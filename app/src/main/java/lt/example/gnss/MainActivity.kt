@@ -7,6 +7,10 @@ import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.location.GnssMeasurementRequest
 import android.location.GnssMeasurementsEvent
 import android.location.GnssStatus
@@ -20,6 +24,7 @@ import android.os.Looper
 import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
@@ -27,9 +32,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import org.json.JSONObject
+import java.net.URL
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executor
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.min
@@ -151,6 +159,116 @@ object Geoid {
 }
 
 // ============================================================
+//  BAROMETRAS
+// ============================================================
+
+/**
+ * Barometrinis aukštis:
+ * altitude = getAltitude(MSLP, vietos slėgis) + kalibravimo poslinkis.
+ * MSLP ateina iš Open-Meteo pagal GNSS koordinates arba įvedamas rankiniu būdu.
+ */
+class Barometer(context: Context) : SensorEventListener {
+
+    private val app = context.applicationContext
+    private val sm = app.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    private val sensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_PRESSURE)
+    private val prefs = app.getSharedPreferences("baro", Context.MODE_PRIVATE)
+
+    val hasSensor: Boolean get() = sensor != null
+
+    @Volatile var stationHpa: Double? = null
+        private set
+
+    @Volatile var mslpHpa: Double? = null
+        private set
+
+    @Volatile var mslpSource: String = "nėra (naudojamas 1013,25 hPa)"
+        private set
+
+    private var lastLat = Double.NaN
+    private var lastLon = Double.NaN
+    private var lastFetch = 0L
+    @Volatile private var fetching = false
+
+    /** Kalibravimo poslinkis (m), išsaugomas tarp paleidimų. */
+    var offsetM: Double
+        get() = prefs.getFloat("offset", 0f).toDouble()
+        private set(v) { prefs.edit().putFloat("offset", v.toFloat()).apply() }
+
+    fun start() {
+        sensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+    }
+
+    fun stop() {
+        sm.unregisterListener(this)
+    }
+
+    override fun onSensorChanged(event: SensorEvent) {
+        stationHpa = event.values[0].toDouble()
+    }
+
+    override fun onAccuracyChanged(s: Sensor?, accuracy: Int) {}
+
+    /** Aukštis virš jūros (m) arba null, jei nėra slėgio duomenų. */
+    fun altitude(): Double? {
+        val p = stationHpa ?: return null
+        return rawAltitude(p) + offsetM
+    }
+
+    private fun rawAltitude(p: Double): Double {
+        val sea = mslpHpa ?: SensorManager.PRESSURE_STANDARD_ATMOSPHERE.toDouble()
+        return SensorManager.getAltitude(sea.toFloat(), p.toFloat()).toDouble()
+    }
+
+    /** Atnaujina MSLP, jei praėjo 30 min arba pasikeitė vieta (~5 km). Fone. */
+    fun updateMslp(lat: Double, lon: Double) {
+        val now = System.currentTimeMillis()
+        val moved = lastLat.isNaN() || abs(lat - lastLat) > 0.05 || abs(lon - lastLon) > 0.05
+        val stale = now - lastFetch > 30 * 60_000L
+        if (fetching || (!moved && !stale)) return
+
+        fetching = true
+        Thread {
+            try {
+                val url = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=pressure_msl"
+                val cur = JSONObject(URL(url).readText()).getJSONObject("current")
+                mslpHpa = cur.getDouble("pressure_msl")
+                mslpSource = "Open-Meteo"
+                lastLat = lat
+                lastLon = lon
+                lastFetch = now
+            } catch (e: Exception) {
+                mslpSource = "klaida: ${e.message}"
+            } finally {
+                fetching = false
+            }
+        }.start()
+    }
+
+    /** Rankinis MSLP (QNH) įvedimas, jei internetas nepasiekiamas. */
+    fun setManualMslp(hpa: Double) {
+        mslpHpa = hpa
+        mslpSource = "rankinis"
+    }
+
+    /** Nulis dabartinėje vietoje. */
+    fun calibrateZero() {
+        val p = stationHpa ?: return
+        offsetM = -rawAltitude(p)
+    }
+
+    /** Kalibravimas pagal žinomą aukštį (pvz., GPS H arba geodezinio ženklo). */
+    fun calibrateTo(targetM: Double) {
+        val p = stationHpa ?: return
+        offsetM = targetM - rawAltitude(p)
+    }
+
+    fun reset() {
+        offsetM = 0.0
+    }
+}
+
+// ============================================================
 //  DANGAUS ŽEMĖLAPIS IR C/N0 STULPELIAI
 // ============================================================
 
@@ -262,8 +380,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var lm: LocationManager
     private lateinit var info: TextView
     private lateinit var skyView: GnssView
+    private lateinit var baro: Barometer
     private lateinit var mainExecutor: Executor
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    private var lastGpsH: Double? = null
 
     private var posText = "Laukiama fikso..."
     private var satText = "Laukiama palydovų..."
@@ -323,6 +444,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         lm = getSystemService(LOCATION_SERVICE) as LocationManager
         mainExecutor = ContextCompat.getMainExecutor(this)
+        baro = Barometer(this)
 
         info = TextView(this).apply {
             textSize = 14f
@@ -347,6 +469,27 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        val btnZero = Button(this).apply {
+            text = "Nulis čia"
+            setOnClickListener { baro.calibrateZero(); render() }
+        }
+        val btnGps = Button(this).apply {
+            text = "Kalibruoti pagal GPS aukštį"
+            setOnClickListener {
+                val h = lastGpsH
+                if (h != null) {
+                    baro.calibrateTo(h)
+                } else {
+                    posText = "Nėra GPS aukščio (laukiama fikso ir geoido)."
+                }
+                render()
+            }
+        }
+        val btnReset = Button(this).apply {
+            text = "Atstatyti kalibravimą"
+            setOnClickListener { baro.reset(); render() }
+        }
+
         // Pirmą kartą įkeliame LIT20G fone
         Geoid.select(applicationContext, GeoidMode.LIT20G) {
             runOnUiThread { render() }
@@ -354,6 +497,12 @@ class MainActivity : AppCompatActivity() {
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(modeSpinner, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(btnZero, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(btnGps, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(btnReset, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(info, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -364,6 +513,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        baro.start()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             == PackageManager.PERMISSION_GRANTED
         ) {
@@ -375,6 +525,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        baro.stop()
         lm.unregisterGnssStatusCallback(statusCallback)
         lm.unregisterGnssMeasurementsCallback(measCallback)
         lm.removeUpdates(locationListener)
@@ -432,6 +583,13 @@ class MainActivity : AppCompatActivity() {
             if (loc.hasSpeed()) appendLine("Greitis: ${f(loc.speed * 3.6, 1)} km/h")
             append("Laikas: ${java.text.DateFormat.getTimeInstance().format(Date(loc.time))}")
         }
+
+        baro.updateMslp(loc.latitude, loc.longitude)
+
+        lastGpsH = if (loc.hasAltitude()) {
+            Geoid.undulation(loc.latitude, loc.longitude)?.let { loc.altitude - it }
+        } else null
+
         render()
     }
 
@@ -440,9 +598,21 @@ class MainActivity : AppCompatActivity() {
             appendLine("=== FIKSAS ===")
             appendLine(posText)
             appendLine()
+            appendLine("=== BAROMETRAS ===")
+            if (!baro.hasSensor) {
+                appendLine("Barometro jutiklio nėra")
+            } else {
+                val alt = baro.altitude()
+                appendLine("Slėgis: ${baro.stationHpa?.let { f(it, 2) } ?: "—"} hPa")
+                appendLine("MSLP: ${baro.mslpHpa?.let { f(it, 1) } ?: "—"} hPa (${baro.mslpSource})")
+                appendLine("Barometrinis aukštis: ${alt?.let { f(it, 1) + " m" } ?: "—"}")
+                appendLine("Kalibravimo poslinkis: ${f(baro.offsetM, 1)} m")
+            }
+            appendLine()
             appendLine("=== PALYDOVAI ===")
             appendLine(satText)
             appendLine()
+            appendLine("=== NEAPDOROTI MATAVIMAI ===")
             append(measText)
         }
     }

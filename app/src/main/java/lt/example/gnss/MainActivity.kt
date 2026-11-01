@@ -18,7 +18,10 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.LinearLayout
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
@@ -28,8 +31,128 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executor
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
+
+// ============================================================
+//  GEOIDAS
+// ============================================================
+
+enum class GeoidMode(val label: String) {
+    LIT20G("LIT20G (Lietuva)"),
+    WORLD("Pasaulinis (EGM2008)")
+}
+
+/** Vienas geoido tinklelis, nuskaitomas iš assets failo (eilutės: platuma ilguma N). */
+class GeoidGrid(
+    private val assetName: String,
+    private val latMin: Double,
+    private val latStep: Double,
+    private val nLat: Int,
+    private val lonMin: Double,
+    private val lonStep: Double,
+    private val nLon: Int,
+) {
+    @Volatile private var grid: FloatArray? = null
+
+    val isLoaded: Boolean get() = grid != null
+
+    /** Kviesti ne pagrindinėje gijoje. Gali mesti išimtį, jei failo nėra. */
+    fun load(context: Context) {
+        if (grid != null) return
+        val data = FloatArray(nLat * nLon) { Float.NaN }
+
+        context.assets.open(assetName).bufferedReader().useLines { lines ->
+            for (line in lines) {
+                val p = line.trim().split(Regex("\\s+"))
+                if (p.size < 3) continue
+                val lat = p[0].toDoubleOrNull() ?: continue
+                val lon = p[1].toDoubleOrNull() ?: continue
+                val n = p[2].toDoubleOrNull() ?: continue
+
+                val i = ((lat - latMin) / latStep).roundToInt()
+                val j = ((lon - lonMin) / lonStep).roundToInt()
+                if (i in 0 until nLat && j in 0 until nLon) {
+                    data[i * nLon + j] = n.toFloat()
+                }
+            }
+        }
+        grid = data
+    }
+
+    /** Bilineari interpoliacija. Null, jei taškas už tinklelio ribų arba nekrautas. */
+    fun undulation(lat: Double, lon: Double): Double? {
+        val g = grid ?: return null
+
+        val fi = (lat - latMin) / latStep
+        val fj = (lon - lonMin) / lonStep
+        val i0 = floor(fi).toInt()
+        val j0 = floor(fj).toInt()
+        if (i0 < 0 || i0 >= nLat - 1 || j0 < 0 || j0 >= nLon - 1) return null
+
+        val di = fi - i0
+        val dj = fj - j0
+
+        val v00 = g[i0 * nLon + j0]
+        val v01 = g[i0 * nLon + j0 + 1]
+        val v10 = g[(i0 + 1) * nLon + j0]
+        val v11 = g[(i0 + 1) * nLon + j0 + 1]
+        if (v00.isNaN() || v01.isNaN() || v10.isNaN() || v11.isNaN()) return null
+
+        val v0 = v00 * (1 - dj) + v01 * dj
+        val v1 = v10 * (1 - dj) + v11 * dj
+        return v0 * (1 - di) + v1 * di
+    }
+}
+
+/** Geoido valdymas: pasirinktas modelis naudojamas visiems skaičiavimams. */
+object Geoid {
+
+    private val lit20g = GeoidGrid(
+        assetName = "LIT20G.txt",
+        latMin = 53.0, latStep = 0.01, nLat = 401,
+        lonMin = 18.0, lonStep = 0.02, nLon = 451
+    )
+
+    private val world = GeoidGrid(
+        assetName = "WORLD_EGM2008.txt",
+        latMin = -90.0, latStep = 0.25, nLat = 721,
+        lonMin = -180.0, lonStep = 0.25, nLon = 1441
+    )
+
+    @Volatile var mode: GeoidMode = GeoidMode.LIT20G
+        private set
+
+    @Volatile var lastError: String? = null
+        private set
+
+    private fun gridOf(m: GeoidMode) = if (m == GeoidMode.LIT20G) lit20g else world
+
+    /** Rankiniu būdu pasirenka modelį ir jį įkelia fone. onReady kviečiamas fono gijoje. */
+    fun select(context: Context, m: GeoidMode, onReady: () -> Unit) {
+        mode = m
+        Thread {
+            try {
+                gridOf(m).load(context.applicationContext)
+                lastError = null
+            } catch (e: Exception) {
+                lastError = "nepavyko įkelti ${m.label}: ${e.message}"
+            }
+            onReady()
+        }.start()
+    }
+
+    val isReady: Boolean get() = gridOf(mode).isLoaded
+
+    /** Unduliacija N (m) pasirinktame modelyje arba null. */
+    fun undulation(lat: Double, lon: Double): Double? = gridOf(mode).undulation(lat, lon)
+}
+
+// ============================================================
+//  DANGAUS ŽEMĖLAPIS IR C/N0 STULPELIAI
+// ============================================================
 
 data class Sat(
     val const: String,
@@ -40,7 +163,6 @@ data class Sat(
     val used: Boolean
 )
 
-/** Piešia dangaus žemėlapį viršuje ir C/N0 stulpelius apačioje. */
 class GnssView(context: Context) : View(context) {
 
     var sats: List<Sat> = emptyList()
@@ -78,12 +200,11 @@ class GnssView(context: Context) : View(context) {
         val h = height.toFloat()
         val skyH = h * 0.5f
 
-        // ---- Dangaus žemėlapis ----
+        // Dangaus žemėlapis
         val cx = w / 2f
         val cy = skyH / 2f + 20f
         val r0 = min(w, skyH) / 2f - 40f
 
-        // Žiedai: 0°, 30°, 60° kampas nuo horizonto
         for (e in listOf(0f, 30f, 60f)) {
             canvas.drawCircle(cx, cy, r0 * (90f - e) / 90f, ringPaint)
         }
@@ -96,22 +217,20 @@ class GnssView(context: Context) : View(context) {
             val a = Math.toRadians(s.az.toDouble())
             val x = cx + r * sin(a).toFloat()
             val y = cy - r * cos(a).toFloat()
-            val col = colorOf(s.const)
 
-            dotPaint.color = col
+            dotPaint.color = colorOf(s.const)
             dotPaint.style = if (s.used) Paint.Style.FILL else Paint.Style.STROKE
             canvas.drawCircle(x, y, 16f, dotPaint)
             canvas.drawText(s.svid.toString(), x + 18f, y + 8f, textPaint)
         }
 
-        // ---- C/N0 stulpeliai ----
+        // C/N0 stulpeliai
         if (sats.isEmpty()) return
 
         val top = skyH + 40f
         val bottom = h - 50f
         val bh = bottom - top
 
-        // 20 ir 40 dB-Hz linijos
         for (db in listOf(20f, 40f)) {
             val y = bottom - (db / 50f) * bh
             canvas.drawLine(20f, y, w - 20f, y, ringPaint)
@@ -133,6 +252,10 @@ class GnssView(context: Context) : View(context) {
         }
     }
 }
+
+// ============================================================
+//  PAGRINDINIS EKRANAS
+// ============================================================
 
 class MainActivity : AppCompatActivity() {
 
@@ -203,11 +326,35 @@ class MainActivity : AppCompatActivity() {
 
         info = TextView(this).apply {
             textSize = 14f
-            setPadding(32, 32, 32, 16)
+            setPadding(32, 16, 32, 16)
         }
         skyView = GnssView(this)
 
+        val modeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                GeoidMode.values().map { it.label }
+            )
+            setSelection(GeoidMode.values().indexOf(Geoid.mode))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                    Geoid.select(applicationContext, GeoidMode.values()[pos]) {
+                        runOnUiThread { render() }
+                    }
+                }
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+        }
+
+        // Pirmą kartą įkeliame LIT20G fone
+        Geoid.select(applicationContext, GeoidMode.LIT20G) {
+            runOnUiThread { render() }
+        }
+
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(modeSpinner, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(info, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(skyView, LinearLayout.LayoutParams(
@@ -268,7 +415,20 @@ class MainActivity : AppCompatActivity() {
                 if (loc.hasAccuracy()) "Tikslumas: ${f(loc.accuracy.toDouble(), 1)} m"
                 else "Tikslumas: nežinomas"
             )
-            if (loc.hasAltitude()) appendLine("Aukštis (elipsoidas): ${f(loc.altitude, 1)} m")
+            if (loc.hasAltitude()) {
+                appendLine("Aukštis (elipsoidas): ${f(loc.altitude, 1)} m")
+                appendLine("Geoidas: ${Geoid.mode.label}")
+                val n = Geoid.undulation(loc.latitude, loc.longitude)
+                when {
+                    n != null -> {
+                        appendLine("Geoido unduliacija (N): ${f(n, 2)} m")
+                        appendLine("Aukštis virš jūros (H): ${f(loc.altitude - n, 1)} m")
+                    }
+                    Geoid.lastError != null -> appendLine("Klaida: ${Geoid.lastError}")
+                    !Geoid.isReady -> appendLine("Geoidas kraunamas...")
+                    else -> appendLine("Taškas už pasirinkto geoido ribų")
+                }
+            }
             if (loc.hasSpeed()) appendLine("Greitis: ${f(loc.speed * 3.6, 1)} km/h")
             append("Laikas: ${java.text.DateFormat.getTimeInstance().format(Date(loc.time))}")
         }

@@ -472,8 +472,7 @@ class BubbleView(context: Context) : View(context) {
 
 class DraggablePanel(
     context: Context,
-    private val onShare: (Set<String>, String, Boolean) -> Unit,
-    private val onClose: () -> Unit
+    private val onShare: (Set<String>, String, Boolean) -> Unit
 ) : FrameLayout(context) {
 
     private val panel = LinearLayout(context).apply {
@@ -485,10 +484,11 @@ class DraggablePanel(
         }
         elevation = 16 * resources.displayMetrics.density
         setPadding(32, 24, 32, 24)
+        visibility = GONE // Pradedame nuo paslėptos būsenos
     }
 
     private val bubble = BubbleView(context).apply {
-        visibility = GONE
+        visibility = VISIBLE // Iš karto matomas burbulas
         isClickable = true
         layoutParams = LayoutParams(80 * resources.displayMetrics.density.toInt(), 80 * resources.displayMetrics.density.toInt())
     }
@@ -541,15 +541,16 @@ class DraggablePanel(
         panel.addView(optionsLayout)
         panel.addView(questionInput)
         panel.addView(btnLayout)
+        
         addView(panel)
         addView(bubble)
 
         minimizeBtn.setOnClickListener { minimize() }
-        cancelBtn.setOnClickListener { onClose() }
+        cancelBtn.setOnClickListener { minimize() }
         shareBtn.setOnClickListener {
             val selected = boxes.filterValues { it.isChecked }.keys
             onShare(selected, questionInput.text.toString().trim(), "screenshot" in selected)
-            onClose()
+            minimize()
         }
 
         // Burbulo paspaudimo logika (išskleidimas + vibracija)
@@ -561,9 +562,7 @@ class DraggablePanel(
                 @Suppress("DEPRECATION")
                 vibrator.vibrate(50)
             }
-            bubble.visibility = GONE
-            panel.visibility = VISIBLE
-            post { adjustPositionOnExpand() }
+            maximize()
         }
     }
 
@@ -577,7 +576,6 @@ class DraggablePanel(
                 lastX = ev.rawX
                 lastY = ev.rawY
                 isDragging = false
-                // Neleisti tempti lentelės, jei vartotojas bando žymėti tekstą EditText laukelyje
                 val rect = Rect()
                 questionInput.getGlobalVisibleRect(rect)
                 if (questionInput.visibility == VISIBLE && rect.contains(ev.rawX.toInt(), ev.rawY.toInt())) {
@@ -626,11 +624,16 @@ class DraggablePanel(
         post { constrainPosition() }
     }
 
+    private fun maximize() {
+        bubble.visibility = GONE
+        panel.visibility = VISIBLE
+        post { adjustPositionOnExpand() }
+    }
+
     private fun adjustPositionOnExpand() {
         val parentW = (parent as? View)?.width?.toFloat() ?: return
         val parentH = (parent as? View)?.height?.toFloat() ?: return
         
-        // Jei lentelė išsiskleidžiant išeina už ekrano ribų, grąžiname ją į ekraną
         val minTx = -width * 0.1f
         val maxTx = parentW - width * 0.9f
         val minTy = -height * 0.1f
@@ -647,7 +650,6 @@ class DraggablePanel(
         val parentW = (parent as? View)?.width?.toFloat() ?: return
         val parentH = (parent as? View)?.height?.toFloat() ?: return
         
-        // Leidžiame nustumti už ekrano taip, kad matytųsi bent 10%
         val minTx = -width * 0.9f
         val maxTx = parentW - width * 0.1f
         val minTy = -height * 0.9f
@@ -886,24 +888,32 @@ class MainActivity : AppCompatActivity() {
         container.addView(bg, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         container.addView(root, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
-        val shareZoneSize = (56 * dm.density).toInt()
-        val shareZone = FrameLayout(this).apply {
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0x66FFFFFF) }
-        }
-        val shareBtnIcon = TextView(this).apply {
-            text = "↗"
-            textSize = 24f
-            gravity = Gravity.CENTER
-            setTextColor(0xFF0F172A.toInt())
-            setOnClickListener { showShareDialog() }
-        }
-        shareZone.addView(shareBtnIcon, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        container.addView(shareZone, FrameLayout.LayoutParams(shareZoneSize, shareZoneSize).apply {
-            gravity = Gravity.TOP or Gravity.END
-            setMargins(0, (16 * dm.density).toInt(), (16 * dm.density).toInt(), 0)
-        })
-
         setContentView(container)
+        
+        // Pradedame su iš karto aktyviu burbulu (minimizuota būsena)
+        setupShareBubble()
+    }
+
+    private fun setupShareBubble() {
+        if (sharePanel != null) return
+        val panel = DraggablePanel(this) { sections, question, wantScreenshot ->
+            val report = buildReport(sections - "screenshot", question)
+            val uri = if (wantScreenshot) takeScreenshot() else null
+            shareContent(report, uri)
+        }
+        val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        params.gravity = Gravity.TOP or Gravity.END
+        
+        container.addView(panel, params)
+        sharePanel = panel
+        
+        // Nustatome pradinę poziciją viršutiniame dešiniajame kampe
+        panel.post {
+            val margin = (16 * resources.displayMetrics.density).toInt()
+            panel.translationX = (container.width - panel.width - margin).toFloat()
+            panel.translationY = margin.toFloat()
+            // Būsena jau yra minimali iš DraggablePanel init
+        }
     }
 
     override fun onStart() {
@@ -995,28 +1005,6 @@ class MainActivity : AppCompatActivity() {
         val stamp = java.text.DateFormat.getTimeInstance().format(Date())
         errorLog.addLast("$stamp  $msg")
         if (errorLog.size > 20) errorLog.removeFirst()
-    }
-
-    private fun showShareDialog() {
-        if (sharePanel != null) return
-        val panel = DraggablePanel(this, { sections, question, wantScreenshot ->
-            val report = buildReport(sections - "screenshot", question)
-            val uri = if (wantScreenshot) takeScreenshot() else null
-            shareContent(report, uri)
-        }, {
-            sharePanel?.let { container.removeView(it) }
-            sharePanel = null
-        })
-        val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        params.gravity = Gravity.TOP or Gravity.START
-        container.addView(panel, params)
-        
-        // Centruojame lange pirmą kartą
-        panel.post {
-            panel.translationX = (container.width - panel.width) / 2f
-            panel.translationY = (container.height - panel.height) / 2f
-        }
-        sharePanel = panel
     }
 
     private fun takeScreenshot(): Uri? {

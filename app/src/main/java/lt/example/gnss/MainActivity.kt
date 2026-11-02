@@ -433,11 +433,31 @@ class CnoPlotView(context: Context) : View(context) {
 // ============================================================
 
 class BubbleView(context: Context) : View(context) {
+    private val density = resources.displayMetrics.density
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val boltPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val rnd = java.util.Random()
     private var t = 0f
-    private var colorIndex = 0
-    private var colorT = 0f
-    private val colors = intArrayOf(constColor("GPS"), constColor("GAL"), constColor("GLO"), constColor("BDS"))
+
+    // avg – vidutinis C/N0 (spalvai ir silpnam signalui), peak – maksimalus C/N0 (ULTRA)
+    private var avg: Float? = null
+    private var peak: Float? = null
+
+    private class Bolt(val path: Path, var life: Int)
+    private class Dust(var x: Float, var y: Float, val vx: Float, val vy: Float, var life: Int)
+
+    private val bolts = ArrayList<Bolt>()
+    private val dust = ArrayList<Dust>()
+
+    fun setSignal(avgDb: Float?, peakDb: Float?) {
+        avg = avgDb
+        peak = peakDb
+        invalidate()
+    }
 
     private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
         duration = 2000
@@ -445,36 +465,125 @@ class BubbleView(context: Context) : View(context) {
         interpolator = LinearInterpolator()
         addUpdateListener {
             t = it.animatedFraction
-            colorT += 0.01f
-            if (colorT >= 1f) {
-                colorT = 0f
-                colorIndex = (colorIndex + 1) % colors.size
-            }
+            updateEffects()
             invalidate()
         }
+    }
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); animator.start() }
+    override fun onDetachedFromWindow() { animator.cancel(); super.onDetachedFromWindow() }
+
+    private fun isUltra() = (peak ?: 0f) > 45f
+    private fun isWeak() = avg != null && avg!! < 20f
+
+    private fun updateEffects() {
+        val w = width.toFloat(); val h = height.toFloat()
+        if (w <= 0f || h <= 0f) return
+        val cx = w / 2f; val cy = h / 2f
+        val r = min(w, h) / 2f
+
+        // Elektros kibirkštys (ULTRA)
+        if (isUltra() && rnd.nextFloat() < 0.6f) {
+            val p = Path()
+            val a = rnd.nextFloat() * 2 * Math.PI.toFloat()
+            var x = cx + cos(a) * r * 0.55f
+            var y = cy + sin(a) * r * 0.55f
+            p.moveTo(x, y)
+            val steps = 4 + rnd.nextInt(3)
+            for (i in 1..steps) {
+                val dist = r * (0.55f + 0.45f * i / steps)
+                val ja = a + (rnd.nextFloat() - 0.5f) * 0.9f
+                x = cx + cos(ja) * dist
+                y = cy + sin(ja) * dist
+                p.lineTo(x, y)
+            }
+            bolts.add(Bolt(p, 3 + rnd.nextInt(3)))
+        }
+        bolts.forEach { it.life-- }
+        bolts.removeAll { it.life <= 0 }
+
+        // Išsklaidyti dulkės (silpnas signalas)
+        if (isWeak() && rnd.nextFloat() < 0.5f) {
+            val a = rnd.nextFloat() * 2 * Math.PI.toFloat()
+            val sp = r * 0.02f + rnd.nextFloat() * r * 0.02f
+            dust.add(Dust(cx + cos(a) * r * 0.2f, cy + sin(a) * r * 0.2f, cos(a) * sp, sin(a) * sp, 30))
+        }
+        dust.forEach { it.x += it.vx; it.y += it.vy; it.life-- }
+        dust.removeAll { it.life <= 0 }
     }
 
     override fun onDraw(canvas: Canvas) {
         val w = width.toFloat()
         val h = height.toFloat()
-        val cx = w / 2
-        val cy = h / 2
-        val baseR = min(w, h) / 2f
-        val pulseR = baseR * (0.8f + 0.2f * t)
-        val c1 = colors[colorIndex]
-        val c2 = colors[(colorIndex + 1) % colors.size]
-        val currentColor = ColorUtils.blendARGB(c1, c2, colorT)
+        val cx = w / 2f
+        val cy = h / 2f
+        val r = min(w, h) / 2f
+        if (r <= 0f) return
 
-        val gradient = RadialGradient(cx, cy, pulseR, currentColor, Color.TRANSPARENT, Shader.TileMode.CLAMP)
-        paint.shader = gradient
+        val ultra = isUltra()
+        val weak = isWeak()
+        val base = when {
+            avg == null -> SIG_BLUE
+            weak -> 0xFF1F2937.toInt()
+            ultra -> SIG_YELLOW
+            else -> signalColor(avg!!)
+        }
+
+        // Pulsuojantis švytėjimas
+        val coreR = r * 0.55f
+        val pulseR = r * (0.85f + 0.12f * t)
+        paint.shader = RadialGradient(cx, cy, pulseR, withAlpha(base, 0.6f), 0x00FFFFFF, Shader.TileMode.CLAMP)
         canvas.drawCircle(cx, cy, pulseR, paint)
         paint.shader = null
-        paint.color = currentColor
-        canvas.drawCircle(cx, cy, baseR * 0.6f, paint)
+
+        // Branduolys
+        paint.color = base
+        canvas.drawCircle(cx, cy, coreR, paint)
+
+        if (ultra) {
+            // Geltonas švytėjimas + baltos kibirkštys
+            boltPaint.color = SIG_YELLOW
+            boltPaint.alpha = 220
+            boltPaint.strokeWidth = 3f * density
+            bolts.forEach { canvas.drawPath(it.path, boltPaint) }
+            boltPaint.color = 0xFFFFFFFF.toInt()
+            boltPaint.strokeWidth = 1.2f * density
+            bolts.forEach { canvas.drawPath(it.path, boltPaint) }
+        }
+
+        if (weak) {
+            drawSkullCloud(canvas, cx, cy, coreR)
+            // Išsisklaidantys dulkės
+            paint.color = 0xFF1F2937.toInt()
+            dust.forEach {
+                paint.alpha = (255 * it.life / 30f).toInt().coerceIn(0, 255)
+                canvas.drawCircle(it.x, it.y, 2.2f * density, paint)
+            }
+            paint.alpha = 255
+        }
     }
 
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); animator.start() }
-    override fun onDetachedFromWindow() { animator.cancel(); super.onDetachedFromWindow() }
+    /** Tamsi debesies formos kaukolė (nupiešta, be paveikslėlio). */
+    private fun drawSkullCloud(canvas: Canvas, cx: Float, cy: Float, r: Float) {
+        paint.color = 0xFF111827.toInt()
+        // Debesis: keli persidengiantys apskritimai
+        canvas.drawCircle(cx - r * 0.42f, cy + r * 0.05f, r * 0.42f, paint)
+        canvas.drawCircle(cx + r * 0.42f, cy + r * 0.05f, r * 0.42f, paint)
+        canvas.drawCircle(cx, cy - r * 0.18f, r * 0.55f, paint)
+        canvas.drawCircle(cx - r * 0.22f, cy + r * 0.32f, r * 0.38f, paint)
+        canvas.drawCircle(cx + r * 0.22f, cy + r * 0.32f, r * 0.38f, paint)
+        canvas.drawRect(cx - r * 0.5f, cy + r * 0.05f, cx + r * 0.5f, cy + r * 0.36f, paint)
+        // Kaukolės akys ir dantys
+        paint.color = 0xFFE5E7EB.toInt()
+        canvas.drawCircle(cx - r * 0.22f, cy - r * 0.02f, r * 0.16f, paint)
+        canvas.drawCircle(cx + r * 0.22f, cy - r * 0.02f, r * 0.16f, paint)
+        paint.color = 0xFF111827.toInt()
+        canvas.drawRect(cx - r * 0.2f, cy + r * 0.2f, cx + r * 0.2f, cy + r * 0.24f, paint)
+        canvas.drawRect(cx - r * 0.05f, cy + r * 0.2f, cx + r * 0.05f, cy + r * 0.34f, paint)
+    }
+
+    private fun withAlpha(color: Int, alpha: Float): Int =
+        (color and 0x00FFFFFF) or ((alpha * 255).toInt() shl 24)
 }
 
 /** Nupiešta „dalintis“ piktograma (tokia kaip nuotraukoje) – be teksto. */
@@ -514,7 +623,7 @@ class DraggablePanel(
     var onCountdownStart: (() -> Unit)? = null
 
     private val density = resources.displayMetrics.density
-    private val bubbleSize = (56 * density).toInt()
+    private val bubbleSize = (88 * density).toInt()
     private val handler = Handler(Looper.getMainLooper())
     private var counting = false
     private var remaining = 0
@@ -700,18 +809,25 @@ class DraggablePanel(
         }
     }
 
+    /** Burbulo spalva ir efektai: avg – vidutinis C/N0, peak – maksimalus. */
+    fun setSignal(avgDb: Float?, peakDb: Float?) {
+        bubble.setSignal(avgDb, peakDb)
+    }
+
     private fun runShare() {
         if (counting) return
         val selected = boxes.filterValues { it.isChecked }.keys.toSet()
-        val question = questionInput.text.toString().trim()
         val screenshot = "screenshot" in selected
         if ("raw" in selected) {
             val secs = rawSecs.text.toString().toIntOrNull()?.coerceIn(5, 600) ?: 30
             startCountdown(secs) {
+                // Klausimas nuskaitomas tik pasibaigus laikmačiui, kad spėtumėte parašyti per įrašymą
+                val question = questionInput.text.toString().trim()
                 onShare(selected, question, screenshot)
                 minimize()
             }
         } else {
+            val question = questionInput.text.toString().trim()
             onShare(selected, question, screenshot)
             minimize()
         }
@@ -973,6 +1089,10 @@ class MainActivity : AppCompatActivity() {
 
             cnoView.addSample(list, if (used.isNotEmpty()) avg.toFloat() else null)
             bg.setSignal(if (used.isNotEmpty()) avg.toFloat() else null)
+            sharePanel?.setSignal(
+                if (used.isNotEmpty()) avg.toFloat() else null,
+                if (used.isNotEmpty()) used.maxOf { it.cn0 } else null
+            )
 
             satText = SpannableStringBuilder().apply {
                 appendLine("Matomi palydovai: ${list.size}")

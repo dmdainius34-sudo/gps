@@ -7,12 +7,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RadialGradient
+import android.graphics.Rect
 import android.graphics.Shader
 import android.graphics.drawable.GradientDrawable
 import android.hardware.Sensor
@@ -25,11 +27,18 @@ import android.location.GnssStatus
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.text.Spannable
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.animation.LinearInterpolator
 import android.widget.AdapterView
@@ -44,11 +53,13 @@ import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.graphics.ColorUtils
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.net.URL
 import java.util.Date
 import java.util.Locale
@@ -76,7 +87,6 @@ enum class GeoidMode(val label: String, val assetFile: String) {
     WORLD("Pasaulinis (EGM2008)", "WORLD_EGM2008.txt")
 }
 
-/** Vienas geoido tinklelis, nuskaitomas iš assets failo (eilutės: platuma ilguma N). */
 class GeoidGrid(
     private val assetName: String,
     private val latMin: Double,
@@ -87,14 +97,11 @@ class GeoidGrid(
     private val nLon: Int,
 ) {
     @Volatile private var grid: FloatArray? = null
-
     val isLoaded: Boolean get() = grid != null
 
-    /** Kviesti ne pagrindinėje gijoje. Gali mesti išimtį, jei failo nėra. */
     fun load(context: Context) {
         if (grid != null) return
         val data = FloatArray(nLat * nLon) { Float.NaN }
-
         context.assets.open(assetName).bufferedReader().useLines { lines ->
             for (line in lines) {
                 val p = line.trim().split(Regex("\\s+"))
@@ -102,7 +109,6 @@ class GeoidGrid(
                 val lat = p[0].toDoubleOrNull() ?: continue
                 val lon = p[1].toDoubleOrNull() ?: continue
                 val n = p[2].toDoubleOrNull() ?: continue
-
                 val i = ((lat - latMin) / latStep).roundToInt()
                 val j = ((lon - lonMin) / lonStep).roundToInt()
                 if (i in 0 until nLat && j in 0 until nLon) {
@@ -113,55 +119,44 @@ class GeoidGrid(
         grid = data
     }
 
-    /** Bilineari interpoliacija. Null, jei taškas už tinklelio ribų arba nekrautas. */
     fun undulation(lat: Double, lon: Double): Double? {
         val g = grid ?: return null
-
         val fi = (lat - latMin) / latStep
         val fj = (lon - lonMin) / lonStep
         val i0 = floor(fi).toInt()
         val j0 = floor(fj).toInt()
         if (i0 < 0 || i0 >= nLat - 1 || j0 < 0 || j0 >= nLon - 1) return null
-
         val di = fi - i0
         val dj = fj - j0
-
         val v00 = g[i0 * nLon + j0]
         val v01 = g[i0 * nLon + j0 + 1]
         val v10 = g[(i0 + 1) * nLon + j0]
         val v11 = g[(i0 + 1) * nLon + j0 + 1]
         if (v00.isNaN() || v01.isNaN() || v10.isNaN() || v11.isNaN()) return null
-
         val v0 = v00 * (1 - dj) + v01 * dj
         val v1 = v10 * (1 - dj) + v11 * dj
         return v0 * (1 - di) + v1 * di
     }
 }
 
-/** Geoido valdymas: pasirinktas modelis naudojamas visiems skaičiavimams. */
 object Geoid {
-
     private val lit20g = GeoidGrid(
         assetName = GeoidMode.LIT20G.assetFile,
         latMin = 53.0, latStep = 0.01, nLat = 401,
         lonMin = 18.0, lonStep = 0.02, nLon = 451
     )
-
     private val world = GeoidGrid(
         assetName = GeoidMode.WORLD.assetFile,
         latMin = -90.0, latStep = 0.25, nLat = 721,
         lonMin = -180.0, lonStep = 0.25, nLon = 1441
     )
-
     @Volatile var mode: GeoidMode = GeoidMode.LIT20G
         private set
-
     @Volatile var lastError: String? = null
         private set
 
     private fun gridOf(m: GeoidMode) = if (m == GeoidMode.LIT20G) lit20g else world
 
-    /** Rankiniu būdu pasirenka modelį ir jį įkelia fone. onReady kviečiamas fono gijoje. */
     fun select(context: Context, m: GeoidMode, onReady: () -> Unit) {
         mode = m
         Thread {
@@ -169,16 +164,12 @@ object Geoid {
                 gridOf(m).load(context.applicationContext)
                 lastError = null
             } catch (e: Exception) {
-                lastError = "nepavyko įkelti ${m.assetFile} " +
-                    "(turi būti app/src/main/assets/${m.assetFile}). Klaida: ${e.message}"
+                lastError = "nepavyko įkelti ${m.assetFile} (turi būti app/src/main/assets/${m.assetFile}). Klaida: ${e.message}"
             }
             onReady()
         }.start()
     }
-
     val isReady: Boolean get() = gridOf(mode).isLoaded
-
-    /** Unduliacija N (m) pasirinktame modelyje arba null. */
     fun undulation(lat: Double, lon: Double): Double? = gridOf(mode).undulation(lat, lon)
 }
 
@@ -186,54 +177,34 @@ object Geoid {
 //  BAROMETRAS
 // ============================================================
 
-/**
- * Barometrinis aukštis:
- * altitude = getAltitude(MSLP, vietos slėgis) + kalibravimo poslinkis.
- * MSLP ateina iš Open-Meteo pagal GNSS koordinates arba įvedamas rankiniu būdu.
- */
 class Barometer(context: Context) : SensorEventListener {
-
     private val app = context.applicationContext
     private val sm = app.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val sensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_PRESSURE)
     private val prefs = app.getSharedPreferences("baro", Context.MODE_PRIVATE)
-
     val hasSensor: Boolean get() = sensor != null
 
     @Volatile var stationHpa: Double? = null
         private set
-
     @Volatile var mslpHpa: Double? = null
         private set
-
     @Volatile var mslpSource: String = "nėra (naudojamas 1013,25 hPa)"
         private set
-
     private var lastLat = Double.NaN
     private var lastLon = Double.NaN
     private var lastFetch = 0L
     @Volatile private var fetching = false
 
-    /** Kalibravimo poslinkis (m), išsaugomas tarp paleidimų. */
     var offsetM: Double
         get() = prefs.getFloat("offset", 0f).toDouble()
         private set(v) { prefs.edit().putFloat("offset", v.toFloat()).apply() }
 
-    fun start() {
-        sensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
-    }
+    fun start() { sensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) } }
+    fun stop() { sm.unregisterListener(this) }
 
-    fun stop() {
-        sm.unregisterListener(this)
-    }
-
-    override fun onSensorChanged(event: SensorEvent) {
-        stationHpa = event.values[0].toDouble()
-    }
-
+    override fun onSensorChanged(event: SensorEvent) { stationHpa = event.values[0].toDouble() }
     override fun onAccuracyChanged(s: Sensor?, accuracy: Int) {}
 
-    /** Aukštis virš jūros (m) arba null, jei nėra slėgio duomenų. */
     fun altitude(): Double? {
         val p = stationHpa ?: return null
         return rawAltitude(p) + offsetM
@@ -244,13 +215,11 @@ class Barometer(context: Context) : SensorEventListener {
         return SensorManager.getAltitude(sea.toFloat(), p.toFloat()).toDouble()
     }
 
-    /** Atnaujina MSLP, jei praėjo 30 min arba pasikeitė vieta (~5 km). Fone. */
     fun updateMslp(lat: Double, lon: Double) {
         val now = System.currentTimeMillis()
         val moved = lastLat.isNaN() || abs(lat - lastLat) > 0.05 || abs(lon - lastLon) > 0.05
         val stale = now - lastFetch > 30 * 60_000L
         if (fetching || (!moved && !stale)) return
-
         fetching = true
         Thread {
             try {
@@ -269,27 +238,17 @@ class Barometer(context: Context) : SensorEventListener {
         }.start()
     }
 
-    /** Rankinis MSLP (QNH) įvedimas, jei internetas nepasiekiamas. */
-    fun setManualMslp(hpa: Double) {
-        mslpHpa = hpa
-        mslpSource = "rankinis"
-    }
-
-    /** Nulis dabartinėje vietoje. */
     fun calibrateZero() {
         val p = stationHpa ?: return
         offsetM = -rawAltitude(p)
     }
 
-    /** Kalibravimas pagal žinomą aukštį (pvz., GPS H arba geodezinio ženklo). */
     fun calibrateTo(targetM: Double) {
         val p = stationHpa ?: return
         offsetM = targetM - rawAltitude(p)
     }
 
-    fun reset() {
-        offsetM = 0.0
-    }
+    fun reset() { offsetM = 0.0 }
 }
 
 // ============================================================
@@ -320,12 +279,8 @@ fun constColor(c: String): Int = when (c) {
 // ============================================================
 
 class GnssView(context: Context) : View(context) {
-
     var sats: List<Sat> = emptyList()
-        set(value) {
-            field = value
-            invalidate()
-        }
+        set(value) { field = value; invalidate() }
 
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.LTGRAY
@@ -340,26 +295,20 @@ class GnssView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-
         val w = width.toFloat()
         val h = height.toFloat()
         val r0 = min(w, h) / 2f - 40f
         val cx = w / 2f
         val cy = h / 2f
-
-        for (e in listOf(0f, 30f, 60f)) {
-            canvas.drawCircle(cx, cy, r0 * (90f - e) / 90f, ringPaint)
-        }
+        for (e in listOf(0f, 30f, 60f)) canvas.drawCircle(cx, cy, r0 * (90f - e) / 90f, ringPaint)
         canvas.drawLine(cx, cy - r0, cx, cy + r0, ringPaint)
         canvas.drawLine(cx - r0, cy, cx + r0, cy, ringPaint)
         canvas.drawText("N", cx - 8f, cy - r0 - 8f, textPaint)
-
         for (s in sats) {
             val r = r0 * (90f - s.elev.coerceIn(0f, 90f)) / 90f
             val a = Math.toRadians(s.az.toDouble())
             val x = cx + r * sin(a).toFloat()
             val y = cy - r * cos(a).toFloat()
-
             dotPaint.color = constColor(s.const)
             dotPaint.style = if (s.used) Paint.Style.FILL else Paint.Style.STROKE
             canvas.drawCircle(x, y, 16f, dotPaint)
@@ -369,42 +318,22 @@ class GnssView(context: Context) : View(context) {
 }
 
 // ============================================================
-//  C/N0 LAIKO GRAFIKAS (kreivės kiekvienam palydovui)
+//  C/N0 LAIKO GRAFIKAS
 // ============================================================
 
 class CnoPlotView(context: Context) : View(context) {
-
-    private val maxPts = 120                  // ~2 min, nes GNSS atnaujina ~1 Hz
+    private val maxPts = 120
     private var total = 0
-    // raktas: "KONST|svid", reikšmės: C/N0 arba null (palydovas nematytas tą akimirką)
     private val series = LinkedHashMap<String, ArrayDeque<Float?>>()
     private val avgSeries = ArrayDeque<Float?>()
+    private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x40334155; strokeWidth = 1f }
+    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 3f; strokeJoin = Paint.Join.ROUND }
+    private val avgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4f; color = Color.RED; pathEffect = DashPathEffect(floatArrayOf(14f, 10f), 0f) }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0F172A.toInt(); textSize = 22f }
 
-    private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0x40334155
-        strokeWidth = 1f
-    }
-    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 3f
-        strokeJoin = Paint.Join.ROUND
-    }
-    private val avgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 4f
-        color = Color.RED
-        pathEffect = DashPathEffect(floatArrayOf(14f, 10f), 0f)
-    }
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF0F172A.toInt()
-        textSize = 22f
-    }
-
-    /** Pridedama kiekvieno GNSS atnaujinimo metu. */
     fun addSample(sats: List<Sat>, avgUsed: Float?) {
         total++
         val seen = sats.associate { "${it.const}|${it.svid}" to it.cn0 }
-
         val it = series.entries.iterator()
         while (it.hasNext()) {
             val e = it.next()
@@ -412,7 +341,6 @@ class CnoPlotView(context: Context) : View(context) {
             if (e.value.size > maxPts) e.value.removeFirst()
             if (e.value.all { v -> v == null }) it.remove()
         }
-
         for ((k, v) in seen) {
             if (!series.containsKey(k)) {
                 val dq = ArrayDeque<Float?>()
@@ -421,50 +349,37 @@ class CnoPlotView(context: Context) : View(context) {
                 series[k] = dq
             }
         }
-
         avgSeries.addLast(avgUsed)
         if (avgSeries.size > maxPts) avgSeries.removeFirst()
         invalidate()
     }
 
-    /** Tekstinė santrauka AI ataskaitai: kiekvieno palydovo min, max, vidurkis per paskutines kelias minutes. */
     fun summary(): String {
         if (series.isEmpty()) return "Duomenų dar nėra"
         val lines = mutableListOf<String>()
         for ((k, dq) in series) {
             val v = dq.filterNotNull()
             if (v.isEmpty()) continue
-            lines.add(
-                "$k: min ${fx(v.minOrNull()?.toDouble() ?: 0.0)}, " +
-                    "max ${fx(v.maxOrNull()?.toDouble() ?: 0.0)}, " +
-                    "vid ${fx(v.average())}, mėginių ${v.size}"
-            )
+            lines.add("$k: min ${fx(v.minOrNull()?.toDouble() ?: 0.0)}, max ${fx(v.maxOrNull()?.toDouble() ?: 0.0)}, vid ${fx(v.average())}, mėginių ${v.size}")
         }
         val avgVals = avgSeries.filterNotNull()
         if (avgVals.isNotEmpty()) {
-            lines.add(
-                "Naudojamų vidurkis: min ${fx(avgVals.minOrNull()?.toDouble() ?: 0.0)}, " +
-                    "max ${fx(avgVals.maxOrNull()?.toDouble() ?: 0.0)}, " +
-                    "vid ${fx(avgVals.average())}"
-            )
+            lines.add("Naudojamų vidurkis: min ${fx(avgVals.minOrNull()?.toDouble() ?: 0.0)}, max ${fx(avgVals.maxOrNull()?.toDouble() ?: 0.0)}, vid ${fx(avgVals.average())}")
         }
         return lines.joinToString("\n")
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-
         val w = width.toFloat()
         val h = height.toFloat()
         val left = 50f
         val right = w - 20f
         val top = 20f
         val bottom = h - 40f
-
         fun xOf(i: Int) = left + i * (right - left) / (maxPts - 1)
         fun yOf(v: Float) = bottom - ((v.coerceIn(10f, 50f) - 10f) / 40f) * (bottom - top)
 
-        // Tinklelis ir Y ašis (dB-Hz)
         for (db in 10..50 step 10) {
             val y = yOf(db.toFloat())
             canvas.drawLine(left, y, right, y, gridPaint)
@@ -473,31 +388,20 @@ class CnoPlotView(context: Context) : View(context) {
         canvas.drawText("dB-Hz", 6f, top - 4f, textPaint)
         canvas.drawText("laikas →", right - 110f, bottom + 30f, textPaint)
 
-        // Palydovų kreivės
         for ((k, dq) in series) {
             linePaint.color = constColor(k.substringBefore('|'))
             drawSeries(canvas, dq, ::xOf, ::yOf, linePaint, label = k.substringAfter('|'))
         }
-
-        // Naudojamų palydovų vidurkis (raudona punktyrinė)
         drawSeries(canvas, avgSeries, ::xOf, ::yOf, avgPaint, label = null)
     }
 
-    private fun drawSeries(
-        canvas: Canvas,
-        dq: ArrayDeque<Float?>,
-        xOf: (Int) -> Float,
-        yOf: (Float) -> Float,
-        paint: Paint,
-        label: String?
-    ) {
+    private fun drawSeries(canvas: Canvas, dq: ArrayDeque<Float?>, xOf: (Int) -> Float, yOf: (Float) -> Float, paint: Paint, label: String?) {
         val start = maxPts - dq.size
         val path = Path()
         var pen = false
         var lastX = 0f
         var lastY = 0f
         var hasLast = false
-
         dq.forEachIndexed { j, v ->
             if (v == null) {
                 pen = false
@@ -512,67 +416,229 @@ class CnoPlotView(context: Context) : View(context) {
             }
         }
         canvas.drawPath(path, paint)
-
-        if (label != null && hasLast) {
-            canvas.drawText(label, lastX + 4f, lastY + 6f, textPaint)
-        }
+        if (label != null && hasLast) canvas.drawText(label, lastX + 4f, lastY + 6f, textPaint)
     }
 }
 
 // ============================================================
-//  „DALINTIS" PIKTOGRAMA (vektorinė, be rėmelių)
+//  STUMDOMA LENTELĖ SU BURBULU
 // ============================================================
 
-class ShareIconView(context: Context) : View(context) {
+class BubbleView(context: Context) : View(context) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var t = 0f
+    private var colorIndex = 0
+    private var colorT = 0f
+    private val colors = intArrayOf(constColor("GPS"), constColor("GAL"), constColor("GLO"), constColor("BDS"))
 
-    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF0F172A.toInt()
-        style = Paint.Style.FILL
+    private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 2000
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = LinearInterpolator()
+        addUpdateListener {
+            t = it.animatedFraction
+            colorT += 0.01f
+            if (colorT >= 1f) {
+                colorT = 0f
+                colorIndex = (colorIndex + 1) % colors.size
+            }
+            invalidate()
+        }
     }
-    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF0F172A.toInt()
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val cx = w / 2
+        val cy = h / 2
+        val baseR = min(w, h) / 2f
+        val pulseR = baseR * (0.8f + 0.2f * t)
+        val c1 = colors[colorIndex]
+        val c2 = colors[(colorIndex + 1) % colors.size]
+        val currentColor = ColorUtils.blendARGB(c1, c2, colorT)
+
+        val gradient = RadialGradient(cx, cy, pulseR, currentColor, Color.TRANSPARENT, Shader.TileMode.CLAMP)
+        paint.shader = gradient
+        canvas.drawCircle(cx, cy, pulseR, paint)
+        paint.shader = null
+        paint.color = currentColor
+        canvas.drawCircle(cx, cy, baseR * 0.6f, paint)
+    }
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); animator.start() }
+    override fun onDetachedFromWindow() { animator.cancel(); super.onDetachedFromWindow() }
+}
+
+class DraggablePanel(
+    context: Context,
+    private val onShare: (Set<String>, String, Boolean) -> Unit,
+    private val onClose: () -> Unit
+) : FrameLayout(context) {
+
+    private val panel = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 24f * resources.displayMetrics.density
+            setColor(Color.WHITE)
+        }
+        elevation = 16 * resources.displayMetrics.density
+        setPadding(32, 24, 32, 24)
+    }
+
+    private val bubble = BubbleView(context).apply {
+        visibility = GONE
+        layoutParams = LayoutParams(80 * resources.displayMetrics.density.toInt(), 80 * resources.displayMetrics.density.toInt())
+    }
+
+    private val title = TextView(context).apply {
+        text = "Ką siųsti AI?"
+        textSize = 18f
+        setTextColor(Color.BLACK)
+        setTypeface(null, android.graphics.Typeface.BOLD)
+    }
+
+    private val optionsLayout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    private val boxes = LinkedHashMap<String, CheckBox>()
+    private val questionInput = EditText(context).apply { hint = "Klausimas (neprivaloma)"; setSingleLine() }
+    
+    private val btnLayout = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.END
+        setPadding(0, 16, 0, 0)
+    }
+
+    private val minimizeBtn = Button(context).apply { text = "➖"; setOnClickListener { minimize() } }
+    private val cancelBtn = Button(context).apply { text = "Atšaukti"; setOnClickListener { onClose() } }
+    private val shareBtn = Button(context).apply {
+        text = "Dalintis"
+        setOnClickListener {
+            val selected = boxes.filterValues { it.isChecked }.keys
+            onShare(selected, questionInput.text.toString().trim(), "screenshot" in selected)
+            onClose()
+        }
     }
 
     init {
         isClickable = true
         isFocusable = true
+
+        val opts = linkedMapOf(
+            "fiksas" to "Fiksas (koordinatės, tikslumas)",
+            "geoidas" to "Geoidas ir aukštis",
+            "baro" to "Barometras ir kalibravimas",
+            "palydovai" to "Palydovai ir C/N0 dabar",
+            "cno" to "C/N0 istorija (~2 min)",
+            "klaidos" to "Klaidos ir būsena",
+            "irenginys" to "Įrenginys (modelis, Android)",
+            "screenshot" to "Įtraukti ekrano kopiją"
+        )
+        for ((k, v) in opts) {
+            val cb = CheckBox(context).apply { text = v; isChecked = true }
+            boxes[k] = cb
+            optionsLayout.addView(cb)
+        }
+
+        btnLayout.addView(minimizeBtn)
+        btnLayout.addView(cancelBtn)
+        btnLayout.addView(shareBtn)
+        panel.addView(title)
+        panel.addView(optionsLayout)
+        panel.addView(questionInput)
+        panel.addView(btnLayout)
+        addView(panel)
+        addView(bubble)
     }
 
-    override fun setPressed(pressed: Boolean) {
-        super.setPressed(pressed)
-        alpha = if (pressed) 0.55f else 1f
+    private var lastX = 0f
+    private var lastY = 0f
+    private var isDragging = false
+
+    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.action) {
+            MotionEvent.ACTION_DOWN -> {
+                lastX = ev.rawX
+                lastY = ev.rawY
+                isDragging = false
+                if (bubble.visibility == VISIBLE) {
+                    val rect = Rect()
+                    bubble.getHitRect(rect)
+                    if (rect.contains(ev.x.toInt(), ev.y.toInt())) return true
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!isDragging) {
+                    if (abs(ev.rawX - lastX) > 10 || abs(ev.rawY - lastY) > 10) {
+                        isDragging = true
+                        return true
+                    }
+                }
+            }
+        }
+        return super.onInterceptTouchEvent(ev)
     }
 
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> return true
+            MotionEvent.ACTION_MOVE -> {
+                if (isDragging) {
+                    val dx = event.rawX - lastX
+                    val dy = event.rawY - lastY
+                    translationX += dx
+                    translationY += dy
+                    lastX = event.rawX
+                    lastY = event.rawY
+                    constrainPosition()
+                    return true
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                if (isDragging) {
+                    isDragging = false
+                    return true
+                } else if (bubble.visibility == VISIBLE) {
+                    val rect = Rect()
+                    bubble.getHitRect(rect)
+                    if (rect.contains(event.x.toInt(), event.y.toInt())) {
+                        val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                        if (Build.VERSION.SDK_INT >= 26) {
+                            vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+                        } else {
+                            @Suppress("DEPRECATION")
+                            vibrator.vibrate(50)
+                        }
+                        bubble.visibility = GONE
+                        panel.visibility = VISIBLE
+                        post { constrainPosition() }
+                        return true
+                    }
+                }
+            }
+        }
+        return super.onTouchEvent(event)
+    }
 
-        val w = width.toFloat()
-        val h = height.toFloat()
-        val padX = w * 0.24f
-        val dotR = w * 0.10f
-        linePaint.strokeWidth = w * 0.06f
+    private fun minimize() {
+        panel.visibility = GONE
+        bubble.visibility = VISIBLE
+        post { constrainPosition() }
+    }
 
-        val lx = padX
-        val ly = h / 2f
-        val rtx = w - padX
-        val rty = h * 0.27f
-        val rbx = w - padX
-        val rby = h * 0.73f
-
-        canvas.drawLine(lx, ly, rtx, rty, linePaint)
-        canvas.drawLine(lx, ly, rbx, rby, linePaint)
-
-        canvas.drawCircle(lx, ly, dotR, dotPaint)
-        canvas.drawCircle(rtx, rty, dotR, dotPaint)
-        canvas.drawCircle(rbx, rby, dotR, dotPaint)
+    private fun constrainPosition() {
+        val parentW = (parent as? View)?.width?.toFloat() ?: return
+        val parentH = (parent as? View)?.height?.toFloat() ?: return
+        val minTx = -width * 0.9f
+        val maxTx = parentW - width * 0.1f
+        val minTy = -height * 0.9f
+        val maxTy = parentH - height * 0.1f
+        translationX = translationX.coerceIn(minTx, maxTx)
+        translationY = translationY.coerceIn(minTy, maxTy)
     }
 }
 
 // ============================================================
 //  SIGNALO SPALVOS SKALĖ
-//  <=20 dB-Hz raudona, 30 mėlyna, >=40 geltona (tarpinės reikšmės maišomos)
 // ============================================================
 
 const val SIG_RED = 0xFFEF4444.toInt()
@@ -588,14 +654,12 @@ fun signalColor(db: Float): Int = when {
 }
 
 // ============================================================
-//  JUDANTIS SPALVŲ FONAS (Gemini stilius)
+//  JUDANTIS SPALVŲ FONAS
 // ============================================================
 
 class GradientBackground(context: Context) : View(context) {
-
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var t = 0f
-
     @Volatile private var targetColor = BG_NEUTRAL
     private var currentColor = BG_NEUTRAL
 
@@ -605,58 +669,39 @@ class GradientBackground(context: Context) : View(context) {
         interpolator = LinearInterpolator()
         addUpdateListener {
             t = it.animatedFraction
-            // Spalva palaipsniui artėja prie tikslinės (be šuolių)
             currentColor = ColorUtils.blendARGB(currentColor, targetColor, 0.03f)
             invalidate()
         }
     }
 
-    /** Nustato fono spalvą pagal vidutinį C/N0 (dB-Hz). null – neutrali spalva. */
     fun setSignal(db: Float?) {
         targetColor = if (db == null) BG_NEUTRAL else signalColor(db)
     }
 
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        animator.start()
-    }
-
-    override fun onDetachedFromWindow() {
-        animator.cancel()
-        super.onDetachedFromWindow()
-    }
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); animator.start() }
+    override fun onDetachedFromWindow() { animator.cancel(); super.onDetachedFromWindow() }
 
     override fun onDraw(canvas: Canvas) {
         val w = width.toFloat()
         val h = height.toFloat()
         canvas.drawColor(BG_NEUTRAL)
-
         val angle = t * 2 * Math.PI
         val radius = max(w, h) * 0.6f
-
-        // Trys judantys dėmės: pagrindinė spalva, šviesesnė ir tamsesnė
         val blobColors = intArrayOf(
             currentColor,
             ColorUtils.blendARGB(currentColor, 0xFFFFFFFF.toInt(), 0.35f),
             ColorUtils.blendARGB(currentColor, 0xFF000000.toInt(), 0.20f)
         )
-
         for (i in blobColors.indices) {
             val phase = angle + i * 2 * Math.PI / blobColors.size
             val cx = w * (0.5f + 0.35f * cos(phase).toFloat())
             val cy = h * (0.5f + 0.25f * sin(phase * 1.3).toFloat())
-
-            paint.shader = RadialGradient(
-                cx, cy, radius,
-                withAlpha(blobColors[i], 0.55f), 0x00FFFFFF,
-                Shader.TileMode.CLAMP
-            )
+            paint.shader = RadialGradient(cx, cy, radius, withAlpha(blobColors[i], 0.55f), 0x00FFFFFF, Shader.TileMode.CLAMP)
             canvas.drawRect(0f, 0f, w, h, paint)
         }
     }
 
-    private fun withAlpha(color: Int, alpha: Float): Int =
-        (color and 0x00FFFFFF) or ((alpha * 255).toInt() shl 24)
+    private fun withAlpha(color: Int, alpha: Float): Int = (color and 0x00FFFFFF) or ((alpha * 255).toInt() shl 24)
 }
 
 // ============================================================
@@ -664,7 +709,6 @@ class GradientBackground(context: Context) : View(context) {
 // ============================================================
 
 class MainActivity : AppCompatActivity() {
-
     private lateinit var lm: LocationManager
     private lateinit var info: TextView
     private lateinit var skyView: GnssView
@@ -673,13 +717,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var baro: Barometer
     private lateinit var mainExecutor: Executor
     private val mainHandler = Handler(Looper.getMainLooper())
+    private lateinit var container: FrameLayout
+    private var sharePanel: DraggablePanel? = null
 
     private var lastGpsH: Double? = null
     private var lastSats: List<Sat> = emptyList()
     private val errorLog = ArrayDeque<String>()
 
     private var posText = "Laukiama fikso..."
-    private var satText = "Laukiama palydovų..."
+    private var satText: CharSequence = "Laukiama palydovų..."
     private var measText = "Laukiama matavimų..."
 
     private val statusCallback = object : GnssStatus.Callback() {
@@ -696,7 +742,6 @@ class MainActivity : AppCompatActivity() {
             }
             lastSats = list
             skyView.sats = list
-
             val used = list.filter { it.used }
             val avg = if (used.isNotEmpty()) used.map { it.cn0.toDouble() }.average() else 0.0
             val max = list.maxOfOrNull { it.cn0 } ?: 0f
@@ -705,12 +750,18 @@ class MainActivity : AppCompatActivity() {
             cnoView.addSample(list, if (used.isNotEmpty()) avg.toFloat() else null)
             bg.setSignal(if (used.isNotEmpty()) avg.toFloat() else null)
 
-            satText = buildString {
+            satText = SpannableStringBuilder().apply {
                 appendLine("Matomi palydovai: ${list.size}")
                 appendLine("Naudojami fiksui: ${used.size}")
                 appendLine("Vidutinis C/N0 (naudojami): ${fx(avg)} dB-Hz")
                 appendLine("Maks. C/N0: ${fx(max.toDouble())} dB-Hz")
-                append("Pagal konstelaciją: $byConst")
+                append("Pagal konstelaciją: ")
+                for ((const, count) in byConst) {
+                    val start = length
+                    append("$const=$count ")
+                    val end = length
+                    setSpan(ForegroundColorSpan(constColor(const)), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
             }
             render()
         }
@@ -725,12 +776,8 @@ class MainActivity : AppCompatActivity() {
 
     private val locationListener = LocationListener { loc -> onLocation(loc) }
 
-    private val permLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            startGnss()
-        } else {
+    private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startGnss() else {
             posText = "Reikia vietos leidimo."
             logError("Vietos leidimas nesuteiktas")
             render()
@@ -739,6 +786,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        supportActionBar?.hide()
+        window.statusBarColor = Color.TRANSPARENT
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+
         lm = getSystemService(LOCATION_SERVICE) as LocationManager
         mainExecutor = ContextCompat.getMainExecutor(this)
         baro = Barometer(this)
@@ -753,60 +804,41 @@ class MainActivity : AppCompatActivity() {
         bg = GradientBackground(this)
 
         val modeSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                GeoidMode.values().map { it.label }
-            )
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, GeoidMode.values().map { it.label })
             setSelection(GeoidMode.values().indexOf(Geoid.mode))
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                    Geoid.select(applicationContext, GeoidMode.values()[pos]) {
-                        runOnUiThread { render() }
-                    }
+                    Geoid.select(applicationContext, GeoidMode.values()[pos]) { runOnUiThread { render() } }
                 }
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
         }
 
-        val btnZero = Button(this).apply {
-            text = "Nulis čia"
-            setOnClickListener { baro.calibrateZero(); render() }
-        }
+        val btnZero = Button(this).apply { text = "Nulis čia"; setOnClickListener { baro.calibrateZero(); render() } }
         val btnGps = Button(this).apply {
             text = "Kalibruoti pagal GPS aukštį"
             setOnClickListener {
                 val h = lastGpsH
-                if (h != null) {
-                    baro.calibrateTo(h)
-                } else {
+                if (h != null) baro.calibrateTo(h)
+                else {
                     posText = "Nėra GPS aukščio (laukiama fikso ir geoido)."
                     logError("Kalibravimas be GPS aukščio")
                 }
                 render()
             }
         }
-        val btnReset = Button(this).apply {
-            text = "Atstatyti kalibravimą"
-            setOnClickListener { baro.reset(); render() }
-        }
+        val btnReset = Button(this).apply { text = "Atstatyti kalibravimą"; setOnClickListener { baro.reset(); render() } }
 
-        // Pirmą kartą įkeliame LIT20G fone
-        Geoid.select(applicationContext, GeoidMode.LIT20G) {
-            runOnUiThread { render() }
-        }
+        Geoid.select(applicationContext, GeoidMode.LIT20G) { runOnUiThread { render() } }
 
         val dm = resources.displayMetrics
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val colW = if (landscape) dm.widthPixels / 2 else dm.widthPixels
-        // Dangaus žemėlapis – kvadratas: portretas – per visą plotį, peizažas – pusė ekrano
         val skySide = if (landscape) min(colW, dm.heightPixels) else colW
         val cnoH = (260 * dm.density).toInt()
-
         val mw = LinearLayout.LayoutParams.MATCH_PARENT
         val ww = LinearLayout.LayoutParams.WRAP_CONTENT
 
-        // Kairė/viršutinė dalis: valdymas ir tekstas
         val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         left.addView(modeSpinner, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnZero, LinearLayout.LayoutParams(mw, ww))
@@ -814,14 +846,11 @@ class MainActivity : AppCompatActivity() {
         left.addView(btnReset, LinearLayout.LayoutParams(mw, ww))
         left.addView(info, LinearLayout.LayoutParams(mw, ww))
 
-        // Dešinė/apatinė dalis: dangus ir C/N0 grafikas
         val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         right.addView(skyView, LinearLayout.LayoutParams(skySide, skySide))
         right.addView(cnoView, LinearLayout.LayoutParams(mw, cnoH))
 
-        val content = LinearLayout(this).apply {
-            orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
-        }
+        val content = LinearLayout(this).apply { orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL }
         if (landscape) {
             content.addView(left, LinearLayout.LayoutParams(0, ww, 1f))
             content.addView(right, LinearLayout.LayoutParams(0, ww, 1f))
@@ -830,69 +859,29 @@ class MainActivity : AppCompatActivity() {
             content.addView(right, LinearLayout.LayoutParams(mw, ww))
         }
 
-        // Rezervuojam vietą plaukiojančiai piktogramai viršuje (72dp)
-        content.setPadding(
-            0,
-            (72 * dm.density).toInt(),
-            0,
-            0
-        )
-
-        // Visas turinys slenka, todėl niekas neužspaudžiama
         val root = ScrollView(this).apply { addView(content) }
 
-        // Judantis fonas po visu turiniu
-        val container = FrameLayout(this)
-        container.addView(
-            bg,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        )
-        container.addView(
-            root,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        )
+        container = FrameLayout(this)
+        container.addView(bg, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        container.addView(root, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
-        // ============================================================
-        //  Plaukiojanti „Dalintis" piktograma viršutiniame dešiniajame kampe
-        // ============================================================
+        // Piktograma viršuje dešinėje (neprivaloma, jei norite išlaikyti mygtuką, galite palikti)
         val shareZoneSize = (56 * dm.density).toInt()
         val shareZone = FrameLayout(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(0x66FFFFFF)   // permatoma balta (40% alpha)
-            }
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0x66FFFFFF) }
         }
-
-        val shareBtn = ShareIconView(this).apply {
+        val shareBtnIcon = TextView(this).apply {
+            text = "↗"
+            textSize = 24f
+            gravity = Gravity.CENTER
+            setTextColor(0xFF0F172A.toInt())
             setOnClickListener { showShareDialog() }
-            contentDescription = "Dalintis su AI"
         }
-
-        shareZone.addView(
-            shareBtn,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            ).apply {
-                val inset = (10 * dm.density).toInt()
-                setMargins(inset, inset, inset, inset)
-            }
-        )
-
-        container.addView(
-            shareZone,
-            FrameLayout.LayoutParams(shareZoneSize, shareZoneSize).apply {
-                gravity = Gravity.TOP or Gravity.END
-                val m = (16 * dm.density).toInt()
-                setMargins(0, m, m, 0)
-            }
-        )
+        shareZone.addView(shareBtnIcon, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        container.addView(shareZone, FrameLayout.LayoutParams(shareZoneSize, shareZoneSize).apply {
+            gravity = Gravity.TOP or Gravity.END
+            setMargins(0, (16 * dm.density).toInt(), (16 * dm.density).toInt(), 0)
+        })
 
         setContentView(container)
     }
@@ -900,9 +889,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         baro.start()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-            == PackageManager.PERMISSION_GRANTED
-        ) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             startGnss()
         } else {
             permLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -924,24 +911,15 @@ class MainActivity : AppCompatActivity() {
             logError("GPS išjungtas")
             render()
         }
-
         lm.registerGnssStatusCallback(statusCallback, mainHandler)
-
-        if (Build.VERSION.SDK_INT >= 31) {
-            registerFullTracking()
-        } else {
-            lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
-        }
-
+        if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
         lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
     }
 
     @RequiresApi(31)
     @SuppressLint("MissingPermission")
     private fun registerFullTracking() {
-        val request = GnssMeasurementRequest.Builder()
-            .setFullTracking(true)
-            .build()
+        val request = GnssMeasurementRequest.Builder().setFullTracking(true).build()
         lm.registerGnssMeasurementsCallback(request, mainExecutor, measCallback)
     }
 
@@ -949,10 +927,7 @@ class MainActivity : AppCompatActivity() {
         posText = buildString {
             appendLine("Platuma: ${fx(loc.latitude, 7)}")
             appendLine("Ilguma: ${fx(loc.longitude, 7)}")
-            appendLine(
-                if (loc.hasAccuracy()) "Tikslumas: ${fx(loc.accuracy.toDouble())} m"
-                else "Tikslumas: nežinomas"
-            )
+            appendLine(if (loc.hasAccuracy()) "Tikslumas: ${fx(loc.accuracy.toDouble())} m" else "Tikslumas: nežinomas")
             if (loc.hasAltitude()) {
                 appendLine("Aukštis (elipsoidas): ${fx(loc.altitude)} m")
                 appendLine("Geoidas: ${Geoid.mode.label}")
@@ -970,42 +945,31 @@ class MainActivity : AppCompatActivity() {
             if (loc.hasSpeed()) appendLine("Greitis: ${fx(loc.speed * 3.6)} km/h")
             append("Laikas: ${java.text.DateFormat.getTimeInstance().format(Date(loc.time))}")
         }
-
         baro.updateMslp(loc.latitude, loc.longitude)
-
-        lastGpsH = if (loc.hasAltitude()) {
-            Geoid.undulation(loc.latitude, loc.longitude)?.let { loc.altitude - it }
-        } else null
-
+        lastGpsH = if (loc.hasAltitude()) Geoid.undulation(loc.latitude, loc.longitude)?.let { loc.altitude - it } else null
         render()
     }
 
     private fun render() {
-        info.text = buildString {
-            appendLine("=== FIKSAS ===")
-            appendLine(posText)
-            appendLine()
-            appendLine("=== BAROMETRAS ===")
-            if (!baro.hasSensor) {
-                appendLine("Barometro jutiklio nėra")
-            } else {
-                val alt = baro.altitude()
-                appendLine("Slėgis: ${baro.stationHpa?.let { fx(it, 2) } ?: "—"} hPa")
-                appendLine("MSLP: ${baro.mslpHpa?.let { fx(it) } ?: "—"} hPa (${baro.mslpSource})")
-                appendLine("Barometrinis aukštis: ${alt?.let { fx(it) + " m" } ?: "—"}")
-                appendLine("Kalibravimo poslinkis: ${fx(baro.offsetM)} m")
-            }
-            appendLine()
-            appendLine("=== PALYDOVAI ===")
-            appendLine("Fonas: ≤20 raudona · 30 mėlyna · ≥40 geltona (dB-Hz)")
-            appendLine(satText)
-            appendLine()
-            appendLine("=== NEAPDOROTI MATAVIMAI ===")
-            append(measText)
+        val sb = SpannableStringBuilder()
+        sb.append("=== FIKSAS ===\n")
+        sb.append(posText)
+        sb.append("\n\n=== BAROMETRAS ===\n")
+        if (!baro.hasSensor) {
+            sb.append("Barometro jutiklio nėra\n")
+        } else {
+            val alt = baro.altitude()
+            sb.append("Slėgis: ${baro.stationHpa?.let { fx(it, 2) } ?: "—"} hPa\n")
+            sb.append("MSLP: ${baro.mslpHpa?.let { fx(it) } ?: "—"} hPa (${baro.mslpSource})\n")
+            sb.append("Barometrinis aukštis: ${alt?.let { fx(it) + " m" } ?: "—"}\n")
+            sb.append("Kalibravimo poslinkis: ${fx(baro.offsetM)} m\n")
         }
+        sb.append("\n=== PALYDOVAI ===\n")
+        sb.append(satText)
+        sb.append("\n\n=== NEAPDOROTI MATAVIMAI ===\n")
+        sb.append(measText)
+        info.text = sb
     }
-
-    // ---------------- AI DALINIMAS ----------------
 
     private fun logError(msg: String) {
         val stamp = java.text.DateFormat.getTimeInstance().format(Date())
@@ -1014,58 +978,41 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showShareDialog() {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(48, 24, 48, 0)
+        if (sharePanel != null) return
+        val panel = DraggablePanel(this, { sections, question, wantScreenshot ->
+            val report = buildReport(sections - "screenshot", question)
+            val uri = if (wantScreenshot) takeScreenshot() else null
+            shareContent(report, uri)
+        }, {
+            sharePanel?.let { container.removeView(it) }
+            sharePanel = null
+        })
+        val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        params.gravity = Gravity.CENTER
+        container.addView(panel, params)
+        sharePanel = panel
+    }
+
+    private fun takeScreenshot(): Uri? {
+        val view = window.decorView
+        val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        view.draw(canvas)
+        val file = File(cacheDir, "screenshot.png")
+        return try {
+            FileOutputStream(file).use { out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
+            FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        } catch (e: Exception) {
+            logError("Screenshot failed: ${e.message}")
+            null
         }
-
-        val options = linkedMapOf(
-            "fiksas" to "Fiksas (koordinatės, tikslumas)",
-            "geoidas" to "Geoidas ir aukštis",
-            "baro" to "Barometras ir kalibravimas",
-            "palydovai" to "Palydovai ir C/N0 dabar",
-            "cno" to "C/N0 istorija (~2 min)",
-            "klaidos" to "Klaidos ir būsena",
-            "irenginys" to "Įrenginys (modelis, Android)"
-        )
-
-        val boxes = LinkedHashMap<String, CheckBox>()
-        for ((key, label) in options) {
-            val cb = CheckBox(this).apply {
-                text = label
-                isChecked = true
-            }
-            boxes[key] = cb
-            box.addView(cb)
-        }
-
-        val question = EditText(this).apply {
-            hint = "Klausimas (neprivaloma), pvz.: kodėl C/N0 žemas?"
-        }
-        box.addView(question)
-
-        AlertDialog.Builder(this)
-            .setTitle("Ką siųsti AI?")
-            .setView(box)
-            .setPositiveButton("Dalintis") { _, _ ->
-                val selected = boxes.filterValues { it.isChecked }.keys
-                val report = buildReport(selected, question.text.toString().trim())
-                shareText(report)
-            }
-            .setNegativeButton("Atšaukti", null)
-            .show()
     }
 
     private fun buildReport(sections: Set<String>, question: String): String = buildString {
         appendLine("GNSS App ataskaita")
         appendLine("Laikas: ${java.text.DateFormat.getDateTimeInstance().format(Date())}")
         appendLine()
-
-        if (question.isNotBlank()) {
-            appendLine("Klausimas: $question")
-            appendLine()
-        }
-
+        if (question.isNotBlank()) { appendLine("Klausimas: $question"); appendLine() }
         if ("irenginys" in sections) {
             appendLine("=== ĮRENGINYS ===")
             appendLine("Modelis: ${Build.MANUFACTURER} ${Build.MODEL}")
@@ -1073,25 +1020,16 @@ class MainActivity : AppCompatActivity() {
             appendLine("Barometras: ${if (baro.hasSensor) "yra" else "nėra"}")
             appendLine()
         }
-
-        if ("fiksas" in sections) {
-            appendLine("=== FIKSAS ===")
-            appendLine(posText)
-            appendLine()
-        }
-
+        if ("fiksas" in sections) { appendLine("=== FIKSAS ==="); appendLine(posText); appendLine() }
         if ("geoidas" in sections) {
             appendLine("=== GEOIDAS ===")
             appendLine("Modelis: ${Geoid.mode.label}")
             appendLine("Būsena: ${Geoid.lastError ?: if (Geoid.isReady) "įkrautas" else "kraunamas"}")
             appendLine()
         }
-
         if ("baro" in sections) {
             appendLine("=== BAROMETRAS ===")
-            if (!baro.hasSensor) {
-                appendLine("Barometro jutiklio nėra")
-            } else {
+            if (!baro.hasSensor) appendLine("Barometro jutiklio nėra") else {
                 appendLine("Slėgis: ${baro.stationHpa?.let { fx(it, 2) } ?: "—"} hPa")
                 appendLine("MSLP: ${baro.mslpHpa?.let { fx(it) } ?: "—"} hPa (${baro.mslpSource})")
                 appendLine("Barometrinis aukštis: ${baro.altitude()?.let { fx(it) + " m" } ?: "—"}")
@@ -1099,38 +1037,22 @@ class MainActivity : AppCompatActivity() {
             }
             appendLine()
         }
-
         if ("palydovai" in sections) {
             appendLine("=== PALYDOVAI ===")
             appendLine(satText)
             appendLine(measText)
-            appendLine("Palydovų sąrašas (konstelacija, PRN, C/N0, kampas, azimutas, fiksui):")
-            lastSats
-                .sortedWith(compareBy({ it.const }, { it.svid }))
-                .forEach { s ->
-                    appendLine(
-                        "${s.const} ${s.svid}: C/N0 ${fx(s.cn0.toDouble())}, " +
-                            "kampas ${fx(s.elev.toDouble(), 0)}°, " +
-                            "az ${fx(s.az.toDouble(), 0)}°, " +
-                            "fiksui: ${if (s.used) "taip" else "ne"}"
-                    )
-                }
+            appendLine("Palydovų sąrašas:")
+            lastSats.sortedWith(compareBy({ it.const }, { it.svid })).forEach { s ->
+                appendLine("${s.const} ${s.svid}: C/N0 ${fx(s.cn0.toDouble())}, kampas ${fx(s.elev.toDouble(), 0)}°, az ${fx(s.az.toDouble(), 0)}°, fiksui: ${if (s.used) "taip" else "ne"}")
+            }
             appendLine()
         }
-
-        if ("cno" in sections) {
-            appendLine("=== C/N0 ISTORIJA ===")
-            appendLine(cnoView.summary())
-            appendLine()
-        }
-
+        if ("cno" in sections) { appendLine("=== C/N0 ISTORIJA ==="); appendLine(cnoView.summary()); appendLine() }
         if ("klaidos" in sections) {
             appendLine("=== KLAIDOS IR BŪSENA ===")
             appendLine("Geoido klaida: ${Geoid.lastError ?: "nėra"}")
             appendLine("MSLP šaltinis: ${baro.mslpSource}")
-            if (errorLog.isEmpty()) {
-                appendLine("Programos klaidų žurnalas tuščias")
-            } else {
+            if (errorLog.isEmpty()) appendLine("Programos klaidų žurnalas tuščias") else {
                 appendLine("Programos žurnalas:")
                 errorLog.forEach { appendLine(it) }
             }
@@ -1138,16 +1060,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun shareText(text: String) {
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "GNSS App ataskaita")
-            putExtra(Intent.EXTRA_TEXT, text)
+    private fun shareContent(text: String, imageUri: Uri?) {
+        if (imageUri != null) {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "image/png"
+                putExtra(Intent.EXTRA_STREAM, imageUri)
+                putExtra(Intent.EXTRA_TEXT, text)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Dalintis su ekrano kopija"))
+        } else {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "GNSS App ataskaita")
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            startActivity(Intent.createChooser(intent, "Dalintis ataskaita"))
         }
-        startActivity(Intent.createChooser(intent, "Dalintis ataskaita"))
     }
-
-    // -----------------------------------------------
 
     private fun constName(type: Int) = when (type) {
         GnssStatus.CONSTELLATION_GPS -> "GPS"

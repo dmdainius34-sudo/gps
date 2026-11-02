@@ -902,7 +902,9 @@ class MainActivity : AppCompatActivity() {
             shareContent(report, uri)
         }
         val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        params.gravity = Gravity.TOP or Gravity.END
+        
+        // PAKEISTA: Naudojame START, kad translationX skaičiavimas būtų teisingas
+        params.gravity = Gravity.TOP or Gravity.START 
         
         container.addView(panel, params)
         sharePanel = panel
@@ -910,9 +912,9 @@ class MainActivity : AppCompatActivity() {
         // Nustatome pradinę poziciją viršutiniame dešiniajame kampe
         panel.post {
             val margin = (16 * resources.displayMetrics.density).toInt()
+            // Kadangi gravitacija START, translationX pastums į dešinę
             panel.translationX = (container.width - panel.width - margin).toFloat()
             panel.translationY = margin.toFloat()
-            // Būsena jau yra minimali iš DraggablePanel init
         }
     }
 

@@ -14,6 +14,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RadialGradient
 import android.graphics.Shader
+import android.graphics.drawable.GradientDrawable
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -28,6 +29,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.view.View
 import android.view.animation.LinearInterpolator
 import android.widget.AdapterView
@@ -518,6 +520,57 @@ class CnoPlotView(context: Context) : View(context) {
 }
 
 // ============================================================
+//  „DALINTIS" PIKTOGRAMA (vektorinė, be rėmelių)
+// ============================================================
+
+class ShareIconView(context: Context) : View(context) {
+
+    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF0F172A.toInt()
+        style = Paint.Style.FILL
+    }
+    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF0F172A.toInt()
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+
+    init {
+        isClickable = true
+        isFocusable = true
+    }
+
+    override fun setPressed(pressed: Boolean) {
+        super.setPressed(pressed)
+        alpha = if (pressed) 0.55f else 1f
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val padX = w * 0.24f
+        val dotR = w * 0.10f
+        linePaint.strokeWidth = w * 0.06f
+
+        val lx = padX
+        val ly = h / 2f
+        val rtx = w - padX
+        val rty = h * 0.27f
+        val rbx = w - padX
+        val rby = h * 0.73f
+
+        canvas.drawLine(lx, ly, rtx, rty, linePaint)
+        canvas.drawLine(lx, ly, rbx, rby, linePaint)
+
+        canvas.drawCircle(lx, ly, dotR, dotPaint)
+        canvas.drawCircle(rtx, rty, dotR, dotPaint)
+        canvas.drawCircle(rbx, rby, dotR, dotPaint)
+    }
+}
+
+// ============================================================
 //  SIGNALO SPALVOS SKALĖ
 //  <=20 dB-Hz raudona, 30 mėlyna, >=40 geltona (tarpinės reikšmės maišomos)
 // ============================================================
@@ -737,10 +790,6 @@ class MainActivity : AppCompatActivity() {
             text = "Atstatyti kalibravimą"
             setOnClickListener { baro.reset(); render() }
         }
-        val btnShare = Button(this).apply {
-            text = "📤 Dalintis su AI"
-            setOnClickListener { showShareDialog() }
-        }
 
         // Pirmą kartą įkeliame LIT20G fone
         Geoid.select(applicationContext, GeoidMode.LIT20G) {
@@ -763,7 +812,6 @@ class MainActivity : AppCompatActivity() {
         left.addView(btnZero, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnGps, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnReset, LinearLayout.LayoutParams(mw, ww))
-        left.addView(btnShare, LinearLayout.LayoutParams(mw, ww))
         left.addView(info, LinearLayout.LayoutParams(mw, ww))
 
         // Dešinė/apatinė dalis: dangus ir C/N0 grafikas
@@ -781,6 +829,14 @@ class MainActivity : AppCompatActivity() {
             content.addView(left, LinearLayout.LayoutParams(mw, ww))
             content.addView(right, LinearLayout.LayoutParams(mw, ww))
         }
+
+        // Rezervuojam vietą plaukiojančiai piktogramai viršuje (72dp)
+        content.setPadding(
+            0,
+            (72 * dm.density).toInt(),
+            0,
+            0
+        )
 
         // Visas turinys slenka, todėl niekas neužspaudžiama
         val root = ScrollView(this).apply { addView(content) }
@@ -801,6 +857,43 @@ class MainActivity : AppCompatActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
         )
+
+        // ============================================================
+        //  Plaukiojanti „Dalintis" piktograma viršutiniame dešiniajame kampe
+        // ============================================================
+        val shareZoneSize = (56 * dm.density).toInt()
+        val shareZone = FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0x66FFFFFF)   // permatoma balta (40% alpha)
+            }
+        }
+
+        val shareBtn = ShareIconView(this).apply {
+            setOnClickListener { showShareDialog() }
+            contentDescription = "Dalintis su AI"
+        }
+
+        shareZone.addView(
+            shareBtn,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ).apply {
+                val inset = (10 * dm.density).toInt()
+                setMargins(inset, inset, inset, inset)
+            }
+        )
+
+        container.addView(
+            shareZone,
+            FrameLayout.LayoutParams(shareZoneSize, shareZoneSize).apply {
+                gravity = Gravity.TOP or Gravity.END
+                val m = (16 * dm.density).toInt()
+                setMargins(0, m, m, 0)
+            }
+        )
+
         setContentView(container)
     }
 

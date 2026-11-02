@@ -16,6 +16,7 @@ import android.graphics.Path
 import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.Shader
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -488,6 +489,7 @@ class DraggablePanel(
 
     private val bubble = BubbleView(context).apply {
         visibility = GONE
+        isClickable = true
         layoutParams = LayoutParams(80 * resources.displayMetrics.density.toInt(), 80 * resources.displayMetrics.density.toInt())
     }
 
@@ -495,7 +497,7 @@ class DraggablePanel(
         text = "Ką siųsti AI?"
         textSize = 18f
         setTextColor(Color.BLACK)
-        setTypeface(null, android.graphics.Typeface.BOLD)
+        setTypeface(null, Typeface.BOLD)
     }
 
     private val optionsLayout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
@@ -508,16 +510,9 @@ class DraggablePanel(
         setPadding(0, 16, 0, 0)
     }
 
-    private val minimizeBtn = Button(context).apply { text = "➖"; setOnClickListener { minimize() } }
-    private val cancelBtn = Button(context).apply { text = "Atšaukti"; setOnClickListener { onClose() } }
-    private val shareBtn = Button(context).apply {
-        text = "Dalintis"
-        setOnClickListener {
-            val selected = boxes.filterValues { it.isChecked }.keys
-            onShare(selected, questionInput.text.toString().trim(), "screenshot" in selected)
-            onClose()
-        }
-    }
+    private val minimizeBtn = Button(context).apply { text = "➖" }
+    private val cancelBtn = Button(context).apply { text = "Atšaukti" }
+    private val shareBtn = Button(context).apply { text = "Dalintis" }
 
     init {
         isClickable = true
@@ -548,6 +543,28 @@ class DraggablePanel(
         panel.addView(btnLayout)
         addView(panel)
         addView(bubble)
+
+        minimizeBtn.setOnClickListener { minimize() }
+        cancelBtn.setOnClickListener { onClose() }
+        shareBtn.setOnClickListener {
+            val selected = boxes.filterValues { it.isChecked }.keys
+            onShare(selected, questionInput.text.toString().trim(), "screenshot" in selected)
+            onClose()
+        }
+
+        // Burbulo paspaudimo logika (išskleidimas + vibracija)
+        bubble.setOnClickListener {
+            val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            if (Build.VERSION.SDK_INT >= 26) {
+                vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(50)
+            }
+            bubble.visibility = GONE
+            panel.visibility = VISIBLE
+            post { adjustPositionOnExpand() }
+        }
     }
 
     private var lastX = 0f
@@ -560,15 +577,16 @@ class DraggablePanel(
                 lastX = ev.rawX
                 lastY = ev.rawY
                 isDragging = false
-                if (bubble.visibility == VISIBLE) {
-                    val rect = Rect()
-                    bubble.getHitRect(rect)
-                    if (rect.contains(ev.x.toInt(), ev.y.toInt())) return true
+                // Neleisti tempti lentelės, jei vartotojas bando žymėti tekstą EditText laukelyje
+                val rect = Rect()
+                questionInput.getGlobalVisibleRect(rect)
+                if (questionInput.visibility == VISIBLE && rect.contains(ev.rawX.toInt(), ev.rawY.toInt())) {
+                    return false
                 }
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!isDragging) {
-                    if (abs(ev.rawX - lastX) > 10 || abs(ev.rawY - lastY) > 10) {
+                    if (abs(ev.rawX - lastX) > 15 || abs(ev.rawY - lastY) > 15) {
                         isDragging = true
                         return true
                     }
@@ -580,7 +598,6 @@ class DraggablePanel(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.action) {
-            MotionEvent.ACTION_DOWN -> return true
             MotionEvent.ACTION_MOVE -> {
                 if (isDragging) {
                     val dx = event.rawX - lastX
@@ -597,22 +614,6 @@ class DraggablePanel(
                 if (isDragging) {
                     isDragging = false
                     return true
-                } else if (bubble.visibility == VISIBLE) {
-                    val rect = Rect()
-                    bubble.getHitRect(rect)
-                    if (rect.contains(event.x.toInt(), event.y.toInt())) {
-                        val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-                        if (Build.VERSION.SDK_INT >= 26) {
-                            vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
-                        } else {
-                            @Suppress("DEPRECATION")
-                            vibrator.vibrate(50)
-                        }
-                        bubble.visibility = GONE
-                        panel.visibility = VISIBLE
-                        post { constrainPosition() }
-                        return true
-                    }
                 }
             }
         }
@@ -625,13 +626,33 @@ class DraggablePanel(
         post { constrainPosition() }
     }
 
+    private fun adjustPositionOnExpand() {
+        val parentW = (parent as? View)?.width?.toFloat() ?: return
+        val parentH = (parent as? View)?.height?.toFloat() ?: return
+        
+        // Jei lentelė išsiskleidžiant išeina už ekrano ribų, grąžiname ją į ekraną
+        val minTx = -width * 0.1f
+        val maxTx = parentW - width * 0.9f
+        val minTy = -height * 0.1f
+        val maxTy = parentH - height * 0.9f
+        
+        translationX = translationX.coerceIn(minTx, maxTx)
+        translationY = translationY.coerceIn(minTy, maxTy)
+        
+        if (width > parentW) translationX = 0f
+        if (height > parentH) translationY = 0f
+    }
+
     private fun constrainPosition() {
         val parentW = (parent as? View)?.width?.toFloat() ?: return
         val parentH = (parent as? View)?.height?.toFloat() ?: return
+        
+        // Leidžiame nustumti už ekrano taip, kad matytųsi bent 10%
         val minTx = -width * 0.9f
         val maxTx = parentW - width * 0.1f
         val minTy = -height * 0.9f
         val maxTy = parentH - height * 0.1f
+        
         translationX = translationX.coerceIn(minTx, maxTx)
         translationY = translationY.coerceIn(minTy, maxTy)
     }
@@ -865,7 +886,6 @@ class MainActivity : AppCompatActivity() {
         container.addView(bg, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         container.addView(root, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
-        // Piktograma viršuje dešinėje (neprivaloma, jei norite išlaikyti mygtuką, galite palikti)
         val shareZoneSize = (56 * dm.density).toInt()
         val shareZone = FrameLayout(this).apply {
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0x66FFFFFF) }
@@ -988,8 +1008,14 @@ class MainActivity : AppCompatActivity() {
             sharePanel = null
         })
         val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        params.gravity = Gravity.CENTER
+        params.gravity = Gravity.TOP or Gravity.START
         container.addView(panel, params)
+        
+        // Centruojame lange pirmą kartą
+        panel.post {
+            panel.translationX = (container.width - panel.width) / 2f
+            panel.translationY = (container.height - panel.height) / 2f
+        }
         sharePanel = panel
     }
 

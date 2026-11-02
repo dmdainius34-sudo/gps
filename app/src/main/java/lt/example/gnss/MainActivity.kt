@@ -5,6 +5,7 @@ import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
@@ -36,6 +37,7 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
@@ -43,6 +45,7 @@ import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
 import org.json.JSONObject
 import java.net.URL
 import java.util.Date
@@ -515,6 +518,23 @@ class CnoPlotView(context: Context) : View(context) {
 }
 
 // ============================================================
+//  SIGNALO SPALVOS SKALĖ
+//  <=20 dB-Hz raudona, 30 mėlyna, >=40 geltona (tarpinės reikšmės maišomos)
+// ============================================================
+
+const val SIG_RED = 0xFFEF4444.toInt()
+const val SIG_BLUE = 0xFF3B82F6.toInt()
+const val SIG_YELLOW = 0xFFFACC15.toInt()
+const val BG_NEUTRAL = 0xFFF8FAFC.toInt()
+
+fun signalColor(db: Float): Int = when {
+    db <= 20f -> SIG_RED
+    db <= 30f -> ColorUtils.blendARGB(SIG_RED, SIG_BLUE, (db - 20f) / 10f)
+    db <= 40f -> ColorUtils.blendARGB(SIG_BLUE, SIG_YELLOW, (db - 30f) / 10f)
+    else -> SIG_YELLOW
+}
+
+// ============================================================
 //  JUDANTIS SPALVŲ FONAS (Gemini stilius)
 // ============================================================
 
@@ -523,22 +543,25 @@ class GradientBackground(context: Context) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var t = 0f
 
+    @Volatile private var targetColor = BG_NEUTRAL
+    private var currentColor = BG_NEUTRAL
+
     private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
         duration = 14000L
         repeatCount = ValueAnimator.INFINITE
         interpolator = LinearInterpolator()
         addUpdateListener {
             t = it.animatedFraction
+            // Spalva palaipsniui artėja prie tikslinės (be šuolių)
+            currentColor = ColorUtils.blendARGB(currentColor, targetColor, 0.03f)
             invalidate()
         }
     }
 
-    private val blobs = intArrayOf(
-        0xFF60A5FA.toInt(), // mėlyna
-        0xFFA78BFA.toInt(), // violetinė
-        0xFF34D399.toInt(), // žalia
-        0xFFF472B6.toInt()  // rožinė
-    )
+    /** Nustato fono spalvą pagal vidutinį C/N0 (dB-Hz). null – neutrali spalva. */
+    fun setSignal(db: Float?) {
+        targetColor = if (db == null) BG_NEUTRAL else signalColor(db)
+    }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
@@ -553,19 +576,26 @@ class GradientBackground(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         val w = width.toFloat()
         val h = height.toFloat()
-        canvas.drawColor(0xFFF8FAFC.toInt())
+        canvas.drawColor(BG_NEUTRAL)
 
         val angle = t * 2 * Math.PI
         val radius = max(w, h) * 0.6f
 
-        for (i in blobs.indices) {
-            val phase = angle + i * Math.PI / 2
+        // Trys judantys dėmės: pagrindinė spalva, šviesesnė ir tamsesnė
+        val blobColors = intArrayOf(
+            currentColor,
+            ColorUtils.blendARGB(currentColor, 0xFFFFFFFF.toInt(), 0.35f),
+            ColorUtils.blendARGB(currentColor, 0xFF000000.toInt(), 0.20f)
+        )
+
+        for (i in blobColors.indices) {
+            val phase = angle + i * 2 * Math.PI / blobColors.size
             val cx = w * (0.5f + 0.35f * cos(phase).toFloat())
             val cy = h * (0.5f + 0.25f * sin(phase * 1.3).toFloat())
 
             paint.shader = RadialGradient(
                 cx, cy, radius,
-                withAlpha(blobs[i], 0.45f), 0x00FFFFFF,
+                withAlpha(blobColors[i], 0.55f), 0x00FFFFFF,
                 Shader.TileMode.CLAMP
             )
             canvas.drawRect(0f, 0f, w, h, paint)
@@ -586,6 +616,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var info: TextView
     private lateinit var skyView: GnssView
     private lateinit var cnoView: CnoPlotView
+    private lateinit var bg: GradientBackground
     private lateinit var baro: Barometer
     private lateinit var mainExecutor: Executor
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -619,6 +650,7 @@ class MainActivity : AppCompatActivity() {
             val byConst = list.groupingBy { it.const }.eachCount().toSortedMap()
 
             cnoView.addSample(list, if (used.isNotEmpty()) avg.toFloat() else null)
+            bg.setSignal(if (used.isNotEmpty()) avg.toFloat() else null)
 
             satText = buildString {
                 appendLine("Matomi palydovai: ${list.size}")
@@ -665,6 +697,7 @@ class MainActivity : AppCompatActivity() {
         }
         skyView = GnssView(this)
         cnoView = CnoPlotView(this)
+        bg = GradientBackground(this)
 
         val modeSpinner = Spinner(this).apply {
             adapter = ArrayAdapter(
@@ -714,28 +747,48 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread { render() }
         }
 
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(modeSpinner, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        root.addView(btnZero, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        root.addView(btnGps, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        root.addView(btnReset, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        root.addView(btnShare, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        root.addView(info, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        root.addView(skyView, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        root.addView(cnoView, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        val dm = resources.displayMetrics
+        val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val colW = if (landscape) dm.widthPixels / 2 else dm.widthPixels
+        // Dangaus žemėlapis – kvadratas: portretas – per visą plotį, peizažas – pusė ekrano
+        val skySide = if (landscape) min(colW, dm.heightPixels) else colW
+        val cnoH = (260 * dm.density).toInt()
+
+        val mw = LinearLayout.LayoutParams.MATCH_PARENT
+        val ww = LinearLayout.LayoutParams.WRAP_CONTENT
+
+        // Kairė/viršutinė dalis: valdymas ir tekstas
+        val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        left.addView(modeSpinner, LinearLayout.LayoutParams(mw, ww))
+        left.addView(btnZero, LinearLayout.LayoutParams(mw, ww))
+        left.addView(btnGps, LinearLayout.LayoutParams(mw, ww))
+        left.addView(btnReset, LinearLayout.LayoutParams(mw, ww))
+        left.addView(btnShare, LinearLayout.LayoutParams(mw, ww))
+        left.addView(info, LinearLayout.LayoutParams(mw, ww))
+
+        // Dešinė/apatinė dalis: dangus ir C/N0 grafikas
+        val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        right.addView(skyView, LinearLayout.LayoutParams(skySide, skySide))
+        right.addView(cnoView, LinearLayout.LayoutParams(mw, cnoH))
+
+        val content = LinearLayout(this).apply {
+            orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        }
+        if (landscape) {
+            content.addView(left, LinearLayout.LayoutParams(0, ww, 1f))
+            content.addView(right, LinearLayout.LayoutParams(0, ww, 1f))
+        } else {
+            content.addView(left, LinearLayout.LayoutParams(mw, ww))
+            content.addView(right, LinearLayout.LayoutParams(mw, ww))
+        }
+
+        // Visas turinys slenka, todėl niekas neužspaudžiama
+        val root = ScrollView(this).apply { addView(content) }
 
         // Judantis fonas po visu turiniu
         val container = FrameLayout(this)
         container.addView(
-            GradientBackground(this),
+            bg,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
@@ -851,6 +904,7 @@ class MainActivity : AppCompatActivity() {
             }
             appendLine()
             appendLine("=== PALYDOVAI ===")
+            appendLine("Fonas: ≤20 raudona · 30 mėlyna · ≥40 geltona (dB-Hz)")
             appendLine(satText)
             appendLine()
             appendLine("=== NEAPDOROTI MATAVIMAI ===")

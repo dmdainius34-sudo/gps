@@ -7,7 +7,9 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RadialGradient
 import android.graphics.Shader
 import android.hardware.Sensor
@@ -275,7 +277,7 @@ class Barometer(context: Context) : SensorEventListener {
 }
 
 // ============================================================
-//  DANGAUS ŽEMĖLAPIS IR C/N0 STULPELIAI
+//  PALYDOVAI, SPALVOS
 // ============================================================
 
 data class Sat(
@@ -286,6 +288,20 @@ data class Sat(
     val az: Float,
     val used: Boolean
 )
+
+fun constColor(c: String): Int = when (c) {
+    "GPS" -> Color.rgb(37, 99, 235)
+    "GAL" -> Color.rgb(22, 163, 74)
+    "GLO" -> Color.rgb(234, 88, 12)
+    "BDS" -> Color.rgb(220, 38, 38)
+    "SBS" -> Color.rgb(107, 114, 128)
+    "QZS" -> Color.rgb(147, 51, 234)
+    else -> Color.DKGRAY
+}
+
+// ============================================================
+//  DANGAUS ŽEMĖLAPIS
+// ============================================================
 
 class GnssView(context: Context) : View(context) {
 
@@ -301,33 +317,19 @@ class GnssView(context: Context) : View(context) {
         strokeWidth = 2f
     }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.DKGRAY
-        textSize = 26f
+        color = 0xFF0F172A.toInt()
+        textSize = 24f
     }
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 3f }
-    private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-
-    private fun colorOf(c: String): Int = when (c) {
-        "GPS" -> Color.rgb(37, 99, 235)
-        "GAL" -> Color.rgb(22, 163, 74)
-        "GLO" -> Color.rgb(234, 88, 12)
-        "BDS" -> Color.rgb(220, 38, 38)
-        "SBS" -> Color.rgb(107, 114, 128)
-        else -> Color.DKGRAY
-    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        // Fonas paliktas permatomas, kad matytųsi judantis gradientas už jo
 
         val w = width.toFloat()
         val h = height.toFloat()
-        val skyH = h * 0.5f
-
-        // Dangaus žemėlapis
+        val r0 = min(w, h) / 2f - 40f
         val cx = w / 2f
-        val cy = skyH / 2f + 20f
-        val r0 = min(w, skyH) / 2f - 40f
+        val cy = h / 2f
 
         for (e in listOf(0f, 30f, 60f)) {
             canvas.drawCircle(cx, cy, r0 * (90f - e) / 90f, ringPaint)
@@ -342,37 +344,137 @@ class GnssView(context: Context) : View(context) {
             val x = cx + r * sin(a).toFloat()
             val y = cy - r * cos(a).toFloat()
 
-            dotPaint.color = colorOf(s.const)
+            dotPaint.color = constColor(s.const)
             dotPaint.style = if (s.used) Paint.Style.FILL else Paint.Style.STROKE
             canvas.drawCircle(x, y, 16f, dotPaint)
             canvas.drawText(s.svid.toString(), x + 18f, y + 8f, textPaint)
         }
+    }
+}
 
-        // C/N0 stulpeliai
-        if (sats.isEmpty()) return
+// ============================================================
+//  C/N0 LAIKO GRAFIKAS (kreivės kiekvienam palydovui)
+// ============================================================
 
-        val top = skyH + 40f
-        val bottom = h - 50f
-        val bh = bottom - top
+class CnoPlotView(context: Context) : View(context) {
 
-        for (db in listOf(20f, 40f)) {
-            val y = bottom - (db / 50f) * bh
-            canvas.drawLine(20f, y, w - 20f, y, ringPaint)
-            canvas.drawText("${db.toInt()}", 4f, y - 4f, textPaint)
+    private val maxPts = 120                  // ~2 min, nes GNSS atnaujina ~1 Hz
+    private var total = 0
+    // raktas: "KONST|svid", reikšmės: C/N0 arba null (palydovas nematytas tą akimirką)
+    private val series = LinkedHashMap<String, ArrayDeque<Float?>>()
+    private val avgSeries = ArrayDeque<Float?>()
+
+    private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0x40334155
+        strokeWidth = 1f
+    }
+    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val avgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 4f
+        color = Color.RED
+        pathEffect = DashPathEffect(floatArrayOf(14f, 10f), 0f)
+    }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF0F172A.toInt()
+        textSize = 22f
+    }
+
+    /** Pridedama kiekvieno GNSS atnaujinimo metu. */
+    fun addSample(sats: List<Sat>, avgUsed: Float?) {
+        total++
+        val seen = sats.associate { "${it.const}|${it.svid}" to it.cn0 }
+
+        val it = series.entries.iterator()
+        while (it.hasNext()) {
+            val e = it.next()
+            e.value.addLast(seen[e.key])
+            if (e.value.size > maxPts) e.value.removeFirst()
+            if (e.value.all { v -> v == null }) it.remove()
         }
-        canvas.drawText("C/N0 dB-Hz", 20f, top - 12f, textPaint)
 
-        val sorted = sats.sortedWith(compareBy({ it.const }, { it.svid }))
-        val slot = (w - 40f) / sorted.size
-        val bw = min(slot * 0.7f, 40f)
+        for ((k, v) in seen) {
+            if (!series.containsKey(k)) {
+                val dq = ArrayDeque<Float?>()
+                repeat(min(total - 1, maxPts - 1)) { dq.addLast(null) }
+                dq.addLast(v)
+                series[k] = dq
+            }
+        }
 
-        sorted.forEachIndexed { i, s ->
-            val x0 = 20f + i * slot + (slot - bw) / 2f
-            val barH = (s.cn0 / 50f).coerceIn(0f, 1f) * bh
-            barPaint.color = colorOf(s.const)
-            barPaint.alpha = if (s.used) 255 else 90
-            canvas.drawRect(x0, bottom - barH, x0 + bw, bottom, barPaint)
-            canvas.drawText(s.svid.toString(), x0, h - 20f, textPaint)
+        avgSeries.addLast(avgUsed)
+        if (avgSeries.size > maxPts) avgSeries.removeFirst()
+        invalidate()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val left = 50f
+        val right = w - 20f
+        val top = 20f
+        val bottom = h - 40f
+
+        fun xOf(i: Int) = left + i * (right - left) / (maxPts - 1)
+        fun yOf(v: Float) = bottom - ((v.coerceIn(10f, 50f) - 10f) / 40f) * (bottom - top)
+
+        // Tinklelis ir Y ašis (dB-Hz)
+        for (db in 10..50 step 10) {
+            val y = yOf(db.toFloat())
+            canvas.drawLine(left, y, right, y, gridPaint)
+            canvas.drawText("$db", 6f, y + 8f, textPaint)
+        }
+        canvas.drawText("dB-Hz", 6f, top - 4f, textPaint)
+        canvas.drawText("laikas →", right - 110f, bottom + 30f, textPaint)
+
+        // Palydovų kreivės
+        for ((k, dq) in series) {
+            linePaint.color = constColor(k.substringBefore('|'))
+            drawSeries(canvas, dq, ::xOf, ::yOf, linePaint, label = k.substringAfter('|'))
+        }
+
+        // Naudojamų palydovų vidurkis (raudona punktyrinė)
+        drawSeries(canvas, avgSeries, ::xOf, ::yOf, avgPaint, label = null)
+    }
+
+    private fun drawSeries(
+        canvas: Canvas,
+        dq: ArrayDeque<Float?>,
+        xOf: (Int) -> Float,
+        yOf: (Float) -> Float,
+        paint: Paint,
+        label: String?
+    ) {
+        val start = maxPts - dq.size
+        val path = Path()
+        var pen = false
+        var lastX = 0f
+        var lastY = 0f
+        var hasLast = false
+
+        dq.forEachIndexed { j, v ->
+            if (v == null) {
+                pen = false
+            } else {
+                val x = xOf(start + j)
+                val y = yOf(v)
+                if (!pen) path.moveTo(x, y) else path.lineTo(x, y)
+                pen = true
+                lastX = x
+                lastY = y
+                hasLast = true
+            }
+        }
+        canvas.drawPath(path, paint)
+
+        if (label != null && hasLast) {
+            canvas.drawText(label, lastX + 4f, lastY + 6f, textPaint)
         }
     }
 }
@@ -448,6 +550,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var lm: LocationManager
     private lateinit var info: TextView
     private lateinit var skyView: GnssView
+    private lateinit var cnoView: CnoPlotView
     private lateinit var baro: Barometer
     private lateinit var mainExecutor: Executor
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -476,6 +579,8 @@ class MainActivity : AppCompatActivity() {
             val avg = if (used.isNotEmpty()) used.map { it.cn0.toDouble() }.average() else 0.0
             val max = list.maxOfOrNull { it.cn0 } ?: 0f
             val byConst = list.groupingBy { it.const }.eachCount().toSortedMap()
+
+            cnoView.addSample(list, if (used.isNotEmpty()) avg.toFloat() else null)
 
             satText = buildString {
                 appendLine("Matomi palydovai: ${list.size}")
@@ -520,6 +625,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(32, 16, 32, 16)
         }
         skyView = GnssView(this)
+        cnoView = CnoPlotView(this)
 
         val modeSpinner = Spinner(this).apply {
             adapter = ArrayAdapter(
@@ -576,6 +682,8 @@ class MainActivity : AppCompatActivity() {
         root.addView(info, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(skyView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(cnoView, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
         // Judantis fonas po visu turiniu

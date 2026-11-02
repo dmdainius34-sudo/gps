@@ -1,28 +1,43 @@
-name: Build APK
+name: Android CI
 
 on:
   push:
-  workflow_dispatch:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
 
 jobs:
   build:
+
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+    # 1. Nuskaitome tavo projekto kodą
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
+    # 2. Paruošiame Java 17 aplinką (Atnaujinta į v5)
+    - name: Set up JDK 17
+      uses: actions/setup-java@v5
+      with:
+        distribution: 'temurin'
+        java-version: '17'
 
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.9
+    # 3. Paruošiame Gradle (Atnaujinta į v6, kad nebeliktų įspėjimų)
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v6
 
-      - name: Build debug APK
-        run: gradle assembleDebug --no-daemon
+    # 4. Suteikiame leidimus Gradle vykdyklui
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+    # 5. Kompiliuojame programą (sukuriamas APK failas)
+    - name: Build with Gradle
+      run: ./gradlew assembleDebug
+
+    # 6. Išsaugome sukompiliuotą APK failą, kad galėtum jį parsisiųsti iš GitHub
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: GnssApp-debug-apk
+        path: app/build/outputs/apk/debug/app-debug.apk

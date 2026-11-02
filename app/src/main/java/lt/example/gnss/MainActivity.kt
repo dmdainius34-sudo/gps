@@ -4,6 +4,7 @@ import android.Manifest
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
@@ -31,12 +32,15 @@ import android.view.animation.LinearInterpolator
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
@@ -51,6 +55,12 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
+
+// ============================================================
+//  PAGALBINĖS FUNKCIJOS
+// ============================================================
+
+fun fx(v: Double, digits: Int = 1): String = String.format(Locale.US, "%.${digits}f", v)
 
 // ============================================================
 //  GEOIDAS
@@ -411,6 +421,30 @@ class CnoPlotView(context: Context) : View(context) {
         invalidate()
     }
 
+    /** Tekstinė santrauka AI ataskaitai: kiekvieno palydovo min, max, vidurkis per paskutines kelias minutes. */
+    fun summary(): String {
+        if (series.isEmpty()) return "Duomenų dar nėra"
+        val lines = mutableListOf<String>()
+        for ((k, dq) in series) {
+            val v = dq.filterNotNull()
+            if (v.isEmpty()) continue
+            lines.add(
+                "$k: min ${fx(v.minOrNull()?.toDouble() ?: 0.0)}, " +
+                    "max ${fx(v.maxOrNull()?.toDouble() ?: 0.0)}, " +
+                    "vid ${fx(v.average())}, mėginių ${v.size}"
+            )
+        }
+        val avgVals = avgSeries.filterNotNull()
+        if (avgVals.isNotEmpty()) {
+            lines.add(
+                "Naudojamų vidurkis: min ${fx(avgVals.minOrNull()?.toDouble() ?: 0.0)}, " +
+                    "max ${fx(avgVals.maxOrNull()?.toDouble() ?: 0.0)}, " +
+                    "vid ${fx(avgVals.average())}"
+            )
+        }
+        return lines.joinToString("\n")
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
@@ -556,6 +590,8 @@ class MainActivity : AppCompatActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var lastGpsH: Double? = null
+    private var lastSats: List<Sat> = emptyList()
+    private val errorLog = ArrayDeque<String>()
 
     private var posText = "Laukiama fikso..."
     private var satText = "Laukiama palydovų..."
@@ -573,6 +609,7 @@ class MainActivity : AppCompatActivity() {
                     used = status.usedInFix(i)
                 )
             }
+            lastSats = list
             skyView.sats = list
 
             val used = list.filter { it.used }
@@ -585,8 +622,8 @@ class MainActivity : AppCompatActivity() {
             satText = buildString {
                 appendLine("Matomi palydovai: ${list.size}")
                 appendLine("Naudojami fiksui: ${used.size}")
-                appendLine("Vidutinis C/N0 (naudojami): ${f(avg, 1)} dB-Hz")
-                appendLine("Maks. C/N0: ${f(max.toDouble(), 1)} dB-Hz")
+                appendLine("Vidutinis C/N0 (naudojami): ${fx(avg)} dB-Hz")
+                appendLine("Maks. C/N0: ${fx(max.toDouble())} dB-Hz")
                 append("Pagal konstelaciją: $byConst")
             }
             render()
@@ -609,6 +646,7 @@ class MainActivity : AppCompatActivity() {
             startGnss()
         } else {
             posText = "Reikia vietos leidimo."
+            logError("Vietos leidimas nesuteiktas")
             render()
         }
     }
@@ -656,6 +694,7 @@ class MainActivity : AppCompatActivity() {
                     baro.calibrateTo(h)
                 } else {
                     posText = "Nėra GPS aukščio (laukiama fikso ir geoido)."
+                    logError("Kalibravimas be GPS aukščio")
                 }
                 render()
             }
@@ -663,6 +702,10 @@ class MainActivity : AppCompatActivity() {
         val btnReset = Button(this).apply {
             text = "Atstatyti kalibravimą"
             setOnClickListener { baro.reset(); render() }
+        }
+        val btnShare = Button(this).apply {
+            text = "📤 Dalintis su AI"
+            setOnClickListener { showShareDialog() }
         }
 
         // Pirmą kartą įkeliame LIT20G fone
@@ -678,6 +721,8 @@ class MainActivity : AppCompatActivity() {
         root.addView(btnGps, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(btnReset, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(btnShare, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(info, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -729,6 +774,7 @@ class MainActivity : AppCompatActivity() {
     private fun startGnss() {
         if (!lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
             posText = "GPS išjungtas. Įjunkite vietos nustatymus."
+            logError("GPS išjungtas")
             render()
         }
 
@@ -754,27 +800,27 @@ class MainActivity : AppCompatActivity() {
 
     private fun onLocation(loc: Location) {
         posText = buildString {
-            appendLine("Platuma: ${f(loc.latitude, 7)}")
-            appendLine("Ilguma: ${f(loc.longitude, 7)}")
+            appendLine("Platuma: ${fx(loc.latitude, 7)}")
+            appendLine("Ilguma: ${fx(loc.longitude, 7)}")
             appendLine(
-                if (loc.hasAccuracy()) "Tikslumas: ${f(loc.accuracy.toDouble(), 1)} m"
+                if (loc.hasAccuracy()) "Tikslumas: ${fx(loc.accuracy.toDouble())} m"
                 else "Tikslumas: nežinomas"
             )
             if (loc.hasAltitude()) {
-                appendLine("Aukštis (elipsoidas): ${f(loc.altitude, 1)} m")
+                appendLine("Aukštis (elipsoidas): ${fx(loc.altitude)} m")
                 appendLine("Geoidas: ${Geoid.mode.label}")
                 val n = Geoid.undulation(loc.latitude, loc.longitude)
                 when {
                     n != null -> {
-                        appendLine("Geoido unduliacija (N): ${f(n, 2)} m")
-                        appendLine("Aukštis virš jūros (H): ${f(loc.altitude - n, 1)} m")
+                        appendLine("Geoido unduliacija (N): ${fx(n, 2)} m")
+                        appendLine("Aukštis virš jūros (H): ${fx(loc.altitude - n)} m")
                     }
                     Geoid.lastError != null -> appendLine("Klaida: ${Geoid.lastError}")
                     !Geoid.isReady -> appendLine("Geoidas kraunamas...")
                     else -> appendLine("Taškas už pasirinkto geoido ribų")
                 }
             }
-            if (loc.hasSpeed()) appendLine("Greitis: ${f(loc.speed * 3.6, 1)} km/h")
+            if (loc.hasSpeed()) appendLine("Greitis: ${fx(loc.speed * 3.6)} km/h")
             append("Laikas: ${java.text.DateFormat.getTimeInstance().format(Date(loc.time))}")
         }
 
@@ -797,10 +843,10 @@ class MainActivity : AppCompatActivity() {
                 appendLine("Barometro jutiklio nėra")
             } else {
                 val alt = baro.altitude()
-                appendLine("Slėgis: ${baro.stationHpa?.let { f(it, 2) } ?: "—"} hPa")
-                appendLine("MSLP: ${baro.mslpHpa?.let { f(it, 1) } ?: "—"} hPa (${baro.mslpSource})")
-                appendLine("Barometrinis aukštis: ${alt?.let { f(it, 1) + " m" } ?: "—"}")
-                appendLine("Kalibravimo poslinkis: ${f(baro.offsetM, 1)} m")
+                appendLine("Slėgis: ${baro.stationHpa?.let { fx(it, 2) } ?: "—"} hPa")
+                appendLine("MSLP: ${baro.mslpHpa?.let { fx(it) } ?: "—"} hPa (${baro.mslpSource})")
+                appendLine("Barometrinis aukštis: ${alt?.let { fx(it) + " m" } ?: "—"}")
+                appendLine("Kalibravimo poslinkis: ${fx(baro.offsetM)} m")
             }
             appendLine()
             appendLine("=== PALYDOVAI ===")
@@ -811,7 +857,149 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun f(v: Double, digits: Int) = String.format(Locale.US, "%.${digits}f", v)
+    // ---------------- AI DALINIMAS ----------------
+
+    private fun logError(msg: String) {
+        val stamp = java.text.DateFormat.getTimeInstance().format(Date())
+        errorLog.addLast("$stamp  $msg")
+        if (errorLog.size > 20) errorLog.removeFirst()
+    }
+
+    private fun showShareDialog() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 0)
+        }
+
+        val options = linkedMapOf(
+            "fiksas" to "Fiksas (koordinatės, tikslumas)",
+            "geoidas" to "Geoidas ir aukštis",
+            "baro" to "Barometras ir kalibravimas",
+            "palydovai" to "Palydovai ir C/N0 dabar",
+            "cno" to "C/N0 istorija (~2 min)",
+            "klaidos" to "Klaidos ir būsena",
+            "irenginys" to "Įrenginys (modelis, Android)"
+        )
+
+        val boxes = LinkedHashMap<String, CheckBox>()
+        for ((key, label) in options) {
+            val cb = CheckBox(this).apply {
+                text = label
+                isChecked = true
+            }
+            boxes[key] = cb
+            box.addView(cb)
+        }
+
+        val question = EditText(this).apply {
+            hint = "Klausimas (neprivaloma), pvz.: kodėl C/N0 žemas?"
+        }
+        box.addView(question)
+
+        AlertDialog.Builder(this)
+            .setTitle("Ką siųsti AI?")
+            .setView(box)
+            .setPositiveButton("Dalintis") { _, _ ->
+                val selected = boxes.filterValues { it.isChecked }.keys
+                val report = buildReport(selected, question.text.toString().trim())
+                shareText(report)
+            }
+            .setNegativeButton("Atšaukti", null)
+            .show()
+    }
+
+    private fun buildReport(sections: Set<String>, question: String): String = buildString {
+        appendLine("GNSS App ataskaita")
+        appendLine("Laikas: ${java.text.DateFormat.getDateTimeInstance().format(Date())}")
+        appendLine()
+
+        if (question.isNotBlank()) {
+            appendLine("Klausimas: $question")
+            appendLine()
+        }
+
+        if ("irenginys" in sections) {
+            appendLine("=== ĮRENGINYS ===")
+            appendLine("Modelis: ${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLine("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+            appendLine("Barometras: ${if (baro.hasSensor) "yra" else "nėra"}")
+            appendLine()
+        }
+
+        if ("fiksas" in sections) {
+            appendLine("=== FIKSAS ===")
+            appendLine(posText)
+            appendLine()
+        }
+
+        if ("geoidas" in sections) {
+            appendLine("=== GEOIDAS ===")
+            appendLine("Modelis: ${Geoid.mode.label}")
+            appendLine("Būsena: ${Geoid.lastError ?: if (Geoid.isReady) "įkrautas" else "kraunamas"}")
+            appendLine()
+        }
+
+        if ("baro" in sections) {
+            appendLine("=== BAROMETRAS ===")
+            if (!baro.hasSensor) {
+                appendLine("Barometro jutiklio nėra")
+            } else {
+                appendLine("Slėgis: ${baro.stationHpa?.let { fx(it, 2) } ?: "—"} hPa")
+                appendLine("MSLP: ${baro.mslpHpa?.let { fx(it) } ?: "—"} hPa (${baro.mslpSource})")
+                appendLine("Barometrinis aukštis: ${baro.altitude()?.let { fx(it) + " m" } ?: "—"}")
+                appendLine("Kalibravimo poslinkis: ${fx(baro.offsetM)} m")
+            }
+            appendLine()
+        }
+
+        if ("palydovai" in sections) {
+            appendLine("=== PALYDOVAI ===")
+            appendLine(satText)
+            appendLine(measText)
+            appendLine("Palydovų sąrašas (konstelacija, PRN, C/N0, kampas, azimutas, fiksui):")
+            lastSats
+                .sortedWith(compareBy({ it.const }, { it.svid }))
+                .forEach { s ->
+                    appendLine(
+                        "${s.const} ${s.svid}: C/N0 ${fx(s.cn0.toDouble())}, " +
+                            "kampas ${fx(s.elev.toDouble(), 0)}°, " +
+                            "az ${fx(s.az.toDouble(), 0)}°, " +
+                            "fiksui: ${if (s.used) "taip" else "ne"}"
+                    )
+                }
+            appendLine()
+        }
+
+        if ("cno" in sections) {
+            appendLine("=== C/N0 ISTORIJA ===")
+            appendLine(cnoView.summary())
+            appendLine()
+        }
+
+        if ("klaidos" in sections) {
+            appendLine("=== KLAIDOS IR BŪSENA ===")
+            appendLine("Geoido klaida: ${Geoid.lastError ?: "nėra"}")
+            appendLine("MSLP šaltinis: ${baro.mslpSource}")
+            if (errorLog.isEmpty()) {
+                appendLine("Programos klaidų žurnalas tuščias")
+            } else {
+                appendLine("Programos žurnalas:")
+                errorLog.forEach { appendLine(it) }
+            }
+            appendLine()
+        }
+    }
+
+    private fun shareText(text: String) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "GNSS App ataskaita")
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        startActivity(Intent.createChooser(intent, "Dalintis ataskaita"))
+    }
+
+    // -----------------------------------------------
 
     private fun constName(type: Int) = when (type) {
         GnssStatus.CONSTELLATION_GPS -> "GPS"

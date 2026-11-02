@@ -52,6 +52,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
@@ -555,14 +556,26 @@ class DraggablePanel(
 
         // Burbulo paspaudimo logika (išskleidimas + vibracija)
         bubble.setOnClickListener {
-            val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-            if (Build.VERSION.SDK_INT >= 26) {
-                vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
-            } else {
-                @Suppress("DEPRECATION")
-                vibrator.vibrate(50)
+            // Vibracija – jei nepavyksta (pvz., nėra leidimo/įrenginys be vibratoriaus), tęsiame be jos
+            try {
+                val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                if (vibrator != null && vibrator.hasVibrator()) {
+                    if (Build.VERSION.SDK_INT >= 26) {
+                        vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+                    } else {
+                        @Suppress("DEPRECATION")
+                        vibrator.vibrate(50)
+                    }
+                }
+            } catch (e: Throwable) {
+                android.util.Log.w("GnssApp", "Vibracija nepavyko", e)
             }
-            maximize()
+            try {
+                maximize()
+            } catch (e: Throwable) {
+                android.util.Log.e("GnssApp", "Panelės atidarymas nepavyko", e)
+                Toast.makeText(context, "Klaida: ${e.javaClass.simpleName}: ${e.message}", Toast.LENGTH_LONG).show()
+            }
         }
     }
 

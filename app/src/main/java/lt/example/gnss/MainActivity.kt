@@ -1,6 +1,10 @@
 package lt.example.gnss
 
 import android.Manifest
+import android.view.HapticFeedbackConstants
+import android.text.InputType
+import android.text.style.RelativeSizeSpan
+import android.text.style.StyleSpan
 import android.widget.SeekBar
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
@@ -506,8 +510,14 @@ class DraggablePanel(
     private val onShare: (Set<String>, String, Boolean) -> Unit
 ) : FrameLayout(context) {
 
+    /** Kviečiama, kai prasideda neapdorotų matavimų įrašymo laikmatis. */
+    var onCountdownStart: (() -> Unit)? = null
+
     private val density = resources.displayMetrics.density
     private val bubbleSize = (56 * density).toInt()
+    private val handler = Handler(Looper.getMainLooper())
+    private var counting = false
+    private var remaining = 0
 
     private val panel = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
@@ -538,6 +548,25 @@ class DraggablePanel(
 
     private val optionsLayout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
     private val boxes = LinkedHashMap<String, CheckBox>()
+
+    // Neapdoroti matavimai: varnelė + įrašo trukmė sekundėmis (atgalinis skaičiavimas)
+    private val rawRow = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+    }
+    private val rawSecs = EditText(context).apply {
+        setText("30")
+        inputType = InputType.TYPE_CLASS_NUMBER
+        setSingleLine()
+        textSize = 13f
+        gravity = Gravity.CENTER
+        layoutParams = LinearLayout.LayoutParams((56 * density).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT)
+    }
+    private val secLabel = TextView(context).apply {
+        text = " s"
+        textSize = 13f
+        setTextColor(Color.DKGRAY)
+    }
 
     private val questionInput = EditText(context).apply {
         hint = "?"
@@ -574,8 +603,7 @@ class DraggablePanel(
         layoutParams = LinearLayout.LayoutParams((sizeDp * density).toInt(), (sizeDp * density).toInt())
     }
 
-    private val minimizeBtn = smallButton("\u2212", 36)   // −
-    private val cancelBtn = smallButton("\u2715", 36)     // ✕
+    private val cancelBtn = smallButton("\u2715", 36)     // ✕ (ir atšaukti, ir sumažinti)
 
     private val shareBtn = FrameLayout(context).apply {
         isClickable = true
@@ -595,12 +623,6 @@ class DraggablePanel(
     private val inputRow = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-    }
-
-    private val btnRow = LinearLayout(context).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.END or Gravity.CENTER_VERTICAL
-        setPadding(0, (8 * density).toInt(), 0, 0)
     }
 
     init {
@@ -625,36 +647,37 @@ class DraggablePanel(
                 isChecked = k != "raw"
             }
             boxes[k] = cb
-            optionsLayout.addView(cb)
+            if (k == "raw") {
+                rawRow.addView(cb, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                rawRow.addView(rawSecs)
+                rawRow.addView(secLabel)
+            } else {
+                optionsLayout.addView(cb)
+            }
         }
 
         header.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        header.addView(minimizeBtn)
+        header.addView(cancelBtn)
 
         inputRow.addView(questionInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         inputRow.addView(shareBtn)
 
-        btnRow.addView(cancelBtn)
-
         panel.addView(header)
         panel.addView(optionsLayout)
+        panel.addView(rawRow)
         panel.addView(alphaLabel)
         panel.addView(alphaSeek)
         panel.addView(inputRow)
-        panel.addView(btnRow)
 
         addView(panel)
         addView(bubble)
 
-        minimizeBtn.setOnClickListener { minimize() }
         cancelBtn.setOnClickListener { minimize() }
-        shareBtn.setOnClickListener {
-            val selected = boxes.filterValues { it.isChecked }.keys
-            onShare(selected, questionInput.text.toString().trim(), "screenshot" in selected)
-            minimize()
-        }
+        shareBtn.setOnClickListener { runShare() }
 
         bubble.setOnClickListener {
+            // Ekrano (lietimo) vibracija – veikia, jei įrenginys ją palaiko
+            bubble.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             try {
                 val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
                 if (vibrator != null && vibrator.hasVibrator()) {
@@ -677,6 +700,54 @@ class DraggablePanel(
         }
     }
 
+    private fun runShare() {
+        if (counting) return
+        val selected = boxes.filterValues { it.isChecked }.keys.toSet()
+        val question = questionInput.text.toString().trim()
+        val screenshot = "screenshot" in selected
+        if ("raw" in selected) {
+            val secs = rawSecs.text.toString().toIntOrNull()?.coerceIn(5, 600) ?: 30
+            startCountdown(secs) {
+                onShare(selected, question, screenshot)
+                minimize()
+            }
+        } else {
+            onShare(selected, question, screenshot)
+            minimize()
+        }
+    }
+
+    /** Atgalinis skaičiavimas: CSV renkamas per visą laikmatį, tada dalinamasi. */
+    private fun startCountdown(secs: Int, done: () -> Unit) {
+        counting = true
+        remaining = secs
+        rawSecs.isEnabled = false
+        shareBtn.isEnabled = false
+        onCountdownStart?.invoke()
+        val tick = object : Runnable {
+            override fun run() {
+                if (remaining <= 0) {
+                    counting = false
+                    rawSecs.isEnabled = true
+                    rawSecs.setText(secs.toString())
+                    shareBtn.isEnabled = true
+                    done()
+                } else {
+                    rawSecs.setText(remaining.toString())
+                    remaining--
+                    handler.postDelayed(this, 1000)
+                }
+            }
+        }
+        handler.post(tick)
+    }
+
+    override fun onDetachedFromWindow() {
+        handler.removeCallbacksAndMessages(null)
+        counting = false
+        super.onDetachedFromWindow()
+    }
+
     private var lastX = 0f
     private var lastY = 0f
     private var isDragging = false
@@ -695,8 +766,8 @@ class DraggablePanel(
                 lastX = ev.rawX
                 lastY = ev.rawY
                 isDragging = false
-                // Įvesties lauke ir slankiklyje nevelkame – leidžiame jiems veikti
-                touchOnControl = inside(questionInput, ev.rawX, ev.rawY) || inside(alphaSeek, ev.rawX, ev.rawY)
+                touchOnControl = inside(questionInput, ev.rawX, ev.rawY) ||
+                    inside(alphaSeek, ev.rawX, ev.rawY) || inside(rawSecs, ev.rawX, ev.rawY)
                 if (touchOnControl) return false
             }
             MotionEvent.ACTION_MOVE -> {
@@ -908,12 +979,24 @@ class MainActivity : AppCompatActivity() {
                 appendLine("Naudojami fiksui: ${used.size}")
                 appendLine("Vidutinis C/N0 (naudojami): ${fx(avg)} dB-Hz")
                 appendLine("Maks. C/N0: ${fx(max.toDouble())} dB-Hz")
-                append("Pagal konstelaciją: ")
+                val sbsAll = list.count { it.const == "SBS" }
+                val sbsUsed = list.count { it.const == "SBS" && it.used }
+                appendLine("SBAS (EGNOS) matomi: $sbsAll, naudojami: $sbsUsed")
+                appendLine(
+                    "SBAS pataisos: " + when {
+                        sbsUsed > 0 -> "taip (SBAS palydovas naudojamas fiksui)"
+                        sbsAll > 0 -> "matomas, bet fiksui nenaudojamas"
+                        else -> "SBAS palydovų nematyti"
+                    }
+                )
+                append("Pagal konstelaciją:\n")
                 for ((const, count) in byConst) {
                     val start = length
-                    append("$const=$count ")
+                    append("$const=$count   ")
                     val end = length
                     setSpan(ForegroundColorSpan(constColor(const)), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    setSpan(StyleSpan(Typeface.BOLD), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    setSpan(RelativeSizeSpan(1.4f), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
             }
             render()
@@ -1040,7 +1123,15 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             if ("raw" in sections) rawCsvUri()?.let { uris.add(it) }
+            // Ataskaita (su klausimu) visada kaip tekstinis failas: kai siunčiami failai,
+            // kai kurios programos (pvz., AI) ignoruoja EXTRA_TEXT ir klausimas dingsta.
+            reportFileUri(report)?.let { uris.add(0, it) }
             shareContent(report, uris)
+        }
+        panel.onCountdownStart = {
+            // Atgalinio skaičiavimo pradžioje CSV buferis pradedamas iš naujo
+            rawLog.setLength(0)
+            rawLog.append(rawHeader)
         }
         val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         
@@ -1165,6 +1256,15 @@ class MainActivity : AppCompatActivity() {
             .append(m.pseudorangeRateMetersPerSecond).append(',')
             .append(m.accumulatedDeltaRangeMeters).append(',')
             .append(m.receivedSvTimeNanos).append('\n')
+    }
+
+    private fun reportFileUri(text: String): Uri? = try {
+        val file = File(cacheDir, "ataskaita.txt")
+        file.writeText(text)
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+    } catch (e: Exception) {
+        logError("Ataskaitos failas nepavyko: ${e.message}")
+        null
     }
 
     private fun rawCsvUri(): Uri? = try {

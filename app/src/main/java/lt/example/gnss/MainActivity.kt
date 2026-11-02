@@ -66,9 +66,9 @@ fun fx(v: Double, digits: Int = 1): String = String.format(Locale.US, "%.${digit
 //  GEOIDAS
 // ============================================================
 
-enum class GeoidMode(val label: String) {
-    LIT20G("LIT20G (Lietuva)"),
-    WORLD("Pasaulinis (EGM2008)")
+enum class GeoidMode(val label: String, val assetFile: String) {
+    LIT20G("LIT20G (Lietuva)", "LIT20G.txt"),
+    WORLD("Pasaulinis (EGM2008)", "WORLD_EGM2008.txt")
 }
 
 /** Vienas geoido tinklelis, nuskaitomas iš assets failo (eilutės: platuma ilguma N). */
@@ -137,13 +137,13 @@ class GeoidGrid(
 object Geoid {
 
     private val lit20g = GeoidGrid(
-        assetName = "LIT20G.txt",
+        assetName = GeoidMode.LIT20G.assetFile,
         latMin = 53.0, latStep = 0.01, nLat = 401,
         lonMin = 18.0, lonStep = 0.02, nLon = 451
     )
 
     private val world = GeoidGrid(
-        assetName = "WORLD_EGM2008.txt",
+        assetName = GeoidMode.WORLD.assetFile,
         latMin = -90.0, latStep = 0.25, nLat = 721,
         lonMin = -180.0, lonStep = 0.25, nLon = 1441
     )
@@ -164,7 +164,8 @@ object Geoid {
                 gridOf(m).load(context.applicationContext)
                 lastError = null
             } catch (e: Exception) {
-                lastError = "nepavyko įkelti ${m.label}: ${e.message}"
+                lastError = "nepavyko įkelti ${m.assetFile} " +
+                    "(turi būti app/src/main/assets/${m.assetFile}). Klaida: ${e.message}"
             }
             onReady()
         }.start()

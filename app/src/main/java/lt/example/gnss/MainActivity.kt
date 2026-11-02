@@ -1,6 +1,16 @@
 package lt.example.gnss
 
 import android.Manifest
+import javax.microedition.khronos.opengles.GL10
+import javax.microedition.khronos.egl.EGLConfig
+import java.nio.FloatBuffer
+import java.nio.ByteOrder
+import java.nio.ByteBuffer
+import android.graphics.PixelFormat
+import android.opengl.Matrix
+import android.opengl.GLUtils
+import android.opengl.GLSurfaceView
+import android.opengl.GLES20
 import android.view.HapticFeedbackConstants
 import android.text.InputType
 import android.text.style.RelativeSizeSpan
@@ -586,6 +596,349 @@ class BubbleView(context: Context) : View(context) {
         (color and 0x00FFFFFF) or ((alpha * 255).toInt() shl 24)
 }
 
+// ============================================================
+//  3D BURBULAS (OpenGL ES 2.0, GLSurfaceView)
+// ============================================================
+
+private class GlBolt(val xy: FloatArray, var life: Int)
+private class GlDust(var x: Float, var y: Float, val vx: Float, val vy: Float, var life: Int)
+
+/** Permatomas 3D burbulas: šviesa, spalva pagal signalą, ULTRA kibirkštys, silpno signalo kaukolė. */
+class BubbleGL(context: Context) : GLSurfaceView(context) {
+    private val renderer = BubbleRenderer(context.applicationContext, resources.displayMetrics.density)
+
+    init {
+        setEGLContextClientVersion(2)
+        setEGLConfigChooser(8, 8, 8, 8, 16, 0)
+        holder.setFormat(PixelFormat.TRANSLUCENT)
+        setZOrderOnTop(true)
+        setRenderer(renderer)
+        renderMode = RENDERMODE_CONTINUOUSLY
+        onResume()
+    }
+
+    fun setSignal(avgDb: Float?, peakDb: Float?) = renderer.setSignal(avgDb, peakDb)
+}
+
+private class BubbleRenderer(private val appCtx: Context, private val density: Float) : GLSurfaceView.Renderer {
+
+    @Volatile private var avg: Float? = null
+    @Volatile private var peak: Float? = null
+    fun setSignal(a: Float?, p: Float?) { avg = a; peak = p }
+
+    private val proj = FloatArray(16)
+    private val view = FloatArray(16)
+    private val vp = FloatArray(16)
+    private val model = FloatArray(16)
+    private val mvp = FloatArray(16)
+    private val tmp = FloatArray(16)
+
+    private var sphereProg = 0
+    private var flatProg = 0
+    private var dotProg = 0
+    private var texProg = 0
+    private var texId = 0
+    private var sphereBuf: FloatBuffer? = null
+    private var sphereCount = 0
+    private var quadPos: FloatBuffer? = null
+    private var quadUv: FloatBuffer? = null
+
+    private val bolts = ArrayList<GlBolt>()
+    private val dust = ArrayList<GlDust>()
+    private val rnd = java.util.Random()
+    private var frame = 0L
+
+    override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        GLES20.glClearColor(0f, 0f, 0f, 0f)
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+
+        sphereProg = program(SPHERE_VS, SPHERE_FS)
+        flatProg = program(FLAT_VS, FLAT_FS)
+        dotProg = program(FLAT_VS, DOT_FS)
+        texProg = program(TEX_VS, TEX_FS)
+
+        val sph = buildSphere(24, 32)
+        sphereCount = sph.size / 3
+        sphereBuf = floatBuf(sph)
+
+        quadPos = floatBuf(floatArrayOf(
+            -0.9f, -0.9f, 1.0f,  0.9f, -0.9f, 1.0f,
+            -0.9f,  0.9f, 1.0f,  0.9f,  0.9f, 1.0f))
+        quadUv = floatBuf(floatArrayOf(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f))
+
+        val ids = IntArray(1)
+        GLES20.glGenTextures(1, ids, 0)
+        texId = ids[0]
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        val bmp = skullBitmap()
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
+        bmp.recycle()
+    }
+
+    override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
+        GLES20.glViewport(0, 0, w, h)
+        // Kamera žiūri į rutulį iš z=4; matomas plotis ±0.6 ties artimąja plokštuma
+        Matrix.frustumM(proj, 0, -0.6f, 0.6f, -0.6f, 0.6f, 2f, 10f)
+        Matrix.setLookAtM(view, 0, 0f, 0f, 4f, 0f, 0f, 0f, 0f, 1f, 0f)
+        Matrix.multiplyMM(vp, 0, proj, 0, view, 0)
+    }
+
+    override fun onDrawFrame(gl: GL10?) {
+        frame++
+        updateEffects()
+
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
+
+        val a = avg
+        val pk = peak
+        val weak = a != null && a < 20f
+        val ultra = (pk ?: 0f) > 45f
+        val col = when {
+            a == null -> floatArrayOf(0.23f, 0.51f, 0.96f)
+            weak -> floatArrayOf(0.12f, 0.16f, 0.22f)
+            ultra -> floatArrayOf(0.98f, 0.80f, 0.08f)
+            else -> rgb(signalColor(a))
+        }
+
+        // 1) Rutulys su šviesa (šviesos kryptis lėtai sukasi)
+        val pulse = 0.9f + 0.03f * kotlin.math.sin(frame * 0.05).toFloat()
+        Matrix.setIdentityM(model, 0)
+        Matrix.scaleM(model, 0, pulse, pulse, pulse)
+        Matrix.multiplyMM(mvp, 0, vp, 0, model, 0)
+        val ang = frame * 0.02
+        GLES20.glUseProgram(sphereProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(sphereProg, "uMVP"), 1, false, mvp, 0)
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(sphereProg, "uLight"),
+            (0.6 * kotlin.math.cos(ang)).toFloat(), 0.5f, (0.6 * kotlin.math.sin(ang) + 0.5).toFloat())
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(sphereProg, "uColor"), col[0], col[1], col[2])
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sphereProg, "uAlpha"), 0.95f)
+        bindAttrib(sphereProg, "aPos", sphereBuf!!, 3)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, sphereCount)
+
+        // 2) ULTRA: elektros kibirkštys (geltonas švytėjimas + baltas branduolys)
+        if (ultra && bolts.isNotEmpty()) {
+            drawBoltStrips(0.022f, floatArrayOf(1f, 0.85f, 0.2f, 0.9f))
+            drawBoltStrips(0.008f, floatArrayOf(1f, 1f, 1f, 1f))
+        }
+
+        // 3) Silpnas signalas: kaukolė (tekstūra) ir išsisklaidančios dulkės
+        if (weak) {
+            GLES20.glUseProgram(texProg)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(texProg, "uMVP"), 1, false, vp, 0)
+            bindAttrib(texProg, "aPos", quadPos!!, 3)
+            bindAttrib(texProg, "aUV", quadUv!!, 2)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId)
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(texProg, "uTex"), 0)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+            GLES20.glUseProgram(dotProg)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(dotProg, "uMVP"), 1, false, vp, 0)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), 10f * density)
+            for (d in dust) {
+                val alpha = d.life / 40f
+                val buf = floatBuf(floatArrayOf(d.x, d.y, 1.02f))
+                GLES20.glUniform4f(GLES20.glGetUniformLocation(dotProg, "uColor"), 0.12f, 0.16f, 0.22f, alpha)
+                bindAttrib(dotProg, "aPos", buf, 3)
+                GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
+            }
+        }
+    }
+
+    private fun drawBoltStrips(width: Float, color: FloatArray) {
+        val verts = ArrayList<Float>()
+        for (b in bolts) {
+            val xy = b.xy
+            var i = 0
+            while (i + 3 < xy.size) {
+                val x0 = xy[i]; val y0 = xy[i + 1]; val x1 = xy[i + 2]; val y1 = xy[i + 3]
+                val dx = x1 - x0; val dy = y1 - y0
+                val len = kotlin.math.sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6f)
+                val px = -dy / len * width; val py = dx / len * width
+                val z = 1.02f
+                val quad = floatArrayOf(
+                    x0 + px, y0 + py, z, x0 - px, y0 - py, z, x1 + px, y1 + py, z,
+                    x0 - px, y0 - py, z, x1 - px, y1 - py, z, x1 + px, y1 + py, z)
+                for (v in quad) verts.add(v)
+                i += 2
+            }
+        }
+        if (verts.isEmpty()) return
+        val buf = floatBuf(verts.toFloatArray())
+        GLES20.glUseProgram(flatProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(flatProg, "uMVP"), 1, false, vp, 0)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(flatProg, "uColor"), color[0], color[1], color[2], color[3])
+        bindAttrib(flatProg, "aPos", buf, 3)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, verts.size / 3)
+    }
+
+    private fun updateEffects() {
+        if ((peak ?: 0f) > 45f && rnd.nextFloat() < 0.6f) {
+            // Kibirkšties kelias: lūžinėjanti linija nuo rutulio krašto į išorę
+            val a = rnd.nextFloat() * 2f * Math.PI.toFloat()
+            val steps = 4 + rnd.nextInt(3)
+            val xy = FloatArray((steps + 1) * 2)
+            var x = kotlin.math.cos(a) * 0.92f
+            var y = kotlin.math.sin(a) * 0.92f
+            xy[0] = x; xy[1] = y
+            for (i in 1..steps) {
+                val dist = 0.92f + 0.22f * i / steps
+                val ja = a + (rnd.nextFloat() - 0.5f) * 0.9f
+                x = kotlin.math.cos(ja) * dist
+                y = kotlin.math.sin(ja) * dist
+                xy[i * 2] = x; xy[i * 2 + 1] = y
+            }
+            bolts.add(GlBolt(xy, 3 + rnd.nextInt(3)))
+        }
+        bolts.forEach { it.life-- }
+        bolts.removeAll { it.life <= 0 }
+
+        if ((avg ?: 99f) < 20f && rnd.nextFloat() < 0.5f) {
+            val a = rnd.nextFloat() * 2f * Math.PI.toFloat()
+            val sp = 0.012f + rnd.nextFloat() * 0.012f
+            dust.add(GlDust(kotlin.math.cos(a) * 0.5f, kotlin.math.sin(a) * 0.5f,
+                kotlin.math.cos(a) * sp, kotlin.math.sin(a) * sp, 40))
+        }
+        dust.forEach { it.x += it.vx; it.y += it.vy; it.life-- }
+        dust.removeAll { it.life <= 0 }
+    }
+
+    private fun bindAttrib(prog: Int, name: String, buf: FloatBuffer, size: Int) {
+        val loc = GLES20.glGetAttribLocation(prog, name)
+        if (loc < 0) return
+        GLES20.glEnableVertexAttribArray(loc)
+        buf.position(0)
+        GLES20.glVertexAttribPointer(loc, size, GLES20.GL_FLOAT, false, 0, buf)
+    }
+
+    private fun rgb(c: Int) = floatArrayOf(Color.red(c) / 255f, Color.green(c) / 255f, Color.blue(c) / 255f)
+
+    private fun floatBuf(data: FloatArray): FloatBuffer =
+        ByteBuffer.allocateDirect(data.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
+            put(data); position(0)
+        }
+
+    private fun buildSphere(stacks: Int, slices: Int): FloatArray {
+        val out = ArrayList<Float>()
+        fun v(st: Int, sl: Int): FloatArray {
+            val th = Math.PI * st / stacks
+            val ph = 2 * Math.PI * sl / slices
+            return floatArrayOf(
+                (kotlin.math.sin(th) * kotlin.math.cos(ph)).toFloat(),
+                kotlin.math.cos(th).toFloat(),
+                (kotlin.math.sin(th) * kotlin.math.sin(ph)).toFloat())
+        }
+        for (st in 0 until stacks) for (sl in 0 until slices) {
+            val a = v(st, sl); val b = v(st + 1, sl); val c = v(st + 1, sl + 1); val d = v(st, sl + 1)
+            for (p in arrayOf(a, b, c, a, c, d)) for (x in p) out.add(x)
+        }
+        return out.toFloatArray()
+    }
+
+    private fun skullBitmap(): Bitmap {
+        val bmp = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        val r = 100f; val cx = 128f; val cy = 128f
+        p.color = 0xFF111827.toInt()
+        c.drawCircle(cx - r * 0.42f, cy + r * 0.05f, r * 0.42f, p)
+        c.drawCircle(cx + r * 0.42f, cy + r * 0.05f, r * 0.42f, p)
+        c.drawCircle(cx, cy - r * 0.18f, r * 0.55f, p)
+        c.drawCircle(cx - r * 0.22f, cy + r * 0.32f, r * 0.38f, p)
+        c.drawCircle(cx + r * 0.22f, cy + r * 0.32f, r * 0.38f, p)
+        c.drawRect(cx - r * 0.5f, cy + r * 0.05f, cx + r * 0.5f, cy + r * 0.36f, p)
+        p.color = 0xFFE5E7EB.toInt()
+        c.drawCircle(cx - r * 0.22f, cy - r * 0.02f, r * 0.16f, p)
+        c.drawCircle(cx + r * 0.22f, cy - r * 0.02f, r * 0.16f, p)
+        p.color = 0xFF111827.toInt()
+        c.drawRect(cx - r * 0.2f, cy + r * 0.2f, cx + r * 0.2f, cy + r * 0.24f, p)
+        c.drawRect(cx - r * 0.05f, cy + r * 0.2f, cx + r * 0.05f, cy + r * 0.34f, p)
+        return bmp
+    }
+
+    private fun program(vs: String, fs: String): Int {
+        val v = compile(GLES20.GL_VERTEX_SHADER, vs)
+        val f = compile(GLES20.GL_FRAGMENT_SHADER, fs)
+        val prog = GLES20.glCreateProgram()
+        GLES20.glAttachShader(prog, v)
+        GLES20.glAttachShader(prog, f)
+        GLES20.glLinkProgram(prog)
+        return prog
+    }
+
+    private fun compile(type: Int, src: String): Int {
+        val sh = GLES20.glCreateShader(type)
+        GLES20.glShaderSource(sh, src)
+        GLES20.glCompileShader(sh)
+        return sh
+    }
+
+    companion object {
+        private const val SPHERE_VS = """
+            attribute vec3 aPos;
+            uniform mat4 uMVP;
+            varying vec3 vN;
+            void main() { vN = aPos; gl_Position = uMVP * vec4(aPos, 1.0); }
+        """
+        private const val SPHERE_FS = """
+            precision mediump float;
+            varying vec3 vN;
+            uniform vec3 uLight;
+            uniform vec3 uColor;
+            uniform float uAlpha;
+            void main() {
+                vec3 n = normalize(vN);
+                vec3 l = normalize(uLight);
+                float d = max(dot(n, l), 0.0);
+                vec3 h = normalize(l + vec3(0.0, 0.0, 1.0));
+                float spec = pow(max(dot(n, h), 0.0), 48.0);
+                float rim = pow(1.0 - abs(n.z), 2.5);
+                vec3 col = uColor * (0.22 + 0.78 * d) + uColor * rim * 0.5 + vec3(spec) * 0.9;
+                gl_FragColor = vec4(col, uAlpha);
+            }
+        """
+        private const val FLAT_VS = """
+            attribute vec3 aPos;
+            uniform mat4 uMVP;
+            uniform float uPoint;
+            void main() { gl_Position = uMVP * vec4(aPos, 1.0); gl_PointSize = uPoint; }
+        """
+        private const val FLAT_FS = """
+            precision mediump float;
+            uniform vec4 uColor;
+            void main() { gl_FragColor = uColor; }
+        """
+        private const val DOT_FS = """
+            precision mediump float;
+            uniform vec4 uColor;
+            void main() {
+                vec2 c = gl_PointCoord - vec2(0.5);
+                if (length(c) > 0.5) discard;
+                gl_FragColor = uColor;
+            }
+        """
+        private const val TEX_VS = """
+            attribute vec3 aPos;
+            attribute vec2 aUV;
+            uniform mat4 uMVP;
+            varying vec2 vUV;
+            void main() { gl_Position = uMVP * vec4(aPos, 1.0); vUV = aUV; }
+        """
+        private const val TEX_FS = """
+            precision mediump float;
+            uniform sampler2D uTex;
+            varying vec2 vUV;
+            void main() { gl_FragColor = texture2D(uTex, vUV); }
+        """
+    }
+}
+
 /** Nupiešta „dalintis“ piktograma (tokia kaip nuotraukoje) – be teksto. */
 class ShareIcon(context: Context) : View(context) {
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -642,7 +995,7 @@ class DraggablePanel(
         visibility = GONE
     }
 
-    private val bubble = BubbleView(context).apply {
+    private val bubble = BubbleGL(context).apply {
         visibility = VISIBLE
         isClickable = true
         layoutParams = LayoutParams(bubbleSize, bubbleSize)

@@ -1,6 +1,7 @@
 package lt.example.gnss
 
 import android.Manifest
+import android.widget.SeekBar
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
@@ -22,6 +23,7 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.location.GnssMeasurement
 import android.location.GnssMeasurementRequest
 import android.location.GnssMeasurementsEvent
 import android.location.GnssStatus
@@ -471,49 +473,135 @@ class BubbleView(context: Context) : View(context) {
     override fun onDetachedFromWindow() { animator.cancel(); super.onDetachedFromWindow() }
 }
 
+/** Nupiešta „dalintis“ piktograma (tokia kaip nuotraukoje) – be teksto. */
+class ShareIcon(context: Context) : View(context) {
+    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        style = Paint.Style.STROKE
+        strokeWidth = 3f * resources.displayMetrics.density
+    }
+    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        style = Paint.Style.FILL
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val s = min(width, height).toFloat()
+        val ox = (width - s) / 2f
+        val oy = (height - s) / 2f
+        val ax = ox + s * 0.30f; val ay = oy + s * 0.50f
+        val bx = ox + s * 0.72f; val by = oy + s * 0.25f
+        val cx = ox + s * 0.72f; val cy = oy + s * 0.75f
+        val r = s * 0.10f
+        canvas.drawLine(ax, ay, bx, by, linePaint)
+        canvas.drawLine(ax, ay, cx, cy, linePaint)
+        canvas.drawCircle(ax, ay, r, dotPaint)
+        canvas.drawCircle(bx, by, r, dotPaint)
+        canvas.drawCircle(cx, cy, r, dotPaint)
+    }
+}
+
 class DraggablePanel(
     context: Context,
     private val onShare: (Set<String>, String, Boolean) -> Unit
 ) : FrameLayout(context) {
 
+    private val density = resources.displayMetrics.density
+    private val bubbleSize = (56 * density).toInt()
+
     private val panel = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = 24f * resources.displayMetrics.density
+            cornerRadius = 16f * density
             setColor(Color.WHITE)
         }
-        elevation = 16 * resources.displayMetrics.density
-        setPadding(32, 24, 32, 24)
-        visibility = GONE // Pradedame nuo paslėptos būsenos
+        elevation = 10 * density
+        val pad = (10 * density).toInt()
+        setPadding(pad, pad, pad, pad)
+        alpha = 0.92f
+        visibility = GONE
     }
 
     private val bubble = BubbleView(context).apply {
-        visibility = VISIBLE // Iš karto matomas burbulas
+        visibility = VISIBLE
         isClickable = true
-        layoutParams = LayoutParams(80 * resources.displayMetrics.density.toInt(), 80 * resources.displayMetrics.density.toInt())
+        layoutParams = LayoutParams(bubbleSize, bubbleSize)
     }
 
     private val title = TextView(context).apply {
         text = "Ką siųsti AI?"
-        textSize = 18f
+        textSize = 15f
         setTextColor(Color.BLACK)
         setTypeface(null, Typeface.BOLD)
     }
 
     private val optionsLayout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
     private val boxes = LinkedHashMap<String, CheckBox>()
-    private val questionInput = EditText(context).apply { hint = "Klausimas (neprivaloma)"; setSingleLine() }
-    
-    private val btnLayout = LinearLayout(context).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.END
-        setPadding(0, 16, 0, 0)
+
+    private val questionInput = EditText(context).apply {
+        hint = "?"
+        setSingleLine()
+        textSize = 14f
     }
 
-    private val minimizeBtn = Button(context).apply { text = "➖" }
-    private val cancelBtn = Button(context).apply { text = "Atšaukti" }
-    private val shareBtn = Button(context).apply { text = "Dalintis" }
+    private val alphaLabel = TextView(context).apply {
+        text = "Permatomumas"
+        textSize = 12f
+        setTextColor(Color.DKGRAY)
+    }
+
+    private val alphaSeek = SeekBar(context).apply {
+        max = 80 // 20..100 %
+        progress = 72 // ~92 %
+        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                panel.alpha = (20 + p) / 100f
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+    }
+
+    private fun smallButton(label: String, sizeDp: Int): Button = Button(context).apply {
+        text = label
+        textSize = 14f
+        minWidth = 0
+        minHeight = 0
+        minimumWidth = 0
+        minimumHeight = 0
+        setPadding(0, 0, 0, 0)
+        layoutParams = LinearLayout.LayoutParams((sizeDp * density).toInt(), (sizeDp * density).toInt())
+    }
+
+    private val minimizeBtn = smallButton("\u2212", 36)   // −
+    private val cancelBtn = smallButton("\u2715", 36)     // ✕
+
+    private val shareBtn = FrameLayout(context).apply {
+        isClickable = true
+        layoutParams = LinearLayout.LayoutParams((40 * density).toInt(), (40 * density).toInt())
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(0xFFE2E8F0.toInt())
+        }
+        addView(ShareIcon(context), LayoutParams((40 * density * 0.6f).toInt(), (40 * density * 0.6f).toInt(), Gravity.CENTER))
+    }
+
+    private val header = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+    }
+
+    private val inputRow = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+    }
+
+    private val btnRow = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.END or Gravity.CENTER_VERTICAL
+        setPadding(0, (8 * density).toInt(), 0, 0)
+    }
 
     init {
         isClickable = true
@@ -527,22 +615,34 @@ class DraggablePanel(
             "cno" to "C/N0 istorija (~2 min)",
             "klaidos" to "Klaidos ir būsena",
             "irenginys" to "Įrenginys (modelis, Android)",
-            "screenshot" to "Įtraukti ekrano kopiją"
+            "screenshot" to "Įtraukti ekrano kopiją",
+            "raw" to "Neapdoroti matavimai (CSV)"
         )
         for ((k, v) in opts) {
-            val cb = CheckBox(context).apply { text = v; isChecked = true }
+            val cb = CheckBox(context).apply {
+                text = v
+                textSize = 13f
+                isChecked = k != "raw"
+            }
             boxes[k] = cb
             optionsLayout.addView(cb)
         }
 
-        btnLayout.addView(minimizeBtn)
-        btnLayout.addView(cancelBtn)
-        btnLayout.addView(shareBtn)
-        panel.addView(title)
+        header.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(minimizeBtn)
+
+        inputRow.addView(questionInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        inputRow.addView(shareBtn)
+
+        btnRow.addView(cancelBtn)
+
+        panel.addView(header)
         panel.addView(optionsLayout)
-        panel.addView(questionInput)
-        panel.addView(btnLayout)
-        
+        panel.addView(alphaLabel)
+        panel.addView(alphaSeek)
+        panel.addView(inputRow)
+        panel.addView(btnRow)
+
         addView(panel)
         addView(bubble)
 
@@ -554,9 +654,7 @@ class DraggablePanel(
             minimize()
         }
 
-        // Burbulo paspaudimo logika (išskleidimas + vibracija)
         bubble.setOnClickListener {
-            // Vibracija – jei nepavyksta (pvz., nėra leidimo/įrenginys be vibratoriaus), tęsiame be jos
             try {
                 val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
                 if (vibrator != null && vibrator.hasVibrator()) {
@@ -582,6 +680,14 @@ class DraggablePanel(
     private var lastX = 0f
     private var lastY = 0f
     private var isDragging = false
+    private var touchOnControl = false
+
+    private fun inside(v: View, x: Float, y: Float): Boolean {
+        if (v.visibility != VISIBLE) return false
+        val r = Rect()
+        v.getGlobalVisibleRect(r)
+        return r.contains(x.toInt(), y.toInt())
+    }
 
     override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
         when (ev.action) {
@@ -589,14 +695,12 @@ class DraggablePanel(
                 lastX = ev.rawX
                 lastY = ev.rawY
                 isDragging = false
-                val rect = Rect()
-                questionInput.getGlobalVisibleRect(rect)
-                if (questionInput.visibility == VISIBLE && rect.contains(ev.rawX.toInt(), ev.rawY.toInt())) {
-                    return false
-                }
+                // Įvesties lauke ir slankiklyje nevelkame – leidžiame jiems veikti
+                touchOnControl = inside(questionInput, ev.rawX, ev.rawY) || inside(alphaSeek, ev.rawX, ev.rawY)
+                if (touchOnControl) return false
             }
             MotionEvent.ACTION_MOVE -> {
-                if (!isDragging) {
+                if (!touchOnControl && !isDragging) {
                     if (abs(ev.rawX - lastX) > 15 || abs(ev.rawY - lastY) > 15) {
                         isDragging = true
                         return true
@@ -631,13 +735,25 @@ class DraggablePanel(
         return super.onTouchEvent(event)
     }
 
+    private fun setOwnWidth(px: Int) {
+        val lp = layoutParams as? FrameLayout.LayoutParams ?: return
+        lp.width = px
+        layoutParams = lp
+    }
+
     private fun minimize() {
+        setOwnWidth(FrameLayout.LayoutParams.WRAP_CONTENT)
         panel.visibility = GONE
         bubble.visibility = VISIBLE
         post { constrainPosition() }
     }
 
     private fun maximize() {
+        // Mažesnė panelė: iki 70 % ekrano pločio ir ne daugiau kaip 260 dp
+        val parentW = (parent as? View)?.width ?: 0
+        val maxW = (260 * density).toInt()
+        val target = if (parentW > 0) min((parentW * 0.7f).toInt(), maxW) else maxW
+        setOwnWidth(target)
         bubble.visibility = GONE
         panel.visibility = VISIBLE
         post { adjustPositionOnExpand() }
@@ -646,28 +762,29 @@ class DraggablePanel(
     private fun adjustPositionOnExpand() {
         val parentW = (parent as? View)?.width?.toFloat() ?: return
         val parentH = (parent as? View)?.height?.toFloat() ?: return
-        
+
         val minTx = -width * 0.1f
         val maxTx = parentW - width * 0.9f
         val minTy = -height * 0.1f
         val maxTy = parentH - height * 0.9f
-        
+
         translationX = translationX.coerceIn(minTx, maxTx)
         translationY = translationY.coerceIn(minTy, maxTy)
-        
+
         if (width > parentW) translationX = 0f
         if (height > parentH) translationY = 0f
     }
 
+    // Burbulas/panelė gali išeiti už ekrano, bet bent 10 % lieka matoma
     private fun constrainPosition() {
         val parentW = (parent as? View)?.width?.toFloat() ?: return
         val parentH = (parent as? View)?.height?.toFloat() ?: return
-        
+
         val minTx = -width * 0.9f
         val maxTx = parentW - width * 0.1f
         val minTy = -height * 0.9f
         val maxTy = parentH - height * 0.1f
-        
+
         translationX = translationX.coerceIn(minTx, maxTx)
         translationY = translationY.coerceIn(minTy, maxTy)
     }
@@ -806,6 +923,7 @@ class MainActivity : AppCompatActivity() {
     private val measCallback = object : GnssMeasurementsEvent.Callback() {
         override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
             measText = "Neapdoroti matavimai: ${event.measurements.size}"
+            for (m in event.measurements) appendRaw(m)
             render()
         }
     }
@@ -910,9 +1028,19 @@ class MainActivity : AppCompatActivity() {
     private fun setupShareBubble() {
         if (sharePanel != null) return
         val panel = DraggablePanel(this) { sections, question, wantScreenshot ->
-            val report = buildReport(sections - "screenshot", question)
-            val uri = if (wantScreenshot) takeScreenshot() else null
-            shareContent(report, uri)
+            val report = buildReport(sections - "screenshot" - "raw", question)
+            val uris = ArrayList<Uri>()
+            if (wantScreenshot) {
+                // Burbulas ir panelė NEPATENKA į ekrano kopiją
+                sharePanel?.visibility = View.INVISIBLE
+                try {
+                    takeScreenshot()?.let { uris.add(it) }
+                } finally {
+                    sharePanel?.visibility = View.VISIBLE
+                }
+            }
+            if ("raw" in sections) rawCsvUri()?.let { uris.add(it) }
+            shareContent(report, uris)
         }
         val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         
@@ -1022,6 +1150,32 @@ class MainActivity : AppCompatActivity() {
         if (errorLog.size > 20) errorLog.removeFirst()
     }
 
+    // ---------------- NEAPDOROTI MATAVIMAI (CSV) ----------------
+    private val rawHeader = "laikas_ms,konstelacija,svid,cn0_dbhz,dazniu_hz,doplerio_mps,akumuliuota_m,recv_sv_time_ns\n"
+    private val rawLog = StringBuilder(rawHeader)
+
+    private fun appendRaw(m: GnssMeasurement) {
+        if (rawLog.length > 3_000_000) { rawLog.setLength(0); rawLog.append(rawHeader) }
+        val carrier = if (m.hasCarrierFrequencyHz()) m.carrierFrequencyHz.toString() else ""
+        rawLog.append(System.currentTimeMillis()).append(',')
+            .append(constName(m.constellationType)).append(',')
+            .append(m.svid).append(',')
+            .append(m.cn0DbHz).append(',')
+            .append(carrier).append(',')
+            .append(m.pseudorangeRateMetersPerSecond).append(',')
+            .append(m.accumulatedDeltaRangeMeters).append(',')
+            .append(m.receivedSvTimeNanos).append('\n')
+    }
+
+    private fun rawCsvUri(): Uri? = try {
+        val file = File(cacheDir, "gnss_raw.csv")
+        file.writeText(rawLog.toString())
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+    } catch (e: Exception) {
+        logError("CSV nepavyko: ${e.message}")
+        null
+    }
+
     private fun takeScreenshot(): Uri? {
         val view = window.decorView
         val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
@@ -1089,22 +1243,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun shareContent(text: String, imageUri: Uri?) {
-        if (imageUri != null) {
-            val intent = Intent(Intent.ACTION_SEND).apply {
-                type = "image/png"
-                putExtra(Intent.EXTRA_STREAM, imageUri)
-                putExtra(Intent.EXTRA_TEXT, text)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            startActivity(Intent.createChooser(intent, "Dalintis su ekrano kopija"))
-        } else {
+    private fun shareContent(text: String, uris: List<Uri>) {
+        if (uris.isEmpty()) {
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 putExtra(Intent.EXTRA_SUBJECT, "GNSS App ataskaita")
                 putExtra(Intent.EXTRA_TEXT, text)
             }
             startActivity(Intent.createChooser(intent, "Dalintis ataskaita"))
+        } else {
+            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "*/*"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+                putExtra(Intent.EXTRA_TEXT, text)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Dalintis"))
         }
     }
 

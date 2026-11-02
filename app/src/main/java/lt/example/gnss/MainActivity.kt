@@ -1,12 +1,15 @@
 package lt.example.gnss
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RadialGradient
+import android.graphics.Shader
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -22,9 +25,11 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import android.view.animation.LinearInterpolator
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
@@ -40,6 +45,7 @@ import java.util.concurrent.Executor
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.floor
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -312,7 +318,7 @@ class GnssView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(Color.WHITE)
+        // Fonas paliktas permatomas, kad matytųsi judantis gradientas už jo
 
         val w = width.toFloat()
         val h = height.toFloat()
@@ -369,6 +375,68 @@ class GnssView(context: Context) : View(context) {
             canvas.drawText(s.svid.toString(), x0, h - 20f, textPaint)
         }
     }
+}
+
+// ============================================================
+//  JUDANTIS SPALVŲ FONAS (Gemini stilius)
+// ============================================================
+
+class GradientBackground(context: Context) : View(context) {
+
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var t = 0f
+
+    private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 14000L
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = LinearInterpolator()
+        addUpdateListener {
+            t = it.animatedFraction
+            invalidate()
+        }
+    }
+
+    private val blobs = intArrayOf(
+        0xFF60A5FA.toInt(), // mėlyna
+        0xFFA78BFA.toInt(), // violetinė
+        0xFF34D399.toInt(), // žalia
+        0xFFF472B6.toInt()  // rožinė
+    )
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        animator.start()
+    }
+
+    override fun onDetachedFromWindow() {
+        animator.cancel()
+        super.onDetachedFromWindow()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        canvas.drawColor(0xFFF8FAFC.toInt())
+
+        val angle = t * 2 * Math.PI
+        val radius = max(w, h) * 0.6f
+
+        for (i in blobs.indices) {
+            val phase = angle + i * Math.PI / 2
+            val cx = w * (0.5f + 0.35f * cos(phase).toFloat())
+            val cy = h * (0.5f + 0.25f * sin(phase * 1.3).toFloat())
+
+            paint.shader = RadialGradient(
+                cx, cy, radius,
+                withAlpha(blobs[i], 0.45f), 0x00FFFFFF,
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, w, h, paint)
+        }
+    }
+
+    private fun withAlpha(color: Int, alpha: Float): Int =
+        (color and 0x00FFFFFF) or ((alpha * 255).toInt() shl 24)
 }
 
 // ============================================================
@@ -448,6 +516,7 @@ class MainActivity : AppCompatActivity() {
 
         info = TextView(this).apply {
             textSize = 14f
+            setTextColor(0xFF0F172A.toInt())
             setPadding(32, 16, 32, 16)
         }
         skyView = GnssView(this)
@@ -508,7 +577,24 @@ class MainActivity : AppCompatActivity() {
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(skyView, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        setContentView(root)
+
+        // Judantis fonas po visu turiniu
+        val container = FrameLayout(this)
+        container.addView(
+            GradientBackground(this),
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        container.addView(
+            root,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        setContentView(container)
     }
 
     override fun onStart() {

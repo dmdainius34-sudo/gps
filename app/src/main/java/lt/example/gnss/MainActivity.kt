@@ -943,19 +943,20 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
 }
 
 // ============================================================
-//  3D DANGAUS KUPOLAS (sensoriai + palydovai pagal azimutą ir kampą)
+//  3D GAUBLYS (dangaus skliautas, sensoriais suderintas)
 // ============================================================
 
 /**
- * Dangaus kupolas: žiūrite iš vidaus. Kupolas sukasi kartu su planšete (rotacijos vektorius),
- * todėl horizontas ir palydovai išlieka tose pačiose realiose kryptyse.
+ * 3D gaublys žiūrint iš išorės: virš horizonto – pulsuojantis GPS kupolas,
+ * žemiau horizonto – permatoma struktūra. Palydovai (geras signalas) žybsi kaip žvaigždės.
+ * Gaublys sukasi kartu su planšete (rotacijos vektoriaus jutiklis).
  */
 class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener {
 
     private val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val rotSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
     private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    private val renderer = SkyRenderer(context.applicationContext, resources.displayMetrics.density)
+    private val renderer = GlobeRenderer(context.applicationContext, resources.displayMetrics.density)
     private var running = false
 
     init {
@@ -984,7 +985,6 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         val raw = FloatArray(9)
         SensorManager.getRotationMatrixFromVector(raw, event.values)
         val out = FloatArray(9)
-        // Ekrano orientacijai pritaikome koordinačių sistemą (portretas / peizažas)
         when (wm.defaultDisplay.rotation) {
             Surface.ROTATION_90 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_Y, SensorManager.AXIS_MINUS_X, out)
             Surface.ROTATION_180 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_MINUS_X, SensorManager.AXIS_MINUS_Y, out)
@@ -997,7 +997,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 }
 
-private class SkyRenderer(private val appCtx: Context, private val density: Float) : GLSurfaceView.Renderer {
+private class GlobeRenderer(private val appCtx: Context, private val density: Float) : GLSurfaceView.Renderer {
 
     @Volatile private var rot = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
     @Volatile private var sats: List<Sat> = emptyList()
@@ -1005,121 +1005,188 @@ private class SkyRenderer(private val appCtx: Context, private val density: Floa
     fun setSats(l: List<Sat>) { sats = l }
 
     private val proj = FloatArray(16)
+    private val view = FloatArray(16)
+    private val pv = FloatArray(16)
     private val mv = FloatArray(16)
     private val mvp = FloatArray(16)
+    private val t0 = System.nanoTime()
 
-    private var colorProg = 0
-    private var dotProg = 0
-    private var texProg = 0
-    private var domeBuf: FloatBuffer? = null
-    private var domeCount = 0
-    private var gridBuf: FloatBuffer? = null
-    private var gridCount = 0
-    private var horizonBuf: FloatBuffer? = null
-    private var horizonCount = 0
-    private val degTex = HashMap<String, Int>()
-    private val satTex = HashMap<String, Int>()
+    private var domeProg = 0; private var lowProg = 0; private var colorProg = 0
+    private var dotProg = 0; private var texProg = 0
+    private var upperBuf: FloatBuffer? = null; private var upperN = 0
+    private var lowerBuf: FloatBuffer? = null; private var lowerN = 0
+    private var gridBuf: FloatBuffer? = null; private var gridN = 0
+    private var horizonBuf: FloatBuffer? = null; private var horizonN = 0
+    private var starTex = 0
+    private val labelTex = HashMap<String, Int>()
+    private val prnTex = HashMap<String, Int>()
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-        GLES20.glClearColor(0.02f, 0.02f, 0.03f, 1f)
+        GLES20.glClearColor(0f, 0f, 0f, 0f)
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        GLES20.glDepthFunc(GLES20.GL_LEQUAL)
 
+        domeProg = program(DOME_VS, DOME_FS)
+        lowProg = program(DOME_VS, LOW_FS)
         colorProg = program(COLOR_VS, COLOR_FS)
         dotProg = program(COLOR_VS, DOT_FS)
         texProg = program(TEX_VS, TEX_FS)
 
-        val dome = buildDome()
-        domeBuf = floatBuf(dome); domeCount = dome.size / 3
-        val grid = buildGrid()
-        gridBuf = floatBuf(grid); gridCount = grid.size / 3
-        val hz = buildHorizon()
-        horizonBuf = floatBuf(hz); horizonCount = hz.size / 3
+        val up = meshSphere(0.0, 90.0, 18, 72, 1.0)
+        upperBuf = floatBuf(up); upperN = up.size / 3
+        val low = meshSphere(-90.0, 0.0, 12, 72, 1.0)
+        lowerBuf = floatBuf(low); lowerN = low.size / 3
+        val grid = buildGrid(1.004)
+        gridBuf = floatBuf(grid); gridN = grid.size / 3
+        val hz = buildHorizon(1.006)
+        horizonBuf = floatBuf(hz); horizonN = hz.size / 3
 
-        // Laipsnių ir kompaso žymos
-        for (d in 0 until 360 step 30) {
-            val label = labelOf(d)
-            val col = if (d == 0) 0xFFEF4444.toInt() else if (d % 90 == 0) 0xFFFACC15.toInt() else 0xFFE5E7EB.toInt()
-            degTex[label] = makeTexture(label, col, 96)
-        }
+        starTex = makeStarTexture()
+        for (d in 0 until 360 step 30) labelTex[labelOf(d)] = makeTexture(labelOf(d), 0xFFFFFFFF.toInt(), 96)
     }
 
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
         GLES20.glViewport(0, 0, w, h)
         val aspect = if (h == 0) 1f else w.toFloat() / h
-        Matrix.perspectiveM(proj, 0, 70f, aspect, 0.05f, 10f)
+        Matrix.perspectiveM(proj, 0, 40f, aspect, 0.1f, 20f)
+        Matrix.setIdentityM(view, 0)
+        Matrix.translateM(view, 0, 0f, 0f, -3f)           // kamera išorėje, žiūri į gaublį
+        Matrix.multiplyMM(pv, 0, proj, 0, view, 0)
     }
 
     override fun onDrawFrame(gl: GL10?) {
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
+        val t = (System.nanoTime() - t0) / 1e9f
 
-        // Pasaulio -> planšetės koordinatės (transponuota rotacijos matrica)
+        // Pasaulis -> planšetė (sensorių suderinimas)
         val r = rot
         java.util.Arrays.fill(mv, 0f)
         for (c in 0..2) for (rr in 0..2) mv[c * 4 + rr] = r[c * 3 + rr]
         mv[15] = 1f
-        Matrix.multiplyMM(mvp, 0, proj, 0, mv, 0)
+        Matrix.multiplyMM(mvp, 0, pv, 0, mv, 0)
+        // Kameros kryptis pasaulio koordinatėse (planšetės +Z)
+        val eye = floatArrayOf(r[2], r[5], r[8])
 
-        // 1) kupolas (pusrutulis)
-        draw(domeBuf!!, domeCount, GLES20.GL_TRIANGLES, colorProg, 0.25f, 0.28f, 0.34f, 0.28f)
-        // 2) tinklelis
-        draw(gridBuf!!, gridCount, GLES20.GL_LINES, colorProg, 0.55f, 0.6f, 0.7f, 0.25f)
-        // 3) horizontas (auksinis žiedas)
-        draw(horizonBuf!!, horizonCount, GLES20.GL_TRIANGLES, colorProg, 0.85f, 0.65f, 0.25f, 0.95f)
-        // 4) laipsnių žymos ant horizonto
+        // Signalo kokybė -> pulsavimo stiprumas
+        val used = sats.filter { it.used }
+        val avgCn0 = if (used.isNotEmpty()) used.map { it.cn0 }.average().toFloat() else 0f
+        val beat = ((avgCn0 - 15f) / 25f).coerceIn(0.2f, 1f)
+
+        // 1) Virš horizonto – pulsuojantis GPS kupolas
+        GLES20.glDepthMask(true)
+        GLES20.glUseProgram(domeProg)
+        setMat(domeProg, "uMVP", mvp)
+        setVec3(domeProg, "uLight", 0.4f, 0.5f, 0.8f)
+        setVec3(domeProg, "uEye", eye[0], eye[1], eye[2])
+        setFloat(domeProg, "uTime", t)
+        setFloat(domeProg, "uBeat", beat)
+        setVec3(domeProg, "uTint", 0.2f + 0.7f * beat, 0.6f + 0.3f * beat, 1.0f - 0.6f * beat)
+        bindPos(domeProg, upperBuf!!)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, upperN)
+
+        // 2) Žemiau horizonto – permatoma struktūra
+        GLES20.glDepthMask(false)
+        GLES20.glUseProgram(lowProg)
+        setMat(lowProg, "uMVP", mvp)
+        setVec3(lowProg, "uEye", eye[0], eye[1], eye[2])
+        setVec4(lowProg, "uColor", 0.35f, 0.4f, 0.5f, 0.14f)
+        bindPos(lowProg, lowerBuf!!)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, lowerN)
+        GLES20.glDepthMask(true)
+
+        // 3) Laipsnių tinklelis
+        GLES20.glUseProgram(colorProg)
+        setMat(colorProg, "uMVP", mvp)
+        setVec4(colorProg, "uColor", 0.6f, 0.7f, 0.85f, 0.22f)
+        setFloat(colorProg, "uPoint", 1f)
+        bindPos(colorProg, gridBuf!!)
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, gridN)
+
+        // 4) Horizontas – pulsuojantis auksinis žiedas
+        val hzAlpha = 0.6f + 0.4f * kotlin.math.sin(t * 2.5f)
+        setVec4(colorProg, "uColor", 0.95f, 0.72f, 0.3f, hzAlpha)
+        bindPos(colorProg, horizonBuf!!)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, horizonN)
+
+        // Žymos ir palydovai piešiami be gylio testo (visada matomi priekyje)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+
+        // 5) Laipsnių žymos ant horizonto
         for (d in 0 until 360 step 30) {
-            val tex = degTex[labelOf(d)] ?: continue
+            val tex = labelTex[labelOf(d)] ?: continue
             val a = Math.toRadians(d.toDouble())
-            val c = floatArrayOf((0.9 * sin(a)).toFloat(), (0.9 * cos(a)).toFloat(), 0f)
-            billboard(c, 0.1f, 0.05f, tex)
+            val c = floatArrayOf((1.04 * sin(a)).toFloat(), (1.04 * cos(a)).toFloat(), 0f)
+            if (dot3(c, eye) < 0.05f) continue
+            val col = when (d) { 0 -> floatArrayOf(0.94f, 0.27f, 0.27f); 90, 180, 270 -> floatArrayOf(0.98f, 0.8f, 0.08f); else -> floatArrayOf(0.85f, 0.87f, 0.9f) }
+            billboard(c, eye, 0.1f, 0.05f, tex, col[0], col[1], col[2], 0.95f)
         }
-        // 5) palydovai pagal azimutą ir kampą nuo horizonto
+
+        // 6) Palydovai: geras signalas žybsi kaip žvaigždės
         for (sat in sats) {
             val el = Math.toRadians(sat.elev.toDouble().coerceIn(-10.0, 90.0))
             val az = Math.toRadians(sat.az.toDouble())
             val p = floatArrayOf(
-                (0.96 * cos(el) * sin(az)).toFloat(),
-                (0.96 * cos(el) * cos(az)).toFloat(),
-                (0.96 * sin(el)).toFloat())
+                (0.98 * cos(el) * sin(az)).toFloat(),
+                (0.98 * cos(el) * cos(az)).toFloat(),
+                (0.98 * sin(el)).toFloat())
+            if (dot3(p, eye) < -0.05f) continue
             val col = constRgb(sat.const)
-            val alpha = if (sat.used) 1f else 0.4f
-            val size = (if (sat.used) 26f else 16f) * density
-            draw(floatBuf(p), 1, GLES20.GL_POINTS, dotProg, col[0], col[1], col[2], alpha, size)
-            val key = "${sat.const}${sat.svid}"
-            val tex = satTex.getOrPut(key) { makeTexture(key, 0xFFFFFFFF.toInt(), 128) }
-            billboard(floatArrayOf(p[0], p[1], p[2] + 0.06f), 0.09f, 0.045f, tex)
+            val usedK = if (sat.used) 1f else 0.4f
+            val phase = sat.svid * 0.7f
+            when {
+                sat.cn0 >= 30f -> {
+                    val tw = kotlin.math.sin(t * 4f + phase)
+                    val size = 0.075f * (1f + 0.35f * tw)
+                    val alpha = (0.75f + 0.25f * tw) * usedK
+                    billboard(p, eye, size, size, starTex, col[0], col[1], col[2], alpha)
+                    val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
+                    billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eye, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
+                }
+                sat.cn0 >= 20f -> {
+                    billboard(p, eye, 0.05f, 0.05f, starTex, col[0], col[1], col[2], 0.6f * usedK)
+                }
+                else -> {
+                    drawPoint(p, col, 0.3f * usedK, 6f * density)
+                }
+            }
         }
+
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 
-    private fun labelOf(d: Int): String = when (d) {
-        0 -> "N"; 90 -> "E"; 180 -> "S"; 270 -> "W"; else -> d.toString()
+    private fun labelOf(d: Int): String = when (d) { 0 -> "N"; 90 -> "E"; 180 -> "S"; 270 -> "W"; else -> d.toString() }
+
+    private fun dot3(a: FloatArray, b: FloatArray): Float = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+    private fun drawPoint(p: FloatArray, col: FloatArray, alpha: Float, size: Float) {
+        GLES20.glUseProgram(dotProg)
+        setMat(dotProg, "uMVP", mvp)
+        setVec4(dotProg, "uColor", col[0], col[1], col[2], alpha)
+        setFloat(dotProg, "uPoint", size)
+        bindPos(dotProg, floatBuf(p))
+        GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
     }
 
-    private fun draw(buf: FloatBuffer, count: Int, mode: Int, prog: Int, r: Float, g: Float, b: Float, a: Float, point: Float = 1f) {
-        GLES20.glUseProgram(prog)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uMVP"), 1, false, mvp, 0)
-        GLES20.glUniform4f(GLES20.glGetUniformLocation(prog, "uColor"), r, g, b, a)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uPoint"), point)
-        val loc = GLES20.glGetAttribLocation(prog, "aPos")
-        GLES20.glEnableVertexAttribArray(loc)
-        buf.position(0)
-        GLES20.glVertexAttribPointer(loc, 3, GLES20.GL_FLOAT, false, 0, buf)
-        GLES20.glDrawArrays(mode, 0, count)
-    }
-
-    /** Teksto plokštuma, kuri visada atsisuka į žiūrovą (centras c, pusplotis w, pusaukštis h). */
-    private fun billboard(c: FloatArray, w: Float, h: Float, tex: Int) {
-        val nx0 = -c[0]; val ny0 = -c[1]; val nz0 = -c[2]
-        val nl = sqrt(nx0 * nx0 + ny0 * ny0 + nz0 * nz0).coerceAtLeast(1e-6f)
-        val nx = nx0 / nl; val ny = ny0 / nl; val nz = nz0 / nl
-        // right = (0,0,1) x n
-        var rx = -ny; var ry = nx
-        val rl = sqrt(rx * rx + ry * ry).coerceAtLeast(1e-6f)
-        rx /= rl; ry /= rl
+    /** Plokštuma, kuri visada atsisuka į kamerą (centras c, pusplotis w, pusaukštis h). */
+    private fun billboard(c: FloatArray, eye: FloatArray, w: Float, h: Float, tex: Int, cr: Float, cg: Float, cb: Float, ca: Float) {
+        var nx = eye[0] - c[0]; var ny = eye[1] - c[1]; var nz = eye[2] - c[2]
+        val nl = sqrt(nx * nx + ny * ny + nz * nz).coerceAtLeast(1e-6f)
+        nx /= nl; ny /= nl; nz /= nl
+        // pagalbinė "aukštis": (0,0,1), o ties poliais – (0,1,0)
+        val ax = if (kotlin.math.abs(nz) > 0.95f) 0f else 0f
+        val ay = if (kotlin.math.abs(nz) > 0.95f) 1f else 0f
+        val az = if (kotlin.math.abs(nz) > 0.95f) 0f else 1f
+        // right = up0 x n
+        var rx = ay * nz - az * ny
+        var ry = az * nx - ax * nz
+        var rz = ax * ny - ay * nx
+        val rl = sqrt(rx * rx + ry * ry + rz * rz).coerceAtLeast(1e-6f)
+        rx /= rl; ry /= rl; rz /= rl
         // up = n x right
-        val ux = ny * 0f - nz * ry
-        val uy = nz * rx - nx * 0f
+        val ux = ny * rz - nz * ry
+        val uy = nz * rx - nx * rz
         val uz = nx * ry - ny * rx
         val pos = FloatArray(12)
         val cs = arrayOf(floatArrayOf(-1f, -1f), floatArrayOf(1f, -1f), floatArrayOf(-1f, 1f), floatArrayOf(1f, 1f))
@@ -1127,11 +1194,12 @@ private class SkyRenderer(private val appCtx: Context, private val density: Floa
             val sx = cs[i][0] * w; val sy = cs[i][1] * h
             pos[i * 3] = c[0] + rx * sx + ux * sy
             pos[i * 3 + 1] = c[1] + ry * sx + uy * sy
-            pos[i * 3 + 2] = c[2] + 0f * sx + uz * sy
+            pos[i * 3 + 2] = c[2] + rz * sx + uz * sy
         }
         val uv = floatArrayOf(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f)
         GLES20.glUseProgram(texProg)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(texProg, "uMVP"), 1, false, mvp, 0)
+        setMat(texProg, "uMVP", mvp)
+        setVec4(texProg, "uColor", cr, cg, cb, ca)
         val lp = GLES20.glGetAttribLocation(texProg, "aPos")
         val lu = GLES20.glGetAttribLocation(texProg, "aUV")
         GLES20.glEnableVertexAttribArray(lp)
@@ -1145,6 +1213,25 @@ private class SkyRenderer(private val appCtx: Context, private val density: Floa
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     }
 
+    private fun makeStarTexture(): Int {
+        val size = 128
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(size / 2f, size / 2f, size / 2f,
+                intArrayOf(0xFFFFFFFF.toInt(), 0x88FFFFFF.toInt(), 0x00FFFFFF),
+                floatArrayOf(0f, 0.25f, 1f), Shader.TileMode.CLAMP)
+        }
+        c.drawCircle(size / 2f, size / 2f, size / 2f, glow)
+        val ray = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xAAFFFFFF.toInt()
+            strokeWidth = 3f
+        }
+        c.drawLine(size / 2f, 4f, size / 2f, size - 4f, ray)
+        c.drawLine(4f, size / 2f, size - 4f, size / 2f, ray)
+        return uploadTexture(bmp)
+    }
+
     private fun makeTexture(text: String, color: Int, sizePx: Int): Int {
         val w = sizePx * 2; val h = sizePx
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -1153,9 +1240,12 @@ private class SkyRenderer(private val appCtx: Context, private val density: Floa
             this.color = color
             textSize = h * 0.7f
             textAlign = Paint.Align.CENTER
-            setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())
         }
         c.drawText(text, w / 2f, h * 0.75f, p)
+        return uploadTexture(bmp)
+    }
+
+    private fun uploadTexture(bmp: Bitmap): Int {
         val ids = IntArray(1)
         GLES20.glGenTextures(1, ids, 0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
@@ -1169,11 +1259,11 @@ private class SkyRenderer(private val appCtx: Context, private val density: Floa
     }
 
     private fun constRgb(c: String): FloatArray = when (c) {
-        "GPS" -> floatArrayOf(0.15f, 0.39f, 0.92f)
-        "GAL" -> floatArrayOf(0.09f, 0.64f, 0.29f)
-        "GLO" -> floatArrayOf(0.92f, 0.35f, 0.05f)
-        "BDS" -> floatArrayOf(0.86f, 0.15f, 0.15f)
-        "SBS" -> floatArrayOf(0.42f, 0.45f, 0.5f)
+        "GPS" -> floatArrayOf(0.35f, 0.6f, 1f)
+        "GAL" -> floatArrayOf(0.3f, 1f, 0.5f)
+        "GLO" -> floatArrayOf(1f, 0.6f, 0.2f)
+        "BDS" -> floatArrayOf(1f, 0.35f, 0.35f)
+        "SBS" -> floatArrayOf(0.7f, 0.72f, 0.78f)
         else -> floatArrayOf(1f, 1f, 1f)
     }
 
@@ -1182,11 +1272,10 @@ private class SkyRenderer(private val appCtx: Context, private val density: Floa
         return doubleArrayOf(radius * cos(el) * sin(az), radius * cos(el) * cos(az), radius * sin(el))
     }
 
-    /** Pusrutulio paviršius: 0..90° elevacija, 0..360° azimutas. */
-    private fun buildDome(): FloatArray {
+    /** Sferos dalis tarp elevacijų e0..e1 (laipsniais). */
+    private fun meshSphere(e0: Double, e1: Double, stacks: Int, slices: Int, radius: Double): FloatArray {
         val out = ArrayList<Float>()
-        val stacks = 14; val slices = 64
-        fun v(st: Int, sl: Int): DoubleArray = dirVec(90.0 * st / stacks, 360.0 * sl / slices, 1.0)
+        fun v(st: Int, sl: Int): DoubleArray = dirVec(e0 + (e1 - e0) * st / stacks, 360.0 * sl / slices, radius)
         for (st in 0 until stacks) for (sl in 0 until slices) {
             val a = v(st, sl); val b = v(st + 1, sl); val c = v(st + 1, sl + 1); val d = v(st, sl + 1)
             for (q in arrayOf(a, b, c, a, c, d)) for (x in q) out.add(x.toFloat())
@@ -1194,26 +1283,24 @@ private class SkyRenderer(private val appCtx: Context, private val density: Floa
         return out.toFloatArray()
     }
 
-    /** Laipsnių linijos: elevacijos žiedai ir azimuto meridianai. */
-    private fun buildGrid(): FloatArray {
+    private fun buildGrid(radius: Double): FloatArray {
         val out = ArrayList<Float>()
         fun seg(a: DoubleArray, b: DoubleArray) { for (x in a) out.add(x.toFloat()); for (x in b) out.add(x.toFloat()) }
-        for (el in listOf(15.0, 30.0, 45.0, 60.0, 75.0)) {
-            for (i in 0 until 72) seg(dirVec(el, i * 5.0, 1.0), dirVec(el, (i + 1) * 5.0, 1.0))
+        for (el in -60.0..60.0 step 15.0) {
+            for (i in 0 until 72) seg(dirVec(el, i * 5.0, radius), dirVec(el, (i + 1) * 5.0, radius))
         }
         for (az in 0 until 360 step 30) {
-            for (i in 0 until 18) seg(dirVec(i * 5.0, az.toDouble(), 1.0), dirVec((i + 1) * 5.0, az.toDouble(), 1.0))
+            for (i in -18 until 18) seg(dirVec(i * 5.0, az.toDouble(), radius), dirVec((i + 1) * 5.0, az.toDouble(), radius))
         }
         return out.toFloatArray()
     }
 
-    /** Auksinis horizonto žiedas (juostelė, kad būtų matomas). */
-    private fun buildHorizon(): FloatArray {
+    private fun buildHorizon(radius: Double): FloatArray {
         val out = ArrayList<Float>()
         val n = 180
         for (i in 0 until n) {
             val a0 = 2 * Math.PI * i / n; val a1 = 2 * Math.PI * (i + 1) / n
-            val ro = 1.0; val ri = 0.975
+            val ro = radius; val ri = radius * 0.985
             val p00 = doubleArrayOf(ro * cos(a0), ro * sin(a0), 0.0)
             val p01 = doubleArrayOf(ri * cos(a0), ri * sin(a0), 0.0)
             val p10 = doubleArrayOf(ro * cos(a1), ro * sin(a1), 0.0)
@@ -1222,6 +1309,22 @@ private class SkyRenderer(private val appCtx: Context, private val density: Floa
         }
         return out.toFloatArray()
     }
+
+    private fun bindPos(prog: Int, buf: FloatBuffer) {
+        val loc = GLES20.glGetAttribLocation(prog, "aPos")
+        GLES20.glEnableVertexAttribArray(loc)
+        buf.position(0)
+        GLES20.glVertexAttribPointer(loc, 3, GLES20.GL_FLOAT, false, 0, buf)
+    }
+
+    private fun setMat(prog: Int, name: String, m: FloatArray) =
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, name), 1, false, m, 0)
+    private fun setVec3(prog: Int, name: String, x: Float, y: Float, z: Float) =
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, name), x, y, z)
+    private fun setVec4(prog: Int, name: String, x: Float, y: Float, z: Float, w: Float) =
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(prog, name), x, y, z, w)
+    private fun setFloat(prog: Int, name: String, v: Float) =
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, name), v)
 
     private fun floatBuf(data: FloatArray): FloatBuffer =
         ByteBuffer.allocateDirect(data.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
@@ -1246,6 +1349,45 @@ private class SkyRenderer(private val appCtx: Context, private val density: Floa
     }
 
     companion object {
+        private const val DOME_VS = """
+            attribute vec3 aPos;
+            uniform mat4 uMVP;
+            varying vec3 vN;
+            varying float vZ;
+            void main() { vN = aPos; vZ = aPos.z; gl_Position = uMVP * vec4(aPos, 1.0); }
+        """
+        private const val DOME_FS = """
+            precision mediump float;
+            varying vec3 vN;
+            varying float vZ;
+            uniform vec3 uLight;
+            uniform vec3 uEye;
+            uniform vec3 uTint;
+            uniform float uTime;
+            uniform float uBeat;
+            void main() {
+                vec3 n = normalize(vN);
+                vec3 l = normalize(uLight);
+                float d = max(dot(n, l), 0.0);
+                float fres = pow(1.0 - max(dot(n, normalize(uEye)), 0.0), 2.0);
+                float wave = 0.5 + 0.5 * sin(uTime * 2.2 - vZ * 7.0);
+                vec3 col = uTint * (0.25 + 0.75 * d) + uTint * fres * 0.9 + uTint * wave * uBeat * 0.5;
+                float a = 0.35 + 0.35 * fres + 0.25 * uBeat * wave;
+                gl_FragColor = vec4(col, clamp(a, 0.0, 1.0));
+            }
+        """
+        private const val LOW_FS = """
+            precision mediump float;
+            varying vec3 vN;
+            varying float vZ;
+            uniform vec3 uEye;
+            uniform vec4 uColor;
+            void main() {
+                vec3 n = normalize(vN);
+                float fres = pow(1.0 - abs(dot(n, normalize(uEye))), 2.0);
+                gl_FragColor = vec4(uColor.rgb, uColor.a * (0.6 + 0.4 * fres));
+            }
+        """
         private const val COLOR_VS = """
             attribute vec3 aPos;
             uniform mat4 uMVP;
@@ -1277,8 +1419,12 @@ private class SkyRenderer(private val appCtx: Context, private val density: Floa
         private const val TEX_FS = """
             precision mediump float;
             uniform sampler2D uTex;
+            uniform vec4 uColor;
             varying vec2 vUV;
-            void main() { gl_FragColor = texture2D(uTex, vUV); }
+            void main() {
+                vec4 t = texture2D(uTex, vUV);
+                gl_FragColor = vec4(t.rgb * uColor.rgb, t.a * uColor.a);
+            }
         """
     }
 }

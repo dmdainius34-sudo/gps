@@ -1,4 +1,3 @@
-```kotlin
 package lt.example.gnss
 
 import android.Manifest
@@ -2400,4 +2399,3 @@ class MainActivity : AppCompatActivity() {
         }
     }
 }
-```

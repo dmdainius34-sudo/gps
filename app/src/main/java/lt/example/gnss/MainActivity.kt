@@ -1,3 +1,4 @@
+```kotlin
 package lt.example.gnss
 
 import android.Manifest
@@ -968,4 +969,1435 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
         GLES20.glViewport(0, 0, w, h)
-        val aspect = if (h == 0) 1f
+        val aspect = if (h == 0) 1f else w.toFloat() / h
+        Matrix.perspectiveM(proj, 0, 40f, aspect, 0.1f, 20f)
+        Matrix.setIdentityM(view, 0)
+        Matrix.translateM(view, 0, 0f, 0f, -3f)
+        Matrix.multiplyMM(pv, 0, proj, 0, view, 0)
+    }
+
+    override fun onDrawFrame(gl: GL10?) {
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
+        val t = (System.nanoTime() - t0) / 1e9f
+
+        val r = rot
+        java.util.Arrays.fill(mv, 0f)
+        for (c in 0..2) for (rr in 0..2) mv[c * 4 + rr] = r[c * 3 + rr]
+        mv[15] = 1f
+        Matrix.multiplyMM(mvp, 0, pv, 0, mv, 0)
+        val eye = floatArrayOf(r[2], r[5], r[8])
+
+        val used = sats.filter { it.used }
+        val avgCn0 = if (used.isNotEmpty()) used.map { it.cn0 }.average().toFloat() else 0f
+        val beat = ((avgCn0 - 15f) / 25f).coerceIn(0.2f, 1f)
+
+        GLES20.glDepthMask(true)
+        GLES20.glUseProgram(domeProg)
+        setMat(domeProg, "uMVP", mvp)
+        setVec3(domeProg, "uLight", 0.4f, 0.5f, 0.8f)
+        setVec3(domeProg, "uEye", eye[0], eye[1], eye[2])
+        setFloat(domeProg, "uTime", t)
+        setFloat(domeProg, "uBeat", beat)
+        setVec3(domeProg, "uTint", 0.2f + 0.7f * beat, 0.6f + 0.3f * beat, 1.0f - 0.6f * beat)
+        bindPos(domeProg, upperBuf!!)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, upperN)
+
+        GLES20.glDepthMask(false)
+        GLES20.glUseProgram(lowProg)
+        setMat(lowProg, "uMVP", mvp)
+        setVec3(lowProg, "uEye", eye[0], eye[1], eye[2])
+        setVec4(lowProg, "uColor", 0.35f, 0.4f, 0.5f, 0.14f)
+        bindPos(lowProg, lowerBuf!!)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, lowerN)
+        GLES20.glDepthMask(true)
+
+        GLES20.glUseProgram(colorProg)
+        setMat(colorProg, "uMVP", mvp)
+        setVec4(colorProg, "uColor", 0.6f, 0.7f, 0.85f, 0.22f)
+        setFloat(colorProg, "uPoint", 1f)
+        bindPos(colorProg, gridBuf!!)
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, gridN)
+
+        val hzAlpha = 0.6f + 0.4f * kotlin.math.sin(t * 2.5f)
+        setVec4(colorProg, "uColor", 0.95f, 0.72f, 0.3f, hzAlpha)
+        bindPos(colorProg, horizonBuf!!)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, horizonN)
+
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+
+        for (d in 0 until 360 step 30) {
+            val tex = labelTex[labelOf(d)] ?: continue
+            val a = Math.toRadians(d.toDouble())
+            val c = floatArrayOf((1.04 * sin(a)).toFloat(), (1.04 * cos(a)).toFloat(), 0f)
+            if (dot3(c, eye) < 0.05f) continue
+            val col = when (d) { 0 -> floatArrayOf(0.94f, 0.27f, 0.27f); 90, 180, 270 -> floatArrayOf(0.98f, 0.8f, 0.08f); else -> floatArrayOf(0.85f, 0.87f, 0.9f) }
+            billboard(c, eye, 0.1f, 0.05f, tex, col[0], col[1], col[2], 0.95f)
+        }
+
+        for (sat in sats) {
+            val el = Math.toRadians(sat.elev.toDouble().coerceIn(-10.0, 90.0))
+            val az = Math.toRadians(sat.az.toDouble())
+            val p = floatArrayOf(
+                (0.98 * cos(el) * sin(az)).toFloat(),
+                (0.98 * cos(el) * cos(az)).toFloat(),
+                (0.98 * sin(el)).toFloat())
+            if (dot3(p, eye) < -0.05f) continue
+            val col = constRgb(sat.const)
+            val usedK = if (sat.used) 1f else 0.4f
+            val phase = sat.svid * 0.7f
+            when {
+                sat.cn0 >= 30f -> {
+                    val tw = kotlin.math.sin(t * 4f + phase)
+                    val size = 0.075f * (1f + 0.35f * tw)
+                    val alpha = (0.75f + 0.25f * tw) * usedK
+                    billboard(p, eye, size, size, starTex, col[0], col[1], col[2], alpha)
+                    val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
+                    billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eye, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
+                }
+                sat.cn0 >= 20f -> {
+                    billboard(p, eye, 0.05f, 0.05f, starTex, col[0], col[1], col[2], 0.6f * usedK)
+                }
+                else -> {
+                    drawPoint(p, col, 0.3f * usedK, 6f * density)
+                }
+            }
+        }
+
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    private fun labelOf(d: Int): String = when (d) { 0 -> "N"; 90 -> "E"; 180 -> "S"; 270 -> "W"; else -> d.toString() }
+
+    private fun dot3(a: FloatArray, b: FloatArray): Float = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+    private fun drawPoint(p: FloatArray, col: FloatArray, alpha: Float, size: Float) {
+        GLES20.glUseProgram(dotProg)
+        setMat(dotProg, "uMVP", mvp)
+        setVec4(dotProg, "uColor", col[0], col[1], col[2], alpha)
+        setFloat(dotProg, "uPoint", size)
+        bindPos(dotProg, floatBuf(p))
+        GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
+    }
+
+    private fun billboard(c: FloatArray, eye: FloatArray, w: Float, h: Float, tex: Int, cr: Float, cg: Float, cb: Float, ca: Float) {
+        var nx = eye[0] - c[0]; var ny = eye[1] - c[1]; var nz = eye[2] - c[2]
+        val nl = sqrt(nx * nx + ny * ny + nz * nz).coerceAtLeast(1e-6f)
+        nx /= nl; ny /= nl; nz /= nl
+        val ax = if (kotlin.math.abs(nz) > 0.95f) 0f else 0f
+        val ay = if (kotlin.math.abs(nz) > 0.95f) 1f else 0f
+        val az = if (kotlin.math.abs(nz) > 0.95f) 0f else 1f
+        var rx = ay * nz - az * ny
+        var ry = az * nx - ax * nz
+        var rz = ax * ny - ay * nx
+        val rl = sqrt(rx * rx + ry * ry + rz * rz).coerceAtLeast(1e-6f)
+        rx /= rl; ry /= rl; rz /= rl
+        val ux = ny * rz - nz * ry
+        val uy = nz * rx - nx * rz
+        val uz = nx * ry - ny * rx
+        val pos = FloatArray(12)
+        val cs = arrayOf(floatArrayOf(-1f, -1f), floatArrayOf(1f, -1f), floatArrayOf(-1f, 1f), floatArrayOf(1f, 1f))
+        for (i in 0..3) {
+            val sx = cs[i][0] * w; val sy = cs[i][1] * h
+            pos[i * 3] = c[0] + rx * sx + ux * sy
+            pos[i * 3 + 1] = c[1] + ry * sx + uy * sy
+            pos[i * 3 + 2] = c[2] + rz * sx + uz * sy
+        }
+        val uv = floatArrayOf(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f)
+        GLES20.glUseProgram(texProg)
+        setMat(texProg, "uMVP", mvp)
+        setVec4(texProg, "uColor", cr, cg, cb, ca)
+        val lp = GLES20.glGetAttribLocation(texProg, "aPos")
+        val lu = GLES20.glGetAttribLocation(texProg, "aUV")
+        GLES20.glEnableVertexAttribArray(lp)
+        GLES20.glEnableVertexAttribArray(lu)
+        val bp = floatBuf(pos); val bu = floatBuf(uv)
+        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, bp)
+        GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, bu)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(texProg, "uTex"), 0)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    }
+
+    private fun makeStarTexture(): Int {
+        val size = 128
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(size / 2f, size / 2f, size / 2f,
+                intArrayOf(0xFFFFFFFF.toInt(), 0x88FFFFFF.toInt(), 0x00FFFFFF),
+                floatArrayOf(0f, 0.25f, 1f), Shader.TileMode.CLAMP)
+        }
+        c.drawCircle(size / 2f, size / 2f, size / 2f, glow)
+        val ray = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xAAFFFFFF.toInt()
+            strokeWidth = 3f
+        }
+        c.drawLine(size / 2f, 4f, size / 2f, size - 4f, ray)
+        c.drawLine(4f, size / 2f, size - 4f, size / 2f, ray)
+        return uploadTexture(bmp)
+    }
+
+    private fun makeTexture(text: String, color: Int, sizePx: Int): Int {
+        val w = sizePx * 2; val h = sizePx
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = color
+            textSize = h * 0.7f
+            textAlign = Paint.Align.CENTER
+        }
+        c.drawText(text, w / 2f, h * 0.75f, p)
+        return uploadTexture(bmp)
+    }
+
+    private fun uploadTexture(bmp: Bitmap): Int {
+        val ids = IntArray(1)
+        GLES20.glGenTextures(1, ids, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
+        bmp.recycle()
+        return ids[0]
+    }
+
+    private fun constRgb(c: String): FloatArray = when (c) {
+        "GPS" -> floatArrayOf(0.35f, 0.6f, 1f)
+        "GAL" -> floatArrayOf(0.3f, 1f, 0.5f)
+        "GLO" -> floatArrayOf(1f, 0.6f, 0.2f)
+        "BDS" -> floatArrayOf(1f, 0.35f, 0.35f)
+        "SBS" -> floatArrayOf(0.7f, 0.72f, 0.78f)
+        else -> floatArrayOf(1f, 1f, 1f)
+    }
+
+    private fun dirVec(elDeg: Double, azDeg: Double, radius: Double): DoubleArray {
+        val el = Math.toRadians(elDeg); val az = Math.toRadians(azDeg)
+        return doubleArrayOf(radius * cos(el) * sin(az), radius * cos(el) * cos(az), radius * sin(el))
+    }
+
+    private fun meshSphere(e0: Double, e1: Double, stacks: Int, slices: Int, radius: Double): FloatArray {
+        val out = ArrayList<Float>()
+        fun v(st: Int, sl: Int): DoubleArray = dirVec(e0 + (e1 - e0) * st / stacks, 360.0 * sl / slices, radius)
+        for (st in 0 until stacks) for (sl in 0 until slices) {
+            val a = v(st, sl); val b = v(st + 1, sl); val c = v(st + 1, sl + 1); val d = v(st, sl + 1)
+            for (q in arrayOf(a, b, c, a, c, d)) for (x in q) out.add(x.toFloat())
+        }
+        return out.toFloatArray()
+    }
+
+    private fun buildGrid(radius: Double): FloatArray {
+        val out = ArrayList<Float>()
+        fun seg(a: DoubleArray, b: DoubleArray) { for (x in a) out.add(x.toFloat()); for (x in b) out.add(x.toFloat()) }
+        for (k in -4..4) {
+            val el = k * 15.0
+            for (i in 0 until 72) seg(dirVec(el, i * 5.0, radius), dirVec(el, (i + 1) * 5.0, radius))
+        }
+        for (az in 0 until 360 step 30) {
+            for (i in -18 until 18) seg(dirVec(i * 5.0, az.toDouble(), radius), dirVec((i + 1) * 5.0, az.toDouble(), radius))
+        }
+        return out.toFloatArray()
+    }
+
+    private fun buildHorizon(radius: Double): FloatArray {
+        val out = ArrayList<Float>()
+        val n = 180
+        for (i in 0 until n) {
+            val a0 = 2 * Math.PI * i / n; val a1 = 2 * Math.PI * (i + 1) / n
+            val ro = radius; val ri = radius * 0.985
+            val p00 = doubleArrayOf(ro * cos(a0), ro * sin(a0), 0.0)
+            val p01 = doubleArrayOf(ri * cos(a0), ri * sin(a0), 0.0)
+            val p10 = doubleArrayOf(ro * cos(a1), ro * sin(a1), 0.0)
+            val p11 = doubleArrayOf(ri * cos(a1), ri * sin(a1), 0.0)
+            for (q in arrayOf(p00, p10, p11, p00, p11, p01)) for (x in q) out.add(x.toFloat())
+        }
+        return out.toFloatArray()
+    }
+
+    private fun bindPos(prog: Int, buf: FloatBuffer) {
+        val loc = GLES20.glGetAttribLocation(prog, "aPos")
+        GLES20.glEnableVertexAttribArray(loc)
+        buf.position(0)
+        GLES20.glVertexAttribPointer(loc, 3, GLES20.GL_FLOAT, false, 0, buf)
+    }
+
+    private fun setMat(prog: Int, name: String, m: FloatArray) =
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, name), 1, false, m, 0)
+    private fun setVec3(prog: Int, name: String, x: Float, y: Float, z: Float) =
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, name), x, y, z)
+    private fun setVec4(prog: Int, name: String, x: Float, y: Float, z: Float, w: Float) =
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(prog, name), x, y, z, w)
+    private fun setFloat(prog: Int, name: String, v: Float) =
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, name), v)
+
+    private fun floatBuf(data: FloatArray): FloatBuffer =
+        ByteBuffer.allocateDirect(data.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
+            put(data); position(0)
+        }
+
+    private fun program(vs: String, fs: String): Int {
+        val v = compile(GLES20.GL_VERTEX_SHADER, vs)
+        val f = compile(GLES20.GL_FRAGMENT_SHADER, fs)
+        val prog = GLES20.glCreateProgram()
+        GLES20.glAttachShader(prog, v)
+        GLES20.glAttachShader(prog, f)
+        GLES20.glLinkProgram(prog)
+        return prog
+    }
+
+    private fun compile(type: Int, src: String): Int {
+        val sh = GLES20.glCreateShader(type)
+        GLES20.glShaderSource(sh, src)
+        GLES20.glCompileShader(sh)
+        return sh
+    }
+
+    companion object {
+        private const val DOME_VS = """
+            attribute vec3 aPos;
+            uniform mat4 uMVP;
+            varying vec3 vN;
+            varying float vZ;
+            void main() { vN = aPos; vZ = aPos.z; gl_Position = uMVP * vec4(aPos, 1.0); }
+        """
+        private const val DOME_FS = """
+            precision mediump float;
+            varying vec3 vN;
+            varying float vZ;
+            uniform vec3 uLight;
+            uniform vec3 uEye;
+            uniform vec3 uTint;
+            uniform float uTime;
+            uniform float uBeat;
+            void main() {
+                vec3 n = normalize(vN);
+                vec3 l = normalize(uLight);
+                float d = max(dot(n, l), 0.0);
+                float fres = pow(1.0 - max(dot(n, normalize(uEye)), 0.0), 2.0);
+                float wave = 0.5 + 0.5 * sin(uTime * 2.2 - vZ * 7.0);
+                vec3 col = uTint * (0.25 + 0.75 * d) + uTint * fres * 0.9 + uTint * wave * uBeat * 0.5;
+                float a = 0.35 + 0.35 * fres + 0.25 * uBeat * wave;
+                gl_FragColor = vec4(col, clamp(a, 0.0, 1.0));
+            }
+        """
+        private const val LOW_FS = """
+            precision mediump float;
+            varying vec3 vN;
+            varying float vZ;
+            uniform vec3 uEye;
+            uniform vec4 uColor;
+            void main() {
+                vec3 n = normalize(vN);
+                float fres = pow(1.0 - abs(dot(n, normalize(uEye))), 2.0);
+                gl_FragColor = vec4(uColor.rgb, uColor.a * (0.6 + 0.4 * fres));
+            }
+        """
+        private const val COLOR_VS = """
+            attribute vec3 aPos;
+            uniform mat4 uMVP;
+            uniform float uPoint;
+            void main() { gl_Position = uMVP * vec4(aPos, 1.0); gl_PointSize = uPoint; }
+        """
+        private const val COLOR_FS = """
+            precision mediump float;
+            uniform vec4 uColor;
+            void main() { gl_FragColor = uColor; }
+        """
+        private const val DOT_FS = """
+            precision mediump float;
+            uniform vec4 uColor;
+            void main() {
+                vec2 c = gl_PointCoord - vec2(0.5);
+                if (length(c) > 0.5) discard;
+                float edge = smoothstep(0.5, 0.36, length(c));
+                gl_FragColor = vec4(uColor.rgb, uColor.a * edge);
+            }
+        """
+        private const val TEX_VS = """
+            attribute vec3 aPos;
+            attribute vec2 aUV;
+            uniform mat4 uMVP;
+            varying vec2 vUV;
+            void main() { gl_Position = uMVP * vec4(aPos, 1.0); vUV = aUV; }
+        """
+        private const val TEX_FS = """
+            precision mediump float;
+            uniform sampler2D uTex;
+            uniform vec4 uColor;
+            varying vec2 vUV;
+            void main() {
+                vec4 t = texture2D(uTex, vUV);
+                gl_FragColor = vec4(t.rgb * uColor.rgb, t.a * uColor.a);
+            }
+        """
+    }
+}
+
+class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener {
+
+    private val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    private val rotSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+    private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private val renderer = GlobeRenderer(context.applicationContext, resources.displayMetrics.density)
+    private val handler = Handler(Looper.getMainLooper())
+    private var running = false
+
+    private var manual = false
+    private var baseRot = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+    private var lastRaw = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+    private var yawD = 0f
+    private var pitchD = 0f
+    private var lastX = 0f
+    private var lastY = 0f
+    private val resumeSensors = Runnable { manual = false }
+
+    var onMove: ((Float, Float) -> Unit)? = null
+    private var moveMode = false
+    private var lastRawX = 0f
+    private var lastRawY = 0f
+
+    init {
+        setEGLContextClientVersion(2)
+        setEGLConfigChooser(8, 8, 8, 8, 16, 0)
+        holder.setFormat(PixelFormat.TRANSLUCENT)
+        setZOrderOnTop(true)
+        setRenderer(renderer)
+        renderMode = RENDERMODE_CONTINUOUSLY
+    }
+
+    fun setSats(list: List<Sat>) = renderer.setSats(list)
+
+    fun start() {
+        if (running) return
+        running = true
+        onResume()
+        rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+    }
+
+    fun stop() {
+        running = false
+        manual = false
+        handler.removeCallbacks(resumeSensors)
+        sm.unregisterListener(this)
+        onPause()
+    }
+
+    override fun onSensorChanged(event: SensorEvent) {
+        val raw = FloatArray(9)
+        SensorManager.getRotationMatrixFromVector(raw, event.values)
+        val out = FloatArray(9)
+        when (wm.defaultDisplay.rotation) {
+            Surface.ROTATION_90 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_Y, SensorManager.AXIS_MINUS_X, out)
+            Surface.ROTATION_180 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_MINUS_X, SensorManager.AXIS_MINUS_Y, out)
+            Surface.ROTATION_270 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_MINUS_Y, SensorManager.AXIS_X, out)
+            else -> raw.copyInto(out)
+        }
+        lastRaw = out
+        if (!manual) renderer.setRotation(out)
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                handler.removeCallbacks(resumeSensors)
+                if (!manual) {
+                    baseRot = lastRaw.copyOf()
+                    yawD = 0f
+                    pitchD = 0f
+                    manual = true
+                }
+                moveMode = false
+                lastX = e.x
+                lastY = e.y
+                parent?.requestDisallowInterceptTouchEvent(true)
+                return true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (e.pointerCount >= 2) {
+                    moveMode = true
+                    lastRawX = (e.getRawX(0) + e.getRawX(1)) / 2f
+                    lastRawY = (e.getRawY(0) + e.getRawY(1)) / 2f
+                }
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (moveMode && e.pointerCount >= 2) {
+                    val cx = (e.getRawX(0) + e.getRawX(1)) / 2f
+                    val cy = (e.getRawY(0) + e.getRawY(1)) / 2f
+                    onMove?.invoke(cx - lastRawX, cy - lastRawY)
+                    lastRawX = cx
+                    lastRawY = cy
+                } else if (!moveMode) {
+                    yawD += (e.x - lastX) * 0.4f
+                    pitchD = (pitchD + (e.y - lastY) * 0.4f).coerceIn(-85f, 85f)
+                    renderer.setRotation(composeManual())
+                }
+                lastX = e.x
+                lastY = e.y
+                return true
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                val remaining = if (e.actionIndex == 0) 1 else 0
+                moveMode = false
+                if (remaining < e.pointerCount) {
+                    lastX = e.getX(remaining)
+                    lastY = e.getY(remaining)
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                moveMode = false
+                handler.removeCallbacks(resumeSensors)
+                handler.postDelayed(resumeSensors, 60_000L)
+                return true
+            }
+        }
+        return super.onTouchEvent(e)
+    }
+
+    private fun composeManual(): FloatArray {
+        val a = Math.toRadians(yawD.toDouble())
+        val b = Math.toRadians(pitchD.toDouble())
+        val ca = cos(a).toFloat(); val sa = sin(a).toFloat()
+        val cb = cos(b).toFloat(); val sb = sin(b).toFloat()
+        val rz = floatArrayOf(ca, -sa, 0f, sa, ca, 0f, 0f, 0f, 1f)
+        val rx = floatArrayOf(1f, 0f, 0f, 0f, cb, -sb, 0f, sb, cb)
+        return mul3(rz, mul3(rx, baseRot))
+    }
+
+    private fun mul3(a: FloatArray, b: FloatArray): FloatArray {
+        val o = FloatArray(9)
+        for (i in 0..2) for (j in 0..2) {
+            var sum = 0f
+            for (k in 0..2) sum += a[i * 3 + k] * b[k * 3 + j]
+            o[i * 3 + j] = sum
+        }
+        return o
+    }
+}
+
+class FloatingSky(context: Context) : FrameLayout(context) {
+
+    val dome = SkyDomeGL(context)
+    private val density = resources.displayMetrics.density
+    private val size = (300 * density).toInt()
+
+    init {
+        addView(dome, FrameLayout.LayoutParams(size, size))
+        dome.onMove = { dx, dy ->
+            translationX += dx
+            translationY += dy
+            constrain()
+        }
+    }
+
+    private fun constrain() {
+        val pw = (parent as? View)?.width?.toFloat() ?: return
+        val ph = (parent as? View)?.height?.toFloat() ?: return
+        val w = size.toFloat()
+        translationX = translationX.coerceIn(-w * 0.9f, pw - w * 0.1f)
+        translationY = translationY.coerceIn(-w * 0.9f, ph - w * 0.1f)
+    }
+}
+
+class ShareIcon(context: Context) : View(context) {
+    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        style = Paint.Style.STROKE
+        strokeWidth = 3f * resources.displayMetrics.density
+    }
+    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        style = Paint.Style.FILL
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val s = min(width, height).toFloat()
+        val ox = (width - s) / 2f
+        val oy = (height - s) / 2f
+        val ax = ox + s * 0.30f; val ay = oy + s * 0.50f
+        val bx = ox + s * 0.72f; val by = oy + s * 0.25f
+        val cx = ox + s * 0.72f; val cy = oy + s * 0.75f
+        val r = s * 0.10f
+        canvas.drawLine(ax, ay, bx, by, linePaint)
+        canvas.drawLine(ax, ay, cx, cy, linePaint)
+        canvas.drawCircle(ax, ay, r, dotPaint)
+        canvas.drawCircle(bx, by, r, dotPaint)
+        canvas.drawCircle(cx, cy, r, dotPaint)
+    }
+}
+
+class DraggablePanel(
+    context: Context,
+    private val onShare: (Set<String>, String, Boolean) -> Unit
+) : FrameLayout(context) {
+
+    var onCountdownStart: (() -> Unit)? = null
+
+    private val density = resources.displayMetrics.density
+    private val bubbleSize = (88 * density).toInt()
+    private val handler = Handler(Looper.getMainLooper())
+    private var counting = false
+    private var remaining = 0
+
+    private val panel = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 16f * density
+            setColor(Color.WHITE)
+        }
+        elevation = 10 * density
+        val pad = (10 * density).toInt()
+        setPadding(pad, pad, pad, pad)
+        alpha = 0.92f
+        visibility = GONE
+    }
+
+    private val bubble = BubbleGL(context).apply {
+        visibility = VISIBLE
+        isClickable = true
+        layoutParams = LayoutParams(bubbleSize, bubbleSize)
+    }
+
+    private val title = TextView(context).apply {
+        text = "Ką siųsti AI?"
+        textSize = 15f
+        setTextColor(Color.BLACK)
+        setTypeface(null, Typeface.BOLD)
+    }
+
+    private val optionsLayout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    private val boxes = LinkedHashMap<String, CheckBox>()
+
+    private val rawRow = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+    }
+    private val rawSecs = EditText(context).apply {
+        setText("30")
+        inputType = InputType.TYPE_CLASS_NUMBER
+        setSingleLine()
+        textSize = 13f
+        gravity = Gravity.CENTER
+        layoutParams = LinearLayout.LayoutParams((56 * density).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT)
+    }
+    private val secLabel = TextView(context).apply {
+        text = " s"
+        textSize = 13f
+        setTextColor(Color.DKGRAY)
+    }
+
+    private val questionInput = EditText(context).apply {
+        hint = "?"
+        setSingleLine()
+        textSize = 14f
+    }
+
+    private val alphaLabel = TextView(context).apply {
+        text = "Permatomumas"
+        textSize = 12f
+        setTextColor(Color.DKGRAY)
+    }
+
+    private val alphaSeek = SeekBar(context).apply {
+        max = 80
+        progress = 72
+        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                panel.alpha = (20 + p) / 100f
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+    }
+
+    private fun smallButton(label: String, sizeDp: Int): Button = Button(context).apply {
+        text = label
+        textSize = 14f
+        minWidth = 0
+        minHeight = 0
+        minimumWidth = 0
+        minimumHeight = 0
+        setPadding(0, 0, 0, 0)
+        layoutParams = LinearLayout.LayoutParams((sizeDp * density).toInt(), (sizeDp * density).toInt())
+    }
+
+    private val cancelBtn = smallButton("\u2715", 36)
+
+    private val shareBtn = FrameLayout(context).apply {
+        isClickable = true
+        layoutParams = LinearLayout.LayoutParams((40 * density).toInt(), (40 * density).toInt())
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(0xFFE2E8F0.toInt())
+        }
+        addView(ShareIcon(context), LayoutParams((40 * density * 0.6f).toInt(), (40 * density * 0.6f).toInt(), Gravity.CENTER))
+    }
+
+    private val header = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+    }
+
+    private val inputRow = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+    }
+
+    init {
+        isClickable = true
+        isFocusable = true
+
+        val opts = linkedMapOf(
+            "fiksas" to "Fiksas (koordinatės, tikslumas)",
+            "geoidas" to "Geoidas ir aukštis",
+            "baro" to "Barometras ir kalibravimas",
+            "palydovai" to "Palydovai ir C/N0 dabar",
+            "cno" to "C/N0 istorija (~2 min)",
+            "klaidos" to "Klaidos ir būsena",
+            "irenginys" to "Įrenginys (modelis, Android)",
+            "screenshot" to "Įtraukti ekrano kopiją",
+            "raw" to "Neapdoroti matavimai (CSV)"
+        )
+        for ((k, v) in opts) {
+            val cb = CheckBox(context).apply {
+                text = v
+                textSize = 13f
+                isChecked = k != "raw"
+            }
+            boxes[k] = cb
+            if (k == "raw") {
+                rawRow.addView(cb, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                rawRow.addView(rawSecs)
+                rawRow.addView(secLabel)
+            } else {
+                optionsLayout.addView(cb)
+            }
+        }
+
+        header.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(cancelBtn)
+
+        inputRow.addView(questionInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        inputRow.addView(shareBtn)
+
+        panel.addView(header)
+        panel.addView(optionsLayout)
+        panel.addView(rawRow)
+        panel.addView(alphaLabel)
+        panel.addView(alphaSeek)
+        panel.addView(inputRow)
+
+        addView(panel)
+        addView(bubble)
+
+        cancelBtn.setOnClickListener { minimize() }
+        shareBtn.setOnClickListener { runShare() }
+
+        bubble.setOnClickListener {
+            bubble.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            try {
+                val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                if (vibrator != null && vibrator.hasVibrator()) {
+                    if (Build.VERSION.SDK_INT >= 26) {
+                        vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+                    } else {
+                        @Suppress("DEPRECATION")
+                        vibrator.vibrate(50)
+                    }
+                }
+            } catch (e: Throwable) {
+                android.util.Log.w("GnssApp", "Vibracija nepavyko", e)
+            }
+            try {
+                maximize()
+            } catch (e: Throwable) {
+                android.util.Log.e("GnssApp", "Panelės atidarymas nepavyko", e)
+                Toast.makeText(context, "Klaida: ${e.javaClass.simpleName}: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    fun setSignal(avgDb: Float?, peakDb: Float?) {
+        bubble.setSignal(avgDb, peakDb)
+    }
+
+    private fun runShare() {
+        if (counting) return
+        val selected = boxes.filterValues { it.isChecked }.keys.toSet()
+        val screenshot = "screenshot" in selected
+        if ("raw" in selected) {
+            val secs = rawSecs.text.toString().toIntOrNull()?.coerceIn(5, 600) ?: 30
+            startCountdown(secs) {
+                val question = questionInput.text.toString().trim()
+                onShare(selected, question, screenshot)
+                minimize()
+            }
+        } else {
+            val question = questionInput.text.toString().trim()
+            onShare(selected, question, screenshot)
+            minimize()
+        }
+    }
+
+    private fun startCountdown(secs: Int, done: () -> Unit) {
+        counting = true
+        remaining = secs
+        rawSecs.isEnabled = false
+        shareBtn.isEnabled = false
+        onCountdownStart?.invoke()
+        val tick = object : Runnable {
+            override fun run() {
+                if (remaining <= 0) {
+                    counting = false
+                    rawSecs.isEnabled = true
+                    rawSecs.setText(secs.toString())
+                    shareBtn.isEnabled = true
+                    done()
+                } else {
+                    rawSecs.setText(remaining.toString())
+                    remaining--
+                    handler.postDelayed(this, 1000)
+                }
+            }
+        }
+        handler.post(tick)
+    }
+
+    override fun onDetachedFromWindow() {
+        handler.removeCallbacksAndMessages(null)
+        counting = false
+        super.onDetachedFromWindow()
+    }
+
+    private var lastX = 0f
+    private var lastY = 0f
+    private var isDragging = false
+    private var touchOnControl = false
+
+    private fun inside(v: View, x: Float, y: Float): Boolean {
+        if (v.visibility != VISIBLE) return false
+        val r = Rect()
+        v.getGlobalVisibleRect(r)
+        return r.contains(x.toInt(), y.toInt())
+    }
+
+    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.action) {
+            MotionEvent.ACTION_DOWN -> {
+                lastX = ev.rawX
+                lastY = ev.rawY
+                isDragging = false
+                touchOnControl = inside(questionInput, ev.rawX, ev.rawY) ||
+                    inside(alphaSeek, ev.rawX, ev.rawY) || inside(rawSecs, ev.rawX, ev.rawY)
+                if (touchOnControl) return false
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!touchOnControl && !isDragging) {
+                    if (abs(ev.rawX - lastX) > 15 || abs(ev.rawY - lastY) > 15) {
+                        isDragging = true
+                        return true
+                    }
+                }
+            }
+        }
+        return super.onInterceptTouchEvent(ev)
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.action) {
+            MotionEvent.ACTION_MOVE -> {
+                if (isDragging) {
+                    val dx = event.rawX - lastX
+                    val dy = event.rawY - lastY
+                    translationX += dx
+                    translationY += dy
+                    lastX = event.rawX
+                    lastY = event.rawY
+                    constrainPosition()
+                    return true
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                if (isDragging) {
+                    isDragging = false
+                    return true
+                }
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+
+    private fun setOwnWidth(px: Int) {
+        val lp = layoutParams as? FrameLayout.LayoutParams ?: return
+        lp.width = px
+        layoutParams = lp
+    }
+
+    private fun minimize() {
+        setOwnWidth(FrameLayout.LayoutParams.WRAP_CONTENT)
+        panel.visibility = GONE
+        bubble.visibility = VISIBLE
+        post { constrainPosition() }
+    }
+
+    private fun maximize() {
+        val parentW = (parent as? View)?.width ?: 0
+        val maxW = (260 * density).toInt()
+        val target = if (parentW > 0) min((parentW * 0.7f).toInt(), maxW) else maxW
+        setOwnWidth(target)
+        bubble.visibility = GONE
+        panel.visibility = VISIBLE
+        post { adjustPositionOnExpand() }
+    }
+
+    private fun adjustPositionOnExpand() {
+        val parentW = (parent as? View)?.width?.toFloat() ?: return
+        val parentH = (parent as? View)?.height?.toFloat() ?: return
+
+        val minTx = -width * 0.1f
+        val maxTx = parentW - width * 0.9f
+        val minTy = -height * 0.1f
+        val maxTy = parentH - height * 0.9f
+
+        translationX = translationX.coerceIn(minTx, maxTx)
+        translationY = translationY.coerceIn(minTy, maxTy)
+
+        if (width > parentW) translationX = 0f
+        if (height > parentH) translationY = 0f
+    }
+
+    private fun constrainPosition() {
+        val parentW = (parent as? View)?.width?.toFloat() ?: return
+        val parentH = (parent as? View)?.height?.toFloat() ?: return
+
+        val minTx = -width * 0.9f
+        val maxTx = parentW - width * 0.1f
+        val minTy = -height * 0.9f
+        val maxTy = parentH - height * 0.1f
+
+        translationX = translationX.coerceIn(minTx, maxTx)
+        translationY = translationY.coerceIn(minTy, maxTy)
+    }
+}
+
+class GradientBackground(context: Context) : View(context) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var t = 0f
+    @Volatile private var targetColor = BG_NEUTRAL
+    private var currentColor = BG_NEUTRAL
+
+    private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 14000L
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = LinearInterpolator()
+        addUpdateListener {
+            t = it.animatedFraction
+            currentColor = ColorUtils.blendARGB(currentColor, targetColor, 0.03f)
+            invalidate()
+        }
+    }
+
+    fun setSignal(db: Float?) {
+        targetColor = if (db == null) BG_NEUTRAL else signalColor(db)
+    }
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); animator.start() }
+    override fun onDetachedFromWindow() { animator.cancel(); super.onDetachedFromWindow() }
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        canvas.drawColor(BG_NEUTRAL)
+        val angle = t * 2 * Math.PI
+        val radius = max(w, h) * 0.6f
+        val blobColors = intArrayOf(
+            currentColor,
+            ColorUtils.blendARGB(currentColor, 0xFFFFFFFF.toInt(), 0.35f),
+            ColorUtils.blendARGB(currentColor, 0xFF000000.toInt(), 0.20f)
+        )
+        for (i in blobColors.indices) {
+            val phase = angle + i * 2 * Math.PI / blobColors.size
+            val cx = w * (0.5f + 0.35f * cos(phase).toFloat())
+            val cy = h * (0.5f + 0.25f * sin(phase * 1.3).toFloat())
+            paint.shader = RadialGradient(cx, cy, radius, withAlpha(blobColors[i], 0.55f), 0x00FFFFFF, Shader.TileMode.CLAMP)
+            canvas.drawRect(0f, 0f, w, h, paint)
+        }
+    }
+
+    private fun withAlpha(color: Int, alpha: Float): Int = (color and 0x00FFFFFF) or ((alpha * 255).toInt() shl 24)
+}
+
+class MainActivity : AppCompatActivity() {
+    private lateinit var lm: LocationManager
+    private lateinit var info: TextView
+    private lateinit var skyView: GnssView
+    private lateinit var skyDome: SkyDomeGL
+    private lateinit var skyFloat: FloatingSky
+    private var use3d = false
+    private lateinit var cnoView: CnoPlotView
+    private lateinit var bg: GradientBackground
+    private lateinit var baro: Barometer
+    private lateinit var mainExecutor: Executor
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private lateinit var container: FrameLayout
+    private var sharePanel: DraggablePanel? = null
+
+    private var lastGpsH: Double? = null
+    private var lastSats: List<Sat> = emptyList()
+    private val errorLog = ArrayDeque<String>()
+
+    private var posText = "Laukiama fikso..."
+    private var satText: CharSequence = "Laukiama palydovų..."
+    private var satTextDisplay: CharSequence = "Laukiama palydovų..."
+    private var measText = "Laukiama matavimų..."
+
+    private val statusCallback = object : GnssStatus.Callback() {
+        override fun onSatelliteStatusChanged(status: GnssStatus) {
+            val list = (0 until status.satelliteCount).map { i ->
+                Sat(
+                    const = constName(status.getConstellationType(i)),
+                    svid = status.getSvid(i),
+                    cn0 = status.getCn0DbHz(i),
+                    elev = status.getElevationDegrees(i),
+                    az = status.getAzimuthDegrees(i),
+                    used = status.usedInFix(i)
+                )
+            }
+            lastSats = list
+            skyView.sats = list
+            if (::skyDome.isInitialized) skyDome.setSats(list)
+            val used = list.filter { it.used }
+            val avg = if (used.isNotEmpty()) used.map { it.cn0.toDouble() }.average() else 0.0
+
+            cnoView.addSample(list, if (used.isNotEmpty()) avg.toFloat() else null)
+            bg.setSignal(if (used.isNotEmpty()) avg.toFloat() else null)
+            sharePanel?.setSignal(
+                if (used.isNotEmpty()) avg.toFloat() else null,
+                if (used.isNotEmpty()) used.maxOf { it.cn0 } else null
+            )
+
+            satText = buildSatText(list, used, includeStats = true)
+            satTextDisplay = buildSatText(list, used, includeStats = false)
+            render()
+        }
+    }
+
+    private val measCallback = object : GnssMeasurementsEvent.Callback() {
+        override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
+            measText = "Neapdoroti matavimai: ${event.measurements.size}"
+            for (m in event.measurements) appendRaw(m)
+            render()
+        }
+    }
+
+    private val locationListener = LocationListener { loc -> onLocation(loc) }
+
+    private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startGnss() else {
+            posText = "Reikia vietos leidimo."
+            logError("Vietos leidimas nesuteiktas")
+            render()
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        supportActionBar?.hide()
+        window.statusBarColor = Color.TRANSPARENT
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+
+        lm = getSystemService(LOCATION_SERVICE) as LocationManager
+        mainExecutor = ContextCompat.getMainExecutor(this)
+        baro = Barometer(this)
+
+        info = TextView(this).apply {
+            textSize = 14f
+            setTextColor(0xFF0F172A.toInt())
+            setPadding(32, 16, 32, 16)
+        }
+        skyView = GnssView(this)
+        cnoView = CnoPlotView(this)
+        bg = GradientBackground(this)
+
+        val modeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, GeoidMode.values().map { it.label })
+            setSelection(GeoidMode.values().indexOf(Geoid.mode))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                    Geoid.select(applicationContext, GeoidMode.values()[pos]) { runOnUiThread { render() } }
+                }
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+        }
+
+        val btnZero = Button(this).apply { text = "Nulis čia"; setOnClickListener { baro.calibrateZero(); render() } }
+        val btnGps = Button(this).apply {
+            text = "Kalibruoti pagal GPS aukštį"
+            setOnClickListener {
+                val h = lastGpsH
+                if (h != null) baro.calibrateTo(h)
+                else {
+                    posText = "Nėra GPS aukščio (laukiama fikso ir geoido)."
+                    logError("Kalibravimas be GPS aukščio")
+                }
+                render()
+            }
+        }
+        val btnReset = Button(this).apply { text = "Atstatyti kalibravimą"; setOnClickListener { baro.reset(); render() } }
+
+        Geoid.select(applicationContext, GeoidMode.LIT20G) { runOnUiThread { render() } }
+
+        val dm = resources.displayMetrics
+        val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val colW = if (landscape) dm.widthPixels / 2 else dm.widthPixels
+        val skySide = if (landscape) min(colW, dm.heightPixels) else colW
+        val cnoH = (260 * dm.density).toInt()
+        val mw = LinearLayout.LayoutParams.MATCH_PARENT
+        val ww = LinearLayout.LayoutParams.WRAP_CONTENT
+
+        val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        left.addView(modeSpinner, LinearLayout.LayoutParams(mw, ww))
+        left.addView(btnZero, LinearLayout.LayoutParams(mw, ww))
+        left.addView(btnGps, LinearLayout.LayoutParams(mw, ww))
+        left.addView(btnReset, LinearLayout.LayoutParams(mw, ww))
+        val btnSky = Button(this).apply {
+            text = "3D dangus ⇄ 2D"
+            setOnClickListener {
+                use3d = !use3d
+                skyView.visibility = if (use3d) View.GONE else View.VISIBLE
+                skyFloat.visibility = if (use3d) View.VISIBLE else View.GONE
+                if (use3d) skyDome.start() else skyDome.stop()
+            }
+        }
+        left.addView(btnSky, LinearLayout.LayoutParams(mw, ww))
+        left.addView(info, LinearLayout.LayoutParams(mw, ww))
+
+        val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        right.addView(skyView, LinearLayout.LayoutParams(skySide, skySide))
+        skyFloat = FloatingSky(this).apply { visibility = View.GONE }
+        skyDome = skyFloat.dome
+        right.addView(cnoView, LinearLayout.LayoutParams(mw, cnoH))
+
+        val content = LinearLayout(this).apply { orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL }
+        if (landscape) {
+            content.addView(left, LinearLayout.LayoutParams(0, ww, 1f))
+            content.addView(right, LinearLayout.LayoutParams(0, ww, 1f))
+        } else {
+            content.addView(left, LinearLayout.LayoutParams(mw, ww))
+            content.addView(right, LinearLayout.LayoutParams(mw, ww))
+        }
+
+        val root = ScrollView(this).apply { addView(content) }
+
+        container = FrameLayout(this)
+        container.addView(bg, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        container.addView(root, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
+        container.addView(
+            skyFloat,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        )
+        setContentView(container)
+
+        setupShareBubble()
+    }
+
+    private fun setupShareBubble() {
+        if (sharePanel != null) return
+        val panel = DraggablePanel(this) { sections, question, wantScreenshot ->
+            val report = buildReport(sections - "screenshot" - "raw", question)
+            val uris = ArrayList<Uri>()
+            if (wantScreenshot) {
+                sharePanel?.visibility = View.INVISIBLE
+                try {
+                    takeScreenshot()?.let { uris.add(it) }
+                } finally {
+                    sharePanel?.visibility = View.VISIBLE
+                }
+            }
+            if ("raw" in sections) rawCsvUri()?.let { uris.add(it) }
+            reportFileUri(report)?.let { uris.add(0, it) }
+            shareContent(report, uris)
+        }
+        panel.onCountdownStart = {
+            rawLog.setLength(0)
+            rawLog.append(rawHeader)
+        }
+        val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        params.gravity = Gravity.TOP or Gravity.START
+
+        container.addView(panel, params)
+        sharePanel = panel
+
+        panel.post {
+            val margin = (16 * resources.displayMetrics.density).toInt()
+            panel.translationX = (container.width - panel.width - margin).toFloat()
+            panel.translationY = margin.toFloat()
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        baro.start()
+        if (use3d && ::skyDome.isInitialized) skyDome.start()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            startGnss()
+        } else {
+            permLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        baro.stop()
+        if (::skyDome.isInitialized) skyDome.stop()
+        lm.unregisterGnssStatusCallback(statusCallback)
+        lm.unregisterGnssMeasurementsCallback(measCallback)
+        lm.removeUpdates(locationListener)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startGnss() {
+        if (!lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            posText = "GPS išjungtas. Įjunkite vietos nustatymus."
+            logError("GPS išjungtas")
+            render()
+        }
+        lm.registerGnssStatusCallback(statusCallback, mainHandler)
+        if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
+        lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
+    }
+
+    @RequiresApi(31)
+    @SuppressLint("MissingPermission")
+    private fun registerFullTracking() {
+        val request = GnssMeasurementRequest.Builder().setFullTracking(true).build()
+        lm.registerGnssMeasurementsCallback(request, mainExecutor, measCallback)
+    }
+
+    private fun onLocation(loc: Location) {
+        posText = buildString {
+            appendLine("Platuma: ${fx(loc.latitude, 7)}")
+            appendLine("Ilguma: ${fx(loc.longitude, 7)}")
+            appendLine(if (loc.hasAccuracy()) "Tikslumas: ${fx(loc.accuracy.toDouble())} m" else "Tikslumas: nežinomas")
+            if (loc.hasAltitude()) {
+                appendLine("Aukštis (elipsoidas): ${fx(loc.altitude)} m")
+                appendLine("Geoidas: ${Geoid.mode.label}")
+                val n = Geoid.undulation(loc.latitude, loc.longitude)
+                when {
+                    n != null -> {
+                        appendLine("Geoido unduliacija (N): ${fx(n, 2)} m")
+                        appendLine("Aukštis virš jūros (H): ${fx(loc.altitude - n)} m")
+                    }
+                    Geoid.lastError != null -> appendLine("Klaida: ${Geoid.lastError}")
+                    !Geoid.isReady -> appendLine("Geoidas kraunamas...")
+                    else -> appendLine("Taškas už pasirinkto geoido ribų")
+                }
+            }
+            if (loc.hasSpeed()) appendLine("Greitis: ${fx(loc.speed * 3.6)} km/h")
+            append("Laikas: ${java.text.DateFormat.getTimeInstance().format(Date(loc.time))}")
+        }
+        baro.updateMslp(loc.latitude, loc.longitude)
+        lastGpsH = if (loc.hasAltitude()) Geoid.undulation(loc.latitude, loc.longitude)?.let { loc.altitude - it } else null
+        render()
+    }
+
+    private fun buildSatText(
+        list: List<Sat>,
+        used: List<Sat>,
+        includeStats: Boolean
+    ): SpannableStringBuilder {
+        val avg = if (used.isNotEmpty()) used.map { it.cn0.toDouble() }.average() else 0.0
+        val max = list.maxOfOrNull { it.cn0 } ?: 0f
+        val byConst = list.groupingBy { it.const }.eachCount().toSortedMap()
+
+        return SpannableStringBuilder().apply {
+            appendLine("Matomi palydovai: ${list.size}")
+            appendLine("Naudojami fiksui: ${used.size}")
+            if (includeStats) {
+                appendLine("Vidutinis C/N0 (naudojami): ${fx(avg)} dB-Hz")
+                appendLine("Maks. C/N0: ${fx(max.toDouble())} dB-Hz")
+            }
+            val sbsAll = list.count { it.const == "SBS" }
+            val sbsUsed = list.count { it.const == "SBS" && it.used }
+            appendLine("SBAS (EGNOS) matomi: $sbsAll, naudojami: $sbsUsed")
+            appendLine(
+                "SBAS pataisos: " + when {
+                    sbsUsed > 0 -> "taip (SBAS palydovas naudojamas fiksui)"
+                    sbsAll > 0 -> "matomas, bet fiksui nenaudojamas"
+                    else -> "SBAS palydovų nematyti"
+                }
+            )
+            append("Pagal konstelaciją:\n")
+            for ((const, count) in byConst) {
+                val start = length
+                append("$const=$count   ")
+                val end = length
+                setSpan(ForegroundColorSpan(constColor(const)), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(StyleSpan(Typeface.BOLD), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(RelativeSizeSpan(1.4f), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
+    }
+
+    private fun displayPos(): String = posText.lines().filterNot {
+        it.startsWith("Platuma:") ||
+        it.startsWith("Ilguma:") ||
+        it.startsWith("Greitis:") ||
+        it.startsWith("Laikas:")
+    }.joinToString("\n")
+
+    private fun render() {
+        val sb = SpannableStringBuilder()
+        sb.append("=== FIKSAS ===\n")
+        sb.append(displayPos())
+        sb.append("\n\n=== BAROMETRAS ===\n")
+        if (!baro.hasSensor) {
+            sb.append("Barometro jutiklio nėra\n")
+        } else {
+            val alt = baro.altitude()
+            sb.append("Slėgis: ${baro.stationHpa?.let { fx(it, 2) } ?: "—"} hPa\n")
+            sb.append("MSLP: ${baro.mslpHpa?.let { fx(it) } ?: "—"} hPa (${baro.mslpSource})\n")
+            sb.append("Barometrinis aukštis: ${alt?.let { fx(it) + " m" } ?: "—"}\n")
+            sb.append("Kalibravimo poslinkis: ${fx(baro.offsetM)} m\n")
+        }
+        sb.append("\n=== PALYDOVAI ===\n")
+        sb.append(satTextDisplay)
+        sb.append("\n\n=== NEAPDOROTI MATAVIMAI ===\n")
+        sb.append(measText)
+        info.text = sb
+    }
+
+    private fun logError(msg: String) {
+        val stamp = java.text.DateFormat.getTimeInstance().format(Date())
+        errorLog.addLast("$stamp  $msg")
+        if (errorLog.size > 20) errorLog.removeFirst()
+    }
+
+    private val rawHeader = "laikas_ms,konstelacija,svid,cn0_dbhz,dazniu_hz,doplerio_mps,akumuliuota_m,recv_sv_time_ns\n"
+    private val rawLog = StringBuilder(rawHeader)
+
+    private fun appendRaw(m: GnssMeasurement) {
+        if (rawLog.length > 3_000_000) { rawLog.setLength(0); rawLog.append(rawHeader) }
+        val carrier = if (m.hasCarrierFrequencyHz()) m.carrierFrequencyHz.toString() else ""
+        rawLog.append(System.currentTimeMillis()).append(',')
+            .append(constName(m.constellationType)).append(',')
+            .append(m.svid).append(',')
+            .append(m.cn0DbHz).append(',')
+            .append(carrier).append(',')
+            .append(m.pseudorangeRateMetersPerSecond).append(',')
+            .append(m.accumulatedDeltaRangeMeters).append(',')
+            .append(m.receivedSvTimeNanos).append('\n')
+    }
+
+    private fun reportFileUri(text: String): Uri? = try {
+        val file = File(cacheDir, "ataskaita.txt")
+        file.writeText(text)
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+    } catch (e: Exception) {
+        logError("Ataskaitos failas nepavyko: ${e.message}")
+        null
+    }
+
+    private fun rawCsvUri(): Uri? = try {
+        val file = File(cacheDir, "gnss_raw.csv")
+        file.writeText(rawLog.toString())
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+    } catch (e: Exception) {
+        logError("CSV nepavyko: ${e.message}")
+        null
+    }
+
+    private fun takeScreenshot(): Uri? {
+        val view = window.decorView
+        val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        view.draw(canvas)
+        val file = File(cacheDir, "screenshot.png")
+        return try {
+            FileOutputStream(file).use { out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
+            FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        } catch (e: Exception) {
+            logError("Screenshot failed: ${e.message}")
+            null
+        }
+    }
+
+    private fun buildReport(sections: Set<String>, question: String): String = buildString {
+        appendLine("GNSS App ataskaita")
+        appendLine("Laikas: ${java.text.DateFormat.getDateTimeInstance().format(Date())}")
+        appendLine()
+        if (question.isNotBlank()) { appendLine("Klausimas: $question"); appendLine() }
+        if ("irenginys" in sections) {
+            appendLine("=== ĮRENGINYS ===")
+            appendLine("Modelis: ${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLine("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+            appendLine("Barometras: ${if (baro.hasSensor) "yra" else "nėra"}")
+            appendLine()
+        }
+        if ("fiksas" in sections) { appendLine("=== FIKSAS ==="); appendLine(posText); appendLine() }
+        if ("geoidas" in sections) {
+            appendLine("=== GEOIDAS ===")
+            appendLine("Modelis: ${Geoid.mode.label}")
+            appendLine("Būsena: ${Geoid.lastError ?: if (Geoid.isReady) "įkrautas" else "kraunamas"}")
+            appendLine()
+        }
+        if ("baro" in sections) {
+            appendLine("=== BAROMETRAS ===")
+            if (!baro.hasSensor) appendLine("Barometro jutiklio nėra") else {
+                appendLine("Slėgis: ${baro.stationHpa?.let { fx(it, 2) } ?: "—"} hPa")
+                appendLine("MSLP: ${baro.mslpHpa?.let { fx(it) } ?: "—"} hPa (${baro.mslpSource})")
+                appendLine("Barometrinis aukštis: ${baro.altitude()?.let { fx(it) + " m" } ?: "—"}")
+                appendLine("Kalibravimo poslinkis: ${fx(baro.offsetM)} m")
+            }
+            appendLine()
+        }
+        if ("palydovai" in sections) {
+            appendLine("=== PALYDOVAI ===")
+            appendLine(satText)
+            appendLine(measText)
+            appendLine("Palydovų sąrašas:")
+            lastSats.sortedWith(compareBy({ it.const }, { it.svid })).forEach { s ->
+                appendLine("${s.const} ${s.svid}: C/N0 ${fx(s.cn0.toDouble())}, kampas ${fx(s.elev.toDouble(), 0)}°, az ${fx(s.az.toDouble(), 0)}°, fiksui: ${if (s.used) "taip" else "ne"}")
+            }
+            appendLine()
+        }
+        if ("cno" in sections) { appendLine("=== C/N0 ISTORIJA ==="); appendLine(cnoView.summary()); appendLine() }
+        if ("klaidos" in sections) {
+            appendLine("=== KLAIDOS IR BŪSENA ===")
+            appendLine("Geoido klaida: ${Geoid.lastError ?: "nėra"}")
+            appendLine("MSLP šaltinis: ${baro.mslpSource}")
+            if (errorLog.isEmpty()) appendLine("Programos klaidų žurnalas tuščias") else {
+                appendLine("Programos žurnalas:")
+                errorLog.forEach { appendLine(it) }
+            }
+            appendLine()
+        }
+    }
+
+    private fun shareContent(text: String, uris: List<Uri>) {
+        if (uris.isEmpty()) {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "GNSS App ataskaita")
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            startActivity(Intent.createChooser(intent, "Dalintis ataskaita"))
+        } else {
+            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "*/*"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, java.util.ArrayList<Uri>(uris))
+                putExtra(Intent.EXTRA_TEXT, text)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Dalintis"))
+        }
+    }
+}
+```

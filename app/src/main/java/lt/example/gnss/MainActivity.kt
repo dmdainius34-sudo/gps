@@ -1286,7 +1286,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun buildGrid(radius: Double): FloatArray {
         val out = ArrayList<Float>()
         fun seg(a: DoubleArray, b: DoubleArray) { for (x in a) out.add(x.toFloat()); for (x in b) out.add(x.toFloat()) }
-        for (el in -60.0..60.0 step 15.0) {
+        for (k in -4..4) {
+            val el = k * 15.0
             for (i in 0 until 72) seg(dirVec(el, i * 5.0, radius), dirVec(el, (i + 1) * 5.0, radius))
         }
         for (az in 0 until 360 step 30) {

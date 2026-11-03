@@ -1932,6 +1932,18 @@ class DraggablePanel(
     }
 }
 
+/** Konstelacijos pavadinimas pagal GnssStatus tipą (viršutinio lygio funkcija). */
+fun constName(type: Int): String = when (type) {
+    GnssStatus.CONSTELLATION_GPS -> "GPS"
+    GnssStatus.CONSTELLATION_GALILEO -> "GAL"
+    GnssStatus.CONSTELLATION_GLONASS -> "GLO"
+    GnssStatus.CONSTELLATION_BEIDOU -> "BDS"
+    GnssStatus.CONSTELLATION_QZSS -> "QZS"
+    GnssStatus.CONSTELLATION_SBAS -> "SBS"
+    GnssStatus.CONSTELLATION_IRNSS -> "NVC"
+    else -> "?"
+}
+
 // ============================================================
 //  SIGNALO SPALVOS SKALĖ
 // ============================================================
@@ -2442,13 +2454,4 @@ class MainActivity : AppCompatActivity() {
 
     private fun shareContent(text: String, uris: List<Uri>) {
         if (uris.isEmpty()) {
-            val intent = Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_SUBJECT, "GNSS App ataskaita")
-                putExtra(Intent.EXTRA_TEXT, text)
-            }
-            startActivity(Intent.createChooser(intent, "Dalintis ataskaita"))
-        } else {
-            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                type = "*/*"
-                putParcelableArrayListExtra(Intent.EXTRA_STREAM, Ar
+            val intent = Int

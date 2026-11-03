@@ -1071,8 +1071,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                     lastRawY = cy
                 } else if (!moveMode) {
                     // Vienas pirštas – sukimas aplink savo ašį
-                    yawD += (e.x - lastX) * 0.4f
-                    pitchD = (pitchD + (e.y - lastY) * 0.4f).coerceIn(-85f, 85f)
+                    yawD -= (e.x - lastX) * 0.4f
+                    pitchD = (pitchD - (e.y - lastY) * 0.4f).coerceIn(-85f, 85f)
                     renderer.setRotation(composeManual())
                 }
                 lastX = e.x
@@ -1289,18 +1289,17 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             when {
                 sat.cn0 >= 30f -> {
                     val tw = kotlin.math.sin(t * 4f + phase)
-                    val size = 0.15f * (1f + 0.3f * tw)
-                    val alpha = (0.85f + 0.15f * tw) * usedK
-                    billboard(p, eye, size * 1.8f, size * 1.8f, starTex, col[0], col[1], col[2], alpha * 0.35f)
-                    billboard(p, eye, size, size, starTex, 1f, 1f, 1f, alpha)
+                    val size = 0.075f * (1f + 0.35f * tw)
+                    val alpha = (0.75f + 0.25f * tw) * usedK
+                    billboard(p, eye, size, size, starTex, col[0], col[1], col[2], alpha)
                     val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
                     billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eye, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
                 }
                 sat.cn0 >= 20f -> {
-                    billboard(p, eye, 0.1f, 0.1f, starTex, col[0], col[1], col[2], 1f * usedK)
+                    billboard(p, eye, 0.05f, 0.05f, starTex, col[0], col[1], col[2], 0.6f * usedK)
                 }
                 else -> {
-                    drawPoint(p, col, 0.6f * usedK, 9f * density)
+                    drawPoint(p, col, 0.3f * usedK, 6f * density)
                 }
             }
         }
@@ -1664,6 +1663,13 @@ class BubbleOverlayService : Service() {
 
     private fun unpin() {
         OverlayBus.onUnpin?.invoke()
+        // Grąžinti programą į priekį, kad burbulas vėl atsirastų savo vietoje
+        try {
+            startActivity(Intent(this, MainActivity::class.java).addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+        } catch (e: Exception) {
+            android.util.Log.e("GnssApp", "Grįžimas nepavyko", e)
+        }
         stopSelf()
     }
 

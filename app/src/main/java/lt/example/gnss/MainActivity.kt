@@ -93,49 +93,15 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-const val SIG_RED = 0xFFEF4444.toInt()
-const val SIG_BLUE = 0xFF3B82F6.toInt()
-const val SIG_YELLOW = 0xFFFACC15.toInt()
-const val BG_NEUTRAL = 0xFFF8FAFC.toInt()
-
-fun signalColor(db: Float): Int = when {
-    db <= 20f -> SIG_RED
-    db <= 30f -> ColorUtils.blendARGB(SIG_RED, SIG_BLUE, (db - 20f) / 10f)
-    db <= 40f -> ColorUtils.blendARGB(SIG_BLUE, SIG_YELLOW, (db - 30f) / 10f)
-    else -> SIG_YELLOW
-}
+// ============================================================
+//  PAGALBINĖS FUNKCIJOS
+// ============================================================
 
 fun fx(v: Double, digits: Int = 1): String = String.format(Locale.US, "%.${digits}f", v)
 
-fun constColor(c: String): Int = when (c) {
-    "GPS" -> Color.rgb(37, 99, 235)
-    "GAL" -> Color.rgb(22, 163, 74)
-    "GLO" -> Color.rgb(234, 88, 12)
-    "BDS" -> Color.rgb(220, 38, 38)
-    "SBS" -> Color.rgb(107, 114, 128)
-    "QZS" -> Color.rgb(147, 51, 234)
-    else -> Color.DKGRAY
-}
-
-fun constName(type: Int): String = when (type) {
-    GnssStatus.CONSTELLATION_GPS -> "GPS"
-    GnssStatus.CONSTELLATION_GALILEO -> "GAL"
-    GnssStatus.CONSTELLATION_GLONASS -> "GLO"
-    GnssStatus.CONSTELLATION_BEIDOU -> "BDS"
-    GnssStatus.CONSTELLATION_QZSS -> "QZS"
-    GnssStatus.CONSTELLATION_SBAS -> "SBS"
-    GnssStatus.CONSTELLATION_IRNSS -> "NVC"
-    else -> "?"
-}
-
-data class Sat(
-    val const: String,
-    val svid: Int,
-    val cn0: Float,
-    val elev: Float,
-    val az: Float,
-    val used: Boolean
-)
+// ============================================================
+//  GEOIDAS
+// ============================================================
 
 enum class GeoidMode(val label: String, val assetFile: String) {
     LIT20G("LIT20G (Lietuva)", "LIT20G.txt"),
@@ -228,6 +194,10 @@ object Geoid {
     fun undulation(lat: Double, lon: Double): Double? = gridOf(mode).undulation(lat, lon)
 }
 
+// ============================================================
+//  BAROMETRAS
+// ============================================================
+
 class Barometer(context: Context) : SensorEventListener {
     private val app = context.applicationContext
     private val sm = app.getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -302,6 +272,33 @@ class Barometer(context: Context) : SensorEventListener {
     fun reset() { offsetM = 0.0 }
 }
 
+// ============================================================
+//  PALYDOVAI, SPALVOS
+// ============================================================
+
+data class Sat(
+    val const: String,
+    val svid: Int,
+    val cn0: Float,
+    val elev: Float,
+    val az: Float,
+    val used: Boolean
+)
+
+fun constColor(c: String): Int = when (c) {
+    "GPS" -> Color.rgb(37, 99, 235)
+    "GAL" -> Color.rgb(22, 163, 74)
+    "GLO" -> Color.rgb(234, 88, 12)
+    "BDS" -> Color.rgb(220, 38, 38)
+    "SBS" -> Color.rgb(107, 114, 128)
+    "QZS" -> Color.rgb(147, 51, 234)
+    else -> Color.DKGRAY
+}
+
+// ============================================================
+//  DANGAUS ŽEMĖLAPIS
+// ============================================================
+
 class GnssView(context: Context) : View(context) {
     var sats: List<Sat> = emptyList()
         set(value) { field = value; invalidate() }
@@ -340,6 +337,10 @@ class GnssView(context: Context) : View(context) {
         }
     }
 }
+
+// ============================================================
+//  C/N0 LAIKO GRAFIKAS
+// ============================================================
 
 class CnoPlotView(context: Context) : View(context) {
     private val maxPts = 120
@@ -439,6 +440,10 @@ class CnoPlotView(context: Context) : View(context) {
         if (label != null && hasLast) canvas.drawText(label, lastX + 4f, lastY + 6f, textPaint)
     }
 }
+
+// ============================================================
+//  STUMDOMA LENTELĖ SU BURBULU
+// ============================================================
 
 class BubbleView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
@@ -584,6 +589,10 @@ class BubbleView(context: Context) : View(context) {
         (color and 0x00FFFFFF) or ((alpha * 255).toInt() shl 24)
 }
 
+// ============================================================
+//  3D BURBULAS (OpenGL ES 2.0, GLSurfaceView)
+// ============================================================
+
 private class GlBolt(val xy: FloatArray, var life: Int)
 private class GlDust(var x: Float, var y: Float, val vx: Float, val vy: Float, var life: Int)
 
@@ -614,6 +623,7 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
     private val vp = FloatArray(16)
     private val model = FloatArray(16)
     private val mvp = FloatArray(16)
+    private val tmp = FloatArray(16)
 
     private var sphereProg = 0
     private var flatProg = 0
@@ -913,6 +923,179 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
             varying vec2 vUV;
             void main() { gl_FragColor = texture2D(uTex, vUV); }
         """
+    }
+}
+
+// ============================================================
+//  3D GAUBLYS (dangaus skliautas, sensoriais suderintas)
+// ============================================================
+
+class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener {
+
+    private val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    private val rotSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+    private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private val renderer = GlobeRenderer(context.applicationContext, resources.displayMetrics.density)
+    private val handler = Handler(Looper.getMainLooper())
+    private var running = false
+
+    private var manual = false
+    private var baseRot = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+    private var lastRaw = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+    private var yawD = 0f
+    private var pitchD = 0f
+    private var lastX = 0f
+    private var lastY = 0f
+    private val resumeSensors = Runnable { manual = false }
+
+    var onMove: ((Float, Float) -> Unit)? = null
+    private var moveMode = false
+    private var lastRawX = 0f
+    private var lastRawY = 0f
+
+    init {
+        setEGLContextClientVersion(2)
+        setEGLConfigChooser(8, 8, 8, 8, 16, 0)
+        holder.setFormat(PixelFormat.TRANSLUCENT)
+        setZOrderOnTop(true)
+        setRenderer(renderer)
+        renderMode = RENDERMODE_CONTINUOUSLY
+    }
+
+    fun setSats(list: List<Sat>) = renderer.setSats(list)
+
+    fun start() {
+        if (running) return
+        running = true
+        onResume()
+        rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+    }
+
+    fun stop() {
+        running = false
+        manual = false
+        handler.removeCallbacks(resumeSensors)
+        sm.unregisterListener(this)
+        onPause()
+    }
+
+    override fun onSensorChanged(event: SensorEvent) {
+        val raw = FloatArray(9)
+        SensorManager.getRotationMatrixFromVector(raw, event.values)
+        val out = FloatArray(9)
+        when (wm.defaultDisplay.rotation) {
+            Surface.ROTATION_90 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_Y, SensorManager.AXIS_MINUS_X, out)
+            Surface.ROTATION_180 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_MINUS_X, SensorManager.AXIS_MINUS_Y, out)
+            Surface.ROTATION_270 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_MINUS_Y, SensorManager.AXIS_X, out)
+            else -> raw.copyInto(out)
+        }
+        lastRaw = out
+        if (!manual) renderer.setRotation(out)
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                handler.removeCallbacks(resumeSensors)
+                if (!manual) {
+                    baseRot = lastRaw.copyOf()
+                    yawD = 0f
+                    pitchD = 0f
+                    manual = true
+                }
+                moveMode = false
+                lastX = e.x
+                lastY = e.y
+                parent?.requestDisallowInterceptTouchEvent(true)
+                return true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (e.pointerCount >= 2) {
+                    moveMode = true
+                    lastRawX = (e.getRawX(0) + e.getRawX(1)) / 2f
+                    lastRawY = (e.getRawY(0) + e.getRawY(1)) / 2f
+                }
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (moveMode && e.pointerCount >= 2) {
+                    val cx = (e.getRawX(0) + e.getRawX(1)) / 2f
+                    val cy = (e.getRawY(0) + e.getRawY(1)) / 2f
+                    onMove?.invoke(cx - lastRawX, cy - lastRawY)
+                    lastRawX = cx
+                    lastRawY = cy
+                } else if (!moveMode) {
+                    yawD += (e.x - lastX) * 0.4f
+                    pitchD = (pitchD + (e.y - lastY) * 0.4f).coerceIn(-85f, 85f)
+                    renderer.setRotation(composeManual())
+                }
+                lastX = e.x
+                lastY = e.y
+                return true
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                val remaining = if (e.actionIndex == 0) 1 else 0
+                moveMode = false
+                if (remaining < e.pointerCount) {
+                    lastX = e.getX(remaining)
+                    lastY = e.getY(remaining)
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                moveMode = false
+                handler.removeCallbacks(resumeSensors)
+                handler.postDelayed(resumeSensors, 60_000L)
+                return true
+            }
+        }
+        return super.onTouchEvent(e)
+    }
+
+    private fun composeManual(): FloatArray {
+        val a = Math.toRadians(yawD.toDouble())
+        val b = Math.toRadians(pitchD.toDouble())
+        val ca = cos(a).toFloat(); val sa = sin(a).toFloat()
+        val cb = cos(b).toFloat(); val sb = sin(b).toFloat()
+        val rz = floatArrayOf(ca, -sa, 0f, sa, ca, 0f, 0f, 0f, 1f)
+        val rx = floatArrayOf(1f, 0f, 0f, 0f, cb, -sb, 0f, sb, cb)
+        return mul3(rz, mul3(rx, baseRot))
+    }
+
+    private fun mul3(a: FloatArray, b: FloatArray): FloatArray {
+        val o = FloatArray(9)
+        for (i in 0..2) for (j in 0..2) {
+            var sum = 0f
+            for (k in 0..2) sum += a[i * 3 + k] * b[k * 3 + j]
+            o[i * 3 + j] = sum
+        }
+        return o
+    }
+}
+
+class FloatingSky(context: Context) : FrameLayout(context) {
+
+    val dome = SkyDomeGL(context)
+    private val density = resources.displayMetrics.density
+    private val size = (300 * density).toInt()
+
+    init {
+        addView(dome, FrameLayout.LayoutParams(size, size))
+        dome.onMove = { dx, dy ->
+            translationX += dx
+            translationY += dy
+            constrain()
+        }
+    }
+
+    private fun constrain() {
+        val pw = (parent as? View)?.width?.toFloat() ?: return
+        val ph = (parent as? View)?.height?.toFloat() ?: return
+        val w = size.toFloat()
+        translationX = translationX.coerceIn(-w * 0.9f, pw - w * 0.1f)
+        translationY = translationY.coerceIn(-w * 0.9f, ph - w * 0.1f)
     }
 }
 
@@ -1334,175 +1517,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 }
 
-class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener {
-
-    private val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-    private val rotSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-    private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    private val renderer = GlobeRenderer(context.applicationContext, resources.displayMetrics.density)
-    private val handler = Handler(Looper.getMainLooper())
-    private var running = false
-
-    private var manual = false
-    private var baseRot = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
-    private var lastRaw = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
-    private var yawD = 0f
-    private var pitchD = 0f
-    private var lastX = 0f
-    private var lastY = 0f
-    private val resumeSensors = Runnable { manual = false }
-
-    var onMove: ((Float, Float) -> Unit)? = null
-    private var moveMode = false
-    private var lastRawX = 0f
-    private var lastRawY = 0f
-
-    init {
-        setEGLContextClientVersion(2)
-        setEGLConfigChooser(8, 8, 8, 8, 16, 0)
-        holder.setFormat(PixelFormat.TRANSLUCENT)
-        setZOrderOnTop(true)
-        setRenderer(renderer)
-        renderMode = RENDERMODE_CONTINUOUSLY
-    }
-
-    fun setSats(list: List<Sat>) = renderer.setSats(list)
-
-    fun start() {
-        if (running) return
-        running = true
-        onResume()
-        rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-    }
-
-    fun stop() {
-        running = false
-        manual = false
-        handler.removeCallbacks(resumeSensors)
-        sm.unregisterListener(this)
-        onPause()
-    }
-
-    override fun onSensorChanged(event: SensorEvent) {
-        val raw = FloatArray(9)
-        SensorManager.getRotationMatrixFromVector(raw, event.values)
-        val out = FloatArray(9)
-        when (wm.defaultDisplay.rotation) {
-            Surface.ROTATION_90 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_Y, SensorManager.AXIS_MINUS_X, out)
-            Surface.ROTATION_180 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_MINUS_X, SensorManager.AXIS_MINUS_Y, out)
-            Surface.ROTATION_270 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_MINUS_Y, SensorManager.AXIS_X, out)
-            else -> raw.copyInto(out)
-        }
-        lastRaw = out
-        if (!manual) renderer.setRotation(out)
-    }
-
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-
-    override fun onTouchEvent(e: MotionEvent): Boolean {
-        when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                handler.removeCallbacks(resumeSensors)
-                if (!manual) {
-                    baseRot = lastRaw.copyOf()
-                    yawD = 0f
-                    pitchD = 0f
-                    manual = true
-                }
-                moveMode = false
-                lastX = e.x
-                lastY = e.y
-                parent?.requestDisallowInterceptTouchEvent(true)
-                return true
-            }
-            MotionEvent.ACTION_POINTER_DOWN -> {
-                if (e.pointerCount >= 2) {
-                    moveMode = true
-                    lastRawX = (e.getRawX(0) + e.getRawX(1)) / 2f
-                    lastRawY = (e.getRawY(0) + e.getRawY(1)) / 2f
-                }
-                return true
-            }
-            MotionEvent.ACTION_MOVE -> {
-                if (moveMode && e.pointerCount >= 2) {
-                    val cx = (e.getRawX(0) + e.getRawX(1)) / 2f
-                    val cy = (e.getRawY(0) + e.getRawY(1)) / 2f
-                    onMove?.invoke(cx - lastRawX, cy - lastRawY)
-                    lastRawX = cx
-                    lastRawY = cy
-                } else if (!moveMode) {
-                    yawD += (e.x - lastX) * 0.4f
-                    pitchD = (pitchD + (e.y - lastY) * 0.4f).coerceIn(-85f, 85f)
-                    renderer.setRotation(composeManual())
-                }
-                lastX = e.x
-                lastY = e.y
-                return true
-            }
-            MotionEvent.ACTION_POINTER_UP -> {
-                val remaining = if (e.actionIndex == 0) 1 else 0
-                moveMode = false
-                if (remaining < e.pointerCount) {
-                    lastX = e.getX(remaining)
-                    lastY = e.getY(remaining)
-                }
-                return true
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                moveMode = false
-                handler.removeCallbacks(resumeSensors)
-                handler.postDelayed(resumeSensors, 60_000L)
-                return true
-            }
-        }
-        return super.onTouchEvent(e)
-    }
-
-    private fun composeManual(): FloatArray {
-        val a = Math.toRadians(yawD.toDouble())
-        val b = Math.toRadians(pitchD.toDouble())
-        val ca = cos(a).toFloat(); val sa = sin(a).toFloat()
-        val cb = cos(b).toFloat(); val sb = sin(b).toFloat()
-        val rz = floatArrayOf(ca, -sa, 0f, sa, ca, 0f, 0f, 0f, 1f)
-        val rx = floatArrayOf(1f, 0f, 0f, 0f, cb, -sb, 0f, sb, cb)
-        return mul3(rz, mul3(rx, baseRot))
-    }
-
-    private fun mul3(a: FloatArray, b: FloatArray): FloatArray {
-        val o = FloatArray(9)
-        for (i in 0..2) for (j in 0..2) {
-            var sum = 0f
-            for (k in 0..2) sum += a[i * 3 + k] * b[k * 3 + j]
-            o[i * 3 + j] = sum
-        }
-        return o
-    }
-}
-
-class FloatingSky(context: Context) : FrameLayout(context) {
-
-    val dome = SkyDomeGL(context)
-    private val density = resources.displayMetrics.density
-    private val size = (300 * density).toInt()
-
-    init {
-        addView(dome, FrameLayout.LayoutParams(size, size))
-        dome.onMove = { dx, dy ->
-            translationX += dx
-            translationY += dy
-            constrain()
-        }
-    }
-
-    private fun constrain() {
-        val pw = (parent as? View)?.width?.toFloat() ?: return
-        val ph = (parent as? View)?.height?.toFloat() ?: return
-        val w = size.toFloat()
-        translationX = translationX.coerceIn(-w * 0.9f, pw - w * 0.1f)
-        translationY = translationY.coerceIn(-w * 0.9f, ph - w * 0.1f)
-    }
-}
-
 class ShareIcon(context: Context) : View(context) {
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
@@ -1885,6 +1899,37 @@ class DraggablePanel(
     }
 }
 
+fun constName(type: Int): String = when (type) {
+    GnssStatus.CONSTELLATION_GPS -> "GPS"
+    GnssStatus.CONSTELLATION_GALILEO -> "GAL"
+    GnssStatus.CONSTELLATION_GLONASS -> "GLO"
+    GnssStatus.CONSTELLATION_BEIDOU -> "BDS"
+    GnssStatus.CONSTELLATION_QZSS -> "QZS"
+    GnssStatus.CONSTELLATION_SBAS -> "SBS"
+    GnssStatus.CONSTELLATION_IRNSS -> "NVC"
+    else -> "?"
+}
+
+// ============================================================
+//  SIGNALO SPALVOS SKALĖ
+// ============================================================
+
+const val SIG_RED = 0xFFEF4444.toInt()
+const val SIG_BLUE = 0xFF3B82F6.toInt()
+const val SIG_YELLOW = 0xFFFACC15.toInt()
+const val BG_NEUTRAL = 0xFFF8FAFC.toInt()
+
+fun signalColor(db: Float): Int = when {
+    db <= 20f -> SIG_RED
+    db <= 30f -> ColorUtils.blendARGB(SIG_RED, SIG_BLUE, (db - 20f) / 10f)
+    db <= 40f -> ColorUtils.blendARGB(SIG_BLUE, SIG_YELLOW, (db - 30f) / 10f)
+    else -> SIG_YELLOW
+}
+
+// ============================================================
+//  JUDANTIS SPALVŲ FONAS
+// ============================================================
+
 class GradientBackground(context: Context) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var t = 0f
@@ -1932,6 +1977,10 @@ class GradientBackground(context: Context) : View(context) {
     private fun withAlpha(color: Int, alpha: Float): Int = (color and 0x00FFFFFF) or ((alpha * 255).toInt() shl 24)
 }
 
+// ============================================================
+//  PAGRINDINIS EKRANAS
+// ============================================================
+
 class MainActivity : AppCompatActivity() {
     private lateinit var lm: LocationManager
     private lateinit var info: TextView
@@ -1952,8 +2001,8 @@ class MainActivity : AppCompatActivity() {
     private val errorLog = ArrayDeque<String>()
 
     private var posText = "Laukiama fikso..."
-    private var satText: CharSequence = "Laukiama palydovų..."
-    private var satTextDisplay: CharSequence = "Laukiama palydovų..."
+    private var satText: CharSequence = "Laukiama palydovų..."        // pilnas (ataskaitai)
+    private var satTextDisplay: CharSequence = "Laukiama palydovų..." // ekranui (be C/N0 avg/max)
     private var measText = "Laukiama matavimų..."
 
     private val statusCallback = object : GnssStatus.Callback() {
@@ -1981,8 +2030,8 @@ class MainActivity : AppCompatActivity() {
                 if (used.isNotEmpty()) used.maxOf { it.cn0 } else null
             )
 
-            satText = buildSatText(list, used, includeStats = true)
-            satTextDisplay = buildSatText(list, used, includeStats = false)
+            satText = buildSatText(list, used, includeStats = true)       // ataskaitai
+            satTextDisplay = buildSatText(list, used, includeStats = false) // ekranui
             render()
         }
     }
@@ -2207,6 +2256,7 @@ class MainActivity : AppCompatActivity() {
         render()
     }
 
+    // ---- Palydovų tekstas (bendras ekranui ir ataskaitai) ----
     private fun buildSatText(
         list: List<Sat>,
         used: List<Sat>,
@@ -2245,6 +2295,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Ekranui — be platumos, ilgumos, greičio ir laiko. */
     private fun displayPos(): String = posText.lines().filterNot {
         it.startsWith("Platuma:") ||
         it.startsWith("Ilguma:") ||
@@ -2255,7 +2306,7 @@ class MainActivity : AppCompatActivity() {
     private fun render() {
         val sb = SpannableStringBuilder()
         sb.append("=== FIKSAS ===\n")
-        sb.append(displayPos())
+        sb.append(displayPos())               // ← ekranui filtruota
         sb.append("\n\n=== BAROMETRAS ===\n")
         if (!baro.hasSensor) {
             sb.append("Barometro jutiklio nėra\n")
@@ -2267,7 +2318,7 @@ class MainActivity : AppCompatActivity() {
             sb.append("Kalibravimo poslinkis: ${fx(baro.offsetM)} m\n")
         }
         sb.append("\n=== PALYDOVAI ===\n")
-        sb.append(satTextDisplay)
+        sb.append(satTextDisplay)             // ← ekranui be avg/max C/N0
         sb.append("\n\n=== NEAPDOROTI MATAVIMAI ===\n")
         sb.append(measText)
         info.text = sb
@@ -2279,6 +2330,7 @@ class MainActivity : AppCompatActivity() {
         if (errorLog.size > 20) errorLog.removeFirst()
     }
 
+    // ---------------- NEAPDOROTI MATAVIMAI (CSV) ----------------
     private val rawHeader = "laikas_ms,konstelacija,svid,cn0_dbhz,dazniu_hz,doplerio_mps,akumuliuota_m,recv_sv_time_ns\n"
     private val rawLog = StringBuilder(rawHeader)
 
@@ -2398,4 +2450,5 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent.createChooser(intent, "Dalintis"))
         }
     }
+
 }

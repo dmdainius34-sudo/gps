@@ -1,6 +1,13 @@
 package lt.example.gnss
 
 import android.Manifest
+import android.app.NotificationManager
+import android.app.NotificationChannel
+import android.app.Notification
+import android.os.IBinder
+import android.app.Service
+import android.provider.Settings
+import android.view.GestureDetector
 import kotlin.math.sqrt
 import android.view.WindowManager
 import android.view.Surface
@@ -456,6 +463,7 @@ class BubbleView(context: Context) : View(context) {
     private val rnd = java.util.Random()
     private var t = 0f
 
+    // avg – vidutinis C/N0 (spalvai ir silpnam signalui), peak – maksimalus C/N0 (ULTRA)
     private var avg: Float? = null
     private var peak: Float? = null
 
@@ -494,6 +502,7 @@ class BubbleView(context: Context) : View(context) {
         val cx = w / 2f; val cy = h / 2f
         val r = min(w, h) / 2f
 
+        // Elektros kibirkštys (ULTRA)
         if (isUltra() && rnd.nextFloat() < 0.6f) {
             val p = Path()
             val a = rnd.nextFloat() * 2 * Math.PI.toFloat()
@@ -513,6 +522,7 @@ class BubbleView(context: Context) : View(context) {
         bolts.forEach { it.life-- }
         bolts.removeAll { it.life <= 0 }
 
+        // Išsklaidyti dulkės (silpnas signalas)
         if (isWeak() && rnd.nextFloat() < 0.5f) {
             val a = rnd.nextFloat() * 2 * Math.PI.toFloat()
             val sp = r * 0.02f + rnd.nextFloat() * r * 0.02f
@@ -539,16 +549,19 @@ class BubbleView(context: Context) : View(context) {
             else -> signalColor(avg!!)
         }
 
+        // Pulsuojantis švytėjimas
         val coreR = r * 0.55f
         val pulseR = r * (0.85f + 0.12f * t)
         paint.shader = RadialGradient(cx, cy, pulseR, withAlpha(base, 0.6f), 0x00FFFFFF, Shader.TileMode.CLAMP)
         canvas.drawCircle(cx, cy, pulseR, paint)
         paint.shader = null
 
+        // Branduolys
         paint.color = base
         canvas.drawCircle(cx, cy, coreR, paint)
 
         if (ultra) {
+            // Geltonas švytėjimas + baltos kibirkštys
             boltPaint.color = SIG_YELLOW
             boltPaint.alpha = 220
             boltPaint.strokeWidth = 3f * density
@@ -560,6 +573,7 @@ class BubbleView(context: Context) : View(context) {
 
         if (weak) {
             drawSkullCloud(canvas, cx, cy, coreR)
+            // Išsisklaidantys dulkės
             paint.color = 0xFF1F2937.toInt()
             dust.forEach {
                 paint.alpha = (255 * it.life / 30f).toInt().coerceIn(0, 255)
@@ -569,14 +583,17 @@ class BubbleView(context: Context) : View(context) {
         }
     }
 
+    /** Tamsi debesies formos kaukolė (nupiešta, be paveikslėlio). */
     private fun drawSkullCloud(canvas: Canvas, cx: Float, cy: Float, r: Float) {
         paint.color = 0xFF111827.toInt()
+        // Debesis: keli persidengiantys apskritimai
         canvas.drawCircle(cx - r * 0.42f, cy + r * 0.05f, r * 0.42f, paint)
         canvas.drawCircle(cx + r * 0.42f, cy + r * 0.05f, r * 0.42f, paint)
         canvas.drawCircle(cx, cy - r * 0.18f, r * 0.55f, paint)
         canvas.drawCircle(cx - r * 0.22f, cy + r * 0.32f, r * 0.38f, paint)
         canvas.drawCircle(cx + r * 0.22f, cy + r * 0.32f, r * 0.38f, paint)
         canvas.drawRect(cx - r * 0.5f, cy + r * 0.05f, cx + r * 0.5f, cy + r * 0.36f, paint)
+        // Kaukolės akys ir dantys
         paint.color = 0xFFE5E7EB.toInt()
         canvas.drawCircle(cx - r * 0.22f, cy - r * 0.02f, r * 0.16f, paint)
         canvas.drawCircle(cx + r * 0.22f, cy - r * 0.02f, r * 0.16f, paint)
@@ -596,6 +613,7 @@ class BubbleView(context: Context) : View(context) {
 private class GlBolt(val xy: FloatArray, var life: Int)
 private class GlDust(var x: Float, var y: Float, val vx: Float, val vy: Float, var life: Int)
 
+/** Permatomas 3D burbulas: šviesa, spalva pagal signalą, ULTRA kibirkštys, silpno signalo kaukolė. */
 class BubbleGL(context: Context) : GLSurfaceView(context) {
     private val renderer = BubbleRenderer(context.applicationContext, resources.displayMetrics.density)
 
@@ -675,6 +693,7 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
 
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
         GLES20.glViewport(0, 0, w, h)
+        // Kamera žiūri į rutulį iš z=4; matomas plotis ±0.6 ties artimąja plokštuma
         Matrix.frustumM(proj, 0, -0.6f, 0.6f, -0.6f, 0.6f, 2f, 10f)
         Matrix.setLookAtM(view, 0, 0f, 0f, 4f, 0f, 0f, 0f, 0f, 1f, 0f)
         Matrix.multiplyMM(vp, 0, proj, 0, view, 0)
@@ -697,6 +716,7 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
             else -> rgb(signalColor(a))
         }
 
+        // 1) Rutulys su šviesa (šviesos kryptis lėtai sukasi)
         val pulse = 0.9f + 0.03f * kotlin.math.sin(frame * 0.05).toFloat()
         Matrix.setIdentityM(model, 0)
         Matrix.scaleM(model, 0, pulse, pulse, pulse)
@@ -711,11 +731,13 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
         bindAttrib(sphereProg, "aPos", sphereBuf!!, 3)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, sphereCount)
 
+        // 2) ULTRA: elektros kibirkštys (geltonas švytėjimas + baltas branduolys)
         if (ultra && bolts.isNotEmpty()) {
             drawBoltStrips(0.022f, floatArrayOf(1f, 0.85f, 0.2f, 0.9f))
             drawBoltStrips(0.008f, floatArrayOf(1f, 1f, 1f, 1f))
         }
 
+        // 3) Silpnas signalas: kaukolė (tekstūra) ir išsisklaidančios dulkės
         if (weak) {
             GLES20.glUseProgram(texProg)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(texProg, "uMVP"), 1, false, vp, 0)
@@ -768,15 +790,21 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
 
     private fun updateEffects() {
         if ((peak ?: 0f) > 45f && rnd.nextFloat() < 0.6f) {
+            // Kibirkšties kelias: lūžinėjanti linija nuo rutulio krašto į išorę
             val a = rnd.nextFloat() * 2f * Math.PI.toFloat()
-            val steps = 4 + rnd.nextInt(3)
+            // Žaibas spinduliu į išorę, lūžinėja, bet lieka apskritimo viduje (be kvadratinių kraštų)
+            val steps = 6 + rnd.nextInt(4)
             val xy = FloatArray((steps + 1) * 2)
-            var x = kotlin.math.cos(a) * 0.92f
-            var y = kotlin.math.sin(a) * 0.92f
+            val r0 = 0.5f
+            val r1 = 0.9f
+            var x = kotlin.math.cos(a) * r0
+            var y = kotlin.math.sin(a) * r0
             xy[0] = x; xy[1] = y
+            var ja = a
             for (i in 1..steps) {
-                val dist = 0.92f + 0.22f * i / steps
-                val ja = a + (rnd.nextFloat() - 0.5f) * 0.9f
+                val f = i.toFloat() / steps
+                val dist = r0 + (r1 - r0) * f
+                ja += (rnd.nextFloat() - 0.5f) * 0.35f
                 x = kotlin.math.cos(ja) * dist
                 y = kotlin.math.sin(ja) * dist
                 xy[i * 2] = x; xy[i * 2 + 1] = y
@@ -930,6 +958,11 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
 //  3D GAUBLYS (dangaus skliautas, sensoriais suderintas)
 // ============================================================
 
+/**
+ * 3D gaublys žiūrint iš išorės: virš horizonto – pulsuojantis GPS kupolas,
+ * žemiau horizonto – permatoma struktūra. Palydovai (geras signalas) žybsi kaip žvaigždės.
+ * Gaublys sukasi kartu su planšete (rotacijos vektoriaus jutiklis).
+ */
 class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener {
 
     private val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -939,6 +972,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private val handler = Handler(Looper.getMainLooper())
     private var running = false
 
+    // Rankinis sukimas pirštu: sensoriai sustabdomi, po minutės be liečiant – grįžtama
     private var manual = false
     private var baseRot = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
     private var lastRaw = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
@@ -947,7 +981,13 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private var lastX = 0f
     private var lastY = 0f
     private val resumeSensors = Runnable { manual = false }
+    var onDoubleTapCb: (() -> Unit)? = null
+    private val gd = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent): Boolean = true
+        override fun onDoubleTap(e: MotionEvent): Boolean { onDoubleTapCb?.invoke(); return true }
+    })
 
+    // Perkėlimas: dviem pirštais tempti gaublį po ekraną; vienu pirštu – sukti
     var onMove: ((Float, Float) -> Unit)? = null
     private var moveMode = false
     private var lastRawX = 0f
@@ -956,6 +996,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     init {
         setEGLContextClientVersion(2)
         setEGLConfigChooser(8, 8, 8, 8, 16, 0)
+        // Permatomas paviršius: matomas tik pats gaublys, be juodo kvadrato
         holder.setFormat(PixelFormat.TRANSLUCENT)
         setZOrderOnTop(true)
         setRenderer(renderer)
@@ -996,6 +1037,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        gd.onTouchEvent(e)
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 handler.removeCallbacks(resumeSensors)
@@ -1013,6 +1055,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (e.pointerCount >= 2) {
+                    // Du pirštai – perkėlimo režimas
                     moveMode = true
                     lastRawX = (e.getRawX(0) + e.getRawX(1)) / 2f
                     lastRawY = (e.getRawY(0) + e.getRawY(1)) / 2f
@@ -1027,6 +1070,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                     lastRawX = cx
                     lastRawY = cy
                 } else if (!moveMode) {
+                    // Vienas pirštas – sukimas aplink savo ašį
                     yawD += (e.x - lastX) * 0.4f
                     pitchD = (pitchD + (e.y - lastY) * 0.4f).coerceIn(-85f, 85f)
                     renderer.setRotation(composeManual())
@@ -1036,6 +1080,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                 return true
             }
             MotionEvent.ACTION_POINTER_UP -> {
+                // Lieka vienas pirštas – tęsiame sukimą be šuolio
                 val remaining = if (e.actionIndex == 0) 1 else 0
                 moveMode = false
                 if (remaining < e.pointerCount) {
@@ -1046,6 +1091,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 moveMode = false
+                // Po 60 s be prisilietimo vėl įjungiami sensoriai
                 handler.removeCallbacks(resumeSensors)
                 handler.postDelayed(resumeSensors, 60_000L)
                 return true
@@ -1075,6 +1121,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     }
 }
 
+/** Plūduriuojantis gaublio langas: viršutinė juosta stumdo, gaublys sukasi pirštu. */
 class FloatingSky(context: Context) : FrameLayout(context) {
 
     val dome = SkyDomeGL(context)
@@ -1090,6 +1137,7 @@ class FloatingSky(context: Context) : FrameLayout(context) {
         }
     }
 
+    /** Bent 10 % lango lieka matoma. */
     private fun constrain() {
         val pw = (parent as? View)?.width?.toFloat() ?: return
         val ph = (parent as? View)?.height?.toFloat() ?: return
@@ -1154,7 +1202,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val aspect = if (h == 0) 1f else w.toFloat() / h
         Matrix.perspectiveM(proj, 0, 40f, aspect, 0.1f, 20f)
         Matrix.setIdentityM(view, 0)
-        Matrix.translateM(view, 0, 0f, 0f, -3f)
+        Matrix.translateM(view, 0, 0f, 0f, -3f)           // kamera išorėje, žiūri į gaublį
         Matrix.multiplyMM(pv, 0, proj, 0, view, 0)
     }
 
@@ -1162,17 +1210,21 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
         val t = (System.nanoTime() - t0) / 1e9f
 
+        // Pasaulis -> planšetė (sensorių suderinimas)
         val r = rot
         java.util.Arrays.fill(mv, 0f)
         for (c in 0..2) for (rr in 0..2) mv[c * 4 + rr] = r[c * 3 + rr]
         mv[15] = 1f
         Matrix.multiplyMM(mvp, 0, pv, 0, mv, 0)
+        // Kameros kryptis pasaulio koordinatėse (planšetės +Z)
         val eye = floatArrayOf(r[2], r[5], r[8])
 
+        // Signalo kokybė -> pulsavimo stiprumas
         val used = sats.filter { it.used }
         val avgCn0 = if (used.isNotEmpty()) used.map { it.cn0 }.average().toFloat() else 0f
         val beat = ((avgCn0 - 15f) / 25f).coerceIn(0.2f, 1f)
 
+        // 1) Virš horizonto – pulsuojantis GPS kupolas
         GLES20.glDepthMask(true)
         GLES20.glUseProgram(domeProg)
         setMat(domeProg, "uMVP", mvp)
@@ -1184,6 +1236,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         bindPos(domeProg, upperBuf!!)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, upperN)
 
+        // 2) Žemiau horizonto – permatoma struktūra
         GLES20.glDepthMask(false)
         GLES20.glUseProgram(lowProg)
         setMat(lowProg, "uMVP", mvp)
@@ -1193,6 +1246,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, lowerN)
         GLES20.glDepthMask(true)
 
+        // 3) Laipsnių tinklelis
         GLES20.glUseProgram(colorProg)
         setMat(colorProg, "uMVP", mvp)
         setVec4(colorProg, "uColor", 0.6f, 0.7f, 0.85f, 0.22f)
@@ -1200,13 +1254,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         bindPos(colorProg, gridBuf!!)
         GLES20.glDrawArrays(GLES20.GL_LINES, 0, gridN)
 
+        // 4) Horizontas – pulsuojantis auksinis žiedas
         val hzAlpha = 0.6f + 0.4f * kotlin.math.sin(t * 2.5f)
         setVec4(colorProg, "uColor", 0.95f, 0.72f, 0.3f, hzAlpha)
         bindPos(colorProg, horizonBuf!!)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, horizonN)
 
+        // Žymos ir palydovai piešiami be gylio testo (visada matomi priekyje)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
 
+        // 5) Laipsnių žymos ant horizonto
         for (d in 0 until 360 step 30) {
             val tex = labelTex[labelOf(d)] ?: continue
             val a = Math.toRadians(d.toDouble())
@@ -1216,6 +1273,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             billboard(c, eye, 0.1f, 0.05f, tex, col[0], col[1], col[2], 0.95f)
         }
 
+        // 6) Palydovai: geras signalas žybsi kaip žvaigždės
         for (sat in sats) {
             val el = Math.toRadians(sat.elev.toDouble().coerceIn(-10.0, 90.0))
             val az = Math.toRadians(sat.az.toDouble())
@@ -1261,18 +1319,22 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
     }
 
+    /** Plokštuma, kuri visada atsisuka į kamerą (centras c, pusplotis w, pusaukštis h). */
     private fun billboard(c: FloatArray, eye: FloatArray, w: Float, h: Float, tex: Int, cr: Float, cg: Float, cb: Float, ca: Float) {
         var nx = eye[0] - c[0]; var ny = eye[1] - c[1]; var nz = eye[2] - c[2]
         val nl = sqrt(nx * nx + ny * ny + nz * nz).coerceAtLeast(1e-6f)
         nx /= nl; ny /= nl; nz /= nl
+        // pagalbinė "aukštis": (0,0,1), o ties poliais – (0,1,0)
         val ax = if (kotlin.math.abs(nz) > 0.95f) 0f else 0f
         val ay = if (kotlin.math.abs(nz) > 0.95f) 1f else 0f
         val az = if (kotlin.math.abs(nz) > 0.95f) 0f else 1f
+        // right = up0 x n
         var rx = ay * nz - az * ny
         var ry = az * nx - ax * nz
         var rz = ax * ny - ay * nx
         val rl = sqrt(rx * rx + ry * ry + rz * rz).coerceAtLeast(1e-6f)
         rx /= rl; ry /= rl; rz /= rl
+        // up = n x right
         val ux = ny * rz - nz * ry
         val uy = nz * rx - nx * rz
         val uz = nx * ry - ny * rx
@@ -1360,6 +1422,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         return doubleArrayOf(radius * cos(el) * sin(az), radius * cos(el) * cos(az), radius * sin(el))
     }
 
+    /** Sferos dalis tarp elevacijų e0..e1 (laipsniais). */
     private fun meshSphere(e0: Double, e1: Double, stacks: Int, slices: Int, radius: Double): FloatArray {
         val out = ArrayList<Float>()
         fun v(st: Int, sl: Int): DoubleArray = dirVec(e0 + (e1 - e0) * st / stacks, 360.0 * sl / slices, radius)
@@ -1517,6 +1580,104 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 }
 
+// ============================================================
+//  PLŪDURUOJANTIS BURBULAS VIRŠ KITŲ PROGRAMŲ
+// ============================================================
+
+object OverlayBus {
+    @Volatile var avg: Float? = null
+    @Volatile var peak: Float? = null
+    @Volatile var onUnpin: (() -> Unit)? = null
+}
+
+class BubbleOverlayService : Service() {
+
+    private var wm: WindowManager? = null
+    private var bubble: BubbleGL? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private val pollSignal = object : Runnable {
+        override fun run() {
+            bubble?.setSignal(OverlayBus.avg, OverlayBus.peak)
+            handler.postDelayed(this, 300L)
+        }
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        startAsForeground()
+        val dm = resources.displayMetrics
+        val size = (88 * dm.density).toInt()
+        val manager = getSystemService(WINDOW_SERVICE) as WindowManager
+        wm = manager
+        val view = BubbleGL(this)
+        bubble = view
+        val lp = WindowManager.LayoutParams(
+            size, size,
+            if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            else WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        )
+        lp.gravity = Gravity.TOP or Gravity.START
+        lp.x = dm.widthPixels - size - 40
+        lp.y = dm.heightPixels / 3
+
+        var startX = 0; var startY = 0
+        var touchX = 0f; var touchY = 0f
+        val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+            override fun onDoubleTap(e: MotionEvent): Boolean { unpin(); return true }
+        })
+        view.setOnTouchListener { _, ev ->
+            gd.onTouchEvent(ev)
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { startX = lp.x; startY = lp.y; touchX = ev.rawX; touchY = ev.rawY }
+                MotionEvent.ACTION_MOVE -> {
+                    val nx = startX + (ev.rawX - touchX).toInt()
+                    val ny = startY + (ev.rawY - touchY).toInt()
+                    // Burbulas gali išeiti už krašto, bet bent 10 % lieka matoma
+                    lp.x = nx.coerceIn(-(size * 0.9f).toInt(), dm.widthPixels - (size * 0.1f).toInt())
+                    lp.y = ny.coerceIn(-(size * 0.9f).toInt(), dm.heightPixels - (size * 0.1f).toInt())
+                    manager.updateViewLayout(view, lp)
+                }
+            }
+            true
+        }
+        manager.addView(view, lp)
+        handler.post(pollSignal)
+    }
+
+    private fun unpin() {
+        OverlayBus.onUnpin?.invoke()
+        stopSelf()
+    }
+
+    private fun startAsForeground() {
+        val chId = "gnss_overlay"
+        if (Build.VERSION.SDK_INT >= 26) {
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(NotificationChannel(chId, "Plūduriuojantis burbulas", NotificationManager.IMPORTANCE_MIN))
+        }
+        val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, chId) else @Suppress("DEPRECATION") Notification.Builder(this)
+        val n = builder
+            .setContentTitle("GNSS burbulas aktyvus")
+            .setContentText("Dvigubas bakstelėjimas – grąžinti į programą")
+            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .build()
+        startForeground(1, n)
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        try { bubble?.let { wm?.removeView(it) } } catch (_: Exception) {}
+        bubble = null
+        super.onDestroy()
+    }
+}
+
+/** Nupiešta „dalintis“ piktograma (tokia kaip nuotraukoje) – be teksto. */
 class ShareIcon(context: Context) : View(context) {
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
@@ -1549,6 +1710,7 @@ class DraggablePanel(
     private val onShare: (Set<String>, String, Boolean) -> Unit
 ) : FrameLayout(context) {
 
+    /** Kviečiama, kai prasideda neapdorotų matavimų įrašymo laikmatis. */
     var onCountdownStart: (() -> Unit)? = null
 
     private val density = resources.displayMetrics.density
@@ -1587,6 +1749,7 @@ class DraggablePanel(
     private val optionsLayout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
     private val boxes = LinkedHashMap<String, CheckBox>()
 
+    // Neapdoroti matavimai: varnelė + įrašo trukmė sekundėmis (atgalinis skaičiavimas)
     private val rawRow = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -1618,8 +1781,8 @@ class DraggablePanel(
     }
 
     private val alphaSeek = SeekBar(context).apply {
-        max = 80
-        progress = 72
+        max = 80 // 20..100 %
+        progress = 72 // ~92 %
         setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
                 panel.alpha = (20 + p) / 100f
@@ -1640,7 +1803,7 @@ class DraggablePanel(
         layoutParams = LinearLayout.LayoutParams((sizeDp * density).toInt(), (sizeDp * density).toInt())
     }
 
-    private val cancelBtn = smallButton("\u2715", 36)
+    private val cancelBtn = smallButton("\u2715", 36)     // ✕ (ir atšaukti, ir sumažinti)
 
     private val shareBtn = FrameLayout(context).apply {
         isClickable = true
@@ -1712,7 +1875,25 @@ class DraggablePanel(
         cancelBtn.setOnClickListener { minimize() }
         shareBtn.setOnClickListener { runShare() }
 
-        bubble.setOnClickListener {
+        bubble.setOnTouchListener { _, ev -> bubbleGd.onTouchEvent(ev); false }
+    }
+
+    /** Burbulo spalva ir efektai: avg – vidutinis C/N0, peak – maksimalus. */
+    fun setSignal(avgDb: Float?, peakDb: Float?) {
+        bubble.setSignal(avgDb, peakDb)
+    }
+
+
+    var onPin: (() -> Unit)? = null
+    private val bubbleAction: () -> Unit = { expandBubble() }
+    private val bubbleGd = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent): Boolean = true
+        override fun onSingleTapConfirmed(e: MotionEvent): Boolean { bubbleAction?.invoke(); return true }
+        override fun onDoubleTap(e: MotionEvent): Boolean { onPin?.invoke(); return true }
+    })
+
+    private fun expandBubble() {
+            // Ekrano (lietimo) vibracija – veikia, jei įrenginys ją palaiko
             bubble.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             try {
                 val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
@@ -1733,11 +1914,6 @@ class DraggablePanel(
                 android.util.Log.e("GnssApp", "Panelės atidarymas nepavyko", e)
                 Toast.makeText(context, "Klaida: ${e.javaClass.simpleName}: ${e.message}", Toast.LENGTH_LONG).show()
             }
-        }
-    }
-
-    fun setSignal(avgDb: Float?, peakDb: Float?) {
-        bubble.setSignal(avgDb, peakDb)
     }
 
     private fun runShare() {
@@ -1747,6 +1923,7 @@ class DraggablePanel(
         if ("raw" in selected) {
             val secs = rawSecs.text.toString().toIntOrNull()?.coerceIn(5, 600) ?: 30
             startCountdown(secs) {
+                // Klausimas nuskaitomas tik pasibaigus laikmačiui, kad spėtumėte parašyti per įrašymą
                 val question = questionInput.text.toString().trim()
                 onShare(selected, question, screenshot)
                 minimize()
@@ -1758,6 +1935,7 @@ class DraggablePanel(
         }
     }
 
+    /** Atgalinis skaičiavimas: CSV renkamas per visą laikmatį, tada dalinamasi. */
     private fun startCountdown(secs: Int, done: () -> Unit) {
         counting = true
         remaining = secs
@@ -1860,6 +2038,7 @@ class DraggablePanel(
     }
 
     private fun maximize() {
+        // Mažesnė panelė: iki 70 % ekrano pločio ir ne daugiau kaip 260 dp
         val parentW = (parent as? View)?.width ?: 0
         val maxW = (260 * density).toInt()
         val target = if (parentW > 0) min((parentW * 0.7f).toInt(), maxW) else maxW
@@ -1885,6 +2064,7 @@ class DraggablePanel(
         if (height > parentH) translationY = 0f
     }
 
+    // Burbulas/panelė gali išeiti už ekrano, bet bent 10 % lieka matoma
     private fun constrainPosition() {
         val parentW = (parent as? View)?.width?.toFloat() ?: return
         val parentH = (parent as? View)?.height?.toFloat() ?: return
@@ -1899,6 +2079,7 @@ class DraggablePanel(
     }
 }
 
+/** Konstelacijos pavadinimas pagal GnssStatus tipą (viršutinio lygio funkcija). */
 fun constName(type: Int): String = when (type) {
     GnssStatus.CONSTELLATION_GPS -> "GPS"
     GnssStatus.CONSTELLATION_GALILEO -> "GAL"
@@ -1986,7 +2167,26 @@ class MainActivity : AppCompatActivity() {
     private lateinit var info: TextView
     private lateinit var skyView: GnssView
     private lateinit var skyDome: SkyDomeGL
-    private lateinit var skyFloat: FloatingSky
+
+    /** Perjungia 2D dangų ir 3D gaublį jų vietoje (dvigubas bakstelėjimas). */
+    private fun setGlobe(on: Boolean) {
+        use3d = on
+        skyView.visibility = if (on) View.GONE else View.VISIBLE
+        skyDome.visibility = if (on) View.VISIBLE else View.GONE
+        if (on) skyDome.start() else skyDome.stop()
+    }
+
+    /** Prisegti burbulą prie ekrano (veikia ir kitose programose). */
+    private fun pinBubble() {
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Leiskite rodyti virš kitų programų", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            return
+        }
+        OverlayBus.onUnpin = { runOnUiThread { sharePanel?.visibility = View.VISIBLE } }
+        sharePanel?.visibility = View.GONE
+        startForegroundService(Intent(this, BubbleOverlayService::class.java))
+    }
     private var use3d = false
     private lateinit var cnoView: CnoPlotView
     private lateinit var bg: GradientBackground
@@ -2001,8 +2201,7 @@ class MainActivity : AppCompatActivity() {
     private val errorLog = ArrayDeque<String>()
 
     private var posText = "Laukiama fikso..."
-    private var satText: CharSequence = "Laukiama palydovų..."        // pilnas (ataskaitai)
-    private var satTextDisplay: CharSequence = "Laukiama palydovų..." // ekranui (be C/N0 avg/max)
+    private var satText: CharSequence = "Laukiama palydovų..."
     private var measText = "Laukiama matavimų..."
 
     private val statusCallback = object : GnssStatus.Callback() {
@@ -2022,16 +2221,43 @@ class MainActivity : AppCompatActivity() {
             if (::skyDome.isInitialized) skyDome.setSats(list)
             val used = list.filter { it.used }
             val avg = if (used.isNotEmpty()) used.map { it.cn0.toDouble() }.average() else 0.0
+            val max = list.maxOfOrNull { it.cn0 } ?: 0f
+            val byConst = list.groupingBy { it.const }.eachCount().toSortedMap()
 
             cnoView.addSample(list, if (used.isNotEmpty()) avg.toFloat() else null)
             bg.setSignal(if (used.isNotEmpty()) avg.toFloat() else null)
+            OverlayBus.avg = if (used.isNotEmpty()) avg.toFloat() else null
+            OverlayBus.peak = if (used.isNotEmpty()) used.maxOf { it.cn0 } else null
             sharePanel?.setSignal(
                 if (used.isNotEmpty()) avg.toFloat() else null,
                 if (used.isNotEmpty()) used.maxOf { it.cn0 } else null
             )
 
-            satText = buildSatText(list, used, includeStats = true)       // ataskaitai
-            satTextDisplay = buildSatText(list, used, includeStats = false) // ekranui
+            satText = SpannableStringBuilder().apply {
+                appendLine("Matomi palydovai: ${list.size}")
+                appendLine("Naudojami fiksui: ${used.size}")
+                appendLine("Vidutinis C/N0 (naudojami): ${fx(avg)} dB-Hz")
+                appendLine("Maks. C/N0: ${fx(max.toDouble())} dB-Hz")
+                val sbsAll = list.count { it.const == "SBS" }
+                val sbsUsed = list.count { it.const == "SBS" && it.used }
+                appendLine("SBAS (EGNOS) matomi: $sbsAll, naudojami: $sbsUsed")
+                appendLine(
+                    "SBAS pataisos: " + when {
+                        sbsUsed > 0 -> "taip (SBAS palydovas naudojamas fiksui)"
+                        sbsAll > 0 -> "matomas, bet fiksui nenaudojamas"
+                        else -> "SBAS palydovų nematyti"
+                    }
+                )
+                append("Pagal konstelaciją:\n")
+                for ((const, count) in byConst) {
+                    val start = length
+                    append("$const=$count   ")
+                    val end = length
+                    setSpan(ForegroundColorSpan(constColor(const)), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    setSpan(StyleSpan(Typeface.BOLD), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    setSpan(RelativeSizeSpan(1.4f), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+            }
             render()
         }
     }
@@ -2114,22 +2340,18 @@ class MainActivity : AppCompatActivity() {
         left.addView(btnZero, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnGps, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnReset, LinearLayout.LayoutParams(mw, ww))
-        val btnSky = Button(this).apply {
-            text = "3D dangus ⇄ 2D"
-            setOnClickListener {
-                use3d = !use3d
-                skyView.visibility = if (use3d) View.GONE else View.VISIBLE
-                skyFloat.visibility = if (use3d) View.VISIBLE else View.GONE
-                if (use3d) skyDome.start() else skyDome.stop()
-            }
-        }
-        left.addView(btnSky, LinearLayout.LayoutParams(mw, ww))
         left.addView(info, LinearLayout.LayoutParams(mw, ww))
 
         val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         right.addView(skyView, LinearLayout.LayoutParams(skySide, skySide))
-        skyFloat = FloatingSky(this).apply { visibility = View.GONE }
-        skyDome = skyFloat.dome
+        skyDome = SkyDomeGL(this).apply { visibility = View.GONE }
+        right.addView(skyDome, LinearLayout.LayoutParams(skySide, skySide))
+        skyDome.onDoubleTapCb = { setGlobe(false) }
+        val skyGd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+            override fun onDoubleTap(e: MotionEvent): Boolean { setGlobe(true); return true }
+        })
+        skyView.setOnTouchListener { _, ev -> skyGd.onTouchEvent(ev); true }
         right.addView(cnoView, LinearLayout.LayoutParams(mw, cnoH))
 
         val content = LinearLayout(this).apply { orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL }
@@ -2147,12 +2369,9 @@ class MainActivity : AppCompatActivity() {
         container.addView(bg, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         container.addView(root, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
-        container.addView(
-            skyFloat,
-            FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        )
         setContentView(container)
-
+        
+        // Pradedame su iš karto aktyviu burbulu (minimizuota būsena)
         setupShareBubble()
     }
 
@@ -2162,6 +2381,7 @@ class MainActivity : AppCompatActivity() {
             val report = buildReport(sections - "screenshot" - "raw", question)
             val uris = ArrayList<Uri>()
             if (wantScreenshot) {
+                // Burbulas ir panelė NEPATENKA į ekrano kopiją
                 sharePanel?.visibility = View.INVISIBLE
                 try {
                     takeScreenshot()?.let { uris.add(it) }
@@ -2170,21 +2390,29 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             if ("raw" in sections) rawCsvUri()?.let { uris.add(it) }
+            // Ataskaita (su klausimu) visada kaip tekstinis failas: kai siunčiami failai,
+            // kai kurios programos (pvz., AI) ignoruoja EXTRA_TEXT ir klausimas dingsta.
             reportFileUri(report)?.let { uris.add(0, it) }
             shareContent(report, uris)
         }
         panel.onCountdownStart = {
+            // Atgalinio skaičiavimo pradžioje CSV buferis pradedamas iš naujo
             rawLog.setLength(0)
             rawLog.append(rawHeader)
         }
         val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        params.gravity = Gravity.TOP or Gravity.START
-
+        
+        // PAKEISTA: Naudojame START, kad translationX skaičiavimas būtų teisingas
+        params.gravity = Gravity.TOP or Gravity.START 
+        
         container.addView(panel, params)
+        panel.onPin = { pinBubble() }
         sharePanel = panel
-
+        
+        // Nustatome pradinę poziciją viršutiniame dešiniajame kampe
         panel.post {
             val margin = (16 * resources.displayMetrics.density).toInt()
+            // Kadangi gravitacija START, translationX pastums į dešinę
             panel.translationX = (container.width - panel.width - margin).toFloat()
             panel.translationY = margin.toFloat()
         }
@@ -2238,217 +2466,4 @@ class MainActivity : AppCompatActivity() {
                 appendLine("Aukštis (elipsoidas): ${fx(loc.altitude)} m")
                 appendLine("Geoidas: ${Geoid.mode.label}")
                 val n = Geoid.undulation(loc.latitude, loc.longitude)
-                when {
-                    n != null -> {
-                        appendLine("Geoido unduliacija (N): ${fx(n, 2)} m")
-                        appendLine("Aukštis virš jūros (H): ${fx(loc.altitude - n)} m")
-                    }
-                    Geoid.lastError != null -> appendLine("Klaida: ${Geoid.lastError}")
-                    !Geoid.isReady -> appendLine("Geoidas kraunamas...")
-                    else -> appendLine("Taškas už pasirinkto geoido ribų")
-                }
-            }
-            if (loc.hasSpeed()) appendLine("Greitis: ${fx(loc.speed * 3.6)} km/h")
-            append("Laikas: ${java.text.DateFormat.getTimeInstance().format(Date(loc.time))}")
-        }
-        baro.updateMslp(loc.latitude, loc.longitude)
-        lastGpsH = if (loc.hasAltitude()) Geoid.undulation(loc.latitude, loc.longitude)?.let { loc.altitude - it } else null
-        render()
-    }
-
-    // ---- Palydovų tekstas (bendras ekranui ir ataskaitai) ----
-    private fun buildSatText(
-        list: List<Sat>,
-        used: List<Sat>,
-        includeStats: Boolean
-    ): SpannableStringBuilder {
-        val avg = if (used.isNotEmpty()) used.map { it.cn0.toDouble() }.average() else 0.0
-        val max = list.maxOfOrNull { it.cn0 } ?: 0f
-        val byConst = list.groupingBy { it.const }.eachCount().toSortedMap()
-
-        return SpannableStringBuilder().apply {
-            appendLine("Matomi palydovai: ${list.size}")
-            appendLine("Naudojami fiksui: ${used.size}")
-            if (includeStats) {
-                appendLine("Vidutinis C/N0 (naudojami): ${fx(avg)} dB-Hz")
-                appendLine("Maks. C/N0: ${fx(max.toDouble())} dB-Hz")
-            }
-            val sbsAll = list.count { it.const == "SBS" }
-            val sbsUsed = list.count { it.const == "SBS" && it.used }
-            appendLine("SBAS (EGNOS) matomi: $sbsAll, naudojami: $sbsUsed")
-            appendLine(
-                "SBAS pataisos: " + when {
-                    sbsUsed > 0 -> "taip (SBAS palydovas naudojamas fiksui)"
-                    sbsAll > 0 -> "matomas, bet fiksui nenaudojamas"
-                    else -> "SBAS palydovų nematyti"
-                }
-            )
-            append("Pagal konstelaciją:\n")
-            for ((const, count) in byConst) {
-                val start = length
-                append("$const=$count   ")
-                val end = length
-                setSpan(ForegroundColorSpan(constColor(const)), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                setSpan(StyleSpan(Typeface.BOLD), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                setSpan(RelativeSizeSpan(1.4f), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-        }
-    }
-
-    /** Ekranui — be platumos, ilgumos, greičio ir laiko. */
-    private fun displayPos(): String = posText.lines().filterNot {
-        it.startsWith("Platuma:") ||
-        it.startsWith("Ilguma:") ||
-        it.startsWith("Greitis:") ||
-        it.startsWith("Laikas:")
-    }.joinToString("\n")
-
-    private fun render() {
-        val sb = SpannableStringBuilder()
-        sb.append("=== FIKSAS ===\n")
-        sb.append(displayPos())               // ← ekranui filtruota
-        sb.append("\n\n=== BAROMETRAS ===\n")
-        if (!baro.hasSensor) {
-            sb.append("Barometro jutiklio nėra\n")
-        } else {
-            val alt = baro.altitude()
-            sb.append("Slėgis: ${baro.stationHpa?.let { fx(it, 2) } ?: "—"} hPa\n")
-            sb.append("MSLP: ${baro.mslpHpa?.let { fx(it) } ?: "—"} hPa (${baro.mslpSource})\n")
-            sb.append("Barometrinis aukštis: ${alt?.let { fx(it) + " m" } ?: "—"}\n")
-            sb.append("Kalibravimo poslinkis: ${fx(baro.offsetM)} m\n")
-        }
-        sb.append("\n=== PALYDOVAI ===\n")
-        sb.append(satTextDisplay)             // ← ekranui be avg/max C/N0
-        sb.append("\n\n=== NEAPDOROTI MATAVIMAI ===\n")
-        sb.append(measText)
-        info.text = sb
-    }
-
-    private fun logError(msg: String) {
-        val stamp = java.text.DateFormat.getTimeInstance().format(Date())
-        errorLog.addLast("$stamp  $msg")
-        if (errorLog.size > 20) errorLog.removeFirst()
-    }
-
-    // ---------------- NEAPDOROTI MATAVIMAI (CSV) ----------------
-    private val rawHeader = "laikas_ms,konstelacija,svid,cn0_dbhz,dazniu_hz,doplerio_mps,akumuliuota_m,recv_sv_time_ns\n"
-    private val rawLog = StringBuilder(rawHeader)
-
-    private fun appendRaw(m: GnssMeasurement) {
-        if (rawLog.length > 3_000_000) { rawLog.setLength(0); rawLog.append(rawHeader) }
-        val carrier = if (m.hasCarrierFrequencyHz()) m.carrierFrequencyHz.toString() else ""
-        rawLog.append(System.currentTimeMillis()).append(',')
-            .append(constName(m.constellationType)).append(',')
-            .append(m.svid).append(',')
-            .append(m.cn0DbHz).append(',')
-            .append(carrier).append(',')
-            .append(m.pseudorangeRateMetersPerSecond).append(',')
-            .append(m.accumulatedDeltaRangeMeters).append(',')
-            .append(m.receivedSvTimeNanos).append('\n')
-    }
-
-    private fun reportFileUri(text: String): Uri? = try {
-        val file = File(cacheDir, "ataskaita.txt")
-        file.writeText(text)
-        FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-    } catch (e: Exception) {
-        logError("Ataskaitos failas nepavyko: ${e.message}")
-        null
-    }
-
-    private fun rawCsvUri(): Uri? = try {
-        val file = File(cacheDir, "gnss_raw.csv")
-        file.writeText(rawLog.toString())
-        FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-    } catch (e: Exception) {
-        logError("CSV nepavyko: ${e.message}")
-        null
-    }
-
-    private fun takeScreenshot(): Uri? {
-        val view = window.decorView
-        val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        view.draw(canvas)
-        val file = File(cacheDir, "screenshot.png")
-        return try {
-            FileOutputStream(file).use { out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
-            FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-        } catch (e: Exception) {
-            logError("Screenshot failed: ${e.message}")
-            null
-        }
-    }
-
-    private fun buildReport(sections: Set<String>, question: String): String = buildString {
-        appendLine("GNSS App ataskaita")
-        appendLine("Laikas: ${java.text.DateFormat.getDateTimeInstance().format(Date())}")
-        appendLine()
-        if (question.isNotBlank()) { appendLine("Klausimas: $question"); appendLine() }
-        if ("irenginys" in sections) {
-            appendLine("=== ĮRENGINYS ===")
-            appendLine("Modelis: ${Build.MANUFACTURER} ${Build.MODEL}")
-            appendLine("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-            appendLine("Barometras: ${if (baro.hasSensor) "yra" else "nėra"}")
-            appendLine()
-        }
-        if ("fiksas" in sections) { appendLine("=== FIKSAS ==="); appendLine(posText); appendLine() }
-        if ("geoidas" in sections) {
-            appendLine("=== GEOIDAS ===")
-            appendLine("Modelis: ${Geoid.mode.label}")
-            appendLine("Būsena: ${Geoid.lastError ?: if (Geoid.isReady) "įkrautas" else "kraunamas"}")
-            appendLine()
-        }
-        if ("baro" in sections) {
-            appendLine("=== BAROMETRAS ===")
-            if (!baro.hasSensor) appendLine("Barometro jutiklio nėra") else {
-                appendLine("Slėgis: ${baro.stationHpa?.let { fx(it, 2) } ?: "—"} hPa")
-                appendLine("MSLP: ${baro.mslpHpa?.let { fx(it) } ?: "—"} hPa (${baro.mslpSource})")
-                appendLine("Barometrinis aukštis: ${baro.altitude()?.let { fx(it) + " m" } ?: "—"}")
-                appendLine("Kalibravimo poslinkis: ${fx(baro.offsetM)} m")
-            }
-            appendLine()
-        }
-        if ("palydovai" in sections) {
-            appendLine("=== PALYDOVAI ===")
-            appendLine(satText)
-            appendLine(measText)
-            appendLine("Palydovų sąrašas:")
-            lastSats.sortedWith(compareBy({ it.const }, { it.svid })).forEach { s ->
-                appendLine("${s.const} ${s.svid}: C/N0 ${fx(s.cn0.toDouble())}, kampas ${fx(s.elev.toDouble(), 0)}°, az ${fx(s.az.toDouble(), 0)}°, fiksui: ${if (s.used) "taip" else "ne"}")
-            }
-            appendLine()
-        }
-        if ("cno" in sections) { appendLine("=== C/N0 ISTORIJA ==="); appendLine(cnoView.summary()); appendLine() }
-        if ("klaidos" in sections) {
-            appendLine("=== KLAIDOS IR BŪSENA ===")
-            appendLine("Geoido klaida: ${Geoid.lastError ?: "nėra"}")
-            appendLine("MSLP šaltinis: ${baro.mslpSource}")
-            if (errorLog.isEmpty()) appendLine("Programos klaidų žurnalas tuščias") else {
-                appendLine("Programos žurnalas:")
-                errorLog.forEach { appendLine(it) }
-            }
-            appendLine()
-        }
-    }
-
-    private fun shareContent(text: String, uris: List<Uri>) {
-        if (uris.isEmpty()) {
-            val intent = Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_SUBJECT, "GNSS App ataskaita")
-                putExtra(Intent.EXTRA_TEXT, text)
-            }
-            startActivity(Intent.createChooser(intent, "Dalintis ataskaita"))
-        } else {
-            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                type = "*/*"
-                putParcelableArrayListExtra(Intent.EXTRA_STREAM, java.util.ArrayList<Uri>(uris))
-                putExtra(Intent.EXTRA_TEXT, text)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            startActivity(Intent.createChooser(intent, "Dalintis"))
-        }
-    }
-
-}
+         

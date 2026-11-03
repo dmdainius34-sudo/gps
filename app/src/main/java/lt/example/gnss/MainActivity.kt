@@ -957,7 +957,18 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private val rotSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
     private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val renderer = GlobeRenderer(context.applicationContext, resources.displayMetrics.density)
+    private val handler = Handler(Looper.getMainLooper())
     private var running = false
+
+    // Rankinis sukimas pirštu: sensoriai sustabdomi, po minutės be liečiant – grįžtama
+    private var manual = false
+    private var baseRot = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+    private var lastRaw = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+    private var yawD = 0f
+    private var pitchD = 0f
+    private var lastX = 0f
+    private var lastY = 0f
+    private val resumeSensors = Runnable { manual = false }
 
     init {
         setEGLContextClientVersion(2)
@@ -977,6 +988,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     fun stop() {
         running = false
+        manual = false
+        handler.removeCallbacks(resumeSensors)
         sm.unregisterListener(this)
         onPause()
     }
@@ -991,10 +1004,108 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             Surface.ROTATION_270 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_MINUS_Y, SensorManager.AXIS_X, out)
             else -> raw.copyInto(out)
         }
-        renderer.setRotation(out)
+        lastRaw = out
+        if (!manual) renderer.setRotation(out)
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                handler.removeCallbacks(resumeSensors)
+                if (!manual) {
+                    baseRot = lastRaw.copyOf()
+                    yawD = 0f
+                    pitchD = 0f
+                    manual = true
+                }
+                lastX = e.x
+                lastY = e.y
+                parent?.requestDisallowInterceptTouchEvent(true)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                yawD += (e.x - lastX) * 0.4f
+                pitchD = (pitchD + (e.y - lastY) * 0.4f).coerceIn(-85f, 85f)
+                lastX = e.x
+                lastY = e.y
+                renderer.setRotation(composeManual())
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                // Po 60 s be prisilietimo vėl įjungiami sensoriai
+                handler.removeCallbacks(resumeSensors)
+                handler.postDelayed(resumeSensors, 60_000L)
+                return true
+            }
+        }
+        return super.onTouchEvent(e)
+    }
+
+    private fun composeManual(): FloatArray {
+        val a = Math.toRadians(yawD.toDouble())
+        val b = Math.toRadians(pitchD.toDouble())
+        val ca = cos(a).toFloat(); val sa = sin(a).toFloat()
+        val cb = cos(b).toFloat(); val sb = sin(b).toFloat()
+        val rz = floatArrayOf(ca, -sa, 0f, sa, ca, 0f, 0f, 0f, 1f)
+        val rx = floatArrayOf(1f, 0f, 0f, 0f, cb, -sb, 0f, sb, cb)
+        return mul3(rz, mul3(rx, baseRot))
+    }
+
+    private fun mul3(a: FloatArray, b: FloatArray): FloatArray {
+        val o = FloatArray(9)
+        for (i in 0..2) for (j in 0..2) {
+            var sum = 0f
+            for (k in 0..2) sum += a[i * 3 + k] * b[k * 3 + j]
+            o[i * 3 + j] = sum
+        }
+        return o
+    }
+}
+
+/** Plūduriuojantis gaublio langas: viršutinė juosta stumdo, gaublys sukasi pirštu. */
+class FloatingSky(context: Context) : FrameLayout(context) {
+
+    val dome = SkyDomeGL(context)
+    private val density = resources.displayMetrics.density
+    private val size = (320 * density).toInt()
+    private val barH = (30 * density).toInt()
+    private val bar = TextView(context).apply {
+        text = "\u2261  stumti"
+        textSize = 13f
+        setTextColor(Color.WHITE)
+        gravity = Gravity.CENTER
+        setBackgroundColor(0xCC1F2937.toInt())
+    }
+    private var lastRawX = 0f
+    private var lastRawY = 0f
+
+    init {
+        addView(dome, FrameLayout.LayoutParams(size, size).apply { topMargin = barH })
+        addView(bar, FrameLayout.LayoutParams(size, barH))
+        bar.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { lastRawX = e.rawX; lastRawY = e.rawY }
+                MotionEvent.ACTION_MOVE -> {
+                    translationX += e.rawX - lastRawX
+                    translationY += e.rawY - lastRawY
+                    lastRawX = e.rawX; lastRawY = e.rawY
+                    constrain()
+                }
+            }
+            true
+        }
+    }
+
+    /** Bent 10 % lango lieka matoma. */
+    private fun constrain() {
+        val pw = (parent as? View)?.width?.toFloat() ?: return
+        val ph = (parent as? View)?.height?.toFloat() ?: return
+        val w = size.toFloat(); val h = (size + barH).toFloat()
+        translationX = translationX.coerceIn(-w * 0.9f, pw - w * 0.1f)
+        translationY = translationY.coerceIn(-h * 0.9f, ph - h * 0.1f)
+    }
 }
 
 private class GlobeRenderer(private val appCtx: Context, private val density: Float) : GLSurfaceView.Renderer {
@@ -1897,6 +2008,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var info: TextView
     private lateinit var skyView: GnssView
     private lateinit var skyDome: SkyDomeGL
+    private lateinit var skyFloat: FloatingSky
     private var use3d = false
     private lateinit var cnoView: CnoPlotView
     private lateinit var bg: GradientBackground
@@ -2053,7 +2165,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener {
                 use3d = !use3d
                 skyView.visibility = if (use3d) View.GONE else View.VISIBLE
-                skyDome.visibility = if (use3d) View.VISIBLE else View.GONE
+                skyFloat.visibility = if (use3d) View.VISIBLE else View.GONE
                 if (use3d) skyDome.start() else skyDome.stop()
             }
         }
@@ -2062,8 +2174,8 @@ class MainActivity : AppCompatActivity() {
 
         val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         right.addView(skyView, LinearLayout.LayoutParams(skySide, skySide))
-        skyDome = SkyDomeGL(this).apply { visibility = View.GONE }
-        right.addView(skyDome, LinearLayout.LayoutParams(skySide, skySide))
+        skyFloat = FloatingSky(this).apply { visibility = View.GONE }
+        skyDome = skyFloat.dome
         right.addView(cnoView, LinearLayout.LayoutParams(mw, cnoH))
 
         val content = LinearLayout(this).apply { orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL }
@@ -2081,6 +2193,10 @@ class MainActivity : AppCompatActivity() {
         container.addView(bg, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         container.addView(root, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
+        container.addView(
+            skyFloat,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        )
         setContentView(container)
         
         // Pradedame su iš karto aktyviu burbulu (minimizuota būsena)
@@ -2335,22 +2451,4 @@ class MainActivity : AppCompatActivity() {
         } else {
             val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
                 type = "*/*"
-                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
-                putExtra(Intent.EXTRA_TEXT, text)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            startActivity(Intent.createChooser(intent, "Dalintis"))
-        }
-    }
-
-    private fun constName(type: Int) = when (type) {
-        GnssStatus.CONSTELLATION_GPS -> "GPS"
-        GnssStatus.CONSTELLATION_GALILEO -> "GAL"
-        GnssStatus.CONSTELLATION_GLONASS -> "GLO"
-        GnssStatus.CONSTELLATION_BEIDOU -> "BDS"
-        GnssStatus.CONSTELLATION_QZSS -> "QZS"
-        GnssStatus.CONSTELLATION_SBAS -> "SBS"
-        GnssStatus.CONSTELLATION_IRNSS -> "NVC"
-        else -> "?"
-    }
-}
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, Ar

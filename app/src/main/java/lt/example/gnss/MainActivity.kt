@@ -1193,6 +1193,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val hz = buildHorizon(1.006)
         horizonBuf = floatBuf(hz); horizonN = hz.size / 3
 
+        // GL kontekstas atkuriamas po išėjimo/įėjimo – senos tekstūrų ID nebegalioja, todėl viską perkuriame
+        prnTex.clear()
+        labelTex.clear()
         starTex = makeStarTexture()
         for (d in 0 until 360 step 30) labelTex[labelOf(d)] = makeTexture(labelOf(d), 0xFFFFFFFF.toInt(), if (d % 90 == 0) 170 else 96)
     }

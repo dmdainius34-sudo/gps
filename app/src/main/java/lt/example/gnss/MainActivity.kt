@@ -970,9 +970,22 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private var lastY = 0f
     private val resumeSensors = Runnable { manual = false }
 
+    // Perkėlimo režimas (ilgas paspaudimas) – gaublį galima tempti po ekraną
+    var onMove: ((Float, Float) -> Unit)? = null
+    private var moveMode = false
+    private var lastRawX = 0f
+    private var lastRawY = 0f
+    private val longPress = Runnable {
+        moveMode = true
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+    }
+
     init {
         setEGLContextClientVersion(2)
         setEGLConfigChooser(8, 8, 8, 8, 16, 0)
+        // Permatomas paviršius: matomas tik pats gaublys, be juodo kvadrato
+        holder.setFormat(PixelFormat.TRANSLUCENT)
+        setZOrderOnTop(true)
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
     }
@@ -1022,18 +1035,32 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                 }
                 lastX = e.x
                 lastY = e.y
+                lastRawX = e.rawX
+                lastRawY = e.rawY
+                moveMode = false
+                handler.postDelayed(longPress, 450L)
                 parent?.requestDisallowInterceptTouchEvent(true)
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                yawD += (e.x - lastX) * 0.4f
-                pitchD = (pitchD + (e.y - lastY) * 0.4f).coerceIn(-85f, 85f)
+                if (moveMode) {
+                    onMove?.invoke(e.rawX - lastRawX, e.rawY - lastRawY)
+                } else {
+                    // Judesys prieš ilgą paspaudimą – sukimas pirštu
+                    if (kotlin.math.abs(e.x - lastX) + kotlin.math.abs(e.y - lastY) > 2f) handler.removeCallbacks(longPress)
+                    yawD += (e.x - lastX) * 0.4f
+                    pitchD = (pitchD + (e.y - lastY) * 0.4f).coerceIn(-85f, 85f)
+                    renderer.setRotation(composeManual())
+                }
                 lastX = e.x
                 lastY = e.y
-                renderer.setRotation(composeManual())
+                lastRawX = e.rawX
+                lastRawY = e.rawY
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                handler.removeCallbacks(longPress)
+                moveMode = false
                 // Po 60 s be prisilietimo vėl įjungiami sensoriai
                 handler.removeCallbacks(resumeSensors)
                 handler.postDelayed(resumeSensors, 60_000L)
@@ -1069,32 +1096,14 @@ class FloatingSky(context: Context) : FrameLayout(context) {
 
     val dome = SkyDomeGL(context)
     private val density = resources.displayMetrics.density
-    private val size = (320 * density).toInt()
-    private val barH = (30 * density).toInt()
-    private val bar = TextView(context).apply {
-        text = "\u2261  stumti"
-        textSize = 13f
-        setTextColor(Color.WHITE)
-        gravity = Gravity.CENTER
-        setBackgroundColor(0xCC1F2937.toInt())
-    }
-    private var lastRawX = 0f
-    private var lastRawY = 0f
+    private val size = (300 * density).toInt()
 
     init {
-        addView(dome, FrameLayout.LayoutParams(size, size).apply { topMargin = barH })
-        addView(bar, FrameLayout.LayoutParams(size, barH))
-        bar.setOnTouchListener { _, e ->
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { lastRawX = e.rawX; lastRawY = e.rawY }
-                MotionEvent.ACTION_MOVE -> {
-                    translationX += e.rawX - lastRawX
-                    translationY += e.rawY - lastRawY
-                    lastRawX = e.rawX; lastRawY = e.rawY
-                    constrain()
-                }
-            }
-            true
+        addView(dome, FrameLayout.LayoutParams(size, size))
+        dome.onMove = { dx, dy ->
+            translationX += dx
+            translationY += dy
+            constrain()
         }
     }
 
@@ -1102,9 +1111,9 @@ class FloatingSky(context: Context) : FrameLayout(context) {
     private fun constrain() {
         val pw = (parent as? View)?.width?.toFloat() ?: return
         val ph = (parent as? View)?.height?.toFloat() ?: return
-        val w = size.toFloat(); val h = (size + barH).toFloat()
+        val w = size.toFloat()
         translationX = translationX.coerceIn(-w * 0.9f, pw - w * 0.1f)
-        translationY = translationY.coerceIn(-h * 0.9f, ph - h * 0.1f)
+        translationY = translationY.coerceIn(-w * 0.9f, ph - w * 0.1f)
     }
 }
 

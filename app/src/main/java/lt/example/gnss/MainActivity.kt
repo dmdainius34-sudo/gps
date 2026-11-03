@@ -2467,4 +2467,189 @@ class MainActivity : AppCompatActivity() {
         }
         lm.registerGnssStatusCallback(statusCallback, mainHandler)
         if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
-        lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1
+        lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
+    }
+
+    @RequiresApi(31)
+    @SuppressLint("MissingPermission")
+    private fun registerFullTracking() {
+        val request = GnssMeasurementRequest.Builder().setFullTracking(true).build()
+        lm.registerGnssMeasurementsCallback(request, mainExecutor, measCallback)
+    }
+
+    private fun onLocation(loc: Location) {
+        posText = buildString {
+            appendLine("Platuma: ${fx(loc.latitude, 7)}")
+            appendLine("Ilguma: ${fx(loc.longitude, 7)}")
+            appendLine(if (loc.hasAccuracy()) "Tikslumas: ${fx(loc.accuracy.toDouble())} m" else "Tikslumas: nežinomas")
+            if (loc.hasAltitude()) {
+                appendLine("Aukštis (elipsoidas): ${fx(loc.altitude)} m")
+                appendLine("Geoidas: ${Geoid.mode.label}")
+                val n = Geoid.undulation(loc.latitude, loc.longitude)
+                when {
+                    n != null -> {
+                        appendLine("Geoido unduliacija (N): ${fx(n, 2)} m")
+                        appendLine("Aukštis virš jūros (H): ${fx(loc.altitude - n)} m")
+                    }
+                    Geoid.lastError != null -> appendLine("Klaida: ${Geoid.lastError}")
+                    !Geoid.isReady -> appendLine("Geoidas kraunamas...")
+                    else -> appendLine("Taškas už pasirinkto geoido ribų")
+                }
+            }
+            if (loc.hasSpeed()) appendLine("Greitis: ${fx(loc.speed * 3.6)} km/h")
+            append("Laikas: ${java.text.DateFormat.getTimeInstance().format(Date(loc.time))}")
+        }
+        baro.updateMslp(loc.latitude, loc.longitude)
+        lastGpsH = if (loc.hasAltitude()) Geoid.undulation(loc.latitude, loc.longitude)?.let { loc.altitude - it } else null
+        render()
+    }
+
+    private fun render() {
+        val sb = SpannableStringBuilder()
+        sb.append("=== FIKSAS ===\n")
+        sb.append(posText)
+        sb.append("\n\n=== BAROMETRAS ===\n")
+        if (!baro.hasSensor) {
+            sb.append("Barometro jutiklio nėra\n")
+        } else {
+            val alt = baro.altitude()
+            sb.append("Slėgis: ${baro.stationHpa?.let { fx(it, 2) } ?: "—"} hPa\n")
+            sb.append("MSLP: ${baro.mslpHpa?.let { fx(it) } ?: "—"} hPa (${baro.mslpSource})\n")
+            sb.append("Barometrinis aukštis: ${alt?.let { fx(it) + " m" } ?: "—"}\n")
+            sb.append("Kalibravimo poslinkis: ${fx(baro.offsetM)} m\n")
+        }
+        sb.append("\n=== PALYDOVAI ===\n")
+        sb.append(satText)
+        sb.append("\n\n=== NEAPDOROTI MATAVIMAI ===\n")
+        sb.append(measText)
+        info.text = sb
+    }
+
+    private fun logError(msg: String) {
+        val stamp = java.text.DateFormat.getTimeInstance().format(Date())
+        errorLog.addLast("$stamp  $msg")
+        if (errorLog.size > 20) errorLog.removeFirst()
+    }
+
+    // ---------------- NEAPDOROTI MATAVIMAI (CSV) ----------------
+    private val rawHeader = "laikas_ms,konstelacija,svid,cn0_dbhz,dazniu_hz,doplerio_mps,akumuliuota_m,recv_sv_time_ns\n"
+    private val rawLog = StringBuilder(rawHeader)
+
+    private fun appendRaw(m: GnssMeasurement) {
+        if (rawLog.length > 3_000_000) { rawLog.setLength(0); rawLog.append(rawHeader) }
+        val carrier = if (m.hasCarrierFrequencyHz()) m.carrierFrequencyHz.toString() else ""
+        rawLog.append(System.currentTimeMillis()).append(',')
+            .append(constName(m.constellationType)).append(',')
+            .append(m.svid).append(',')
+            .append(m.cn0DbHz).append(',')
+            .append(carrier).append(',')
+            .append(m.pseudorangeRateMetersPerSecond).append(',')
+            .append(m.accumulatedDeltaRangeMeters).append(',')
+            .append(m.receivedSvTimeNanos).append('\n')
+    }
+
+    private fun reportFileUri(text: String): Uri? = try {
+        val file = File(cacheDir, "ataskaita.txt")
+        file.writeText(text)
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+    } catch (e: Exception) {
+        logError("Ataskaitos failas nepavyko: ${e.message}")
+        null
+    }
+
+    private fun rawCsvUri(): Uri? = try {
+        val file = File(cacheDir, "gnss_raw.csv")
+        file.writeText(rawLog.toString())
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+    } catch (e: Exception) {
+        logError("CSV nepavyko: ${e.message}")
+        null
+    }
+
+    private fun takeScreenshot(): Uri? {
+        val view = window.decorView
+        val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        view.draw(canvas)
+        val file = File(cacheDir, "screenshot.png")
+        return try {
+            FileOutputStream(file).use { out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
+            FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        } catch (e: Exception) {
+            logError("Screenshot failed: ${e.message}")
+            null
+        }
+    }
+
+    private fun buildReport(sections: Set<String>, question: String): String = buildString {
+        appendLine("GNSS App ataskaita")
+        appendLine("Laikas: ${java.text.DateFormat.getDateTimeInstance().format(Date())}")
+        appendLine()
+        if (question.isNotBlank()) { appendLine("Klausimas: $question"); appendLine() }
+        if ("irenginys" in sections) {
+            appendLine("=== ĮRENGINYS ===")
+            appendLine("Modelis: ${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLine("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+            appendLine("Barometras: ${if (baro.hasSensor) "yra" else "nėra"}")
+            appendLine()
+        }
+        if ("fiksas" in sections) { appendLine("=== FIKSAS ==="); appendLine(posText); appendLine() }
+        if ("geoidas" in sections) {
+            appendLine("=== GEOIDAS ===")
+            appendLine("Modelis: ${Geoid.mode.label}")
+            appendLine("Būsena: ${Geoid.lastError ?: if (Geoid.isReady) "įkrautas" else "kraunamas"}")
+            appendLine()
+        }
+        if ("baro" in sections) {
+            appendLine("=== BAROMETRAS ===")
+            if (!baro.hasSensor) appendLine("Barometro jutiklio nėra") else {
+                appendLine("Slėgis: ${baro.stationHpa?.let { fx(it, 2) } ?: "—"} hPa")
+                appendLine("MSLP: ${baro.mslpHpa?.let { fx(it) } ?: "—"} hPa (${baro.mslpSource})")
+                appendLine("Barometrinis aukštis: ${baro.altitude()?.let { fx(it) + " m" } ?: "—"}")
+                appendLine("Kalibravimo poslinkis: ${fx(baro.offsetM)} m")
+            }
+            appendLine()
+        }
+        if ("palydovai" in sections) {
+            appendLine("=== PALYDOVAI ===")
+            appendLine(satText)
+            appendLine(measText)
+            appendLine("Palydovų sąrašas:")
+            lastSats.sortedWith(compareBy({ it.const }, { it.svid })).forEach { s ->
+                appendLine("${s.const} ${s.svid}: C/N0 ${fx(s.cn0.toDouble())}, kampas ${fx(s.elev.toDouble(), 0)}°, az ${fx(s.az.toDouble(), 0)}°, fiksui: ${if (s.used) "taip" else "ne"}")
+            }
+            appendLine()
+        }
+        if ("cno" in sections) { appendLine("=== C/N0 ISTORIJA ==="); appendLine(cnoView.summary()); appendLine() }
+        if ("klaidos" in sections) {
+            appendLine("=== KLAIDOS IR BŪSENA ===")
+            appendLine("Geoido klaida: ${Geoid.lastError ?: "nėra"}")
+            appendLine("MSLP šaltinis: ${baro.mslpSource}")
+            if (errorLog.isEmpty()) appendLine("Programos klaidų žurnalas tuščias") else {
+                appendLine("Programos žurnalas:")
+                errorLog.forEach { appendLine(it) }
+            }
+            appendLine()
+        }
+    }
+
+    private fun shareContent(text: String, uris: List<Uri>) {
+        if (uris.isEmpty()) {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "GNSS App ataskaita")
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            startActivity(Intent.createChooser(intent, "Dalintis ataskaita"))
+        } else {
+            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "*/*"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, java.util.ArrayList<Uri>(uris))
+                putExtra(Intent.EXTRA_TEXT, text)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Dalintis"))
+        }
+    }
+
+}

@@ -2454,4 +2454,21 @@ class MainActivity : AppCompatActivity() {
 
     private fun shareContent(text: String, uris: List<Uri>) {
         if (uris.isEmpty()) {
-            val intent = Int
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "GNSS App ataskaita")
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            startActivity(Intent.createChooser(intent, "Dalintis ataskaita"))
+        } else {
+            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "*/*"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, java.util.ArrayList<Uri>(uris))
+                putExtra(Intent.EXTRA_TEXT, text)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Dalintis"))
+        }
+    }
+
+}

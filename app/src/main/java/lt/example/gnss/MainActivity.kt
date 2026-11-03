@@ -1,6 +1,7 @@
 package lt.example.gnss
 
 import android.Manifest
+import android.hardware.GeomagneticField
 import android.app.NotificationManager
 import android.app.NotificationChannel
 import android.app.Notification
@@ -970,6 +971,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val renderer = GlobeRenderer(context.applicationContext, resources.displayMetrics.density)
     private val handler = Handler(Looper.getMainLooper())
+    private val calPrefs = context.getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
+    private var offsetDeg = calPrefs.getFloat("offset", 0f)   // rankinis šiaurės poslinkis (°)
+    private var declDeg = 0f                                    // magnetinė deklinacija (°) pagal vietą
     private var running = false
 
     // Rankinis sukimas pirštu: sensoriai sustabdomi, po minutės be liečiant – grįžtama
@@ -1005,6 +1009,32 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     fun setSats(list: List<Sat>) = renderer.setSats(list)
 
+    /** Pagal vietą apskaičiuojama magnetinė deklinacija (magnetinė šiaurė -> tikroji šiaurė). */
+    fun setLocation(lat: Double, lon: Double, alt: Double) {
+        declDeg = try {
+            GeomagneticField(lat.toFloat(), lon.toFloat(), alt.toFloat(), System.currentTimeMillis()).declination
+        } catch (e: Exception) { 0f }
+    }
+
+    /** Įrašo tai, ką pirštu pasukote: N žymė turi sutapti su tikrąja šiaurės kryptimi. */
+    fun saveNorth() {
+        offsetDeg += yawD
+        calPrefs.edit().putFloat("offset", offsetDeg).apply()
+        yawD = 0f
+        pitchD = 0f
+        manual = false
+        handler.removeCallbacks(resumeSensors)
+    }
+
+    /** Pašalina rankinį šiaurės poslinkį (lieka tik magnetinė deklinacija). */
+    fun resetNorth() {
+        offsetDeg = 0f
+        calPrefs.edit().putFloat("offset", 0f).apply()
+        yawD = 0f
+        pitchD = 0f
+        manual = false
+    }
+
     fun start() {
         if (running) return
         running = true
@@ -1030,8 +1060,12 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             Surface.ROTATION_270 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_MINUS_Y, SensorManager.AXIS_X, out)
             else -> raw.copyInto(out)
         }
-        lastRaw = out
-        if (!manual) renderer.setRotation(out)
+        // Šiaurės korekcija: magnetinė deklinacija + rankinis poslinkis (pasaulio Z ašimi)
+        val total = Math.toRadians((offsetDeg + declDeg).toDouble())
+        val c = cos(total).toFloat(); val sn = sin(total).toFloat()
+        val fixed = mul3(floatArrayOf(c, -sn, 0f, sn, c, 0f, 0f, 0f, 1f), out)
+        lastRaw = fixed
+        if (!manual) renderer.setRotation(fixed)
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -2369,6 +2403,16 @@ class MainActivity : AppCompatActivity() {
         left.addView(btnZero, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnGps, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnReset, LinearLayout.LayoutParams(mw, ww))
+        val btnSaveN = Button(this).apply {
+            text = "Įrašyti šiaurę (3D: pasukite N į tikrąją šiaurę)"
+            setOnClickListener { if (::skyDome.isInitialized) skyDome.saveNorth() }
+        }
+        val btnResetN = Button(this).apply {
+            text = "Atstatyti šiaurę (3D)"
+            setOnClickListener { if (::skyDome.isInitialized) skyDome.resetNorth() }
+        }
+        left.addView(btnSaveN, LinearLayout.LayoutParams(mw, ww))
+        left.addView(btnResetN, LinearLayout.LayoutParams(mw, ww))
         left.addView(info, LinearLayout.LayoutParams(mw, ww))
 
         val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -2509,6 +2553,7 @@ class MainActivity : AppCompatActivity() {
             append("Laikas: ${java.text.DateFormat.getTimeInstance().format(Date(loc.time))}")
         }
         baro.updateMslp(loc.latitude, loc.longitude)
+        if (::skyDome.isInitialized) skyDome.setLocation(loc.latitude, loc.longitude, loc.altitude)
         lastGpsH = if (loc.hasAltitude()) Geoid.undulation(loc.latitude, loc.longitude)?.let { loc.altitude - it } else null
         render()
     }

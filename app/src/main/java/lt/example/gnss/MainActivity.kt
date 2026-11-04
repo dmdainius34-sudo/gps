@@ -1356,6 +1356,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     fun setLocation(lat: Double, lon: Double) { obsLat = lat; obsLon = lon }
 
     private var earthTex = 0
+    private var earthProg = 0
+    private val earthAxis by lazy { floatBuf(floatArrayOf(0f, 0f, -0.5f, 0f, 0f, 0.5f)) }
     private var earthPos: FloatBuffer? = null
     private var earthUv: FloatBuffer? = null
     private var earthCount = 0
@@ -1364,6 +1366,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Įkelia assets/earth.jpg ir sukuria rutulį su lygiakampe tekstūra. */
     private fun buildEarth() {
+        earthProg = program(EARTH_VS, EARTH_FS)
         try {
             appCtx.assets.open("earth.jpg").use { ins ->
                 val bmp = android.graphics.BitmapFactory.decodeStream(ins)
@@ -1416,29 +1419,36 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         Matrix.multiplyMM(earthMvp, 0, mvp, 0, earthMat, 0)
 
         if (earthTex == 0) {
-            // Tekstūros nėra – rodome mėlyną rutulį, kad būtų aišku, kad Žemės vieta veikia
             GLES20.glUseProgram(colorProg)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, earthMvp, 0)
             GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 0.18f, 0.45f, 0.85f, 1f)
             bindPos(colorProg, earthPos!!)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
-            return
+        } else {
+            // 3D apšvietimas: saulės šviesa iš viršaus-dešinės, žemynai matomi tekstūroje
+            GLES20.glUseProgram(earthProg)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uMVP"), 1, false, earthMvp, 0)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uModel"), 1, false, earthMat, 0)
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uLight"), 0.5f, 0.3f, 0.8f)
+            val lp = GLES20.glGetAttribLocation(earthProg, "aPos")
+            val lu = GLES20.glGetAttribLocation(earthProg, "aUV")
+            GLES20.glEnableVertexAttribArray(lp)
+            GLES20.glEnableVertexAttribArray(lu)
+            earthPos!!.position(0); earthUv!!.position(0)
+            GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, earthPos)
+            GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, earthUv)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, earthTex)
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(earthProg, "uTex"), 0)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
         }
 
-        GLES20.glUseProgram(texProg)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(texProg, "uMVP"), 1, false, earthMvp, 0)
-        GLES20.glUniform4f(GLES20.glGetUniformLocation(texProg, "uColor"), 1f, 1f, 1f, 1f)
-        val lp = GLES20.glGetAttribLocation(texProg, "aPos")
-        val lu = GLES20.glGetAttribLocation(texProg, "aUV")
-        GLES20.glEnableVertexAttribArray(lp)
-        GLES20.glEnableVertexAttribArray(lu)
-        earthPos!!.position(0); earthUv!!.position(0)
-        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, earthPos)
-        GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, earthUv)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, earthTex)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(texProg, "uTex"), 0)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+        // Žemės ašis (strypas per polius), rodanti į Polaris
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, earthMvp, 0)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 0.85f, 0.3f, 1f)
+        bindPos(colorProg, earthAxis)
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
     }
 
     private fun labelOf(d: Int): String = when (d) { 0 -> "N"; 90 -> "E"; 180 -> "S"; 270 -> "W"; else -> d.toString() }
@@ -1694,6 +1704,32 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 if (length(c) > 0.5) discard;
                 float edge = smoothstep(0.5, 0.36, length(c));
                 gl_FragColor = vec4(uColor.rgb, uColor.a * edge);
+            }
+        """
+        private const val EARTH_VS = """
+            attribute vec3 aPos;
+            attribute vec2 aUV;
+            uniform mat4 uMVP;
+            uniform mat4 uModel;
+            varying vec2 vUV;
+            varying vec3 vN;
+            void main() {
+                vUV = aUV;
+                vN = mat3(uModel) * aPos;
+                gl_Position = uMVP * vec4(aPos, 1.0);
+            }
+        """
+        private const val EARTH_FS = """
+            precision mediump float;
+            uniform sampler2D uTex;
+            uniform vec3 uLight;
+            varying vec2 vUV;
+            varying vec3 vN;
+            void main() {
+                vec3 n = normalize(vN);
+                float d = max(dot(n, normalize(uLight)), 0.0);
+                vec4 t = texture2D(uTex, vUV);
+                gl_FragColor = vec4(t.rgb * (0.18 + 0.82 * d), 1.0);
             }
         """
         private const val TEX_VS = """

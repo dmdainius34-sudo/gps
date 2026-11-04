@@ -1188,7 +1188,55 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile private var rot = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
     @Volatile private var sats: List<Sat> = emptyList()
     fun setRotation(r: FloatArray) { rot = r.copyOf() }
-    fun setSats(l: List<Sat>) { sats = l }
+    // Kadro bazė: ENU stebėtojo ašys (e, n, u) sideralinėje (I) erdvėje, stebėtojo vieta ant paviršiaus
+    private var fE = DoubleArray(3)
+    private var fN = DoubleArray(3)
+    private var fU = DoubleArray(3)
+    private var fQ = DoubleArray(9)
+    private var fP = FloatArray(3)
+    private var fG = 0.0
+    private val mvpI = FloatArray(16)
+    private val lMat = FloatArray(16)
+    private var eyeI = floatArrayOf(0f, 0f, 1f)
+
+    private class SatI(val sat: Sat, val pos: FloatArray)
+    @Volatile private var satsI: List<SatI> = emptyList()
+
+    private fun frameNow() {
+        val d = System.currentTimeMillis() / 86400000.0 + 2440587.5 - 2451545.0
+        var gm = (280.46061837 + 360.98564736629 * d) % 360.0
+        if (gm < 0) gm += 360.0
+        fG = Math.toRadians(gm)
+        val la = Math.toRadians(obsLat)
+        val lst = fG + Math.toRadians(obsLon)
+        fE = doubleArrayOf(-sin(lst), cos(lst), 0.0)
+        fN = doubleArrayOf(-sin(la) * cos(lst), -sin(la) * sin(lst), cos(la))
+        fU = doubleArrayOf(cos(la) * cos(lst), cos(la) * sin(lst), sin(la))
+        fQ = doubleArrayOf(fE[0], fN[0], fU[0], fE[1], fN[1], fU[1], fE[2], fN[2], fU[2])
+        fP = floatArrayOf((EARTH_R * fU[0]).toFloat(), (EARTH_R * fU[1]).toFloat(), (EARTH_R * fU[2]).toFloat())
+    }
+
+    fun setSats(l: List<Sat>) {
+        sats = l
+        frameNow()
+        val out = ArrayList<SatI>()
+        for (s in l) {
+            if (s.elev < 0f) continue
+            val el = Math.toRadians(s.elev.toDouble().coerceIn(0.0, 90.0))
+            val az = Math.toRadians(s.az.toDouble())
+            val re = 6371.0
+            val rs = re + altKm(s.const)
+            val se = sin(el)
+            val rho = -re * se + kotlin.math.sqrt(re * re * se * se + rs * rs - re * re)
+            val dist = rho * EARTH_R / re
+            val dx = cos(el) * sin(az); val dy = cos(el) * cos(az); val dz = sin(el)
+            out.add(SatI(s, floatArrayOf(
+                (fP[0] + dist * (dx * fE[0] + dy * fN[0] + dz * fU[0])).toFloat(),
+                (fP[1] + dist * (dx * fE[1] + dy * fN[1] + dz * fU[1])).toFloat(),
+                (fP[2] + dist * (dx * fE[2] + dy * fN[2] + dz * fU[2])).toFloat())))
+        }
+        satsI = out
+    }
 
     private val proj = FloatArray(16)
     private val view = FloatArray(16)
@@ -1250,12 +1298,25 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
         val t = (System.nanoTime() - t0) / 1e9f
 
-        // Pasaulis -> planšetė (sensorių suderinimas)
+        // Kadras: įrenginio orientacija sideralinėje erdvėje (A = Q * rot)
+        frameNow()
         val r = rot
+        val aM = DoubleArray(9)
+        for (i in 0..2) for (j in 0..2) {
+            var sum = 0.0
+            for (k in 0..2) sum += fQ[i * 3 + k] * r[k * 3 + j]
+            aM[i * 3 + j] = sum
+        }
         java.util.Arrays.fill(mv, 0f)
-        for (c in 0..2) for (rr in 0..2) mv[c * 4 + rr] = r[c * 3 + rr]
+        for (c in 0..2) for (rr in 0..2) mv[c * 4 + rr] = aM[c * 3 + rr].toFloat()
         mv[15] = 1f
-        Matrix.multiplyMM(mvp, 0, pv, 0, mv, 0)
+        Matrix.multiplyMM(mvpI, 0, pv, 0, mv, 0)          // Žemė, palydovai (sideralinė erdvė)
+        // Stebėtojo lokali sistema (dangaus kupolas, horizontas): ENU -> I + vieta
+        java.util.Arrays.fill(lMat, 0f)
+        for (c in 0..2) for (rr in 0..2) lMat[c * 4 + rr] = fQ[rr * 3 + c].toFloat()
+        lMat[12] = fP[0]; lMat[13] = fP[1]; lMat[14] = fP[2]; lMat[15] = 1f
+        Matrix.multiplyMM(mvp, 0, mvpI, 0, lMat, 0)        // kupolas, horizontas, žymos
+        eyeI = floatArrayOf(aM[2].toFloat(), aM[5].toFloat(), aM[8].toFloat())
         // Kameros kryptis pasaulio koordinatėse (planšetės +Z)
         val eye = floatArrayOf(r[2], r[5], r[8])
 
@@ -1312,16 +1373,14 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
 
         // 6) Palydovai: geras signalas žybsi kaip žvaigždės
-        for (sat in sats) {
-            // Palydovai žemiau horizonto nematomi (už Žemės) – nepiešiame
-            if (sat.elev < 0f) continue
-            val el = Math.toRadians(sat.elev.toDouble().coerceIn(0.0, 90.0))
-            val az = Math.toRadians(sat.az.toDouble())
-            val p = floatArrayOf(
-                (0.98 * cos(el) * sin(az)).toFloat(),
-                (0.98 * cos(el) * cos(az)).toFloat(),
-                (0.98 * sin(el)).toFloat())
-            if (dot3(p, eye) < -0.05f) continue
+        System.arraycopy(mvpI, 0, mvp, 0, 16)
+        for (si in satsI) {
+            val sat = si.sat
+            val p = si.pos
+            // Už Žemės: kamera -> palydovas kerta Žemės rutulį – nerodome
+            val dd = p[0] * eyeI[0] + p[1] * eyeI[1] + p[2] * eyeI[2]
+            val px2 = p[0] - dd * eyeI[0]; val py2 = p[1] - dd * eyeI[1]; val pz2 = p[2] - dd * eyeI[2]
+            if (dd < 0f && kotlin.math.sqrt(px2 * px2 + py2 * py2 + pz2 * pz2) < EARTH_R) continue
             val col = constRgb(sat.const)
             val usedK = if (sat.used) 1f else 0.4f
             val phase = sat.svid * 0.7f
@@ -1382,7 +1441,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             earthTex = 0
             main.post { Toast.makeText(appCtx, "earth.jpg nerastas: app/src/main/assets/earth.jpg", Toast.LENGTH_LONG).show() }
         }
-        val stacks = 48; val slices = 96; val r = 0.32
+        val stacks = 48; val slices = 96; val r = 0.25
         val pos = ArrayList<Float>(); val uv = ArrayList<Float>()
         fun vertex(st: Int, sl: Int) {
             val lat = Math.toRadians(-90.0 + 180.0 * st / stacks)
@@ -1406,23 +1465,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Žemės sukimasis: GMST + stebėtojo ilguma; ašis rodo į Polaris (pasvirimas = 90° − platuma). */
     private fun drawEarth() {
         if (earthPos == null) return
-        val d = System.currentTimeMillis() / 86400000.0 + 2440587.5 - 2451545.0
-        var gmst = (280.46061837 + 360.98564736629 * d) % 360.0
-        if (gmst < 0) gmst += 360.0
-        val spin = Math.toRadians(gmst)
-        val tilt = Math.toRadians(-(90.0 - obsLat))
-        val rz = doubleArrayOf(cos(spin), -sin(spin), 0.0, sin(spin), cos(spin), 0.0, 0.0, 0.0, 1.0)
-        val rx = doubleArrayOf(1.0, 0.0, 0.0, 0.0, cos(tilt), -sin(tilt), 0.0, sin(tilt), cos(tilt))
-        val m3 = DoubleArray(9)
-        for (i in 0..2) for (j in 0..2) {
-            var sum = 0.0
-            for (k in 0..2) sum += rx[i * 3 + k] * rz[k * 3 + j]
-            m3[i * 3 + j] = sum
-        }
+        // Žemė sukasi apie savo ašį (Polaris kryptimi) pagal GMST; smeigtukas ir horizontas – jos dalis
+        val gg = fG
         java.util.Arrays.fill(earthMat, 0f)
-        for (c in 0..2) for (rr in 0..2) earthMat[c * 4 + rr] = m3[rr * 3 + c].toFloat()
-        earthMat[15] = 1f
-        Matrix.multiplyMM(earthMvp, 0, mvp, 0, earthMat, 0)
+        earthMat[0] = cos(gg).toFloat(); earthMat[1] = sin(gg).toFloat()
+        earthMat[4] = (-sin(gg)).toFloat(); earthMat[5] = cos(gg).toFloat()
+        earthMat[10] = 1f; earthMat[15] = 1f
+        Matrix.multiplyMM(earthMvp, 0, mvpI, 0, earthMat, 0)
 
         if (earthTex == 0) {
             GLES20.glUseProgram(colorProg)
@@ -1458,7 +1507,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // Stebėtojo vieta: raudonas smeigtukas ant Žemės paviršiaus
         val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon)
-        val r = 0.32
+        val r = 0.25
         val px = (r * cos(la) * cos(lo)).toFloat()
         val py = (r * cos(la) * sin(lo)).toFloat()
         val pz = (r * sin(la)).toFloat()
@@ -1471,6 +1520,18 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), 22f * density)
         bindPos(dotProg, floatBuf(floatArrayOf(px * 1.35f, py * 1.35f, pz * 1.35f)))
         GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
+    }
+
+    private val EARTH_R = 0.25f
+
+    /** Palydovo aukštis virš Žemės (km) pagal konstelaciją. */
+    private fun altKm(c: String): Double = when (c) {
+        "GPS" -> 20200.0
+        "GAL" -> 23222.0
+        "GLO" -> 19100.0
+        "BDS" -> 21528.0
+        "SBS" -> 35786.0
+        else -> 20200.0
     }
 
     private fun labelOf(d: Int): String = when (d) { 0 -> "N"; 90 -> "E"; 180 -> "S"; 270 -> "W"; else -> d.toString() }

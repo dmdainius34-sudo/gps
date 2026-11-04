@@ -1010,8 +1010,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     fun setSats(list: List<Sat>) {
         renderer.setSats(list)
-        val used = list.filter { it.used }
-        renderer.addCno(if (used.isNotEmpty()) used.map { it.cn0 }.average().toFloat() else null)
+        renderer.addSamples(list)
     }
 
     /** Pietų vaizdas: Žemė apverčiama apie zenitą. */
@@ -1223,12 +1222,23 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         fP = floatArrayOf((EARTH_R * fU[0]).toFloat(), (EARTH_R * fU[1]).toFloat(), (EARTH_R * fU[2]).toFloat())
     }
 
-    private val cnoHist = ArrayList<Float>()
-    fun addCno(v: Float?) {
-        if (v == null) return
-        synchronized(cnoHist) {
-            cnoHist.add(v)
-            if (cnoHist.size > 120) cnoHist.removeAt(0)
+    // Kiekvieno palydovo C/N0 istorija (kaip GNSS Logger „CN0 vs Time“): ~120 s
+    private val satHist = LinkedHashMap<String, ArrayList<Float>>()
+    private var ticks = 0
+    private val winN = 120
+    fun addSamples(list: List<Sat>) {
+        synchronized(satHist) {
+            ticks++
+            val seen = HashMap<String, Float>()
+            for (x in list) seen[x.const + x.svid] = x.cn0
+            for (k in seen.keys) if (!satHist.containsKey(k)) {
+                satHist[k] = ArrayList<Float>().apply { repeat(minOf(ticks - 1, winN)) { add(Float.NaN) } }
+            }
+            for ((k, h) in satHist) {
+                h.add(seen[k] ?: Float.NaN)
+                if (h.size > winN) h.removeAt(0)
+            }
+            satHist.entries.removeAll { e -> e.value.all { it.isNaN() } }
         }
     }
 
@@ -1371,7 +1381,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawEarth()
 
         // C/N0 istorija kaip juosta aplink apatinę gaublio dalį (apskritimu – laikas)
-        drawCnoRibbon(tint)
+        drawSatCurves()
 
         // 4) Horizontas – pulsuojantis auksinis žiedas
         val hzAlpha = 0.6f + 0.4f * kotlin.math.sin(t * 2.5f)
@@ -1594,30 +1604,37 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             (r * sin(el)).toFloat())
     }
 
-    private fun drawCnoRibbon(tint: Int) {
-        val samples: List<Float> = synchronized(cnoHist) { cnoHist.toList() }
-        if (samples.size < 3) return
-        val n = samples.size
-        val verts = FloatArray(n * 18)
-        var k = 0
-        fun put(p: FloatArray) { verts[k++] = p[0]; verts[k++] = p[1]; verts[k++] = p[2] }
-        for (i in 0 until n) {
-            val j = (i + 1) % n
-            val a0 = Math.toRadians(360.0 * i / n)
-            val a1 = Math.toRadians(360.0 * j / n)
-            val t0 = cnoPt(a0, Math.toRadians(cnoEl(samples[i])))
-            val t1 = cnoPt(a1, Math.toRadians(cnoEl(samples[j])))
-            val b0 = cnoPt(a0, Math.toRadians(-88.0))
-            val b1 = cnoPt(a1, Math.toRadians(-88.0))
-            put(t0); put(b0); put(t1)
-            put(t1); put(b0); put(b1)
+    /** Palydovų C/N0 kreivės aplink apatinę gaublio dalį – laikas eina apskritimu. */
+    private fun drawSatCurves() {
+        val snap: Map<String, List<Float>> = synchronized(satHist) {
+            satHist.mapValues { it.value.toList() }
         }
         GLES20.glUseProgram(colorProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvp, 0)
-        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"),
-            Color.red(tint) / 255f, Color.green(tint) / 255f, Color.blue(tint) / 255f, 0.6f)
-        bindPos(colorProg, floatBuf(verts))
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, n * 6)
+        for ((key, h) in snap) {
+            if (h.size < 2) continue
+            val pts = ArrayList<Float>()
+            var prev: FloatArray? = null
+            var prevIdx = -2
+            for (i in h.indices) {
+                val v = h[i]
+                if (v.isNaN()) { prev = null; continue }
+                val age = h.size - 1 - i
+                val az = Math.toRadians(360.0 * (winN - 1 - age) / winN)
+                val p = cnoPt(az, Math.toRadians(cnoEl(v)))
+                if (prev != null && i == prevIdx + 1) {
+                    pts.add(prev[0]); pts.add(prev[1]); pts.add(prev[2])
+                    pts.add(p[0]); pts.add(p[1]); pts.add(p[2])
+                }
+                prev = p
+                prevIdx = i
+            }
+            if (pts.isEmpty()) continue
+            val c = constRgb(key.substring(0, minOf(3, key.length)))
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), c[0], c[1], c[2], 0.9f)
+            bindPos(colorProg, floatBuf(pts.toFloatArray()))
+            GLES20.glDrawArrays(GLES20.GL_LINES, 0, pts.size / 3)
+        }
     }
 
     private fun labelOf(d: Int): String = when (d) { 0 -> "N"; 90 -> "E"; 180 -> "S"; 270 -> "W"; else -> d.toString() }

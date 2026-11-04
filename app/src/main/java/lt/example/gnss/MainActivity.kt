@@ -1010,6 +1010,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     fun setSats(list: List<Sat>) = renderer.setSats(list)
 
+    /** Pietų vaizdas: Žemė apverčiama apie zenitą. */
+    fun setSouthUp(on: Boolean) = renderer.setSouthUp(on)
+
     /** Pagal vietą apskaičiuojama magnetinė deklinacija (magnetinė šiaurė -> tikroji šiaurė). */
     fun setLocation(lat: Double, lon: Double, alt: Double) {
         renderer.setLocation(lat, lon)

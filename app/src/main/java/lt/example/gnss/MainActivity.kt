@@ -1370,9 +1370,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 if (bmp != null) earthTex = uploadTexture(bmp)
             }
         } catch (e: Exception) {
-            android.util.Log.e("GnssApp", "earth.jpg nerastas assets aplanke", e)
+            android.util.Log.e("GnssApp", "earth.jpg nerastas assets aplanke: app/src/main/assets/earth.jpg", e)
             earthTex = 0
-            return
         }
         val stacks = 48; val slices = 96; val r = 0.32
         val pos = ArrayList<Float>(); val uv = ArrayList<Float>()
@@ -1397,7 +1396,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Žemės sukimasis: GMST + stebėtojo ilguma; ašis rodo į Polaris (pasvirimas = 90° − platuma). */
     private fun drawEarth() {
-        if (earthTex == 0 || earthPos == null) return
+        if (earthPos == null) return
         val d = System.currentTimeMillis() / 86400000.0 + 2440587.5 - 2451545.0
         var gmst = (280.46061837 + 360.98564736629 * d) % 360.0
         if (gmst < 0) gmst += 360.0
@@ -1415,6 +1414,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         for (c in 0..2) for (rr in 0..2) earthMat[c * 4 + rr] = m3[rr * 3 + c].toFloat()
         earthMat[15] = 1f
         Matrix.multiplyMM(earthMvp, 0, mvp, 0, earthMat, 0)
+
+        if (earthTex == 0) {
+            // Tekstūros nėra – rodome mėlyną rutulį, kad būtų aišku, kad Žemės vieta veikia
+            GLES20.glUseProgram(colorProg)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, earthMvp, 0)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 0.18f, 0.45f, 0.85f, 1f)
+            bindPos(colorProg, earthPos!!)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+            return
+        }
 
         GLES20.glUseProgram(texProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(texProg, "uMVP"), 1, false, earthMvp, 0)

@@ -1650,6 +1650,10 @@ class BubbleOverlayService : Service() {
             setupOverlay()
         } catch (e: Exception) {
             android.util.Log.e("GnssApp", "Perdengimas nepavyko", e)
+            // Nepavykus – grąžiname burbulą į programą ir pranešame
+            OverlayBus.onUnpin?.invoke()
+            OverlayBus.onUnpin = null
+            handler.post { Toast.makeText(this, "Prisegti nepavyko: ${e.javaClass.simpleName}", Toast.LENGTH_LONG).show() }
             stopSelf()
         }
     }
@@ -1722,7 +1726,11 @@ class BubbleOverlayService : Service() {
             .setContentText("Dvigubas bakstelėjimas – grąžinti į programą")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .build()
-        startForeground(1, n)
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(1, n, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(1, n)
+        }
     }
 
     override fun onDestroy() {

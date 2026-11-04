@@ -1313,7 +1313,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // 6) Palydovai: geras signalas žybsi kaip žvaigždės
         for (sat in sats) {
-            val el = Math.toRadians(sat.elev.toDouble().coerceIn(-10.0, 90.0))
+            // Palydovai žemiau horizonto nematomi (už Žemės) – nepiešiame
+            if (sat.elev < 0f) continue
+            val el = Math.toRadians(sat.elev.toDouble().coerceIn(0.0, 90.0))
             val az = Math.toRadians(sat.az.toDouble())
             val p = floatArrayOf(
                 (0.98 * cos(el) * sin(az)).toFloat(),

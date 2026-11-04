@@ -1292,6 +1292,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glViewport(0, 0, w, h)
         val aspect = if (h == 0) 1f else w.toFloat() / h
         Matrix.perspectiveM(proj, 0, 40f, aspect, 0.1f, 20f)
+        // Vaizdo centras pastumtas žemyn, kad viršutinė kupolo dalis tilptų į ekraną
+        proj[9] = 0.3f
         Matrix.setIdentityM(view, 0)
         Matrix.translateM(view, 0, 0f, 0f, -3f)           // kamera išorėje, žiūri į gaublį
         Matrix.multiplyMM(pv, 0, proj, 0, view, 0)
@@ -1363,6 +1365,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // Žymos ir palydovai piešiami be gylio testo (visada matomi priekyje)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+
+        // Signalo indikatorius kupolo apačioje (nadyras): spalva pagal signalą, pulsuoja
+        val pulseA = 0.6f + 0.4f * kotlin.math.sin(t * 2f)
+        billboard(floatArrayOf(0f, 0f, -1.03f), eye, 0.32f, 0.32f, starTex,
+            Color.red(tint) / 255f, Color.green(tint) / 255f, Color.blue(tint) / 255f, pulseA)
 
         // 5) Laipsnių žymos ant horizonto
         for (d in 0 until 360 step 30) {
@@ -2653,7 +2660,7 @@ class MainActivity : AppCompatActivity() {
         val dm = resources.displayMetrics
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val colW = if (landscape) dm.widthPixels / 2 else dm.widthPixels
-        val skySide = (0.85f * (if (landscape) min(colW, dm.heightPixels) else colW)).toInt()
+        val skySide = if (landscape) min(colW, dm.heightPixels) else colW
         val cnoH = (260 * dm.density).toInt()
         val mw = LinearLayout.LayoutParams.MATCH_PARENT
         val ww = LinearLayout.LayoutParams.WRAP_CONTENT

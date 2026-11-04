@@ -1412,6 +1412,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile private var obsLon = 25.25
     fun setLocation(lat: Double, lon: Double) { obsLat = lat; obsLon = lon }
 
+    @Volatile var southUp = false
+    fun setSouthUp(on: Boolean) { southUp = on }
+
     private var earthTex = 0
     private var earthProg = 0
     private val earthAxis by lazy { floatBuf(floatArrayOf(0f, 0f, -0.5f, 0f, 0f, 0.5f)) }
@@ -1471,6 +1474,27 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         earthMat[0] = cos(gg).toFloat(); earthMat[1] = sin(gg).toFloat()
         earthMat[4] = (-sin(gg)).toFloat(); earthMat[5] = cos(gg).toFloat()
         earthMat[10] = 1f; earthMat[15] = 1f
+        if (southUp) {
+            // 180° apie zenito ašį: pietų pusrutulis rodomas viršuje, smeigtukas lieka vietoje
+            val ux = fU[0]; val uy = fU[1]; val uz = fU[2]
+            val ru = doubleArrayOf(
+                2 * ux * ux - 1, 2 * ux * uy, 2 * ux * uz,
+                2 * uy * ux, 2 * uy * uy - 1, 2 * uy * uz,
+                2 * uz * ux, 2 * uz * uy, 2 * uz * uz - 1)
+            val rzm = doubleArrayOf(
+                earthMat[0].toDouble(), earthMat[4].toDouble(), 0.0,
+                earthMat[1].toDouble(), earthMat[5].toDouble(), 0.0,
+                0.0, 0.0, 1.0)
+            val out = DoubleArray(9)
+            for (i in 0..2) for (j in 0..2) {
+                var sum = 0.0
+                for (k in 0..2) sum += ru[i * 3 + k] * rzm[k * 3 + j]
+                out[i * 3 + j] = sum
+            }
+            earthMat[0] = out[0].toFloat(); earthMat[1] = out[3].toFloat(); earthMat[2] = out[6].toFloat()
+            earthMat[4] = out[1].toFloat(); earthMat[5] = out[4].toFloat(); earthMat[6] = out[7].toFloat()
+            earthMat[8] = out[2].toFloat(); earthMat[9] = out[5].toFloat(); earthMat[10] = out[8].toFloat()
+        }
         Matrix.multiplyMM(earthMvp, 0, mvpI, 0, earthMat, 0)
 
         if (earthTex == 0) {
@@ -2483,6 +2507,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
     private var use3d = false
+    private var southUpOn = false
     private lateinit var cnoView: CnoPlotView
     private lateinit var bg: GradientBackground
     private lateinit var baro: Barometer
@@ -2625,7 +2650,7 @@ class MainActivity : AppCompatActivity() {
         val dm = resources.displayMetrics
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val colW = if (landscape) dm.widthPixels / 2 else dm.widthPixels
-        val skySide = if (landscape) min(colW, dm.heightPixels) else colW
+        val skySide = (0.85f * (if (landscape) min(colW, dm.heightPixels) else colW)).toInt()
         val cnoH = (260 * dm.density).toInt()
         val mw = LinearLayout.LayoutParams.MATCH_PARENT
         val ww = LinearLayout.LayoutParams.WRAP_CONTENT
@@ -2639,6 +2664,14 @@ class MainActivity : AppCompatActivity() {
             text = "Įrašyti šiaurę (3D: pasukite N į tikrąją šiaurę)"
             setOnClickListener { if (::skyDome.isInitialized) skyDome.saveNorth() }
         }
+        val btnSouth = Button(this).apply {
+            text = "Pietų vaizdas (apversti Žemę)"
+            setOnClickListener {
+                southUpOn = !southUpOn
+                if (::skyDome.isInitialized) skyDome.setSouthUp(southUpOn)
+            }
+        }
+        left.addView(btnSouth, LinearLayout.LayoutParams(mw, ww))
         val btnResetN = Button(this).apply {
             text = "Atstatyti šiaurę (3D)"
             setOnClickListener { if (::skyDome.isInitialized) skyDome.resetNorth() }

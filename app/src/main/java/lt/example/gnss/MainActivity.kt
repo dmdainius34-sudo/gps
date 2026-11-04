@@ -1008,7 +1008,11 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderMode = RENDERMODE_CONTINUOUSLY
     }
 
-    fun setSats(list: List<Sat>) = renderer.setSats(list)
+    fun setSats(list: List<Sat>) {
+        renderer.setSats(list)
+        val used = list.filter { it.used }
+        renderer.addCno(if (used.isNotEmpty()) used.map { it.cn0 }.average().toFloat() else null)
+    }
 
     /** Pietų vaizdas: Žemė apverčiama apie zenitą. */
     fun setSouthUp(on: Boolean) = renderer.setSouthUpMode(on)
@@ -1219,6 +1223,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         fP = floatArrayOf((EARTH_R * fU[0]).toFloat(), (EARTH_R * fU[1]).toFloat(), (EARTH_R * fU[2]).toFloat())
     }
 
+    private val cnoHist = ArrayList<Float>()
+    fun addCno(v: Float?) {
+        if (v == null) return
+        synchronized(cnoHist) {
+            cnoHist.add(v)
+            if (cnoHist.size > 120) cnoHist.removeAt(0)
+        }
+    }
+
     fun setSats(l: List<Sat>) {
         sats = l
         frameNow()
@@ -1356,6 +1369,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // 2b) Žemė gaublio viduryje (pasvirusi į Polaris, sukasi realiu laiku)
         drawEarth()
+
+        // C/N0 istorija kaip juosta aplink apatinę gaublio dalį (apskritimu – laikas)
+        drawCnoRibbon(tint)
 
         // 4) Horizontas – pulsuojantis auksinis žiedas
         val hzAlpha = 0.6f + 0.4f * kotlin.math.sin(t * 2.5f)
@@ -1566,6 +1582,42 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         "BDS" -> 21528.0
         "SBS" -> 35786.0
         else -> 20200.0
+    }
+
+    private fun cnoEl(v: Float): Double = (-80.0 + (v - 15.0) * 70.0 / 30.0).coerceIn(-86.0, -10.0)
+
+    private fun cnoPt(az: Double, el: Double): FloatArray {
+        val r = 0.995
+        return floatArrayOf(
+            (r * cos(el) * sin(az)).toFloat(),
+            (r * cos(el) * cos(az)).toFloat(),
+            (r * sin(el)).toFloat())
+    }
+
+    private fun drawCnoRibbon(tint: Int) {
+        val samples: List<Float> = synchronized(cnoHist) { cnoHist.toList() }
+        if (samples.size < 3) return
+        val n = samples.size
+        val verts = FloatArray(n * 18)
+        var k = 0
+        fun put(p: FloatArray) { verts[k++] = p[0]; verts[k++] = p[1]; verts[k++] = p[2] }
+        for (i in 0 until n) {
+            val j = (i + 1) % n
+            val a0 = Math.toRadians(360.0 * i / n)
+            val a1 = Math.toRadians(360.0 * j / n)
+            val t0 = cnoPt(a0, Math.toRadians(cnoEl(samples[i])))
+            val t1 = cnoPt(a1, Math.toRadians(cnoEl(samples[j])))
+            val b0 = cnoPt(a0, Math.toRadians(-88.0))
+            val b1 = cnoPt(a1, Math.toRadians(-88.0))
+            put(t0); put(b0); put(t1)
+            put(t1); put(b0); put(b1)
+        }
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvp, 0)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"),
+            Color.red(tint) / 255f, Color.green(tint) / 255f, Color.blue(tint) / 255f, 0.6f)
+        bindPos(colorProg, floatBuf(verts))
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, n * 6)
     }
 
     private fun labelOf(d: Int): String = when (d) { 0 -> "N"; 90 -> "E"; 180 -> "S"; 270 -> "W"; else -> d.toString() }

@@ -615,36 +615,6 @@ class BubbleView(context: Context) : View(context) {
 private class GlBolt(val xy: FloatArray, var life: Int)
 private class GlDust(var x: Float, var y: Float, val vx: Float, val vy: Float, var life: Int)
 
-/** Bendras šeiderių kompiliavimas su klaidų tikrinimu ir žurnalavimu (GLSL ES 1.00). */
-object GlHelper {
-    fun compile(type: Int, src: String): Int {
-        val sh = GLES20.glCreateShader(type)
-        GLES20.glShaderSource(sh, src)
-        GLES20.glCompileShader(sh)
-        val ok = IntArray(1)
-        GLES20.glGetShaderiv(sh, GLES20.GL_COMPILE_STATUS, ok, 0)
-        if (ok[0] == 0) {
-            android.util.Log.e("GnssApp", "Shader kompiliavimo klaida:\n" + GLES20.glGetShaderInfoLog(sh))
-        }
-        return sh
-    }
-
-    fun program(vs: String, fs: String): Int {
-        val v = compile(GLES20.GL_VERTEX_SHADER, vs)
-        val f = compile(GLES20.GL_FRAGMENT_SHADER, fs)
-        val prog = GLES20.glCreateProgram()
-        GLES20.glAttachShader(prog, v)
-        GLES20.glAttachShader(prog, f)
-        GLES20.glLinkProgram(prog)
-        val ok = IntArray(1)
-        GLES20.glGetProgramiv(prog, GLES20.GL_LINK_STATUS, ok, 0)
-        if (ok[0] == 0) {
-            android.util.Log.e("GnssApp", "Programos surišimo klaida:\n" + GLES20.glGetProgramInfoLog(prog))
-        }
-        return prog
-    }
-}
-
 /** Permatomas 3D burbulas: šviesa, spalva pagal signalą, ULTRA kibirkštys, silpno signalo kaukolė. */
 class BubbleGL(context: Context) : GLSurfaceView(context) {
     private val renderer = BubbleRenderer(context.applicationContext, resources.displayMetrics.density)
@@ -696,10 +666,10 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
 
-        sphereProg = GlHelper.program(SPHERE_VS, SPHERE_FS)
-        flatProg = GlHelper.program(FLAT_VS, FLAT_FS)
-        dotProg = GlHelper.program(FLAT_VS, DOT_FS)
-        texProg = GlHelper.program(TEX_VS, TEX_FS)
+        sphereProg = program(SPHERE_VS, SPHERE_FS)
+        flatProg = program(FLAT_VS, FLAT_FS)
+        dotProg = program(FLAT_VS, DOT_FS)
+        texProg = program(TEX_VS, TEX_FS)
 
         val sph = buildSphere(24, 32)
         sphereCount = sph.size / 3
@@ -909,6 +879,23 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
         return bmp
     }
 
+    private fun program(vs: String, fs: String): Int {
+        val v = compile(GLES20.GL_VERTEX_SHADER, vs)
+        val f = compile(GLES20.GL_FRAGMENT_SHADER, fs)
+        val prog = GLES20.glCreateProgram()
+        GLES20.glAttachShader(prog, v)
+        GLES20.glAttachShader(prog, f)
+        GLES20.glLinkProgram(prog)
+        return prog
+    }
+
+    private fun compile(type: Int, src: String): Int {
+        val sh = GLES20.glCreateShader(type)
+        GLES20.glShaderSource(sh, src)
+        GLES20.glCompileShader(sh)
+        return sh
+    }
+
     companion object {
         private const val SPHERE_VS = """
             attribute vec3 aPos;
@@ -1005,7 +992,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         override fun onDoubleTap(e: MotionEvent): Boolean { onDoubleTapCb?.invoke(); return true }
     })
 
-    // Perkėlimas: dviem pirštais tempti gaublį po ekranu; vienu pirštu – sukti
+    // Perkėlimas: dviem pirštais tempti gaublį po ekraną; vienu pirštu – sukti
     var onMove: ((Float, Float) -> Unit)? = null
     private var moveMode = false
     private var lastRawX = 0f
@@ -1227,11 +1214,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
         GLES20.glDepthFunc(GLES20.GL_LEQUAL)
 
-        domeProg = GlHelper.program(DOME_VS, DOME_FS)
-        lowProg = GlHelper.program(DOME_VS, LOW_FS)
-        colorProg = GlHelper.program(COLOR_VS, COLOR_FS)
-        dotProg = GlHelper.program(COLOR_VS, DOT_FS)
-        texProg = GlHelper.program(TEX_VS, TEX_FS)
+        domeProg = program(DOME_VS, DOME_FS)
+        lowProg = program(DOME_VS, LOW_FS)
+        colorProg = program(COLOR_VS, COLOR_FS)
+        dotProg = program(COLOR_VS, DOT_FS)
+        texProg = program(TEX_VS, TEX_FS)
 
         val up = meshSphere(0.0, 90.0, 18, 72, 1.0)
         upperBuf = floatBuf(up); upperN = up.size / 3
@@ -1379,7 +1366,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Įkelia assets/earth.jpg ir sukuria rutulį su lygiakampe tekstūra. */
     private fun buildEarth() {
-        earthProg = GlHelper.program(EARTH_VS, EARTH_FS)
+        earthProg = program(EARTH_VS, EARTH_FS)
         val main = Handler(Looper.getMainLooper())
         try {
             appCtx.assets.open("earth.jpg").use { ins ->
@@ -1649,6 +1636,23 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             put(data); position(0)
         }
 
+    private fun program(vs: String, fs: String): Int {
+        val v = compile(GLES20.GL_VERTEX_SHADER, vs)
+        val f = compile(GLES20.GL_FRAGMENT_SHADER, fs)
+        val prog = GLES20.glCreateProgram()
+        GLES20.glAttachShader(prog, v)
+        GLES20.glAttachShader(prog, f)
+        GLES20.glLinkProgram(prog)
+        return prog
+    }
+
+    private fun compile(type: Int, src: String): Int {
+        val sh = GLES20.glCreateShader(type)
+        GLES20.glShaderSource(sh, src)
+        GLES20.glCompileShader(sh)
+        return sh
+    }
+
     companion object {
         private const val DOME_VS = """
             attribute vec3 aPos;
@@ -1710,8 +1714,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 gl_FragColor = vec4(uColor.rgb, uColor.a * edge);
             }
         """
-        // PATAISYTA: mat3(uModel) neegzistuoja GLSL ES 1.00 – normalė skaičiuojama
-        // per pilną matricą (Žemės modelyje yra tik rotacija, tad tai tinka).
         private const val EARTH_VS = """
             attribute vec3 aPos;
             attribute vec2 aUV;
@@ -1721,7 +1723,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             varying vec3 vN;
             void main() {
                 vUV = aUV;
-                vN = (uModel * vec4(aPos, 1.0)).xyz;
+                vN = mat3(uModel) * aPos;
                 gl_Position = uMVP * vec4(aPos, 1.0);
             }
         """
@@ -2391,7 +2393,7 @@ class MainActivity : AppCompatActivity() {
         try {
             startForegroundService(Intent(this, BubbleOverlayService::class.java))
         } catch (e: Exception) {
-            android.util.Log.e("GnssApp", "Burbolo prisegimas nepavyko", e)
+            android.util.Log.e("GnssApp", "Burbulo prisegimas nepavyko", e)
             OverlayBus.onUnpin = null
             sharePanel?.visibility = View.VISIBLE
             Toast.makeText(this, "Prisegti nepavyko: ${e.javaClass.simpleName}", Toast.LENGTH_LONG).show()

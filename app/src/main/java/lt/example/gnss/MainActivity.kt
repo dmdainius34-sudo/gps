@@ -1011,7 +1011,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setSats(list: List<Sat>) = renderer.setSats(list)
 
     /** Pietų vaizdas: Žemė apverčiama apie zenitą. */
-    fun setSouthUp(on: Boolean) = renderer.setSouthUp(on)
+    fun setSouthUp(on: Boolean) = renderer.setSouthUpMode(on)
 
     /** Pagal vietą apskaičiuojama magnetinė deklinacija (magnetinė šiaurė -> tikroji šiaurė). */
     fun setLocation(lat: Double, lon: Double, alt: Double) {
@@ -1415,8 +1415,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile private var obsLon = 25.25
     fun setLocation(lat: Double, lon: Double) { obsLat = lat; obsLon = lon }
 
-    @Volatile var southUp = false
-    fun setSouthUp(on: Boolean) { southUp = on }
+    @Volatile private var southUp = false
+    fun setSouthUpMode(on: Boolean) { southUp = on }
 
     private var earthTex = 0
     private var earthProg = 0

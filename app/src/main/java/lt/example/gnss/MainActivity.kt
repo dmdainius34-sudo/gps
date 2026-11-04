@@ -1,6 +1,7 @@
 package lt.example.gnss
 
 import android.Manifest
+import android.graphics.BitmapFactory
 import android.hardware.GeomagneticField
 import android.app.NotificationManager
 import android.app.NotificationChannel
@@ -1011,6 +1012,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     /** Pagal vietą apskaičiuojama magnetinė deklinacija (magnetinė šiaurė -> tikroji šiaurė). */
     fun setLocation(lat: Double, lon: Double, alt: Double) {
+        renderer.setLocation(lat, lon)
         declDeg = try {
             GeomagneticField(lat.toFloat(), lon.toFloat(), alt.toFloat(), System.currentTimeMillis()).declination
         } catch (e: Exception) { 0f }
@@ -1230,6 +1232,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // GL kontekstas atkuriamas po išėjimo/įėjimo – senos tekstūrų ID nebegalioja, todėl viską perkuriame
         prnTex.clear()
         labelTex.clear()
+        buildEarth()
         starTex = makeStarTexture()
         for (d in 0 until 360 step 30) labelTex[labelOf(d)] = makeTexture(labelOf(d), 0xFFFFFFFF.toInt(), if (d % 90 == 0) 170 else 96)
     }
@@ -1261,8 +1264,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val avgCn0 = if (used.isNotEmpty()) used.map { it.cn0 }.average().toFloat() else 0f
         val beat = ((avgCn0 - 15f) / 25f).coerceIn(0.2f, 1f)
 
-        // 1) Virš horizonto – pulsuojantis GPS kupolas
-        GLES20.glDepthMask(true)
+        // 1) Virš horizonto – pulsuojantis GPS kupolas (neįrašo gylio, kad Žemė būtų matoma)
+        GLES20.glDepthMask(false)
         GLES20.glUseProgram(domeProg)
         setMat(domeProg, "uMVP", mvp)
         setVec3(domeProg, "uLight", 0.4f, 0.5f, 0.8f)
@@ -1282,6 +1285,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         bindPos(lowProg, lowerBuf!!)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, lowerN)
         GLES20.glDepthMask(true)
+
+        // 2b) Žemė gaublio viduryje (pasvirusi į Polaris, sukasi realiu laiku)
+        drawEarth()
 
         // 3) Laipsnių tinklelis
         GLES20.glUseProgram(colorProg)
@@ -1342,6 +1348,88 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
 
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    // ---------------- ŽEMĖ GAUBLIO VIDUJE ----------------
+    @Volatile private var obsLat = 54.7
+    @Volatile private var obsLon = 25.25
+    fun setLocation(lat: Double, lon: Double) { obsLat = lat; obsLon = lon }
+
+    private var earthTex = 0
+    private var earthPos: FloatBuffer? = null
+    private var earthUv: FloatBuffer? = null
+    private var earthCount = 0
+    private val earthMat = FloatArray(16)
+    private val earthMvp = FloatArray(16)
+
+    /** Įkelia assets/earth.jpg ir sukuria rutulį su lygiakampe tekstūra. */
+    private fun buildEarth() {
+        try {
+            appCtx.assets.open("earth.jpg").use { ins ->
+                val bmp = android.graphics.BitmapFactory.decodeStream(ins)
+                if (bmp != null) earthTex = uploadTexture(bmp)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("GnssApp", "earth.jpg nerastas assets aplanke", e)
+            earthTex = 0
+            return
+        }
+        val stacks = 48; val slices = 96; val r = 0.32
+        val pos = ArrayList<Float>(); val uv = ArrayList<Float>()
+        fun vertex(st: Int, sl: Int) {
+            val lat = Math.toRadians(-90.0 + 180.0 * st / stacks)
+            val lon = Math.toRadians(-180.0 + 360.0 * sl / slices)
+            pos.add((r * cos(lat) * cos(lon)).toFloat())
+            pos.add((r * cos(lat) * sin(lon)).toFloat())
+            pos.add((r * sin(lat)).toFloat())
+            uv.add(sl.toFloat() / slices)
+            uv.add((stacks - st).toFloat() / stacks)
+        }
+        for (st in 0 until stacks) for (sl in 0 until slices) {
+            // du trikampiai kiekvienam tinklelio kvadratui
+            vertex(st, sl); vertex(st + 1, sl); vertex(st + 1, sl + 1)
+            vertex(st, sl); vertex(st + 1, sl + 1); vertex(st, sl + 1)
+        }
+        earthPos = floatBuf(pos.toFloatArray())
+        earthUv = floatBuf(uv.toFloatArray())
+        earthCount = pos.size / 3
+    }
+
+    /** Žemės sukimasis: GMST + stebėtojo ilguma; ašis rodo į Polaris (pasvirimas = 90° − platuma). */
+    private fun drawEarth() {
+        if (earthTex == 0 || earthPos == null) return
+        val d = System.currentTimeMillis() / 86400000.0 + 2440587.5 - 2451545.0
+        var gmst = (280.46061837 + 360.98564736629 * d) % 360.0
+        if (gmst < 0) gmst += 360.0
+        val spin = Math.toRadians((gmst + obsLon) % 360.0)
+        val tilt = Math.toRadians(-(90.0 - obsLat))
+        val rz = doubleArrayOf(cos(spin), -sin(spin), 0.0, sin(spin), cos(spin), 0.0, 0.0, 0.0, 1.0)
+        val rx = doubleArrayOf(1.0, 0.0, 0.0, 0.0, cos(tilt), -sin(tilt), 0.0, sin(tilt), cos(tilt))
+        val m3 = DoubleArray(9)
+        for (i in 0..2) for (j in 0..2) {
+            var sum = 0.0
+            for (k in 0..2) sum += rx[i * 3 + k] * rz[k * 3 + j]
+            m3[i * 3 + j] = sum
+        }
+        java.util.Arrays.fill(earthMat, 0f)
+        for (c in 0..2) for (rr in 0..2) earthMat[c * 4 + rr] = m3[rr * 3 + c].toFloat()
+        earthMat[15] = 1f
+        Matrix.multiplyMM(earthMvp, 0, mvp, 0, earthMat, 0)
+
+        GLES20.glUseProgram(texProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(texProg, "uMVP"), 1, false, earthMvp, 0)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(texProg, "uColor"), 1f, 1f, 1f, 1f)
+        val lp = GLES20.glGetAttribLocation(texProg, "aPos")
+        val lu = GLES20.glGetAttribLocation(texProg, "aUV")
+        GLES20.glEnableVertexAttribArray(lp)
+        GLES20.glEnableVertexAttribArray(lu)
+        earthPos!!.position(0); earthUv!!.position(0)
+        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, earthPos)
+        GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, earthUv)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, earthTex)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(texProg, "uTex"), 0)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
     }
 
     private fun labelOf(d: Int): String = when (d) { 0 -> "N"; 90 -> "E"; 180 -> "S"; 270 -> "W"; else -> d.toString() }

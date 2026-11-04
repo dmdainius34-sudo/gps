@@ -1367,14 +1367,22 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Įkelia assets/earth.jpg ir sukuria rutulį su lygiakampe tekstūra. */
     private fun buildEarth() {
         earthProg = program(EARTH_VS, EARTH_FS)
+        val main = Handler(Looper.getMainLooper())
         try {
             appCtx.assets.open("earth.jpg").use { ins ->
                 val bmp = android.graphics.BitmapFactory.decodeStream(ins)
-                if (bmp != null) earthTex = uploadTexture(bmp)
+                if (bmp != null) {
+                    earthTex = uploadTexture(bmp)
+                    val info = "Žemės tekstūra įkelta: ${bmp.width}x${bmp.height}"
+                    main.post { Toast.makeText(appCtx, info, Toast.LENGTH_LONG).show() }
+                } else {
+                    main.post { Toast.makeText(appCtx, "earth.jpg neskaitomas (ne JPG/PNG?)", Toast.LENGTH_LONG).show() }
+                }
             }
         } catch (e: Exception) {
             android.util.Log.e("GnssApp", "earth.jpg nerastas assets aplanke: app/src/main/assets/earth.jpg", e)
             earthTex = 0
+            main.post { Toast.makeText(appCtx, "earth.jpg nerastas: app/src/main/assets/earth.jpg", Toast.LENGTH_LONG).show() }
         }
         val stacks = 48; val slices = 96; val r = 0.32
         val pos = ArrayList<Float>(); val uv = ArrayList<Float>()
@@ -1729,7 +1737,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vec3 n = normalize(vN);
                 float d = max(dot(n, normalize(uLight)), 0.0);
                 vec4 t = texture2D(uTex, vUV);
-                gl_FragColor = vec4(t.rgb * (0.18 + 0.82 * d), 1.0);
+                gl_FragColor = vec4(t.rgb * (0.35 + 0.65 * d), 1.0);
             }
         """
         private const val TEX_VS = """

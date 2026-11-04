@@ -1262,7 +1262,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Signalo kokybė -> pulsavimo stiprumas
         val used = sats.filter { it.used }
         val avgCn0 = if (used.isNotEmpty()) used.map { it.cn0 }.average().toFloat() else 0f
+        val peakCn0 = if (used.isNotEmpty()) used.maxOf { it.cn0 } else 0f
         val beat = ((avgCn0 - 15f) / 25f).coerceIn(0.2f, 1f)
+        val tint = signalTint(if (used.isNotEmpty()) avgCn0 else null, if (used.isNotEmpty()) peakCn0 else null)
 
         // 1) Virš horizonto – pulsuojantis GPS kupolas (neįrašo gylio, kad Žemė būtų matoma)
         GLES20.glDepthMask(false)
@@ -1272,7 +1274,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         setVec3(domeProg, "uEye", eye[0], eye[1], eye[2])
         setFloat(domeProg, "uTime", t)
         setFloat(domeProg, "uBeat", beat)
-        setVec3(domeProg, "uTint", 0.2f + 0.7f * beat, 0.6f + 0.3f * beat, 1.0f - 0.6f * beat)
+        setVec3(domeProg, "uTint", Color.red(tint) / 255f, Color.green(tint) / 255f, Color.blue(tint) / 255f)
         bindPos(domeProg, upperBuf!!)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, upperN)
 
@@ -1288,14 +1290,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // 2b) Žemė gaublio viduryje (pasvirusi į Polaris, sukasi realiu laiku)
         drawEarth()
-
-        // 3) Laipsnių tinklelis
-        GLES20.glUseProgram(colorProg)
-        setMat(colorProg, "uMVP", mvp)
-        setVec4(colorProg, "uColor", 0.8f, 0.88f, 1f, 0.5f)
-        setFloat(colorProg, "uPoint", 1f)
-        bindPos(colorProg, gridBuf!!)
-        GLES20.glDrawArrays(GLES20.GL_LINES, 0, gridN)
 
         // 4) Horizontas – pulsuojantis auksinis žiedas
         val hzAlpha = 0.6f + 0.4f * kotlin.math.sin(t * 2.5f)
@@ -1336,6 +1330,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     val size = 0.075f * (1f + 0.2f * tw)
                     val alpha = (0.8f + 0.2f * tw) * usedK
                     billboard(p, eye, size, size, starTex, col[0], col[1], col[2], alpha)
+                    billboard(p, eye, size * 0.45f, size * 0.45f, starTex, 1f, 1f, 1f, alpha)
                     val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
                     billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eye, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
                 }
@@ -1693,8 +1688,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 float d = max(dot(n, l), 0.0);
                 float fres = pow(1.0 - max(dot(n, normalize(uEye)), 0.0), 2.0);
                 float wave = 0.5 + 0.5 * sin(uTime * 2.2 - vZ * 7.0);
-                vec3 col = uTint * (0.25 + 0.75 * d) + uTint * fres * 0.9 + uTint * wave * uBeat * 0.5;
-                float a = 0.55 + 0.35 * fres + 0.3 * uBeat * wave;
+                vec3 col = uTint * (0.10 + 0.45 * d) + uTint * fres * 0.5 + uTint * wave * uBeat * 0.35;
+                float a = 0.45 + 0.30 * fres + 0.25 * uBeat * wave;
                 gl_FragColor = vec4(col, clamp(a, 0.0, 1.0));
             }
         """
@@ -2321,6 +2316,14 @@ const val SIG_RED = 0xFFEF4444.toInt()
 const val SIG_BLUE = 0xFF3B82F6.toInt()
 const val SIG_YELLOW = 0xFFFACC15.toInt()
 const val BG_NEUTRAL = 0xFFF8FAFC.toInt()
+
+/** Bendra spalva visiems elementams (burbulas, fonas, dangaus kupolas) pagal C/N0. */
+fun signalTint(avg: Float?, peak: Float?): Int = when {
+    avg == null -> 0xFF3B82F6.toInt()
+    avg < 20f -> 0xFF1F2937.toInt()
+    (peak ?: 0f) > 45f -> 0xFFFACC15.toInt()
+    else -> signalColor(avg)
+}
 
 fun signalColor(db: Float): Int = when {
     db <= 20f -> SIG_RED

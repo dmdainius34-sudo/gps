@@ -746,14 +746,18 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
             bindAttrib(sphereProg, "aPos", sphereBuf!!, 3)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, sphereCount)
         }
-        val metal = floatArrayOf(col[0] * 0.55f + 0.35f, col[1] * 0.55f + 0.35f, col[2] * 0.55f + 0.38f)
+        val metal = floatArrayOf(col[0] * 0.2f + 0.62f, col[1] * 0.2f + 0.64f, col[2] * 0.2f + 0.68f)
         ufoPart(1.0f, 0.26f, 1.0f, 0f, metal, 0.97f)                               // diskas
         ufoPart(0.62f, 0.12f, 0.62f, -0.12f, floatArrayOf(col[0] * 0.5f, col[1] * 0.5f, col[2] * 0.5f), 0.97f) // apačia
         if (recording) {
-            // Įrašas vyksta: kabina švyti žaliai ir pulsuoja
-            val g = 0.65f + 0.35f * kotlin.math.sin(frame * 0.15).toFloat()
-            ufoPart(0.42f, 0.38f, 0.42f, 0.16f, floatArrayOf(0.15f * g, 1.0f * g, 0.35f * g), 0.9f)
-            ufoPart(0.50f, 0.45f, 0.50f, 0.16f, floatArrayOf(0.2f, 1f, 0.4f), 0.18f * g)   // švytėjimas aplink
+            // Įrašas vyksta: tik stiklinė kabina švyti, spalva plaukia mėlyna ↔ žalia
+            val k = 0.5f + 0.5f * kotlin.math.sin(frame * 0.08).toFloat()
+            val glow = 0.8f + 0.2f * kotlin.math.sin(frame * 0.2).toFloat()
+            val cab = floatArrayOf(
+                (0.15f * k + 0.15f * (1 - k)) * glow,
+                (1.0f * k + 0.55f * (1 - k)) * glow,
+                (0.35f * k + 1.0f * (1 - k)) * glow)
+            ufoPart(0.42f, 0.38f, 0.42f, 0.16f, cab, 0.85f)
         } else {
             ufoPart(0.42f, 0.38f, 0.42f, 0.16f, floatArrayOf(0.75f, 0.9f, 1f), 0.6f)   // stiklinis kupolas
         }
@@ -2726,7 +2730,7 @@ class DraggablePanel(
     }
 
     private val envOptions = arrayOf("Aplinka: nenurodyta", "Lauke, atviras dangus", "Lauke, tarp pastatų", "Lauke, miške",
-        "Prie lango", "Patalpoje", "Automobilyje", "Einant / judant")
+        "Prie lango", "Patalpoje", "Automobilyje", "Krano kabinoje", "Ant krano (atvirai)", "Einant / judant")
     private val envSpinner = Spinner(context).apply {
         adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, envOptions)
         minimumHeight = (44 * resources.displayMetrics.density).toInt()
@@ -2944,6 +2948,11 @@ class DraggablePanel(
     private fun setRecordingUi(on: Boolean) {
         bubble.setRecording(on)
         OverlayBus.recording = on
+        // Įrašo metu ekranas neužgęsta – kitaip Android sustabdo GNSS matavimus
+        (context as? android.app.Activity)?.window?.let { w ->
+            if (on) w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            else w.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 
     private fun startCountdown(secs: Int, done: () -> Unit) {

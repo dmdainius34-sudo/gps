@@ -497,7 +497,7 @@ class BubbleView(context: Context) : View(context) {
     override fun onAttachedToWindow() { super.onAttachedToWindow(); animator.start() }
     override fun onDetachedFromWindow() { animator.cancel(); super.onDetachedFromWindow() }
 
-    private fun isUltra() = (peak ?: 0f) > 45f
+    private fun isUltra() = (peak ?: 0f) >= ULTRA_DB
     private fun isWeak() = avg != null && avg!! < 20f
 
     private fun updateEffects() {
@@ -712,7 +712,7 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
         val a = avg
         val pk = peak
         val weak = a != null && a < 20f
-        val ultra = (pk ?: 0f) > 45f
+        val ultra = (pk ?: 0f) >= ULTRA_DB
         val col = when {
             a == null -> floatArrayOf(0.23f, 0.51f, 0.96f)
             weak -> floatArrayOf(0.12f, 0.16f, 0.22f)
@@ -724,7 +724,8 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
         val pulse = 0.9f + 0.03f * kotlin.math.sin(frame * 0.05).toFloat()
         val hover = 0.06f * kotlin.math.sin(frame * 0.04).toFloat()      // lengvas plūduriavimas
         val ang = frame * 0.02
-        val spinDeg = (frame * 1.2f) % 360f                                // lėkštė sukasi
+        spinAcc = (spinAcc + if (ultra) 2.8f else 1.2f) % 360f            // ULTRA – sukasi greičiau
+        val spinDeg = spinAcc
         fun ufoPart(sx: Float, sy: Float, sz: Float, ty: Float, c: FloatArray, alpha: Float) {
             Matrix.setIdentityM(model, 0)
             Matrix.translateM(model, 0, 0f, hover + ty, 0f)
@@ -746,19 +747,23 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
         ufoPart(0.62f, 0.12f, 0.62f, -0.12f, floatArrayOf(col[0] * 0.5f, col[1] * 0.5f, col[2] * 0.5f), 0.97f) // apačia
         ufoPart(0.42f, 0.38f, 0.42f, 0.16f, floatArrayOf(0.75f, 0.9f, 1f), 0.6f)   // stiklinis kupolas
 
-        // Šviesos ant krašto – signalo spalva, bėga ratu
-        GLES20.glUseProgram(dotProg)
+        // Lėkštės plokštumos matrica (spinduliui ir žaibams)
         Matrix.setIdentityM(model, 0)
         Matrix.translateM(model, 0, 0f, hover, 0f)
         Matrix.rotateM(model, 0, 22f, 1f, 0f, 0f)
-        Matrix.multiplyMM(mvp, 0, vp, 0, model, 0)
+        Matrix.multiplyMM(ufoMvp, 0, vp, 0, model, 0)
+        if (ultra) drawTractorBeam(col)
+
+        // Šviesos ant krašto – signalo spalva, bėga ratu (ULTRA – dega visos)
+        GLES20.glUseProgram(dotProg)
+        System.arraycopy(ufoMvp, 0, mvp, 0, 16)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(dotProg, "uMVP"), 1, false, mvp, 0)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), 9f * density)
         val nLights = 10
-        val lead = (frame / 4) % nLights
+        val lead = (frame / (if (ultra) 2 else 4)) % nLights
         for (i in 0 until nLights) {
             val a = 2.0 * Math.PI * i / nLights + Math.toRadians(spinDeg.toDouble())
-            val on = ((i - lead + nLights) % nLights) < 3
+            val on = ultra || ((i - lead + nLights) % nLights) < 3
             val br = if (on) 1f else 0.35f
             GLES20.glUniform4f(GLES20.glGetUniformLocation(dotProg, "uColor"),
                 (col[0] * 0.5f + 0.5f) * br, (col[1] * 0.5f + 0.5f) * br, (col[2] * 0.5f + 0.5f) * br, 1f)
@@ -769,8 +774,8 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
 
         // 2) ULTRA: elektros kibirkštys (geltonas švytėjimas + baltas branduolys)
         if (ultra && bolts.isNotEmpty()) {
-            drawBoltStrips(0.022f, floatArrayOf(1f, 0.85f, 0.2f, 0.9f))
-            drawBoltStrips(0.008f, floatArrayOf(1f, 1f, 1f, 1f))
+            drawBoltStrips(6f * density, floatArrayOf(1f, 0.85f, 0.2f, 0.85f))
+            drawBoltStrips(2f * density, floatArrayOf(1f, 1f, 1f, 1f))
         }
 
         // 3) Silpnas signalas: kaukolė (tekstūra) ir išsisklaidančios dulkės
@@ -797,55 +802,83 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
         }
     }
 
+    /** Žaibai – 3D linijos lėkštės koordinatėse (ufoMat). */
     private fun drawBoltStrips(width: Float, color: FloatArray) {
         val verts = ArrayList<Float>()
-        for (b in bolts) {
-            val xy = b.xy
+        for (bt in bolts) {
+            val p = bt.xy
             var i = 0
-            while (i + 3 < xy.size) {
-                val x0 = xy[i]; val y0 = xy[i + 1]; val x1 = xy[i + 2]; val y1 = xy[i + 3]
-                val dx = x1 - x0; val dy = y1 - y0
-                val len = kotlin.math.sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6f)
-                val px = -dy / len * width; val py = dx / len * width
-                val z = 1.02f
-                val quad = floatArrayOf(
-                    x0 + px, y0 + py, z, x0 - px, y0 - py, z, x1 + px, y1 + py, z,
-                    x0 - px, y0 - py, z, x1 - px, y1 - py, z, x1 + px, y1 + py, z)
-                for (v in quad) verts.add(v)
-                i += 2
+            while (i + 5 < p.size) {
+                for (k in 0 until 6) verts.add(p[i + k])
+                i += 3
             }
         }
         if (verts.isEmpty()) return
-        val buf = floatBuf(verts.toFloatArray())
         GLES20.glUseProgram(flatProg)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(flatProg, "uMVP"), 1, false, vp, 0)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(flatProg, "uMVP"), 1, false, ufoMvp, 0)
         GLES20.glUniform4f(GLES20.glGetUniformLocation(flatProg, "uColor"), color[0], color[1], color[2], color[3])
-        bindAttrib(flatProg, "aPos", buf, 3)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, verts.size / 3)
+        bindAttrib(flatProg, "aPos", floatBuf(verts.toFloatArray()), 3)
+        GLES20.glLineWidth(width)
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, verts.size / 3)
+        GLES20.glLineWidth(1f)
+    }
+
+    private val ufoMvp = FloatArray(16)
+    private var spinAcc = 0f
+
+    /** Traktorinis spindulys: pulsuojantis šviesos kūgis žemyn iš lėkštės apačios. */
+    private fun drawTractorBeam(col: FloatArray) {
+        val segs = 6
+        val sides = 40
+        val yTop = -0.14f; val yBot = -1.05f
+        val rTop = 0.30f; val rBot = 0.85f
+        val pulseB = 0.75f + 0.25f * kotlin.math.sin(frame * 0.12).toFloat()
+        GLES20.glDepthMask(false)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        GLES20.glUseProgram(flatProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(flatProg, "uMVP"), 1, false, ufoMvp, 0)
+        for (sgi in 0 until segs) {
+            val f0 = sgi.toFloat() / segs; val f1 = (sgi + 1).toFloat() / segs
+            val y0 = yTop + (yBot - yTop) * f0; val y1 = yTop + (yBot - yTop) * f1
+            val r0 = rTop + (rBot - rTop) * f0; val r1 = rTop + (rBot - rTop) * f1
+            val v = ArrayList<Float>()
+            for (i in 0 until sides) {
+                val a0 = 2.0 * Math.PI * i / sides; val a1 = 2.0 * Math.PI * (i + 1) / sides
+                val c0 = kotlin.math.cos(a0).toFloat(); val s0 = kotlin.math.sin(a0).toFloat()
+                val c1 = kotlin.math.cos(a1).toFloat(); val s1 = kotlin.math.sin(a1).toFloat()
+                val q = floatArrayOf(
+                    r0 * c0, y0, r0 * s0, r1 * c0, y1, r1 * s0, r1 * c1, y1, r1 * s1,
+                    r0 * c0, y0, r0 * s0, r1 * c1, y1, r1 * s1, r0 * c1, y0, r0 * s1)
+                for (x in q) v.add(x)
+            }
+            val alpha = 0.22f * (1f - f0) * pulseB
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(flatProg, "uColor"),
+                col[0] * 0.4f + 0.6f, col[1] * 0.4f + 0.6f, col[2] * 0.3f + 0.5f, alpha)
+            bindAttrib(flatProg, "aPos", floatBuf(v.toFloatArray()), 3)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, v.size / 3)
+        }
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDepthMask(true)
     }
 
     private fun updateEffects() {
-        if ((peak ?: 0f) > 45f && rnd.nextFloat() < 0.6f) {
-            // Kibirkšties kelias: lūžinėjanti linija nuo rutulio krašto į išorę
+        if ((peak ?: 0f) >= ULTRA_DB && rnd.nextFloat() < 0.6f) {
+            // Elektros iškrova nuo lėkštės krašto į išorę, lėkštės plokštumoje (x, y, z trejetai)
             val a = rnd.nextFloat() * 2f * Math.PI.toFloat()
-            // Žaibas spinduliu į išorę, lūžinėja, bet lieka apskritimo viduje (be kvadratinių kraštų)
-            val steps = 6 + rnd.nextInt(4)
-            val xy = FloatArray((steps + 1) * 2)
-            val r0 = 0.5f
-            val r1 = 0.9f
-            var x = kotlin.math.cos(a) * r0
-            var y = kotlin.math.sin(a) * r0
-            xy[0] = x; xy[1] = y
+            val steps = 5 + rnd.nextInt(4)
+            val xyz = FloatArray((steps + 1) * 3)
+            val r0 = 0.95f
+            val r1 = 1.38f
             var ja = a
-            for (i in 1..steps) {
+            for (i in 0..steps) {
                 val f = i.toFloat() / steps
                 val dist = r0 + (r1 - r0) * f
-                ja += (rnd.nextFloat() - 0.5f) * 0.35f
-                x = kotlin.math.cos(ja) * dist
-                y = kotlin.math.sin(ja) * dist
-                xy[i * 2] = x; xy[i * 2 + 1] = y
+                if (i > 0) ja += (rnd.nextFloat() - 0.5f) * 0.28f
+                xyz[i * 3] = kotlin.math.cos(ja) * dist
+                xyz[i * 3 + 1] = if (i == 0) 0f else (rnd.nextFloat() - 0.5f) * 0.16f
+                xyz[i * 3 + 2] = kotlin.math.sin(ja) * dist
             }
-            bolts.add(GlBolt(xy, 3 + rnd.nextInt(3)))
+            bolts.add(GlBolt(xyz, 3 + rnd.nextInt(3)))
         }
         bolts.forEach { it.life-- }
         bolts.removeAll { it.life <= 0 }
@@ -1395,7 +1428,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Signalo kokybė -> pulsavimo stiprumas
         val used = sats.filter { it.used }
         val avgCn0 = if (used.isNotEmpty()) used.map { it.cn0 }.average().toFloat() else 0f
-        val peakCn0 = if (used.isNotEmpty()) used.maxOf { it.cn0 } else 0f
+        val peakCn0 = top4Avg(sats) ?: 0f
         val beat = ((avgCn0 - 15f) / 25f).coerceIn(0.2f, 1f)
         val tint = signalTint(if (used.isNotEmpty()) avgCn0 else null, if (used.isNotEmpty()) peakCn0 else null)
         lastTint = tint
@@ -3012,10 +3045,18 @@ const val SIG_YELLOW = 0xFFFACC15.toInt()
 const val BG_NEUTRAL = 0xFFF8FAFC.toInt()
 
 /** Bendra spalva visiems elementams (burbulas, fonas, dangaus kupolas) pagal C/N0. */
+/** ULTRA riba: 4 stipriausių naudojamų palydovų C/N0 vidurkis (kaip GNSS Logger). */
+const val ULTRA_DB = 40f
+
+fun top4Avg(list: List<Sat>): Float? {
+    val v = list.filter { it.used }.map { it.cn0 }.sortedDescending().take(4)
+    return if (v.isEmpty()) null else v.average().toFloat()
+}
+
 fun signalTint(avg: Float?, peak: Float?): Int = when {
     avg == null -> 0xFF3B82F6.toInt()
     avg < 20f -> 0xFF1F2937.toInt()
-    (peak ?: 0f) > 45f -> 0xFFFACC15.toInt()
+    (peak ?: 0f) >= ULTRA_DB -> 0xFFFACC15.toInt()
     else -> signalColor(avg)
 }
 
@@ -3192,10 +3233,10 @@ class MainActivity : AppCompatActivity() {
             cnoView.addSample(list, if (used.isNotEmpty()) avg.toFloat() else null)
             bg.setSignal(if (used.isNotEmpty()) avg.toFloat() else null)
             OverlayBus.avg = if (used.isNotEmpty()) avg.toFloat() else null
-            OverlayBus.peak = if (used.isNotEmpty()) used.maxOf { it.cn0 } else null
+            OverlayBus.peak = top4Avg(list)
             sharePanel?.setSignal(
                 if (used.isNotEmpty()) avg.toFloat() else null,
-                if (used.isNotEmpty()) used.maxOf { it.cn0 } else null
+                top4Avg(list)
             )
 
             satText = SpannableStringBuilder().apply {

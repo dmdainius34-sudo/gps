@@ -720,20 +720,52 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
             else -> rgb(signalColor(a))
         }
 
-        // 1) Rutulys su šviesa (šviesos kryptis lėtai sukasi)
+        // 1) NSO lėkštė: plokščias diskas + kupolas + mirksintys šviesos ant krašto
         val pulse = 0.9f + 0.03f * kotlin.math.sin(frame * 0.05).toFloat()
-        Matrix.setIdentityM(model, 0)
-        Matrix.scaleM(model, 0, pulse, pulse, pulse)
-        Matrix.multiplyMM(mvp, 0, vp, 0, model, 0)
+        val hover = 0.06f * kotlin.math.sin(frame * 0.04).toFloat()      // lengvas plūduriavimas
         val ang = frame * 0.02
-        GLES20.glUseProgram(sphereProg)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(sphereProg, "uMVP"), 1, false, mvp, 0)
-        GLES20.glUniform3f(GLES20.glGetUniformLocation(sphereProg, "uLight"),
-            (0.6 * kotlin.math.cos(ang)).toFloat(), 0.5f, (0.6 * kotlin.math.sin(ang) + 0.5).toFloat())
-        GLES20.glUniform3f(GLES20.glGetUniformLocation(sphereProg, "uColor"), col[0], col[1], col[2])
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(sphereProg, "uAlpha"), 0.95f)
-        bindAttrib(sphereProg, "aPos", sphereBuf!!, 3)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, sphereCount)
+        val spinDeg = (frame * 1.2f) % 360f                                // lėkštė sukasi
+        fun ufoPart(sx: Float, sy: Float, sz: Float, ty: Float, c: FloatArray, alpha: Float) {
+            Matrix.setIdentityM(model, 0)
+            Matrix.translateM(model, 0, 0f, hover + ty, 0f)
+            Matrix.rotateM(model, 0, 22f, 1f, 0f, 0f)                     // pakreipta į žiūrovą
+            Matrix.rotateM(model, 0, spinDeg, 0f, 1f, 0f)
+            Matrix.scaleM(model, 0, sx * pulse, sy * pulse, sz * pulse)
+            Matrix.multiplyMM(mvp, 0, vp, 0, model, 0)
+            GLES20.glUseProgram(sphereProg)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(sphereProg, "uMVP"), 1, false, mvp, 0)
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(sphereProg, "uLight"),
+                (0.6 * kotlin.math.cos(ang)).toFloat(), 0.8f, 0.6f)
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(sphereProg, "uColor"), c[0], c[1], c[2])
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(sphereProg, "uAlpha"), alpha)
+            bindAttrib(sphereProg, "aPos", sphereBuf!!, 3)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, sphereCount)
+        }
+        val metal = floatArrayOf(col[0] * 0.55f + 0.35f, col[1] * 0.55f + 0.35f, col[2] * 0.55f + 0.38f)
+        ufoPart(1.0f, 0.26f, 1.0f, 0f, metal, 0.97f)                               // diskas
+        ufoPart(0.62f, 0.12f, 0.62f, -0.12f, floatArrayOf(col[0] * 0.5f, col[1] * 0.5f, col[2] * 0.5f), 0.97f) // apačia
+        ufoPart(0.42f, 0.38f, 0.42f, 0.16f, floatArrayOf(0.75f, 0.9f, 1f), 0.6f)   // stiklinis kupolas
+
+        // Šviesos ant krašto – signalo spalva, bėga ratu
+        GLES20.glUseProgram(dotProg)
+        Matrix.setIdentityM(model, 0)
+        Matrix.translateM(model, 0, 0f, hover, 0f)
+        Matrix.rotateM(model, 0, 22f, 1f, 0f, 0f)
+        Matrix.multiplyMM(mvp, 0, vp, 0, model, 0)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(dotProg, "uMVP"), 1, false, mvp, 0)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), 9f * density)
+        val nLights = 10
+        val lead = (frame / 4) % nLights
+        for (i in 0 until nLights) {
+            val a = 2.0 * Math.PI * i / nLights + Math.toRadians(spinDeg.toDouble())
+            val on = ((i - lead + nLights) % nLights) < 3
+            val br = if (on) 1f else 0.35f
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(dotProg, "uColor"),
+                (col[0] * 0.5f + 0.5f) * br, (col[1] * 0.5f + 0.5f) * br, (col[2] * 0.5f + 0.5f) * br, 1f)
+            bindAttrib(dotProg, "aPos", floatBuf(floatArrayOf(
+                (0.97 * pulse * kotlin.math.cos(a)).toFloat(), 0.02f, (0.97 * pulse * kotlin.math.sin(a)).toFloat())), 3)
+            GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
+        }
 
         // 2) ULTRA: elektros kibirkštys (geltonas švytėjimas + baltas branduolys)
         if (ultra && bolts.isNotEmpty()) {
@@ -1979,6 +2011,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(sunProg, "uMVP"), 1, false, sunMvp, 0)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(sunProg, "uModel"), 1, false, sunMat, 0)
         GLES20.glUniform3f(GLES20.glGetUniformLocation(sunProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(sunProg, "uCam"), eyeI[0] * zoom, eyeI[1] * zoom, eyeI[2] * zoom)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uTime"), t)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uHasTex"), if (sunImgTex != 0) 1f else 0f)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -1998,8 +2031,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
 
         // 3D korona: didesnis rutulys aplink Saulę, švyti tik prie krašto (pridėtinis maišymas)
-        if (glowProg == 0) glowProg = program(ATMO_VS, SUNGLOW_FS)
-        val gk = k * 1.7f
+        if (glowProg == 0) glowProg = program(GLOW_VS, SUNGLOW_FS)
+        val gk = k * 2.0f
         val gm = FloatArray(16)
         gm[0] = gk; gm[5] = gk; gm[10] = gk
         gm[12] = sp[0]; gm[13] = sp[1]; gm[14] = sp[2]; gm[15] = 1f
@@ -2010,7 +2043,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUseProgram(glowProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(glowProg, "uMVP"), 1, false, gmvp, 0)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(glowProg, "uModel"), 1, false, gm, 0)
-        GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uCam"), eyeI[0] * zoom, eyeI[1] * zoom, eyeI[2] * zoom)
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uCenter"), sp[0], sp[1], sp[2])
         GLES20.glUniform1f(GLES20.glGetUniformLocation(glowProg, "uTime"), t)
         resetAttribs()
         val gl = GLES20.glGetAttribLocation(glowProg, "aPos")
@@ -2265,9 +2299,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             varying vec3 vO;
             varying vec3 vN;
             varying vec2 vUV;
+            varying vec3 vW;
             void main() {
                 vO = aPos;
                 vUV = aUV;
+                vW = (uModel * vec4(aPos, 1.0)).xyz;
                 vN = mat3(uModel) * aPos;
                 gl_Position = uMVP * vec4(aPos, 1.0);
             }
@@ -2281,7 +2317,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             varying vec3 vO;
             varying vec3 vN;
             varying vec2 vUV;
+            varying vec3 vW;
             uniform vec3 uEye;
+            uniform vec3 uCam;
             uniform float uTime;
             uniform sampler2D uTex;
             uniform float uHasTex;
@@ -2312,10 +2350,20 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     // NASA SDO žemėlapis + lengvas mirgėjimas, kad paviršius „gyventų“
                     col = texture2D(uTex, vUV).rgb * 1.25 * (0.92 + 0.16 * n);
                 }
-                float mu = max(dot(normalize(vN), normalize(uEye)), 0.0);
+                float mu = max(dot(normalize(vN), normalize(uCam - vW)), 0.0);
                 col *= 0.42 + 0.58 * pow(mu, 0.5);      // kraštų patamsėjimas (limb darkening)
                 col += vec3(1.0, 0.6, 0.2) * pow(1.0 - mu, 4.0) * 0.6;   // ryškus kraštas
                 gl_FragColor = vec4(col, 1.0);
+            }
+        """
+        private const val GLOW_VS = """
+            attribute vec3 aPos;
+            uniform mat4 uMVP;
+            uniform mat4 uModel;
+            varying vec3 vW;
+            void main() {
+                vW = (uModel * vec4(aPos, 1.0)).xyz;
+                gl_Position = uMVP * vec4(aPos, 1.0);
             }
         """
         private const val SUNGLOW_FS = """
@@ -2324,16 +2372,22 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             #else
             precision mediump float;
             #endif
-            uniform vec3 uEye;
+            uniform vec3 uCam;
+            uniform vec3 uCenter;
             uniform float uTime;
-            varying vec3 vN;
+            varying vec3 vW;
             void main() {
-                float mu = abs(dot(normalize(vN), normalize(uEye)));
-                float pr = sqrt(max(1.0 - mu * mu, 0.0));      // atstumas nuo centro ekrane (0..1)
-                float r0 = 1.0 / 1.7;                            // Saulės kraštas apvalkalo masteliu
-                float g = pr < r0 ? 0.0 : pow(clamp((1.0 - pr) / (1.0 - r0), 0.0, 1.0), 2.2);
-                g *= 0.85 + 0.15 * sin(uTime * 1.5);             // lėtas pulsavimas
-                gl_FragColor = vec4(vec3(1.0, 0.62, 0.22) * g, g * 0.9);
+                // Spindulio nuo kameros atstumas iki Saulės centro – korona visada koncentriška su Saule
+                vec3 d = normalize(vW - uCam);
+                vec3 oc = uCenter - uCam;
+                float tc = dot(oc, d);
+                float dist = length(oc - d * tc);
+                float shellR = length(vW - uCenter);
+                float r = dist / shellR;                      // 0 centre, 1 korona kraštas
+                float r0 = 1.0 / 2.0;                         // Saulės kraštas
+                float g = r < r0 ? 0.35 : pow(clamp((1.0 - r) / (1.0 - r0), 0.0, 1.0), 1.8);
+                g *= 0.85 + 0.15 * sin(uTime * 1.5);
+                gl_FragColor = vec4(vec3(1.0, 0.62, 0.22) * g, g);
             }
         """
         private const val ATMO_VS = """
@@ -2647,7 +2701,7 @@ class DraggablePanel(
         layoutParams = LinearLayout.LayoutParams((sizeDp * density).toInt(), (sizeDp * density).toInt())
     }
 
-    private val dragSlop = 20f * resources.displayMetrics.density
+    private val dragSlop = 10f * resources.displayMetrics.density
     private val cancelBtn = smallButton("\u2715", 44)     // ✕ (ir atšaukti, ir sumažinti)
 
     private val shareBtn = FrameLayout(context).apply {
@@ -2849,7 +2903,17 @@ class DraggablePanel(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                lastX = event.rawX
+                lastY = event.rawY
+                isDragging = false
+                return true
+            }
             MotionEvent.ACTION_MOVE -> {
+                // Tempimas ir už tuščios panelės vietos (antraštės, kraštų)
+                if (!isDragging && (abs(event.rawX - lastX) > dragSlop || abs(event.rawY - lastY) > dragSlop)) {
+                    isDragging = true
+                }
                 if (isDragging) {
                     val dx = event.rawX - lastX
                     val dy = event.rawY - lastY
@@ -3183,6 +3247,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Klaviatūra nekeičia ekrano išdėstymo (dalinimosi lapas nesusitraukia ir nejuda)
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
         supportActionBar?.hide()
         window.statusBarColor = Color.TRANSPARENT
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
@@ -3321,21 +3387,22 @@ class MainActivity : AppCompatActivity() {
         if (sharePanel != null) return
         val panel = DraggablePanel(this) { sections, question, wantScreenshot ->
             val report = buildReport(sections - "screenshot" - "raw", question)
-            val uris = ArrayList<Uri>()
-            if (wantScreenshot) {
-                // Burbulas ir panelė NEPATENKA į ekrano kopiją
-                sharePanel?.visibility = View.INVISIBLE
-                try {
-                    takeScreenshot()?.let { uris.add(it) }
-                } finally {
-                    sharePanel?.visibility = View.VISIBLE
-                }
+            val finish: (Uri?) -> Unit = { shot ->
+                val uris = ArrayList<Uri>()
+                shot?.let { uris.add(it) }
+                if ("raw" in sections) rawCsvUri()?.let { uris.add(it) }
+                // Ataskaita (su klausimu) visada kaip tekstinis failas
+                reportFileUri(report)?.let { uris.add(0, it) }
+                shareContent(report, uris)
             }
-            if ("raw" in sections) rawCsvUri()?.let { uris.add(it) }
-            // Ataskaita (su klausimu) visada kaip tekstinis failas: kai siunčiami failai,
-            // kai kurios programos (pvz., AI) ignoruoja EXTRA_TEXT ir klausimas dingsta.
-            reportFileUri(report)?.let { uris.add(0, it) }
-            shareContent(report, uris)
+            if (wantScreenshot) {
+                // Burbulas ir panelė NEPATENKA į ekrano kopiją; 3D modeliai – patenka
+                sharePanel?.visibility = View.INVISIBLE
+                takeScreenshotAsync { uri ->
+                    sharePanel?.visibility = View.VISIBLE
+                    finish(uri)
+                }
+            } else finish(null)
         }
         panel.onCountdownStart = {
             // Atgalinio skaičiavimo pradžioje CSV buferis pradedamas iš naujo
@@ -3487,6 +3554,44 @@ class MainActivity : AppCompatActivity() {
     } catch (e: Exception) {
         logError("CSV nepavyko: ${e.message}")
         null
+    }
+
+    /** Ekrano kopija kartu su OpenGL 3D vaizdu (jis nupiešiamas per PixelCopy). */
+    private fun takeScreenshotAsync(done: (Uri?) -> Unit) {
+        val view = window.decorView
+        val bitmap = try {
+            Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+        } catch (e: Exception) { done(null); return }
+        Canvas(bitmap).also { view.draw(it) }
+        val save: () -> Unit = {
+            val file = File(cacheDir, "screenshot.png")
+            val uri = try {
+                FileOutputStream(file).use { out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
+                FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            } catch (e: Exception) {
+                logError("Screenshot failed: ${e.message}")
+                null
+            }
+            done(uri)
+        }
+        val gl = if (::skyDome.isInitialized) skyDome else null
+        if (gl == null || !use3d || gl.width <= 0 || gl.height <= 0 || Build.VERSION.SDK_INT < 24) {
+            save(); return
+        }
+        val glBmp = Bitmap.createBitmap(gl.width, gl.height, Bitmap.Config.ARGB_8888)
+        try {
+            android.view.PixelCopy.request(gl, glBmp, { res ->
+                if (res == android.view.PixelCopy.SUCCESS) {
+                    val loc = IntArray(2)
+                    gl.getLocationInWindow(loc)
+                    Canvas(bitmap).drawBitmap(glBmp, loc[0].toFloat(), loc[1].toFloat(), null)
+                }
+                save()
+            }, Handler(Looper.getMainLooper()))
+        } catch (e: Exception) {
+            logError("3D kopija nepavyko: ${e.message}")
+            save()
+        }
     }
 
     private fun takeScreenshot(): Uri? {

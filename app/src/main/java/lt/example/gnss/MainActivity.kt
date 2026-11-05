@@ -1355,6 +1355,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // 2b) Žemė gaublio viduryje (pasvirusi į Polaris, sukasi realiu laiku)
         drawEarth()
+        drawAtmosphere()
 
 
         // 4) Horizontas – pulsuojantis auksinis žiedas
@@ -1575,6 +1576,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uMVP"), 1, false, earthMvp, 0)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uModel"), 1, false, earthMat, 0)
             GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uLight"), 0.5f, 0.3f, 0.8f)
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
             val lp = GLES20.glGetAttribLocation(earthProg, "aPos")
             val lu = GLES20.glGetAttribLocation(earthProg, "aUV")
             GLES20.glEnableVertexAttribArray(lp)
@@ -1666,6 +1668,32 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glDrawArrays(GLES20.GL_LINES, 0, pts.size / 3)
         }
     }
+
+    /** Mėlyna atmosferos aureolė aplink Žemę (matoma tik prie krašto). */
+    private fun drawAtmosphere() {
+        if (earthPos == null) return
+        if (atmoProg == 0) atmoProg = program(ATMO_VS, ATMO_FS)
+        val m = FloatArray(16)
+        java.util.Arrays.fill(m, 0f)
+        val k = 1.06f
+        m[0] = k; m[5] = k; m[10] = k; m[15] = 1f
+        val mvpA = FloatArray(16)
+        Matrix.multiplyMM(mvpA, 0, mvpI, 0, m, 0)
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        GLES20.glUseProgram(atmoProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(atmoProg, "uMVP"), 1, false, mvpA, 0)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(atmoProg, "uModel"), 1, false, m, 0)
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(atmoProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
+        val lp = GLES20.glGetAttribLocation(atmoProg, "aPos")
+        GLES20.glEnableVertexAttribArray(lp)
+        earthPos!!.position(0)
+        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, earthPos)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+    }
+
+    private var atmoProg = 0
 
     private fun labelOf(d: Int): String = when (d) { 0 -> "N"; 90 -> "E"; 180 -> "S"; 270 -> "W"; else -> d.toString() }
 
@@ -1884,8 +1912,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 float d = max(dot(n, l), 0.0);
                 float fres = pow(1.0 - max(dot(n, normalize(uEye)), 0.0), 2.0);
                 float wave = 0.5 + 0.5 * sin(uTime * 2.2 - vZ * 7.0);
-                vec3 col = uTint * (0.10 + 0.45 * d) + uTint * fres * 0.5 + uTint * wave * uBeat * 0.35;
-                float a = 0.45 + 0.30 * fres + 0.25 * uBeat * wave;
+                vec3 h = normalize(l + normalize(uEye));
+                float spec = pow(max(dot(n, h), 0.0), 64.0);
+                vec3 rim = uTint * pow(fres, 1.4) * 1.6;
+                vec3 col = uTint * (0.08 + 0.40 * d) + rim + vec3(spec) * 0.55 + uTint * wave * uBeat * 0.30;
+                float a = 0.30 + 0.55 * pow(fres, 1.2) + 0.25 * uBeat * wave + spec * 0.6;
                 gl_FragColor = vec4(col, clamp(a, 0.0, 1.0));
             }
         """
@@ -1935,17 +1966,47 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 gl_Position = uMVP * vec4(aPos, 1.0);
             }
         """
+        private const val ATMO_VS = """
+            attribute vec3 aPos;
+            uniform mat4 uMVP;
+            uniform mat4 uModel;
+            varying vec3 vN;
+            void main() {
+                vN = mat3(uModel) * aPos;
+                gl_Position = uMVP * vec4(aPos, 1.0);
+            }
+        """
+        private const val ATMO_FS = """
+            precision mediump float;
+            uniform vec3 uEye;
+            varying vec3 vN;
+            void main() {
+                vec3 n = normalize(vN);
+                float fres = pow(1.0 - max(dot(n, normalize(uEye)), 0.0), 3.5);
+                gl_FragColor = vec4(vec3(0.3, 0.55, 1.0) * fres, fres * 0.9);
+            }
+        """
         private const val EARTH_FS = """
             precision mediump float;
             uniform sampler2D uTex;
             uniform vec3 uLight;
+            uniform vec3 uEye;
             varying vec2 vUV;
             varying vec3 vN;
             void main() {
                 vec3 n = normalize(vN);
-                float d = max(dot(n, normalize(uLight)), 0.0);
+                vec3 l = normalize(uLight);
+                vec3 v = normalize(uEye);
+                float d = max(dot(n, l), 0.0);
+                float soft = smoothstep(-0.12, 0.25, dot(n, l));   // švelnus terminatorius
                 vec4 t = texture2D(uTex, vUV);
-                gl_FragColor = vec4(t.rgb * (0.35 + 0.65 * d), 1.0);
+                float ocean = 1.0 - smoothstep(0.08, 0.22, t.r);   // vandenys tamsiai mėlyni
+                vec3 h = normalize(l + v);
+                float spec = pow(max(dot(n, h), 0.0), 90.0) * ocean * 0.8;
+                float fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+                vec3 atm = vec3(0.35, 0.6, 1.0) * fres * 1.1;      // atmosferos kraštas
+                vec3 col = t.rgb * (0.12 + 0.95 * d * soft) + vec3(spec) + atm;
+                gl_FragColor = vec4(col, 1.0);
             }
         """
         private const val TEX_VS = """

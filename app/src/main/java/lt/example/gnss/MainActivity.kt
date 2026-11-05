@@ -993,6 +993,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     init {
         setEGLContextClientVersion(2)
         setEGLConfigChooser(8, 8, 8, 8, 16, 0)
+        preserveEGLContextOnPause = true
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
     }
@@ -1267,6 +1268,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // GL kontekstas atkuriamas po išėjimo/įėjimo – senos tekstūrų ID nebegalioja, todėl viską perkuriame
         prnTex.clear()
         labelTex.clear()
+        atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         buildEarth()
         starTex = makeStarTexture()
         for (d in 0 until 360 step 30) labelTex[labelOf(d)] = makeTexture(labelOf(d), 0xFFFFFFFF.toInt(), if (d % 90 == 0) 170 else 96)
@@ -1284,6 +1286,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     override fun onDrawFrame(gl: GL10?) {
+        // Fonas – ta pati C/N0 spalva kaip ekrano fone ir burbule (švelniai pereinama)
+        val bgTarget = ColorUtils.blendARGB(BG_NEUTRAL, lastTint, 0.45f)
+        bgNow = ColorUtils.blendARGB(bgNow, bgTarget, 0.05f)
+        GLES20.glClearColor(Color.red(bgNow) / 255f, Color.green(bgNow) / 255f, Color.blue(bgNow) / 255f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
         val t = (System.nanoTime() - t0) / 1e9f
 
@@ -1331,6 +1337,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val peakCn0 = if (used.isNotEmpty()) used.maxOf { it.cn0 } else 0f
         val beat = ((avgCn0 - 15f) / 25f).coerceIn(0.2f, 1f)
         val tint = signalTint(if (used.isNotEmpty()) avgCn0 else null, if (used.isNotEmpty()) peakCn0 else null)
+        lastTint = tint
 
         // 1) Virš horizonto – pulsuojantis GPS kupolas (neįrašo gylio, kad Žemė būtų matoma)
         GLES20.glDepthMask(false)
@@ -1418,6 +1425,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile private var obsLat = 54.7
     @Volatile private var obsLon = 25.25
     fun setLocation(lat: Double, lon: Double) { obsLat = lat; obsLon = lon }
+
+    private var lastTint = 0xFF3B82F6.toInt()
+    private var bgNow = BG_NEUTRAL
 
     @Volatile var zoom = 3f
     fun zoomBy(factor: Float) { zoom = (zoom / factor).coerceIn(1.07f, 6f) }
@@ -1578,6 +1588,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uModel"), 1, false, earthMat, 0)
             GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uLight"), 0.5f, 0.3f, 0.8f)
             GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
+            resetAttribs()
             val lp = GLES20.glGetAttribLocation(earthProg, "aPos")
             val lu = GLES20.glGetAttribLocation(earthProg, "aUV")
             GLES20.glEnableVertexAttribArray(lp)
@@ -1686,6 +1697,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(atmoProg, "uMVP"), 1, false, mvpA, 0)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(atmoProg, "uModel"), 1, false, m, 0)
         GLES20.glUniform3f(GLES20.glGetUniformLocation(atmoProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
+        resetAttribs()
         val lp = GLES20.glGetAttribLocation(atmoProg, "aPos")
         GLES20.glEnableVertexAttribArray(lp)
         earthPos!!.position(0)
@@ -1741,6 +1753,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUseProgram(texProg)
         setMat(texProg, "uMVP", mvp)
         setVec4(texProg, "uColor", cr, cg, cb, ca)
+        resetAttribs()
         val lp = GLES20.glGetAttribLocation(texProg, "aPos")
         val lu = GLES20.glGetAttribLocation(texProg, "aUV")
         GLES20.glEnableVertexAttribArray(lp)
@@ -1852,7 +1865,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         return out.toFloatArray()
     }
 
+    private fun resetAttribs() {
+        for (i in 0 until 4) GLES20.glDisableVertexAttribArray(i)
+    }
+
     private fun bindPos(prog: Int, buf: FloatBuffer) {
+        resetAttribs()
         val loc = GLES20.glGetAttribLocation(prog, "aPos")
         GLES20.glEnableVertexAttribArray(loc)
         buf.position(0)

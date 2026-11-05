@@ -131,24 +131,81 @@ class GeoidGrid(
     @Volatile private var grid: FloatArray? = null
     val isLoaded: Boolean get() = grid != null
 
+    @Synchronized
     fun load(context: Context) {
         if (grid != null) return
+        val t0 = android.os.SystemClock.elapsedRealtime()
         val data = FloatArray(nLat * nLon) { Float.NaN }
-        context.assets.open(assetName).bufferedReader().useLines { lines ->
-            for (line in lines) {
-                val p = line.trim().split(Regex("\\s+"))
-                if (p.size < 3) continue
-                val lat = p[0].toDoubleOrNull() ?: continue
-                val lon = p[1].toDoubleOrNull() ?: continue
-                val n = p[2].toDoubleOrNull() ?: continue
-                val i = ((lat - latMin) / latStep).roundToInt()
-                val j = ((lon - lonMin) / lonStep).roundToInt()
+        // Visas failas nuskaitomas į baitų buferį ir skaičiai išskiriami rankiniu būdu
+        // (be eilučių objektų ir Regex – daug mažiau atminties šiukšlių).
+        val buf = context.assets.open(assetName).use { it.readBytes() }
+        val vals = DoubleArray(3)
+        var points = 0
+        var pos = 0
+        val end = buf.size
+        while (pos < end) {
+            // Vienos eilutės ribos
+            var eol = pos
+            while (eol < end && buf[eol] != '\n'.code.toByte()) eol++
+            var cnt = 0
+            var p = pos
+            while (cnt < 3) {
+                while (p < eol && (buf[p] == ' '.code.toByte() || buf[p] == '\t'.code.toByte() || buf[p] == '\r'.code.toByte())) p++
+                if (p >= eol) break
+                val s = p
+                while (p < eol && buf[p] != ' '.code.toByte() && buf[p] != '\t'.code.toByte() && buf[p] != '\r'.code.toByte()) p++
+                val v = parseNumber(buf, s, p)
+                if (v.isNaN()) break
+                vals[cnt++] = v
+            }
+            if (cnt == 3) {
+                val i = ((vals[0] - latMin) / latStep).roundToInt()
+                val j = ((vals[1] - lonMin) / lonStep).roundToInt()
                 if (i in 0 until nLat && j in 0 until nLon) {
-                    data[i * nLon + j] = n.toFloat()
+                    data[i * nLon + j] = vals[2].toFloat()
+                    points++
                 }
             }
+            pos = eol + 1
         }
         grid = data
+        android.util.Log.i(
+            "Geoid",
+            "$assetName įkeltas per ${android.os.SystemClock.elapsedRealtime() - t0} ms " +
+                "(${buf.size} B, taškų: $points)"
+        )
+    }
+
+    /** Skaičius iš buf[s, e): ženklas, sveikoji ir trupmeninė dalys, nebūtinas eksponentas. NaN – jei ne skaičius. */
+    private fun parseNumber(buf: ByteArray, s: Int, e: Int): Double {
+        var p = s
+        var neg = false
+        if (p < e && (buf[p] == '-'.code.toByte() || buf[p] == '+'.code.toByte())) {
+            neg = buf[p] == '-'.code.toByte(); p++
+        }
+        var mant = 0L
+        var scale = 0
+        var digits = 0
+        while (p < e && buf[p] in '0'.code.toByte()..'9'.code.toByte()) {
+            mant = mant * 10 + (buf[p] - '0'.code.toByte()); p++; digits++
+        }
+        if (p < e && buf[p] == '.'.code.toByte()) {
+            p++
+            while (p < e && buf[p] in '0'.code.toByte()..'9'.code.toByte()) {
+                mant = mant * 10 + (buf[p] - '0'.code.toByte()); p++; digits++; scale++
+            }
+        }
+        if (digits == 0 || digits > 18) return String(buf, s, e - s, Charsets.US_ASCII).toDoubleOrNull() ?: Double.NaN
+        if (p < e && (buf[p] == 'e'.code.toByte() || buf[p] == 'E'.code.toByte())) {
+            return String(buf, s, e - s, Charsets.US_ASCII).toDoubleOrNull() ?: Double.NaN
+        }
+        if (p != e) return Double.NaN
+        val v = mant.toDouble() / POW10[scale]
+        return if (neg) -v else v
+    }
+
+    private companion object {
+        val POW10 = DoubleArray(19).also { a -> a[0] = 1.0; for (k in 1 until a.size) a[k] = a[k - 1] * 10.0 }
     }
 
     fun undulation(lat: Double, lon: Double): Double? {
@@ -196,6 +253,7 @@ object Geoid {
                 gridOf(m).load(context.applicationContext)
                 lastError = null
             } catch (e: Exception) {
+                android.util.Log.e("Geoid", "Nepavyko įkelti ${m.assetFile}", e)
                 lastError = "nepavyko įkelti ${m.assetFile} (turi būti app/src/main/assets/${m.assetFile}). Klaida: ${e.message}"
             }
             onReady()
@@ -3428,6 +3486,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Geoidas pradedamas krauti iš karto (fone), kol kuriamas vaizdas ir laukiama fikso.
+        // render() įvykdomas per runOnUiThread, t. y. tik pasibaigus onCreate.
+        Geoid.select(applicationContext, GeoidMode.LIT20G) { runOnUiThread { render() } }
         // Klaviatūra nekeičia ekrano išdėstymo (dalinimosi lapas nesusitraukia ir nejuda)
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
         supportActionBar?.hide()
@@ -3472,8 +3533,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
         val btnReset = Button(this).apply { text = "Atstatyti kalibravimą"; setOnClickListener { baro.reset(); render() } }
-
-        Geoid.select(applicationContext, GeoidMode.LIT20G) { runOnUiThread { render() } }
 
         val dm = resources.displayMetrics
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE

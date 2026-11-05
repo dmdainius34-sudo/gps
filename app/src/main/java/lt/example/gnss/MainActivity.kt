@@ -1428,6 +1428,7 @@ private class FilamentEarth(private val appCtx: Context) {
                 .castShadows(false)
                 .receiveShadows(false)
                 .build(eng, earthEnt)
+            eng.transformManager.create(earthEnt)   // be transformacijos komponento objektas liktų koordinačių pradžioje
             scene!!.addEntity(earthEnt)
 
             // Saulė – kryptinė šviesa; kryptis atnaujinama kiekvieną kadrą iš sunDir()
@@ -1701,6 +1702,7 @@ private class FilamentEarth(private val appCtx: Context) {
             resLoader!!.loadResources(asset)
             asset.releaseSourceData()
             scene!!.addEntities(asset.entities)
+            if (!eng.transformManager.hasComponent(asset.root)) eng.transformManager.create(asset.root)
             val bb = asset.boundingBox
             val he = bb.halfExtent
             val maxHe = max(he[0], max(he[1], he[2])).coerceAtLeast(1e-6f)
@@ -1726,6 +1728,7 @@ private class FilamentEarth(private val appCtx: Context) {
             .material(0, body).material(1, panel)
             .culling(false).castShadows(false).receiveShadows(false)
             .build(eng, ent)
+        eng.transformManager.create(ent)
         scene!!.addEntity(ent)
         return SatObj(ent, listOf(body, panel), null, satSize / 2.5f, floatArrayOf(0f, 0f, 0f))
     }

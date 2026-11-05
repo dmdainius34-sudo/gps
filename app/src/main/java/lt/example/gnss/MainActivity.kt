@@ -1292,12 +1292,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         sunTex = makeSunTexture()
         sunImgTex = 0
         try {
-            appCtx.assets.open("sun.png").use { ins ->
+            appCtx.assets.open("sun.jpg").use { ins ->
                 val bmp = android.graphics.BitmapFactory.decodeStream(ins)
                 if (bmp != null) sunImgTex = uploadTexture(bmp)
             }
         } catch (e: Exception) {
-            android.util.Log.w("GnssApp", "sun.png nerastas: rodoma nupiešta Saulė")
+            android.util.Log.w("GnssApp", "sun.jpg nerastas: rodoma programiškai nupiešta Saulė")
         }
         for (d in 0 until 360 step 30) labelTex[labelOf(d)] = makeTexture(labelOf(d), 0xFFFFFFFF.toInt(), if (d % 90 == 0) 170 else 96)
     }
@@ -1810,8 +1810,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawMoon() {
         if (earthPos == null) return
         val dir = moonDir()
-        val k = 0.28f                                   // Mėnulio spindulys = 0,07 scenos vnt.
-        val dist = 0.85
+        val k = 0.40f                                   // Mėnulio spindulys = 0,10 scenos vnt.
+        val dist = 1.9                                  // už GEO palydovų (~1,6), arčiau nei Saulė (2,3)
         val px = fP[0] + dir[0] * dist; val py = fP[1] + dir[1] * dist; val pz = fP[2] + dir[2] * dist
         // Artimoji pusė atsukta į Žemę
         val x = doubleArrayOf(-dir[0], -dir[1], -dir[2])
@@ -1980,11 +1980,21 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(sunProg, "uModel"), 1, false, sunMat, 0)
         GLES20.glUniform3f(GLES20.glGetUniformLocation(sunProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uTime"), t)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uHasTex"), if (sunImgTex != 0) 1f else 0f)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sunImgTex)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(sunProg, "uTex"), 0)
         resetAttribs()
         val lp = GLES20.glGetAttribLocation(sunProg, "aPos")
+        val lu = GLES20.glGetAttribLocation(sunProg, "aUV")
         GLES20.glEnableVertexAttribArray(lp)
         earthPos!!.position(0)
         GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, earthPos)
+        if (lu >= 0) {
+            GLES20.glEnableVertexAttribArray(lu)
+            earthUv!!.position(0)
+            GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, earthUv)
+        }
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
     }
@@ -2220,12 +2230,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         """
         private const val SUN_VS = """
             attribute vec3 aPos;
+            attribute vec2 aUV;
             uniform mat4 uMVP;
             uniform mat4 uModel;
             varying vec3 vO;
             varying vec3 vN;
+            varying vec2 vUV;
             void main() {
                 vO = aPos;
+                vUV = aUV;
                 vN = mat3(uModel) * aPos;
                 gl_Position = uMVP * vec4(aPos, 1.0);
             }
@@ -2238,8 +2251,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             #endif
             varying vec3 vO;
             varying vec3 vN;
+            varying vec2 vUV;
             uniform vec3 uEye;
             uniform float uTime;
+            uniform sampler2D uTex;
+            uniform float uHasTex;
             float hash(vec3 p) {
                 return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
             }
@@ -2262,7 +2278,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vec3 hot = vec3(1.0, 0.96, 0.72);
                 vec3 warm = vec3(1.0, 0.52, 0.08);
                 vec3 col = mix(warm, hot, n);
-                col *= 1.0 - 0.65 * spots;
+                col *= 1.0 - 0.35 * spots;
+                if (uHasTex > 0.5) {
+                    // NASA SDO žemėlapis + lengvas mirgėjimas, kad paviršius „gyventų“
+                    col = texture2D(uTex, vUV).rgb * 1.25 * (0.92 + 0.16 * n);
+                }
                 float mu = max(dot(normalize(vN), normalize(uEye)), 0.0);
                 col *= 0.42 + 0.58 * pow(mu, 0.5);      // kraštų patamsėjimas (limb darkening)
                 col += vec3(1.0, 0.6, 0.2) * pow(1.0 - mu, 4.0) * 0.6;   // ryškus kraštas

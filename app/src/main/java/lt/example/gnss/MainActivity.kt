@@ -67,6 +67,7 @@ import android.text.Spannable
 import android.text.SpannableStringBuilder
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
+import android.view.ScaleGestureDetector
 import android.view.MotionEvent
 import android.view.View
 import android.view.animation.LinearInterpolator
@@ -987,6 +988,12 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private var lastY = 0f
     private val resumeSensors = Runnable { manual = false }
     var onDoubleTapCb: (() -> Unit)? = null
+    private val scaleDet = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        override fun onScale(d: ScaleGestureDetector): Boolean {
+            renderer.zoomBy(d.scaleFactor)
+            return true
+        }
+    })
     private val gd = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
         override fun onDoubleTap(e: MotionEvent): Boolean { onDoubleTapCb?.invoke(); return true }
@@ -1079,6 +1086,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        scaleDet.onTouchEvent(e)
+        if (scaleDet.isInProgress) return true
         gd.onTouchEvent(e)
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -1294,9 +1303,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         dotProg = program(COLOR_VS, DOT_FS)
         texProg = program(TEX_VS, TEX_FS)
 
-        val up = meshSphere(0.0, 90.0, 18, 72, 1.0)
+        val up = meshSphere(0.0, 90.0, 48, 128, 1.0)
         upperBuf = floatBuf(up); upperN = up.size / 3
-        val low = meshSphere(-90.0, 0.0, 12, 72, 1.0)
+        val low = meshSphere(-90.0, 0.0, 32, 128, 1.0)
         lowerBuf = floatBuf(low); lowerN = low.size / 3
         val grid = buildGrid(1.004)
         gridBuf = floatBuf(grid); gridN = grid.size / 3
@@ -1318,7 +1327,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Vaizdo centras pastumtas žemyn, kad viršutinė kupolo dalis tilptų į ekraną
         proj[9] = 0.3f
         Matrix.setIdentityM(view, 0)
-        Matrix.translateM(view, 0, 0f, 0f, -3f)           // kamera išorėje, žiūri į gaublį
+        Matrix.translateM(view, 0, 0f, 0f, -zoom)         // kamera išorėje, žiūri į gaublį
         Matrix.multiplyMM(pv, 0, proj, 0, view, 0)
     }
 
@@ -1326,6 +1335,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
         val t = (System.nanoTime() - t0) / 1e9f
 
+        // Zoom: kameros atstumas kiekvieną kadrą
+        Matrix.setIdentityM(view, 0)
+        Matrix.translateM(view, 0, 0f, 0f, -zoom)
+        Matrix.multiplyMM(pv, 0, proj, 0, view, 0)
         // Kadras: įrenginio orientacija sideralinėje erdvėje (A = Q * rot)
         frameNow()
         val r = rot
@@ -1380,22 +1393,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // 2b) Žemė gaublio viduryje (pasvirusi į Polaris, sukasi realiu laiku)
         drawEarth()
 
-        // C/N0 istorija kaip juosta aplink apatinę gaublio dalį (apskritimu – laikas)
-        drawSatCurves()
 
         // 4) Horizontas – pulsuojantis auksinis žiedas
-        val hzAlpha = 0.6f + 0.4f * kotlin.math.sin(t * 2.5f)
+        val hzAlpha = 0.7f
         setVec4(colorProg, "uColor", 0.95f, 0.72f, 0.3f, hzAlpha)
         bindPos(colorProg, horizonBuf!!)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, horizonN)
 
         // Žymos ir palydovai piešiami be gylio testo (visada matomi priekyje)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
-
-        // Signalo indikatorius kupolo apačioje (nadyras): spalva pagal signalą, pulsuoja
-        val pulseA = 0.6f + 0.4f * kotlin.math.sin(t * 2f)
-        billboard(floatArrayOf(0f, 0f, -1.03f), eye, 0.32f, 0.32f, starTex,
-            Color.red(tint) / 255f, Color.green(tint) / 255f, Color.blue(tint) / 255f, pulseA)
 
         // 5) Laipsnių žymos ant horizonto
         for (d in 0 until 360 step 30) {
@@ -1447,6 +1453,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile private var obsLat = 54.7
     @Volatile private var obsLon = 25.25
     fun setLocation(lat: Double, lon: Double) { obsLat = lat; obsLon = lon }
+
+    @Volatile var zoom = 3f
+    fun zoomBy(factor: Float) { zoom = (zoom / factor).coerceIn(1.6f, 6f) }
 
     @Volatile private var southUp = false
     fun setSouthUpMode(on: Boolean) { southUp = on }

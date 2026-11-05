@@ -1520,18 +1520,30 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val usedK = if (sat.used) 1f else 0.4f
             val phase = sat.svid * 0.7f
             when {
+                sat.cn0 >= 45f -> {
+                    // Labai stiprus signalas: greitas žybčiojimas (3× greičiau), ryškesnė žvaigždė
+                    val tw = kotlin.math.sin(t * 3.6f + phase)
+                    val flick = if (kotlin.math.sin(t * 7.2f + phase * 1.7f) > 0.6f) 1.35f else 1f
+                    val size = 0.085f * (1f + 0.3f * tw) * flick
+                    val alpha = ((0.85f + 0.15f * tw) * usedK).coerceAtMost(1f)
+                    billboard(p, eyeI, size * 1.5f, size * 1.5f, starTex, col[0], col[1], col[2], alpha * 0.45f)
+                    billboard(p, eyeI, size, size, starTex, col[0], col[1], col[2], alpha)
+                    billboard(p, eyeI, size * 0.5f, size * 0.5f, starTex, 1f, 1f, 1f, alpha)
+                    val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
+                    billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.95f * usedK)
+                }
                 sat.cn0 >= 30f -> {
                     // Lėtas pulsavimas, alfa niekada nenukrenta iki nulio – dingsta tik palydovui išeinant
                     val tw = kotlin.math.sin(t * 1.2f + phase)
                     val size = 0.075f * (1f + 0.2f * tw)
                     val alpha = (0.8f + 0.2f * tw) * usedK
-                    billboard(p, eye, size, size, starTex, col[0], col[1], col[2], alpha)
-                    billboard(p, eye, size * 0.45f, size * 0.45f, starTex, 1f, 1f, 1f, alpha)
+                    billboard(p, eyeI, size, size, starTex, col[0], col[1], col[2], alpha)
+                    billboard(p, eyeI, size * 0.45f, size * 0.45f, starTex, 1f, 1f, 1f, alpha)
                     val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
-                    billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eye, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
+                    billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
                 }
                 sat.cn0 >= 20f -> {
-                    billboard(p, eye, 0.05f, 0.05f, starTex, col[0], col[1], col[2], 0.6f * usedK)
+                    billboard(p, eyeI, 0.05f, 0.05f, starTex, col[0], col[1], col[2], 0.6f * usedK)
                 }
                 else -> {
                     drawPoint(p, col, 0.3f * usedK, 6f * density)

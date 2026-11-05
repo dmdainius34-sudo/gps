@@ -1390,7 +1390,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // 2b) Žemė gaublio viduryje (pasvirusi į Polaris, sukasi realiu laiku)
         drawEarth()
-        drawAtmosphere()
+        drawEquatorRing(t)
+        drawMoon()
 
 
         // 4) Horizontas – pulsuojantis auksinis žiedas
@@ -1549,6 +1550,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             earthTex = 0
             main.post { Toast.makeText(appCtx, "earth.jpg nerastas: app/src/main/assets/earth.jpg", Toast.LENGTH_LONG).show() }
         }
+        moonTex = 0
+        try {
+            appCtx.assets.open("moon.jpg").use { ins ->
+                val bmp = android.graphics.BitmapFactory.decodeStream(ins)
+                if (bmp != null) moonTex = uploadTexture(bmp)
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("GnssApp", "moon.jpg nerastas: app/src/main/assets/moon.jpg (rodomas pilkas Mėnulis)")
+        }
         val stacks = 48; val slices = 96; val r = 0.25
         val pos = ArrayList<Float>(); val uv = ArrayList<Float>()
         fun vertex(st: Int, sl: Int) {
@@ -1613,7 +1623,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUseProgram(earthProg)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uMVP"), 1, false, earthMvp, 0)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uModel"), 1, false, earthMat, 0)
-            GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uLight"), 0.5f, 0.3f, 0.8f)
+            val sun = sunDir()
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
             GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
             resetAttribs()
             val lp = GLES20.glGetAttribLocation(earthProg, "aPos")
@@ -1734,6 +1745,112 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     private var atmoProg = 0
+
+    // ---------------- MĖNULIS, SAULĖ, PUSIAUJO ŽIEDAS ----------------
+    private var moonTex = 0
+    private val moonMat = FloatArray(16)
+    private val moonMvp = FloatArray(16)
+
+    private fun jdDays(): Double = System.currentTimeMillis() / 86400000.0 + 2440587.5 - 2451545.0
+
+    /** Ekliptikos vektorius -> pusiaujo (sideralinė) sistema. */
+    private fun eclToEq(lon: Double, lat: Double): DoubleArray {
+        val e = Math.toRadians(23.4397)
+        val xe = cos(lat) * cos(lon); val ye = cos(lat) * sin(lon); val ze = sin(lat)
+        return doubleArrayOf(xe, ye * cos(e) - ze * sin(e), ye * sin(e) + ze * cos(e))
+    }
+
+    /** Saulės kryptis (apytikslė, ~0,01°). */
+    private fun sunDir(): DoubleArray {
+        val d = jdDays()
+        val m = Math.toRadians(357.5291 + 0.98560028 * d)
+        val c = Math.toRadians(1.9148 * sin(m) + 0.02 * sin(2 * m) + 0.0003 * sin(3 * m))
+        val l = m + c + Math.toRadians(102.9372) + Math.PI
+        return eclToEq(l, 0.0)
+    }
+
+    /** Mėnulio kryptis (apytikslė, ~1°). */
+    private fun moonDir(): DoubleArray {
+        val d = jdDays()
+        val L = Math.toRadians(218.316 + 13.176396 * d)
+        val M = Math.toRadians(134.963 + 13.064993 * d)
+        val F = Math.toRadians(93.272 + 13.229350 * d)
+        val lon = L + Math.toRadians(6.289) * sin(M)
+        val lat = Math.toRadians(5.128) * sin(F)
+        return eclToEq(lon, lat)
+    }
+
+    /** Mėnulis tikroje dangaus kryptyje nuo stebėtojo, apšviestas Saulės (matosi fazė). */
+    private fun drawMoon() {
+        if (earthPos == null) return
+        val dir = moonDir()
+        val k = 0.28f                                   // Mėnulio spindulys = 0,07 scenos vnt.
+        val dist = 0.85
+        val px = fP[0] + dir[0] * dist; val py = fP[1] + dir[1] * dist; val pz = fP[2] + dir[2] * dist
+        // Artimoji pusė atsukta į Žemę
+        val x = doubleArrayOf(-dir[0], -dir[1], -dir[2])
+        var y = doubleArrayOf(-x[1], x[0], 0.0)                 // z0 × x
+        val yl = kotlin.math.sqrt(y[0] * y[0] + y[1] * y[1]).coerceAtLeast(1e-9)
+        y = doubleArrayOf(y[0] / yl, y[1] / yl, 0.0)
+        val z = doubleArrayOf(x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0])
+        java.util.Arrays.fill(moonMat, 0f)
+        for (i in 0..2) {
+            moonMat[i] = (x[i] * k).toFloat()
+            moonMat[4 + i] = (y[i] * k).toFloat()
+            moonMat[8 + i] = (z[i] * k).toFloat()
+        }
+        moonMat[12] = px.toFloat(); moonMat[13] = py.toFloat(); moonMat[14] = pz.toFloat(); moonMat[15] = 1f
+        Matrix.multiplyMM(moonMvp, 0, mvpI, 0, moonMat, 0)
+
+        val sun = sunDir()
+        if (moonTex == 0) {
+            GLES20.glUseProgram(colorProg)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, moonMvp, 0)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 0.75f, 0.75f, 0.72f, 1f)
+            bindPos(colorProg, earthPos!!)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+            return
+        }
+        GLES20.glUseProgram(earthProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uMVP"), 1, false, moonMvp, 0)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uModel"), 1, false, moonMat, 0)
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
+        resetAttribs()
+        val lp = GLES20.glGetAttribLocation(earthProg, "aPos")
+        val lu = GLES20.glGetAttribLocation(earthProg, "aUV")
+        GLES20.glEnableVertexAttribArray(lp)
+        GLES20.glEnableVertexAttribArray(lu)
+        earthPos!!.position(0); earthUv!!.position(0)
+        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, earthPos)
+        GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, earthUv)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, moonTex)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(earthProg, "uTex"), 0)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+    }
+
+    /** Pusiaujo žiedas aplink Žemę: brūkšneliai bėga iš vakarų į rytus (Žemės sukimosi kryptimi). */
+    private fun drawEquatorRing(t: Float) {
+        val n = 240
+        val r = 0.30
+        val phase = (t * 24f).toInt()
+        val pts = ArrayList<Float>()
+        for (i in 0 until n) {
+            if (((i - phase) % 12 + 12) % 12 >= 6) continue
+            val a0 = 2 * Math.PI * i / n; val a1 = 2 * Math.PI * (i + 1) / n
+            pts.add((r * cos(a0)).toFloat()); pts.add((r * sin(a0)).toFloat()); pts.add(0f)
+            pts.add((r * cos(a1)).toFloat()); pts.add((r * sin(a1)).toFloat()); pts.add(0f)
+        }
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 0.55f, 0.9f, 1f, 0.9f)
+        bindPos(colorProg, floatBuf(pts.toFloatArray()))
+        GLES20.glLineWidth(3f)
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, pts.size / 3)
+        GLES20.glLineWidth(1f)
+    }
+
 
     private fun labelOf(d: Int): String = when (d) { 0 -> "N"; 90 -> "E"; 180 -> "S"; 270 -> "W"; else -> d.toString() }
 

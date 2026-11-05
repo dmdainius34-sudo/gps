@@ -2700,7 +2700,7 @@ class DraggablePanel(
         gravity = Gravity.CENTER_VERTICAL
     }
     private val rawSecs = EditText(context).apply {
-        setText("30")
+        setText("900")
         inputType = InputType.TYPE_CLASS_NUMBER
         setSingleLine()
         textSize = 13f
@@ -2712,6 +2712,15 @@ class DraggablePanel(
         textSize = 13f
         setTextColor(Color.DKGRAY)
     }
+
+    private val envOptions = arrayOf("Aplinka: nenurodyta", "Lauke, atviras dangus", "Lauke, tarp pastatų", "Lauke, miške",
+        "Prie lango", "Patalpoje", "Automobilyje", "Einant / judant")
+    private val envSpinner = Spinner(context).apply {
+        adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, envOptions)
+        minimumHeight = (44 * resources.displayMetrics.density).toInt()
+    }
+    /** Vartotojo nurodyta aplinka (įrašoma į CSV ir ataskaitą). */
+    val envTag: String get() = if (envSpinner.selectedItemPosition <= 0) "" else envOptions[envSpinner.selectedItemPosition]
 
     private val questionInput = EditText(context).apply {
         hint = "?"
@@ -2784,7 +2793,7 @@ class DraggablePanel(
             "klaidos" to "Klaidos ir būsena",
             "irenginys" to "Įrenginys (modelis, Android)",
             "screenshot" to "Įtraukti ekrano kopiją",
-            "raw" to "Neapdoroti matavimai (CSV)"
+            "raw" to "Matavimai + fiksai (2 CSV)"
         )
         for ((k, v) in opts) {
             val cb = CheckBox(context).apply {
@@ -2814,6 +2823,7 @@ class DraggablePanel(
         panel.addView(rawRow)
         panel.addView(alphaLabel)
         panel.addView(alphaSeek)
+        panel.addView(envSpinner)
         panel.addView(inputRow)
 
         addView(panel)
@@ -2853,7 +2863,7 @@ class DraggablePanel(
         val selected = boxes.filterValues { it.isChecked }.keys.toSet()
         val screenshot = "screenshot" in selected
         if ("raw" in selected) {
-            val secs = rawSecs.text.toString().toIntOrNull()?.coerceIn(5, 600) ?: 30
+            val secs = rawSecs.text.toString().toIntOrNull()?.coerceIn(5, 1800) ?: 900
             startCountdown(secs) {
                 // Klausimas nuskaitomas tik pasibaigus laikmačiui, kad spėtumėte parašyti per įrašymą
                 val question = questionInput.text.toString().trim()
@@ -2917,7 +2927,8 @@ class DraggablePanel(
                 lastY = ev.rawY
                 isDragging = false
                 touchOnControl = inside(questionInput, ev.rawX, ev.rawY) ||
-                    inside(alphaSeek, ev.rawX, ev.rawY) || inside(rawSecs, ev.rawX, ev.rawY)
+                    inside(alphaSeek, ev.rawX, ev.rawY) || inside(rawSecs, ev.rawX, ev.rawY) ||
+                    inside(envSpinner, ev.rawX, ev.rawY)
                 if (touchOnControl) return false
             }
             MotionEvent.ACTION_MOVE -> {
@@ -3241,6 +3252,8 @@ class MainActivity : AppCompatActivity() {
                 )
             }
             lastSats = list
+            satMap.clear()
+            for (x in list) satMap[x.const + x.svid] = x
             skyView.sats = list
             if (::skyDome.isInitialized) skyDome.setSats(list)
             val used = list.filter { it.used }
@@ -3289,7 +3302,7 @@ class MainActivity : AppCompatActivity() {
     private val measCallback = object : GnssMeasurementsEvent.Callback() {
         override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
             measText = "Neapdoroti matavimai: ${event.measurements.size}"
-            for (m in event.measurements) appendRaw(m)
+            for (m in event.measurements) appendRaw(m, event.clock)
             render()
         }
     }
@@ -3449,7 +3462,10 @@ class MainActivity : AppCompatActivity() {
             val finish: (Uri?) -> Unit = { shot ->
                 val uris = ArrayList<Uri>()
                 shot?.let { uris.add(it) }
-                if ("raw" in sections) rawCsvUri()?.let { uris.add(it) }
+                if ("raw" in sections) {
+                    rawCsvUri()?.let { uris.add(it) }
+                    fixCsvUri()?.let { uris.add(it) }
+                }
                 // Ataskaita (su klausimu) visada kaip tekstinis failas
                 reportFileUri(report)?.let { uris.add(0, it) }
                 shareContent(report, uris)
@@ -3467,6 +3483,8 @@ class MainActivity : AppCompatActivity() {
             // Atgalinio skaičiavimo pradžioje CSV buferis pradedamas iš naujo
             rawLog.setLength(0)
             rawLog.append(rawHeader)
+            fixLog.setLength(0)
+            fixLog.append(fixHeader)
         }
         val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         
@@ -3489,6 +3507,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         baro.start()
+        startDeviceSensors()
         if (use3d && ::skyDome.isInitialized) skyDome.start()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             startGnss()
@@ -3500,6 +3519,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         baro.stop()
+        stopDeviceSensors()
         if (::skyDome.isInitialized) skyDome.stop()
         lm.unregisterGnssStatusCallback(statusCallback)
         lm.unregisterGnssMeasurementsCallback(measCallback)
@@ -3548,6 +3568,8 @@ class MainActivity : AppCompatActivity() {
             append("Laikas: ${java.text.DateFormat.getTimeInstance().format(Date(loc.time))}")
         }
         baro.updateMslp(loc.latitude, loc.longitude)
+        appendFix(loc)
+        fetchKp()
         if (::skyDome.isInitialized) skyDome.setLocation(loc.latitude, loc.longitude, loc.altitude)
         lastGpsH = if (loc.hasAltitude()) Geoid.undulation(loc.latitude, loc.longitude)?.let { loc.altitude - it } else null
         render()
@@ -3580,21 +3602,182 @@ class MainActivity : AppCompatActivity() {
         if (errorLog.size > 20) errorLog.removeFirst()
     }
 
-    // ---------------- NEAPDOROTI MATAVIMAI (CSV) ----------------
-    private val rawHeader = "laikas_ms,konstelacija,svid,cn0_dbhz,dazniu_hz,doplerio_mps,akumuliuota_m,recv_sv_time_ns\n"
+    // ---------------- NEAPDOROTI MATAVIMAI (CSV) – išplėstiniai AI analizei ----------------
+    private val rawHeader = "laikas_ms,konstelacija,svid,signalas,dazniu_hz,cn0_dbhz,baseband_cn0_dbhz," +
+        "kampas_deg,azimutas_deg,fiksui," +
+        "time_nanos,full_bias_nanos,bias_nanos,bias_unc_nanos,drift_nsps,time_offset_ns," +
+        "state,recv_sv_time_ns,recv_sv_time_unc_ns,doplerio_mps,doplerio_unc_mps," +
+        "adr_m,adr_state,adr_unc_m,multipath,agc_db,aplinka\n"
     private val rawLog = StringBuilder(rawHeader)
+    private val satMap = HashMap<String, Sat>()
+    private val bandsSeen = java.util.TreeSet<String>()
 
-    private fun appendRaw(m: GnssMeasurement) {
-        if (rawLog.length > 3_000_000) { rawLog.setLength(0); rawLog.append(rawHeader) }
-        val carrier = if (m.hasCarrierFrequencyHz()) m.carrierFrequencyHz.toString() else ""
-        rawLog.append(System.currentTimeMillis()).append(',')
-            .append(constName(m.constellationType)).append(',')
-            .append(m.svid).append(',')
-            .append(m.cn0DbHz).append(',')
-            .append(carrier).append(',')
+    private fun bandName(c: String, hz: Double): String {
+        val mhz = hz / 1e6
+        return when {
+            kotlin.math.abs(mhz - 1575.42) < 2 -> if (c == "GAL") "E1" else "L1"
+            kotlin.math.abs(mhz - 1176.45) < 2 -> if (c == "GAL") "E5a" else "L5"
+            kotlin.math.abs(mhz - 1207.14) < 2 -> if (c == "GAL") "E5b" else "B2b"
+            kotlin.math.abs(mhz - 1227.60) < 2 -> "L2"
+            kotlin.math.abs(mhz - 1561.098) < 2 -> "B1I"
+            kotlin.math.abs(mhz - 1268.52) < 2 -> "B3I"
+            mhz in 1598.0..1607.0 -> "G1"
+            mhz in 1242.0..1249.0 -> "G2"
+            else -> fx(mhz, 2) + "MHz"
+        }
+    }
+
+    private fun envTag(): String = sharePanel?.envTag ?: ""
+
+    private fun appendRaw(m: GnssMeasurement, clk: android.location.GnssClock) {
+        if (rawLog.length > 12_000_000) { rawLog.setLength(0); rawLog.append(rawHeader) }
+        val c = constName(m.constellationType)
+        val hz = if (m.hasCarrierFrequencyHz()) m.carrierFrequencyHz.toDouble() else 1575.42e6
+        val band = bandName(c, hz)
+        bandsSeen.add("$c $band")
+        val sat = satMap["$c${m.svid}"]
+        val bb = if (Build.VERSION.SDK_INT >= 30 && m.hasBasebandCn0DbHz()) m.basebandCn0DbHz.toString() else ""
+        @Suppress("DEPRECATION")
+        val agc = if (m.hasAutomaticGainControlLevelDb()) m.automaticGainControlLevelDb.toString() else ""
+        val sb = rawLog
+        sb.append(System.currentTimeMillis()).append(',')
+            .append(c).append(',').append(m.svid).append(',').append(band).append(',')
+            .append(if (m.hasCarrierFrequencyHz()) m.carrierFrequencyHz.toString() else "").append(',')
+            .append(m.cn0DbHz).append(',').append(bb).append(',')
+            .append(sat?.elev?.let { fx(it.toDouble(), 1) } ?: "").append(',')
+            .append(sat?.az?.let { fx(it.toDouble(), 1) } ?: "").append(',')
+            .append(if (sat?.used == true) 1 else 0).append(',')
+            .append(clk.timeNanos).append(',')
+            .append(if (clk.hasFullBiasNanos()) clk.fullBiasNanos.toString() else "").append(',')
+            .append(if (clk.hasBiasNanos()) clk.biasNanos.toString() else "").append(',')
+            .append(if (clk.hasBiasUncertaintyNanos()) clk.biasUncertaintyNanos.toString() else "").append(',')
+            .append(if (clk.hasDriftNanosPerSecond()) clk.driftNanosPerSecond.toString() else "").append(',')
+            .append(m.timeOffsetNanos).append(',')
+            .append(m.state).append(',')
+            .append(m.receivedSvTimeNanos).append(',')
+            .append(m.receivedSvTimeUncertaintyNanos).append(',')
             .append(m.pseudorangeRateMetersPerSecond).append(',')
+            .append(m.pseudorangeRateUncertaintyMetersPerSecond).append(',')
             .append(m.accumulatedDeltaRangeMeters).append(',')
-            .append(m.receivedSvTimeNanos).append('\n')
+            .append(m.accumulatedDeltaRangeState).append(',')
+            .append(m.accumulatedDeltaRangeUncertaintyMeters).append(',')
+            .append(m.multipathIndicator).append(',')
+            .append(agc).append(',')
+            .append(envTag()).append('\n')
+    }
+
+    // ---------------- FIKSAI KAS SEKUNDĘ (CSV) ----------------
+    private val fixHeader = "laikas_ms,platuma,ilguma,aukstis_elips_m,geoido_N_m,aukstis_jura_m," +
+        "h_tikslumas_m,v_tikslumas_m,greitis_mps,kryptis_deg,palydovu_naudojama,palydovu_matoma," +
+        "vid_cn0_naudojami,top4_cn0,pitch_deg,roll_deg,azimutas_ekrano_deg,judejimas_mps2,aplinka\n"
+    private val fixLog = StringBuilder(fixHeader)
+
+    private fun appendFix(loc: Location) {
+        if (fixLog.length > 4_000_000) { fixLog.setLength(0); fixLog.append(fixHeader) }
+        val n = Geoid.undulation(loc.latitude, loc.longitude)
+        val used = lastSats.filter { it.used }
+        val avg = if (used.isNotEmpty()) used.map { it.cn0 }.average() else Double.NaN
+        val t4 = top4Avg(lastSats)
+        fixLog.append(loc.time).append(',')
+            .append(fx(loc.latitude, 8)).append(',').append(fx(loc.longitude, 8)).append(',')
+            .append(if (loc.hasAltitude()) fx(loc.altitude, 2) else "").append(',')
+            .append(n?.let { fx(it, 3) } ?: "").append(',')
+            .append(if (loc.hasAltitude() && n != null) fx(loc.altitude - n, 2) else "").append(',')
+            .append(if (loc.hasAccuracy()) fx(loc.accuracy.toDouble(), 2) else "").append(',')
+            .append(if (Build.VERSION.SDK_INT >= 26 && loc.hasVerticalAccuracy()) fx(loc.verticalAccuracyMeters.toDouble(), 2) else "").append(',')
+            .append(if (loc.hasSpeed()) fx(loc.speed.toDouble(), 2) else "").append(',')
+            .append(if (loc.hasBearing()) fx(loc.bearing.toDouble(), 1) else "").append(',')
+            .append(used.size).append(',').append(lastSats.size).append(',')
+            .append(if (avg.isNaN()) "" else fx(avg, 1)).append(',')
+            .append(t4?.let { fx(it.toDouble(), 1) } ?: "").append(',')
+            .append(fx(devPitch, 1)).append(',').append(fx(devRoll, 1)).append(',').append(fx(devAzimuth, 1)).append(',')
+            .append(fx(motionLevel, 3)).append(',')
+            .append(envTag()).append('\n')
+    }
+
+    private fun fixCsvUri(): Uri? = try {
+        val file = File(cacheDir, "gnss_fix.csv")
+        file.writeText(fixLog.toString())
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+    } catch (e: Exception) {
+        logError("Fiksų CSV nepavyko: ${e.message}")
+        null
+    }
+
+    // ---------------- ĮRENGINIO PADĖTIS IR JUDĖJIMAS ----------------
+    private var devPitch = 0.0
+    private var devRoll = 0.0
+    private var devAzimuth = 0.0
+    private var motionLevel = 0.0
+    private val devSensorListener = object : SensorEventListener {
+        override fun onSensorChanged(e: SensorEvent) {
+            when (e.sensor.type) {
+                Sensor.TYPE_ROTATION_VECTOR -> {
+                    val r = FloatArray(9); val o = FloatArray(3)
+                    SensorManager.getRotationMatrixFromVector(r, e.values)
+                    SensorManager.getOrientation(r, o)
+                    devAzimuth = (Math.toDegrees(o[0].toDouble()) + 360.0) % 360.0
+                    devPitch = Math.toDegrees(o[1].toDouble())
+                    devRoll = Math.toDegrees(o[2].toDouble())
+                }
+                Sensor.TYPE_LINEAR_ACCELERATION -> {
+                    val a = kotlin.math.sqrt((e.values[0] * e.values[0] + e.values[1] * e.values[1] + e.values[2] * e.values[2]).toDouble())
+                    motionLevel = motionLevel * 0.9 + a * 0.1     // išlygintas judėjimo lygis
+                }
+            }
+        }
+        override fun onAccuracyChanged(s: Sensor?, a: Int) {}
+    }
+
+    private fun startDeviceSensors() {
+        val sm = getSystemService(SENSOR_SERVICE) as SensorManager
+        sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let { sm.registerListener(devSensorListener, it, SensorManager.SENSOR_DELAY_UI) }
+        sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)?.let { sm.registerListener(devSensorListener, it, SensorManager.SENSOR_DELAY_UI) }
+    }
+
+    private fun stopDeviceSensors() {
+        (getSystemService(SENSOR_SERVICE) as SensorManager).unregisterListener(devSensorListener)
+    }
+
+    // ---------------- KOSMINIAI ORAI (NOAA Kp) ----------------
+    @Volatile private var kpText = "nežinoma"
+    @Volatile private var kpFetched = 0L
+
+    private fun fetchKp() {
+        val now = System.currentTimeMillis()
+        if (now - kpFetched < 30 * 60_000L) return
+        kpFetched = now
+        Thread {
+            kpText = try {
+                val txt = URL("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json").readText()
+                val arr = org.json.JSONArray(txt)
+                val last = arr.get(arr.length() - 1)
+                when (last) {
+                    is org.json.JSONArray -> "Kp ${last.getString(1)} (${last.getString(0)} UTC)"
+                    is org.json.JSONObject -> "Kp ${last.optString("Kp", last.optString("kp_index", "?"))} (${last.optString("time_tag")} UTC)"
+                    else -> "nežinoma"
+                }
+            } catch (e: Exception) {
+                kpFetched = 0L
+                "nepavyko gauti (${e.javaClass.simpleName})"
+            }
+        }.start()
+    }
+
+    /** GNSS lusto informacija ataskaitai. */
+    private fun gnssChipInfo(): String = buildString {
+        if (Build.VERSION.SDK_INT >= 28) {
+            appendLine("GNSS lustas: ${lm.gnssHardwareModelName ?: "nežinomas"} (metai: ${lm.gnssYearOfHardware})")
+        }
+        if (Build.VERSION.SDK_INT >= 31) {
+            val cap = lm.gnssCapabilities
+            appendLine("Galimybės: matavimai=${cap.hasMeasurements()}, navigaciniai pranešimai=${cap.hasNavigationMessages()}, " +
+                "antenos info=${cap.hasAntennaInfo()}, matavimų korekcijos=${cap.hasMeasurementCorrections()}")
+        }
+        appendLine("Pilnas sekimas: programa jo prašo (setFullTracking=true)")
+        appendLine("Matyti dažniai: ${if (bandsSeen.isEmpty()) "—" else bandsSeen.joinToString(", ")}")
+        val dual = bandsSeen.any { it.endsWith("L5") || it.endsWith("E5a") || it.endsWith("E5b") || it.endsWith("B2b") }
+        appendLine("Dviejų dažnių priėmimas: ${if (dual) "taip" else "nematyta"}")
     }
 
     private fun reportFileUri(text: String): Uri? = try {
@@ -3678,6 +3861,10 @@ class MainActivity : AppCompatActivity() {
             appendLine("Modelis: ${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
             appendLine("Barometras: ${if (baro.hasSensor) "yra" else "nėra"}")
+            append(gnssChipInfo())
+            appendLine("Kosminiai orai (NOAA): $kpText")
+            appendLine("Aplinka (vartotojo žyma): ${envTag().ifBlank { "nenurodyta" }}")
+            appendLine("Planšetės padėtis: pitch ${fx(devPitch, 0)}°, roll ${fx(devRoll, 0)}°, ekrano azimutas ${fx(devAzimuth, 0)}°, judėjimas ${fx(motionLevel, 2)} m/s²")
             appendLine()
         }
         if ("fiksas" in sections) { appendLine("=== FIKSAS ==="); appendLine(posText); appendLine() }

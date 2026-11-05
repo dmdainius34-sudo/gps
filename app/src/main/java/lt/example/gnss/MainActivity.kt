@@ -967,6 +967,23 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
  * žemiau horizonto – permatoma struktūra. Palydovai (geras signalas) žybsi kaip žvaigždės.
  * Gaublys sukasi kartu su planšete (rotacijos vektoriaus jutiklis).
  */
+/** EGL konfigūracija su 4x MSAA (lygūs kraštai); jei nepalaikoma – be jos. */
+class MsaaConfigChooser : GLSurfaceView.EGLConfigChooser {
+    override fun chooseConfig(egl: javax.microedition.khronos.egl.EGL10,
+                              display: javax.microedition.khronos.egl.EGLDisplay): EGLConfig {
+        val E = javax.microedition.khronos.egl.EGL10.EGL_NONE
+        val ms = intArrayOf(0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3021, 8, 0x3025, 16,
+            0x3040, 4, 0x3032, 1, 0x3031, 4, E)          // RGBA8, depth16, ES2, sample buffers=1, samples=4
+        val plain = intArrayOf(0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3021, 8, 0x3025, 16, 0x3040, 4, E)
+        for (attrs in arrayOf(ms, plain)) {
+            val num = IntArray(1)
+            val cfg = arrayOfNulls<EGLConfig>(1)
+            if (egl.eglChooseConfig(display, attrs, cfg, 1, num) && num[0] > 0 && cfg[0] != null) return cfg[0]!!
+        }
+        throw IllegalArgumentException("Nerasta EGL konfigūracija")
+    }
+}
+
 class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener {
 
     private val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -992,7 +1009,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     init {
         setEGLContextClientVersion(2)
-        setEGLConfigChooser(8, 8, 8, 8, 16, 0)
+        setEGLConfigChooser(MsaaConfigChooser())
         preserveEGLContextOnPause = true
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
@@ -1256,9 +1273,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         dotProg = program(COLOR_VS, DOT_FS)
         texProg = program(TEX_VS, TEX_FS)
 
-        val up = meshSphere(0.0, 90.0, 48, 128, 1.0)
+        val up = meshSphere(0.0, 90.0, 72, 192, 1.0)
         upperBuf = floatBuf(up); upperN = up.size / 3
-        val low = meshSphere(-90.0, 0.0, 32, 128, 1.0)
+        val low = meshSphere(-90.0, 0.0, 48, 192, 1.0)
         lowerBuf = floatBuf(low); lowerN = low.size / 3
         val grid = buildGrid(1.004)
         gridBuf = floatBuf(grid); gridN = grid.size / 3
@@ -1349,7 +1366,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         setFloat(domeProg, "uBeat", beat)
         setVec3(domeProg, "uTint", Color.red(tint) / 255f, Color.green(tint) / 255f, Color.blue(tint) / 255f)
         bindPos(domeProg, upperBuf!!)
+        GLES20.glEnable(GLES20.GL_CULL_FACE)
+        GLES20.glCullFace(GLES20.GL_FRONT)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, upperN)
+        GLES20.glCullFace(GLES20.GL_BACK)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, upperN)
+        GLES20.glDisable(GLES20.GL_CULL_FACE)
 
         // 2) Žemiau horizonto – permatoma struktūra
         GLES20.glDepthMask(false)
@@ -1358,7 +1380,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         setVec3(lowProg, "uEye", eye[0], eye[1], eye[2])
         setVec4(lowProg, "uColor", 0.35f, 0.4f, 0.5f, 0.14f)
         bindPos(lowProg, lowerBuf!!)
+        GLES20.glEnable(GLES20.GL_CULL_FACE)
+        GLES20.glCullFace(GLES20.GL_FRONT)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, lowerN)
+        GLES20.glCullFace(GLES20.GL_BACK)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, lowerN)
+        GLES20.glDisable(GLES20.GL_CULL_FACE)
         GLES20.glDepthMask(true)
 
         // 2b) Žemė gaublio viduryje (pasvirusi į Polaris, sukasi realiu laiku)
@@ -1917,7 +1944,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             void main() { vN = aPos; vZ = aPos.z; gl_Position = uMVP * vec4(aPos, 1.0); }
         """
         private const val DOME_FS = """
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
             precision mediump float;
+            #endif
             varying vec3 vN;
             varying float vZ;
             uniform vec3 uLight;
@@ -1930,17 +1961,23 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vec3 l = normalize(uLight);
                 float d = max(dot(n, l), 0.0);
                 float fres = pow(1.0 - max(dot(n, normalize(uEye)), 0.0), 2.0);
-                float wave = 0.5 + 0.5 * sin(uTime * 2.2 - vZ * 7.0);
+                float wave = 0.5 + 0.5 * sin(uTime * 2.2);   // visas kupolas pulsuoja kartu (be horizontalių juostų)
                 vec3 h = normalize(l + normalize(uEye));
                 float spec = pow(max(dot(n, h), 0.0), 64.0);
                 vec3 rim = uTint * pow(fres, 1.4) * 1.6;
                 vec3 col = uTint * (0.08 + 0.40 * d) + rim + vec3(spec) * 0.55 + uTint * wave * uBeat * 0.30;
                 float a = 0.30 + 0.55 * pow(fres, 1.2) + 0.25 * uBeat * wave + spec * 0.6;
-                gl_FragColor = vec4(col, clamp(a, 0.0, 1.0));
+                float nz = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+                col += (nz - 0.5) / 128.0;
+                gl_FragColor = vec4(col, clamp(a + (nz - 0.5) / 255.0, 0.0, 1.0));
             }
         """
         private const val LOW_FS = """
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
             precision mediump float;
+            #endif
             varying vec3 vN;
             varying float vZ;
             uniform vec3 uEye;
@@ -1948,7 +1985,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             void main() {
                 vec3 n = normalize(vN);
                 float fres = pow(1.0 - abs(dot(n, normalize(uEye))), 2.0);
-                gl_FragColor = vec4(uColor.rgb, uColor.a * (0.6 + 0.4 * fres));
+                float nz = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+                gl_FragColor = vec4(uColor.rgb + (nz - 0.5) / 128.0, uColor.a * (0.6 + 0.4 * fres));
             }
         """
         private const val COLOR_VS = """

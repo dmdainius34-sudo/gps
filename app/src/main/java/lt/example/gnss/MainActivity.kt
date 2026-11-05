@@ -1412,6 +1412,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // GL kontekstas atkuriamas po išėjimo/įėjimo – senos tekstūrų ID nebegalioja, todėl viską perkuriame
         prnTex.clear()
         labelTex.clear()
+        wideLabels.clear()
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
         glowProg = 0
@@ -1534,12 +1535,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawTrails()
 
 
-        // 4) Horizontas – pulsuojantis auksinis žiedas
-        val hzAlpha = 0.7f
-        setVec4(colorProg, "uColor", 0.95f, 0.72f, 0.3f, hzAlpha)
-        bindPos(colorProg, horizonBuf!!)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, horizonN)
-
         // Žymos ir palydovai piešiami be gylio testo (visada matomi priekyje)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
 
@@ -1573,6 +1568,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 drawSun3D(sp, t)
             }
         }
+        val pin = pinWorld()
         for (si in satsI) {
             val sat = si.sat
             val p = si.pos
@@ -1584,10 +1580,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val usedK = if (sat.used) 1f else 0.4f
             // Švytėjimas: 0 ties 20 dB-Hz, didžiausias ties 45 dB-Hz
             val glow = ((sat.cn0 - 20f) / 25f).coerceIn(0f, 1f)
-            if (glow > 0.02f) {
-                billboard(p, eyeI, satSize * (1.2f + 1.3f * glow), satSize * (1.2f + 1.3f * glow), starTex,
-                    col[0], col[1], col[2], 0.55f * glow * usedK)
-            }
+            drawLaser(p, pin, sat.cn0, sat.svid, t)
             drawSatModel(p, col, glow, usedK)
             if (sat.cn0 >= 30f) {
                 val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
@@ -1655,6 +1648,33 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDrawArrays(GLES20.GL_LINES, 0, seg.size / 3)
     }
 
+    private val wideLabels = HashMap<String, Pair<Int, Float>>()
+
+    /** Teksto tekstūra pagal teksto plotį: (tekstūra, plotis/aukštis). */
+    private fun wideLabel(text: String): Pair<Int, Float> = wideLabels.getOrPut(text) {
+        val h = 64
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); textSize = h * 0.7f; textAlign = Paint.Align.CENTER }
+        val w = (p.measureText(text) + h * 0.4f).toInt().coerceAtLeast(h)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        Canvas(bmp).drawText(text, w / 2f, h * 0.75f, p)
+        uploadTexture(bmp) to (w.toFloat() / h)
+    }
+
+    /** Žiedo pavadinimas – ties labiausiai į kamerą atsuktu matomu žiedo tašku. */
+    private fun ringLabel(pts: List<FloatArray>, text: String, r: Float, g: Float, b: Float) {
+        var best: FloatArray? = null
+        var bestDot = -1e9f
+        for (q in pts) {
+            if (!aboveHorizon(q)) continue
+            val d = q[0] * eyeI[0] + q[1] * eyeI[1] + q[2] * eyeI[2]
+            if (d > bestDot) { bestDot = d; best = q }
+        }
+        val q = best ?: return
+        val (tex, aspect) = wideLabel(text)
+        val h = 0.07f
+        billboard(floatArrayOf(q[0] * 1.04f, q[1] * 1.04f, q[2] * 1.04f), eyeI, h * aspect, h, tex, r, g, b, 0.95f)
+    }
+
     private fun drawSky() {
         // Dangaus pusiaujas (Dec = 0) ir ekliptika (eclToEq(lon, 0)), spindulys 1,5
         val nRing = 180
@@ -1669,6 +1689,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glLineWidth(1.5f * density)
         drawLines(visibleSegments(eq, true), 0.55f, 0.85f, 1f, 0.55f)
         drawLines(visibleSegments(ecl, true), 1f, 0.82f, 0.3f, 0.55f)
+        ringLabel(eq, "Dangaus pusiaujas", 0.55f, 0.85f, 1f)
+        ringLabel(ecl, "Ekliptika", 1f, 0.82f, 0.3f)
 
         // Oriono linijos
         val pos = HashMap<String, FloatArray>()
@@ -1790,6 +1812,73 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, satBodyN, satPanelN)
         GLES20.glDisableVertexAttribArray(ln)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+    }
+
+    // ---------------- LAZERIAI: palydovas -> smeigtukas ----------------
+    /** Smeigtuko galvutė (stebėtojo vieta) sideralinėje erdvėje – ta pati, kurią piešia drawEarth(). */
+    private fun pinWorld(): FloatArray {
+        val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon)
+        val k = 0.25 * 1.35
+        val x = (k * cos(la) * cos(lo)).toFloat(); val y = (k * cos(la) * sin(lo)).toFloat(); val z = (k * sin(la)).toFloat()
+        val m = earthMat
+        return floatArrayOf(
+            m[0] * x + m[4] * y + m[8] * z + m[12],
+            m[1] * x + m[5] * y + m[9] * z + m[13],
+            m[2] * x + m[6] * y + m[10] * z + m[14])
+    }
+
+    /**
+     * Šviesos impulsai nuo palydovo į smeigtuką pagal C/N0:
+     * ≥45 – greiti elektriniai geltoni neoniniai su baltu centru; >20 – lėti tamsiai mėlyni;
+     * >10 – lėti pilki; ≤10 – nėra.
+     */
+    private fun drawLaser(sp: FloatArray, pin: FloatArray, cn0: Float, svid: Int, t: Float) {
+        if (cn0 <= 10f) return
+        val fast = cn0 >= 45f
+        val col = when {
+            fast -> floatArrayOf(1f, 0.95f, 0.15f)
+            cn0 > 20f -> floatArrayOf(0.1f, 0.2f, 0.75f)
+            else -> floatArrayOf(0.6f, 0.6f, 0.62f)
+        }
+        val speed = if (fast) 1.6f else 0.3f            // impulsų greitis (kelio dalis per sekundę)
+        val pulses = if (fast) 5 else 3
+        val len = if (fast) 0.07f else 0.10f
+        val dx = pin[0] - sp[0]; val dy = pin[1] - sp[1]; val dz = pin[2] - sp[2]
+        fun at(s: Float) = floatArrayOf(sp[0] + dx * s, sp[1] + dy * s, sp[2] + dz * s)
+
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)       // šviesa sumuojasi (neoninis efektas)
+        // silpnas spindulys
+        GLES20.glLineWidth(1f * density)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], if (fast) 0.25f else 0.15f)
+        bindPos(colorProg, floatBuf(floatArrayOf(sp[0], sp[1], sp[2], pin[0], pin[1], pin[2])))
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
+        // judantys impulsai
+        val seg = ArrayList<Float>()
+        val phase = (svid * 0.137f) % 1f
+        for (j in 0 until pulses) {
+            var s0 = (t * speed + phase + j.toFloat() / pulses) % 1f
+            if (s0 < 0f) s0 += 1f
+            val s1 = (s0 + len).coerceAtMost(1f)
+            val a = at(s0); val b = at(s1)
+            seg.add(a[0]); seg.add(a[1]); seg.add(a[2]); seg.add(b[0]); seg.add(b[1]); seg.add(b[2])
+        }
+        val buf = floatBuf(seg.toFloatArray())
+        GLES20.glLineWidth((if (fast) 5f else 3f) * density)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], if (fast) 0.9f else 0.75f)
+        bindPos(colorProg, buf)
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, seg.size / 3)
+        if (fast) {
+            // baltas centras – „elektrinis“ neonas, šiek tiek mirga
+            val flick = 0.75f + 0.25f * sin(t * 40f + svid).toFloat()
+            GLES20.glLineWidth(1.6f * density)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 1f, 1f, flick)
+            bindPos(colorProg, buf)
+            GLES20.glDrawArrays(GLES20.GL_LINES, 0, seg.size / 3)
+        }
+        GLES20.glLineWidth(1f)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
     }
 
     // ---------------- PALYDOVŲ TRAJEKTORIJOS (paskutinės 2 min, taškas kas sekundę) ----------------

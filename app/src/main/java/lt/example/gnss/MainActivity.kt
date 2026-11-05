@@ -1300,8 +1300,32 @@ class FloatingSky(context: Context) : FrameLayout(context) {
  * arba Filament nepavyko paleisti – ready == false ir naudojamas senasis GL piešimas.
  */
 private class FilamentEarth(private val appCtx: Context) {
+    /** Palydovas Filament scenai: pozicija sideralinėje erdvėje, konsteliacijos spalva, C/N0. */
+    class SatDraw(val key: String, val pos: FloatArray, val rgb: FloatArray, val cn0: Float, val used: Boolean)
+
     var ready = false
         private set
+
+    /** Palydovo modelio dydis (scenos vienetais, didžiausias matmuo). */
+    var satSize = 0.06f
+
+    private class SatObj(
+        val ent: Int,
+        val mis: List<com.google.android.filament.MaterialInstance>,
+        val asset: com.google.android.filament.gltfio.FilamentAsset?,
+        val scale: Float,
+        val center: FloatArray,
+    )
+    private val satObjs = HashMap<String, SatObj>()
+    private var satMat: com.google.android.filament.Material? = null
+    private var satVb: com.google.android.filament.VertexBuffer? = null
+    private var satIb: com.google.android.filament.IndexBuffer? = null
+    private var satBodyCount = 0
+    private var satPanelCount = 0
+    private var glbBuf: ByteBuffer? = null
+    private var assetLoader: com.google.android.filament.gltfio.AssetLoader? = null
+    private var resLoader: com.google.android.filament.gltfio.ResourceLoader? = null
+    private var ubershader: com.google.android.filament.gltfio.UbershaderProvider? = null
 
     private var engine: com.google.android.filament.Engine? = null
     private var renderer: com.google.android.filament.Renderer? = null
@@ -1416,6 +1440,8 @@ private class FilamentEarth(private val appCtx: Context) {
                 .build(eng)
             scene!!.setIndirectLight(ibl)
 
+            initSatellites(eng)
+
             quadProg = glProgram(QUAD_VS, QUAD_FS)
             ready = true
             android.util.Log.i("GnssApp", "Filament Žemė paruošta")
@@ -1513,11 +1539,13 @@ private class FilamentEarth(private val appCtx: Context) {
      * @param proj GL projekcijos matrica, @param modelView Žemės modelio-vaizdo matrica,
      * @param lightView kryptis Į Saulę kameros (vaizdo) koordinatėse.
      */
-    fun draw(w: Int, h: Int, proj: FloatArray, modelView: FloatArray, lightView: FloatArray): Boolean {
+    fun draw(w: Int, h: Int, proj: FloatArray, modelView: FloatArray, lightView: FloatArray,
+             viewI: FloatArray, sats: List<SatDraw>): Boolean {
         val eng = engine ?: return false
         if (!ready || w <= 0 || h <= 0) return false
         try {
             ensureTarget(eng, w, h)
+            updateSatellites(eng, viewI, sats)
             camera!!.setCustomProjection(DoubleArray(16) { proj[it].toDouble() }, 0.1, 20.0)
             val tm = eng.transformManager
             tm.setTransform(tm.getInstance(earthEnt), modelView)
@@ -1556,6 +1584,192 @@ private class FilamentEarth(private val appCtx: Context) {
         return true
     }
 
+    // ---------------- PALYDOVAI ----------------
+
+    private fun initSatellites(eng: com.google.android.filament.Engine) {
+        // glTF modelis, jei yra assets/models/satellite.glb
+        glbBuf = try {
+            appCtx.assets.open("models/satellite.glb").use { ins ->
+                val b = ins.readBytes()
+                ByteBuffer.allocateDirect(b.size).order(ByteOrder.nativeOrder()).apply { put(b); flip() }
+            }
+        } catch (e: Exception) { null }
+        if (glbBuf != null) {
+            try {
+                com.google.android.filament.gltfio.Gltfio.init()
+                ubershader = com.google.android.filament.gltfio.UbershaderProvider(eng)
+                assetLoader = com.google.android.filament.gltfio.AssetLoader(
+                    eng, ubershader!!, com.google.android.filament.EntityManager.get())
+                resLoader = com.google.android.filament.gltfio.ResourceLoader(eng)
+                android.util.Log.i("GnssApp", "Palydovai: glTF modelis models/satellite.glb")
+                return
+            } catch (t: Throwable) {
+                android.util.Log.w("GnssApp", "satellite.glb neįkeltas – procedūrinis palydovas", t)
+                glbBuf = null
+            }
+        }
+        // Procedūrinis palydovas: korpusas ir dvi saulės baterijos
+        val mb = appCtx.assets.open("satellite.filamat").use { it.readBytes() }
+        val buf = ByteBuffer.allocateDirect(mb.size).order(ByteOrder.nativeOrder()).apply { put(mb); flip() }
+        satMat = com.google.android.filament.Material.Builder().payload(buf, buf.remaining()).build(eng)
+        val boxes = listOf(
+            floatArrayOf(-0.25f, -0.25f, -0.35f, 0.25f, 0.25f, 0.35f),       // korpusas
+            floatArrayOf(-1.25f, -0.02f, -0.22f, -0.30f, 0.02f, 0.22f),      // kairė baterija
+            floatArrayOf(0.30f, -0.02f, -0.22f, 1.25f, 0.02f, 0.22f))        // dešinė baterija
+        val nV = boxes.size * 24
+        val pos = ByteBuffer.allocateDirect(nV * 12).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val nrm = ByteBuffer.allocateDirect(nV * 12).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val idx = ByteBuffer.allocateDirect(boxes.size * 36 * 2).order(ByteOrder.nativeOrder()).asShortBuffer()
+        // Kiekviena sienelė: normalė ir 4 kampai (prieš laikrodžio rodyklę žiūrint iš išorės)
+        val faces = arrayOf(
+            intArrayOf(1, 0, 0), intArrayOf(-1, 0, 0), intArrayOf(0, 1, 0),
+            intArrayOf(0, -1, 0), intArrayOf(0, 0, 1), intArrayOf(0, 0, -1))
+        var v = 0
+        for (b in boxes) {
+            for (f in faces) {
+                val n = FloatArray(3) { f[it].toFloat() }
+                // dvi ašys sienelės plokštumoje
+                val u = FloatArray(3).also { it[if (f[0] != 0) 1 else 0] = 1f }
+                val w = floatArrayOf(n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0])
+                val c = FloatArray(3) { (b[it] + b[it + 3]) / 2f }
+                val hlf = FloatArray(3) { (b[it + 3] - b[it]) / 2f }
+                val corners = arrayOf(floatArrayOf(-1f, -1f), floatArrayOf(1f, -1f), floatArrayOf(1f, 1f), floatArrayOf(-1f, 1f))
+                for (cc in corners) {
+                    for (k in 0..2) pos.put(c[k] + n[k] * hlf[k] + (u[k] * cc[0] + w[k] * cc[1]) * hlf[k])
+                    nrm.put(n[0]).put(n[1]).put(n[2])
+                }
+                idx.put(v.toShort()).put((v + 1).toShort()).put((v + 2).toShort())
+                idx.put(v.toShort()).put((v + 2).toShort()).put((v + 3).toShort())
+                v += 4
+            }
+        }
+        pos.flip(); nrm.flip(); idx.flip()
+        val quats = ByteBuffer.allocateDirect(nV * 16).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val so = com.google.android.filament.SurfaceOrientation.Builder().vertexCount(nV).normals(nrm).build()
+        so.getQuatsAsFloat(quats); so.destroy(); quats.position(0)
+        satVb = com.google.android.filament.VertexBuffer.Builder()
+            .bufferCount(2).vertexCount(nV)
+            .attribute(FVA.POSITION, 0, FAT.FLOAT3, 0, 12)
+            .attribute(FVA.TANGENTS, 1, FAT.FLOAT4, 0, 16)
+            .build(eng).apply { setBufferAt(eng, 0, pos); setBufferAt(eng, 1, quats) }
+        satIb = com.google.android.filament.IndexBuffer.Builder()
+            .indexCount(boxes.size * 36)
+            .bufferType(com.google.android.filament.IndexBuffer.Builder.IndexType.USHORT)
+            .build(eng).apply { setBuffer(eng, idx) }
+        satBodyCount = 36
+        satPanelCount = 72
+        android.util.Log.i("GnssApp", "Palydovai: procedūrinis modelis (korpusas + 2 saulės baterijos)")
+    }
+
+    private fun createSat(eng: com.google.android.filament.Engine): SatObj? {
+        val loader = assetLoader
+        val glb = glbBuf
+        if (loader != null && glb != null) {
+            glb.position(0)
+            val asset = loader.createAsset(glb) ?: return null
+            resLoader!!.loadResources(asset)
+            asset.releaseSourceData()
+            scene!!.addEntities(asset.entities)
+            val bb = asset.boundingBox
+            val he = bb.halfExtent
+            val maxHe = max(he[0], max(he[1], he[2])).coerceAtLeast(1e-6f)
+            val mis = asset.instance.materialInstances.filter { it.material.hasParameter("emissiveFactor") }
+            return SatObj(asset.root, mis, asset, satSize / (2f * maxHe), bb.center)
+        }
+        val mat = satMat ?: return null
+        val body = mat.createInstance().apply {
+            setParameter("baseColor", 0.78f, 0.70f, 0.45f)      // auksinė izoliacija
+            setParameter("metallic", 0.8f); setParameter("roughness", 0.35f)
+            setParameter("emissive", 0f, 0f, 0f, 1f)
+        }
+        val panel = mat.createInstance().apply {
+            setParameter("baseColor", 0.10f, 0.16f, 0.38f)      // tamsiai mėlynos baterijos
+            setParameter("metallic", 0.3f); setParameter("roughness", 0.25f)
+            setParameter("emissive", 0f, 0f, 0f, 1f)
+        }
+        val ent = com.google.android.filament.EntityManager.get().create()
+        com.google.android.filament.RenderableManager.Builder(2)
+            .boundingBox(com.google.android.filament.Box(0f, 0f, 0f, 1.25f, 0.25f, 0.35f))
+            .geometry(0, com.google.android.filament.RenderableManager.PrimitiveType.TRIANGLES, satVb!!, satIb!!, 0, satBodyCount)
+            .geometry(1, com.google.android.filament.RenderableManager.PrimitiveType.TRIANGLES, satVb!!, satIb!!, satBodyCount, satPanelCount)
+            .material(0, body).material(1, panel)
+            .culling(false).castShadows(false).receiveShadows(false)
+            .build(eng, ent)
+        scene!!.addEntity(ent)
+        return SatObj(ent, listOf(body, panel), null, satSize / 2.5f, floatArrayOf(0f, 0f, 0f))
+    }
+
+    private fun destroySat(eng: com.google.android.filament.Engine, o: SatObj) {
+        if (o.asset != null) {
+            scene?.removeEntities(o.asset.entities)
+            assetLoader?.destroyAsset(o.asset)
+        } else {
+            scene?.removeEntity(o.ent)
+            eng.destroyEntity(o.ent)
+            for (mi in o.mis) eng.destroyMaterialInstance(mi)
+        }
+    }
+
+    private fun updateSatellites(eng: com.google.android.filament.Engine, viewI: FloatArray, sats: List<SatDraw>) {
+        val keep = HashSet<String>()
+        for (s in sats) keep.add(s.key)
+        val it = satObjs.entries.iterator()
+        while (it.hasNext()) {
+            val e = it.next()
+            if (e.key !in keep) { destroySat(eng, e.value); it.remove() }
+        }
+        val tm = eng.transformManager
+        val local = FloatArray(16)
+        val world = FloatArray(16)
+        for (s in sats) {
+            var o = satObjs[s.key]
+            if (o == null) {
+                o = createSat(eng) ?: continue
+                satObjs[s.key] = o
+            }
+            // Orientacija: vietinė Y ašis – nuo Žemės centro, X (baterijos) – statmenai poliui
+            val p = s.pos
+            val pl = kotlin.math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).coerceAtLeast(1e-6f)
+            val y = floatArrayOf(p[0] / pl, p[1] / pl, p[2] / pl)
+            var x = floatArrayOf(-y[1], y[0], 0f)                      // (0,0,1) × y
+            var xl = kotlin.math.sqrt(x[0] * x[0] + x[1] * x[1])
+            if (xl < 1e-4f) { x = floatArrayOf(1f, 0f, 0f); xl = 1f }
+            x = floatArrayOf(x[0] / xl, x[1] / xl, 0f)
+            val z = floatArrayOf(x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0])
+            val k = o.scale
+            for (i in 0..2) {
+                local[i] = x[i] * k; local[4 + i] = y[i] * k; local[8 + i] = z[i] * k
+            }
+            local[3] = 0f; local[7] = 0f; local[11] = 0f
+            // modelio centras į palydovo vietą
+            for (i in 0..2) local[12 + i] = p[i] - (local[i] * o.center[0] + local[4 + i] * o.center[1] + local[8 + i] * o.center[2])
+            local[15] = 1f
+            Matrix.multiplyMM(world, 0, viewI, 0, local, 0)
+            tm.setTransform(tm.getInstance(o.ent), world)
+            // Švytėjimas: 0 ties 20 dB-Hz, maksimalus ties 45 dB-Hz
+            val g = ((s.cn0 - 20f) / 25f).coerceIn(0f, 1f) * (if (s.used) 1f else 0.5f)
+            if (o.asset != null) {
+                for (mi in o.mis) mi.setParameter("emissiveFactor", s.rgb[0] * g, s.rgb[1] * g, s.rgb[2] * g)
+            } else {
+                o.mis[0].setParameter("emissive", s.rgb[0] * g * 1.5f, s.rgb[1] * g * 1.5f, s.rgb[2] * g * 1.5f, 1f)
+                o.mis[1].setParameter("emissive", s.rgb[0] * g * 0.6f, s.rgb[1] * g * 0.6f, s.rgb[2] * g * 0.6f, 1f)
+            }
+        }
+    }
+
+    private fun releaseSatellites(eng: com.google.android.filament.Engine) {
+        for (o in satObjs.values) destroySat(eng, o)
+        satObjs.clear()
+        satVb?.let { eng.destroyVertexBuffer(it) }
+        satIb?.let { eng.destroyIndexBuffer(it) }
+        satMat?.let { eng.destroyMaterial(it) }
+        resLoader?.destroy()
+        assetLoader?.destroy()
+        ubershader?.let { it.destroyMaterials(); it.destroy() }
+        satVb = null; satIb = null; satMat = null
+        resLoader = null; assetLoader = null; ubershader = null; glbBuf = null
+    }
+
     fun release() {
         ready = false
         val eng = engine
@@ -1567,6 +1781,7 @@ private class FilamentEarth(private val appCtx: Context) {
                 target?.let { eng.destroyRenderTarget(it) }
                 colorTex?.let { eng.destroyTexture(it) }
                 depthTex?.let { eng.destroyTexture(it) }
+                releaseSatellites(eng)
                 if (earthEnt != 0) eng.destroyEntity(earthEnt)
                 if (sunEnt != 0) eng.destroyEntity(sunEnt)
                 matInst?.let { eng.destroyMaterialInstance(it) }
@@ -1697,6 +1912,57 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 (fP[2] + dist * (dx * fE[2] + dy * fN[2] + dz * fU[2])).toFloat())))
         }
         satsI = out
+        recordTrails(out)
+    }
+
+    // ---------------- PALYDOVŲ TRAJEKTORIJOS (paskutinės 2 min, taškas kas sekundę) ----------------
+    private val satSize = 0.06f
+    private val trailWindowMs = 120_000L
+    private class TrailPt(val t: Long, val p: FloatArray)
+    private val trails = HashMap<String, ArrayDeque<TrailPt>>()
+    private val trailConst = HashMap<String, String>()
+
+    private fun recordTrails(list: List<SatI>) {
+        val now = System.currentTimeMillis()
+        synchronized(trails) {
+            for (si in list) {
+                val key = si.sat.const + si.sat.svid
+                val q = trails.getOrPut(key) { ArrayDeque() }
+                trailConst[key] = si.sat.const
+                if (q.isEmpty() || now - q.last().t >= 1000L) q.addLast(TrailPt(now, si.pos.copyOf()))
+            }
+            val it = trails.entries.iterator()
+            while (it.hasNext()) {
+                val e = it.next()
+                while (e.value.isNotEmpty() && now - e.value.first().t > trailWindowMs) e.value.removeFirst()
+                if (e.value.isEmpty()) { it.remove(); trailConst.remove(e.key) }
+            }
+        }
+    }
+
+    /** Kiekvieno palydovo kreivė per paskutines 2 min (segmentas kas sekundę), spalva – pagal konsteliaciją. */
+    private fun drawTrails() {
+        val snap: List<Pair<String, FloatArray>> = synchronized(trails) {
+            trails.mapNotNull { (k, q) ->
+                if (q.size < 2) null else {
+                    val a = FloatArray(q.size * 3)
+                    var i = 0
+                    for (tp in q) { a[i++] = tp.p[0]; a[i++] = tp.p[1]; a[i++] = tp.p[2] }
+                    (trailConst[k] ?: "GPS") to a
+                }
+            }
+        }
+        if (snap.isEmpty()) return
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glLineWidth(2f * density)
+        for ((c, a) in snap) {
+            val col = constRgb(c)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.85f)
+            bindPos(colorProg, floatBuf(a))
+            GLES20.glDrawArrays(GLES20.GL_LINE_STRIP, 0, a.size / 3)
+        }
+        GLES20.glLineWidth(1f)
     }
 
     private val proj = FloatArray(16)
@@ -1745,6 +2011,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         sunProg = 0
         glowProg = 0
         buildEarth()
+        filEarth.satSize = satSize
         filEarth.init(EARTH_R)
         starTex = makeStarTexture()
         sunTex = makeSunTexture()
@@ -1861,6 +2128,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawEarth()
         drawEquatorRing(t)
         drawMoon()
+        drawTrails()
 
 
         // 4) Horizontas – pulsuojantis auksinis žiedas
@@ -1899,9 +2167,22 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 drawSun3D(sp, t)
             }
         }
+        val filSats = filDrawn
         for (si in satsI) {
             val sat = si.sat
             val p = si.pos
+            if (filSats) {
+                // Palydovą piešia Filament (3D modelis); čia – tik PRN numeris
+                if (sat.cn0 >= 30f) {
+                    val dd0 = p[0] * eyeI[0] + p[1] * eyeI[1] + p[2] * eyeI[2]
+                    val qx0 = p[0] - dd0 * eyeI[0]; val qy0 = p[1] - dd0 * eyeI[1]; val qz0 = p[2] - dd0 * eyeI[2]
+                    if (dd0 < 0f && kotlin.math.sqrt(qx0 * qx0 + qy0 * qy0 + qz0 * qz0) < EARTH_R) continue
+                    val c0 = constRgb(sat.const)
+                    val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
+                    billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, c0[0], c0[1], c0[2], if (sat.used) 0.95f else 0.4f)
+                }
+                continue
+            }
             // Už Žemės: kamera -> palydovas kerta Žemės rutulį – nerodome
             val dd = p[0] * eyeI[0] + p[1] * eyeI[1] + p[2] * eyeI[2]
             val px2 = p[0] - dd * eyeI[0]; val py2 = p[1] - dd * eyeI[1]; val pz2 = p[2] - dd * eyeI[2]
@@ -2078,7 +2359,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private val filEarth = FilamentEarth(appCtx)
 
     /** Žemė per Filament PBR; Saulės šviesa – iš sunDir(). false – jei Filament neprieinamas. */
+    @Volatile private var filDrawn = false
+
     private fun drawEarthFilament(): Boolean {
+        filDrawn = false
         if (!filEarth.ready) return false
         val vp = IntArray(4)
         GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, vp, 0)
@@ -2094,7 +2378,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         var lz = (vm[2] * sd[0] + vm[6] * sd[1] + vm[10] * sd[2]).toFloat()
         val ll = kotlin.math.sqrt(lx * lx + ly * ly + lz * lz).coerceAtLeast(1e-6f)
         lx /= ll; ly /= ll; lz /= ll
-        if (!filEarth.draw(vp[2], vp[3], proj, mvE, floatArrayOf(lx, ly, lz))) return false
+        val fs = satsI.map { si ->
+            FilamentEarth.SatDraw(si.sat.const + si.sat.svid, si.pos, constRgb(si.sat.const), si.sat.cn0, si.sat.used)
+        }
+        if (!filEarth.draw(vp[2], vp[3], proj, mvE, floatArrayOf(lx, ly, lz), vm, fs)) return false
+        filDrawn = true
         // Gylis Žemei (tik gylio buferis), kad kiti objektai būtų teisingai uždengti
         GLES20.glColorMask(false, false, false, false)
         GLES20.glUseProgram(colorProg)
@@ -2107,6 +2395,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Žemės sukimasis: GMST + stebėtojo ilguma; ašis rodo į Polaris (pasvirimas = 90° − platuma). */
     private fun drawEarth() {
+        filDrawn = false
         if (earthPos == null) return
         // Žemė sukasi apie savo ašį (Polaris kryptimi) pagal GMST; smeigtukas ir horizontas – jos dalis
         val gg = fG

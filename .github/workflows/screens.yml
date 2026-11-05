@@ -40,6 +40,20 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Install Android SDK packages (with retry)
+        uses: nick-fields/retry@v3
+        with:
+          max_attempts: 3
+          timeout_minutes: 20
+          retry_wait_seconds: 15
+          shell: bash
+          command: |
+            SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+            yes | "$SDKM" --licenses > /dev/null || true
+            "$SDKM" --install emulator platform-tools "platforms;android-34" \
+              "system-images;android-34;google_apis;x86_64" > /dev/null
+            test -x "$ANDROID_HOME/emulator/emulator"
+
       - name: Run emulator and capture
         uses: reactivecircus/android-emulator-runner@v2
         env:

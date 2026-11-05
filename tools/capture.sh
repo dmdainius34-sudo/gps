@@ -70,5 +70,6 @@ case "$MODE" in
 esac
 
 adb logcat -d > "$OUT/logcat.txt" || true
-grep -E " (I|E) Geoid *:" "$OUT/logcat.txt" | tee -a "$OUT/geoid.txt" || true
+grep -E " (I|W|E) (Geoid|GnssApp|Filament) *:" "$OUT/logcat.txt" | tee -a "$OUT/geoid.txt" || true
 ls -la "$OUT"
+grep -E "FATAL EXCEPTION|AndroidRuntime: |Filament|filament" "$OUT/logcat.txt" | grep -E " $(adb shell pidof lt.example.gnss 2>/dev/null | tr -d '\r') |FATAL|AndroidRuntime" | head -40 || true

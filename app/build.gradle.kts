@@ -7,12 +7,29 @@ android {
     namespace = "lt.example.gnss"
     compileSdk = 34
 
+    // Vienas pastovus raktas – nauja APK versija diegiama ant senos be išdiegimo
+    signingConfigs {
+        create("stable") {
+            storeFile = file("gnss-debug.keystore")
+            storePassword = "android"
+            keyAlias = "gnssdebug"
+            keyPassword = "android"
+        }
+    }
+
     defaultConfig {
         applicationId = "lt.example.gnss"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        // Kiekvienas GitHub Actions paleidimas – didesnis versijos numeris
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        versionName = "1.0." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
+    }
+
+    buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("stable")
+        }
     }
 
     compileOptions {

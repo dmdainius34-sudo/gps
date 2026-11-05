@@ -3753,7 +3753,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun envTag(): String = sharePanel?.envTag ?: ""
+    // Kableliai pakeičiami kabliataškiais, kad CSV stulpeliai nesusimaišytų
+    private fun envTag(): String = (sharePanel?.envTag ?: "").replace(',', ';')
 
     /** Pradeda naują matavimų failą (kviečiama atgalinio skaičiavimo pradžioje ir paleidus). */
     private fun resetRawFile() {

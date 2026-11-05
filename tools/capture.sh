@@ -70,4 +70,5 @@ case "$MODE" in
 esac
 
 adb logcat -d > "$OUT/logcat.txt" || true
+grep -E " (I|E) Geoid *:" "$OUT/logcat.txt" | tee -a "$OUT/geoid.txt" || true
 ls -la "$OUT"

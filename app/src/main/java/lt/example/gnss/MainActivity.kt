@@ -974,56 +974,32 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private val renderer = GlobeRenderer(context.applicationContext, resources.displayMetrics.density)
     private val handler = Handler(Looper.getMainLooper())
     private val calPrefs = context.getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
-    private var offsetDeg = calPrefs.getFloat("offset", 0f)   // rankinis šiaurės poslinkis (°)
-    private var declDeg = 0f                                    // magnetinė deklinacija (°) pagal vietą
+    private var offsetDeg = calPrefs.getFloat("offset", 0f)
+    private var declDeg = 0f
     private var running = false
-
-    // Rankinis sukimas pirštu: sensoriai sustabdomi, po minutės be liečiant – grįžtama
     private var manual = false
-    private var baseRot = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
     private var lastRaw = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
-    private var yawD = 0f
-    private var pitchD = 0f
-    private var lastX = 0f
-    private var lastY = 0f
     private val resumeSensors = Runnable { manual = false }
     var onDoubleTapCb: (() -> Unit)? = null
-    private var pinchLast = 0f
-    private fun pinchDist(e: MotionEvent): Float {
-        val dx = e.getX(0) - e.getX(1)
-        val dy = e.getY(0) - e.getY(1)
-        return kotlin.math.sqrt(dx * dx + dy * dy)
-    }
     private val gd = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
         override fun onDoubleTap(e: MotionEvent): Boolean { onDoubleTapCb?.invoke(); return true }
     })
-
-    // Perkėlimas: dviem pirštais tempti gaublį po ekraną; vienu pirštu – sukti
-    var onMove: ((Float, Float) -> Unit)? = null
-    private var moveMode = false
-    private var lastRawX = 0f
-    private var lastRawY = 0f
+    private var prevArc = doubleArrayOf(0.0, 0.0, 1.0)
+    private var pinchLast = 0f
+    private var pinchAngle = 0.0
 
     init {
         setEGLContextClientVersion(2)
         setEGLConfigChooser(8, 8, 8, 8, 16, 0)
-        // Permatomas paviršius: matomas tik pats gaublys, be juodo kvadrato
-        holder.setFormat(PixelFormat.TRANSLUCENT)
-        setZOrderOnTop(true)
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
     }
 
-    fun setSats(list: List<Sat>) {
-        renderer.setSats(list)
-        renderer.addSamples(list)
-    }
+    fun setSats(list: List<Sat>) { renderer.setSats(list) }
 
-    /** Pietų vaizdas: Žemė apverčiama apie zenitą. */
     fun setSouthUp(on: Boolean) = renderer.setSouthUpMode(on)
 
-    /** Pagal vietą apskaičiuojama magnetinė deklinacija (magnetinė šiaurė -> tikroji šiaurė). */
     fun setLocation(lat: Double, lon: Double, alt: Double) {
         renderer.setLocation(lat, lon)
         declDeg = try {
@@ -1031,22 +1007,18 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         } catch (e: Exception) { 0f }
     }
 
-    /** Įrašo tai, ką pirštu pasukote: N žymė turi sutapti su tikrąja šiaurės kryptimi. */
     fun saveNorth() {
-        offsetDeg += yawD
+        offsetDeg += Math.toDegrees(renderer.northDeltaRad()).toFloat()
         calPrefs.edit().putFloat("offset", offsetDeg).apply()
-        yawD = 0f
-        pitchD = 0f
+        renderer.resetUser()
         manual = false
         handler.removeCallbacks(resumeSensors)
     }
 
-    /** Pašalina rankinį šiaurės poslinkį (lieka tik magnetinė deklinacija). */
     fun resetNorth() {
         offsetDeg = 0f
         calPrefs.edit().putFloat("offset", 0f).apply()
-        yawD = 0f
-        pitchD = 0f
+        renderer.resetUser()
         manual = false
     }
 
@@ -1075,7 +1047,6 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             Surface.ROTATION_270 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_MINUS_Y, SensorManager.AXIS_X, out)
             else -> raw.copyInto(out)
         }
-        // Šiaurės korekcija: magnetinė deklinacija + rankinis poslinkis (pasaulio Z ašimi)
         val total = Math.toRadians((offsetDeg + declDeg).toDouble())
         val c = cos(total).toFloat(); val sn = sin(total).toFloat()
         val fixed = mul3(floatArrayOf(c, -sn, 0f, sn, c, 0f, 0f, 0f, 1f), out)
@@ -1085,28 +1056,45 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
+    private fun arcMap(x: Float, y: Float): DoubleArray {
+        val w = width.toDouble().coerceAtLeast(1.0)
+        val h = height.toDouble().coerceAtLeast(1.0)
+        val sz = kotlin.math.min(w, h)
+        val nx = (2.0 * x - w) / sz
+        val ny = (h - 2.0 * y) / sz
+        val r2 = nx * nx + ny * ny
+        return if (r2 <= 1.0) {
+            doubleArrayOf(nx, ny, kotlin.math.sqrt(1.0 - r2))
+        } else {
+            val l = kotlin.math.sqrt(r2)
+            doubleArrayOf(nx / l, ny / l, 0.0)
+        }
+    }
+
+    private fun pinchAng(e: MotionEvent): Double =
+        kotlin.math.atan2((e.getY(1) - e.getY(0)).toDouble(), (e.getX(1) - e.getX(0)).toDouble())
+
+    private fun pinchDist(e: MotionEvent): Float {
+        val dx = e.getX(0) - e.getX(1)
+        val dy = e.getY(0) - e.getY(1)
+        return kotlin.math.sqrt(dx * dx + dy * dy)
+    }
+
     override fun onTouchEvent(e: MotionEvent): Boolean {
         gd.onTouchEvent(e)
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 handler.removeCallbacks(resumeSensors)
-                if (!manual) {
-                    baseRot = lastRaw.copyOf()
-                    yawD = 0f
-                    pitchD = 0f
-                    manual = true
-                }
-                moveMode = false
-                lastX = e.x
-                lastY = e.y
+                manual = true
+                renderer.setDragging(true)
+                prevArc = arcMap(e.x, e.y)
                 parent?.requestDisallowInterceptTouchEvent(true)
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (e.pointerCount >= 2) {
-                    // Du pirštai – žiupsnelis (zoom)
-                    moveMode = true
                     pinchLast = pinchDist(e)
+                    pinchAngle = pinchAng(e)
                 }
                 return true
             }
@@ -1115,46 +1103,34 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                     val d = pinchDist(e)
                     if (pinchLast > 1f && d > 1f) renderer.zoomBy(d / pinchLast)
                     pinchLast = d
-                } else if (!moveMode) {
-                    // Vienas pirštas – sukimas aplink savo ašį
-                    yawD -= (e.x - lastX) * 0.4f
-                    pitchD = (pitchD - (e.y - lastY) * 0.4f).coerceIn(-85f, 85f)
-                    renderer.setRotation(composeManual())
+                    val ang = pinchAng(e)
+                    var da = ang - pinchAngle
+                    if (da > Math.PI) da -= 2 * Math.PI
+                    if (da < -Math.PI) da += 2 * Math.PI
+                    renderer.rollBy(da)
+                    pinchAngle = ang
+                } else {
+                    val cur = arcMap(e.x, e.y)
+                    renderer.arcRotate(prevArc, cur)
+                    prevArc = cur
                 }
-                lastX = e.x
-                lastY = e.y
                 return true
             }
             MotionEvent.ACTION_POINTER_UP -> {
-                // Lieka vienas pirštas – tęsiame sukimą be šuolio
-                val remaining = if (e.actionIndex == 0) 1 else 0
-                moveMode = false
                 pinchLast = 0f
-                if (remaining < e.pointerCount) {
-                    lastX = e.getX(remaining)
-                    lastY = e.getY(remaining)
-                }
+                pinchAngle = 0.0
+                val remaining = if (e.actionIndex == 0) 1 else 0
+                if (remaining < e.pointerCount) prevArc = arcMap(e.getX(remaining), e.getY(remaining))
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                moveMode = false
-                // Po 60 s be prisilietimo vėl įjungiami sensoriai
+                renderer.setDragging(false)
                 handler.removeCallbacks(resumeSensors)
                 handler.postDelayed(resumeSensors, 60_000L)
                 return true
             }
         }
         return super.onTouchEvent(e)
-    }
-
-    private fun composeManual(): FloatArray {
-        val a = Math.toRadians(yawD.toDouble())
-        val b = Math.toRadians(pitchD.toDouble())
-        val ca = cos(a).toFloat(); val sa = sin(a).toFloat()
-        val cb = cos(b).toFloat(); val sb = sin(b).toFloat()
-        val rz = floatArrayOf(ca, -sa, 0f, sa, ca, 0f, 0f, 0f, 1f)
-        val rx = floatArrayOf(1f, 0f, 0f, 0f, cb, -sb, 0f, sb, cb)
-        return mul3(rz, mul3(rx, baseRot))
     }
 
     private fun mul3(a: FloatArray, b: FloatArray): FloatArray {
@@ -1168,30 +1144,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     }
 }
 
-/** Plūduriuojantis gaublio langas: viršutinė juosta stumdo, gaublys sukasi pirštu. */
 class FloatingSky(context: Context) : FrameLayout(context) {
-
     val dome = SkyDomeGL(context)
-    private val density = resources.displayMetrics.density
-    private val size = (300 * density).toInt()
-
-    init {
-        addView(dome, FrameLayout.LayoutParams(size, size))
-        dome.onMove = { dx, dy ->
-            translationX += dx
-            translationY += dy
-            constrain()
-        }
-    }
-
-    /** Bent 10 % lango lieka matoma. */
-    private fun constrain() {
-        val pw = (parent as? View)?.width?.toFloat() ?: return
-        val ph = (parent as? View)?.height?.toFloat() ?: return
-        val w = size.toFloat()
-        translationX = translationX.coerceIn(-w * 0.9f, pw - w * 0.1f)
-        translationY = translationY.coerceIn(-w * 0.9f, ph - w * 0.1f)
-    }
+    init { addView(dome, FrameLayout.LayoutParams(300, 300)) }
 }
 
 private class GlobeRenderer(private val appCtx: Context, private val density: Float) : GLSurfaceView.Renderer {
@@ -1347,15 +1302,27 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         java.util.Arrays.fill(mv, 0f)
         for (c in 0..2) for (rr in 0..2) mv[c * 4 + rr] = aM[c * 3 + rr].toFloat()
         mv[15] = 1f
-        Matrix.multiplyMM(mvpI, 0, pv, 0, mv, 0)          // Žemė, palydovai (sideralinė erdvė)
+        if (!dragging && spinAngle > 1e-4) {
+            userR = mul3d(axisAngleMat(spinAxis, spinAngle), userR)
+            spinAngle *= 0.92
+        }
+        val u4 = FloatArray(16)
+        for (c in 0..2) for (rr in 0..2) u4[c * 4 + rr] = userR[rr * 3 + c].toFloat()
+        u4[15] = 1f
+        val mvU = FloatArray(16)
+        Matrix.multiplyMM(mvU, 0, u4, 0, mv, 0)
+        Matrix.multiplyMM(mvpI, 0, pv, 0, mvU, 0)          // Žemė, palydovai (sideralinė erdvė)
         // Stebėtojo lokali sistema (dangaus kupolas, horizontas): ENU -> I + vieta
         java.util.Arrays.fill(lMat, 0f)
         for (c in 0..2) for (rr in 0..2) lMat[c * 4 + rr] = fQ[rr * 3 + c].toFloat()
         lMat[12] = fP[0]; lMat[13] = fP[1]; lMat[14] = fP[2]; lMat[15] = 1f
         Matrix.multiplyMM(mvp, 0, mvpI, 0, lMat, 0)        // kupolas, horizontas, žymos
-        eyeI = floatArrayOf(aM[2].toFloat(), aM[5].toFloat(), aM[8].toFloat())
+        eyeI = floatArrayOf(mvU[2], mvU[6], mvU[10])
         // Kameros kryptis pasaulio koordinatėse (planšetės +Z)
-        val eye = floatArrayOf(r[2], r[5], r[8])
+        val eye = floatArrayOf(
+            (fE[0] * eyeI[0] + fE[1] * eyeI[1] + fE[2] * eyeI[2]).toFloat(),
+            (fN[0] * eyeI[0] + fN[1] * eyeI[1] + fN[2] * eyeI[2]).toFloat(),
+            (fU[0] * eyeI[0] + fU[1] * eyeI[1] + fU[2] * eyeI[2]).toFloat())
 
         // Signalo kokybė -> pulsavimo stiprumas
         val used = sats.filter { it.used }
@@ -1451,7 +1418,65 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     fun setLocation(lat: Double, lon: Double) { obsLat = lat; obsLon = lon }
 
     @Volatile var zoom = 3f
-    fun zoomBy(factor: Float) { zoom = (zoom / factor).coerceIn(1.6f, 6f) }
+    fun zoomBy(factor: Float) { zoom = (zoom / factor).coerceIn(1.07f, 6f) }
+
+    @Volatile private var userR = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    @Volatile private var dragging = false
+    @Volatile private var spinAngle = 0.0
+    @Volatile private var spinAxis = doubleArrayOf(0.0, 0.0, 1.0)
+    fun setDragging(b: Boolean) { dragging = b }
+    fun resetUser() { userR = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0); spinAngle = 0.0 }
+
+    fun arcRotate(p0: DoubleArray, p1: DoubleArray) {
+        val ax = p0[1] * p1[2] - p0[2] * p1[1]
+        val ay = p0[2] * p1[0] - p0[0] * p1[2]
+        val az = p0[0] * p1[1] - p0[1] * p1[0]
+        val len = kotlin.math.sqrt(ax * ax + ay * ay + az * az)
+        if (len < 1e-9) return
+        val dot = (p0[0] * p1[0] + p0[1] * p1[1] + p0[2] * p1[2]).coerceIn(-1.0, 1.0)
+        val angle = kotlin.math.acos(dot)
+        if (angle < 1e-6) return
+        val axis = doubleArrayOf(ax / len, ay / len, az / len)
+        userR = mul3d(axisAngleMat(axis, angle), userR)
+        spinAxis = axis
+        spinAngle = angle
+    }
+
+    private fun axisAngleMat(a: DoubleArray, th: Double): DoubleArray {
+        val c = cos(th); val s = sin(th); val t = 1 - c
+        val x = a[0]; val y = a[1]; val z = a[2]
+        return doubleArrayOf(
+            t * x * x + c, t * x * y - s * z, t * x * z + s * y,
+            t * x * y + s * z, t * y * y + c, t * y * z - s * x,
+            t * x * z - s * y, t * y * z + s * x, t * z * z + c)
+    }
+
+    private fun mul3d(a: DoubleArray, b: DoubleArray): DoubleArray {
+        val o = DoubleArray(9)
+        for (i in 0..2) for (j in 0..2) {
+            var sum = 0.0
+            for (k in 0..2) sum += a[i * 3 + k] * b[k * 3 + j]
+            o[i * 3 + j] = sum
+        }
+        return o
+    }
+
+    /** Ritinimas aplink ekrano (žiūros) ašį – dviejų pirštų pasukimas. */
+    fun rollBy(angle: Double) {
+        if (kotlin.math.abs(angle) < 1e-6) return
+        userR = mul3d(axisAngleMat(doubleArrayOf(0.0, 0.0, 1.0), angle), userR)
+    }
+
+    fun northDeltaRad(): Double {
+        val r = rot
+        val nd = doubleArrayOf(r[3].toDouble(), r[4].toDouble(), r[5].toDouble())
+        val u = userR
+        val nu = doubleArrayOf(
+            u[0] * nd[0] + u[1] * nd[1] + u[2] * nd[2],
+            u[3] * nd[0] + u[4] * nd[1] + u[5] * nd[2],
+            u[6] * nd[0] + u[7] * nd[1] + u[8] * nd[2])
+        return kotlin.math.atan2(nu[0], nu[1]) - kotlin.math.atan2(nd[0], nd[1])
+    }
 
     @Volatile private var southUp = false
     fun setSouthUpMode(on: Boolean) { southUp = on }

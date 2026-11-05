@@ -1365,6 +1365,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 (fP[2] + dist * (dx * fE[2] + dy * fN[2] + dz * fU[2])).toFloat())))
         }
         satsI = out
+        recordTrails(out)
     }
 
     private val proj = FloatArray(16)
@@ -1394,6 +1395,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         domeProg = program(DOME_VS, DOME_FS)
         lowProg = program(DOME_VS, LOW_FS)
         colorProg = program(COLOR_VS, COLOR_FS)
+        satProg = program(SAT_VS, SAT_FS)
+        buildSatMesh()
         dotProg = program(COLOR_VS, DOT_FS)
         texProg = program(TEX_VS, TEX_FS)
 
@@ -1528,6 +1531,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawEarth()
         drawEquatorRing(t)
         drawMoon()
+        drawTrails()
 
 
         // 4) Horizontas – pulsuojantis auksinis žiedas
@@ -1575,40 +1579,166 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             if (dd < 0f && kotlin.math.sqrt(px2 * px2 + py2 * py2 + pz2 * pz2) < EARTH_R) continue
             val col = constRgb(sat.const)
             val usedK = if (sat.used) 1f else 0.4f
-            val phase = sat.svid * 0.7f
-            when {
-                sat.cn0 >= 45f -> {
-                    // Labai stiprus signalas: greitas žybčiojimas (3× greičiau), ryškesnė žvaigždė
-                    val tw = kotlin.math.sin(t * 3.6f + phase)
-                    val flick = if (kotlin.math.sin(t * 7.2f + phase * 1.7f) > 0.6f) 1.35f else 1f
-                    val size = 0.085f * (1f + 0.3f * tw) * flick
-                    val alpha = ((0.85f + 0.15f * tw) * usedK).coerceAtMost(1f)
-                    billboard(p, eyeI, size * 1.5f, size * 1.5f, starTex, col[0], col[1], col[2], alpha * 0.45f)
-                    billboard(p, eyeI, size, size, starTex, col[0], col[1], col[2], alpha)
-                    billboard(p, eyeI, size * 0.5f, size * 0.5f, starTex, 1f, 1f, 1f, alpha)
-                    val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
-                    billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.95f * usedK)
-                }
-                sat.cn0 >= 30f -> {
-                    // Lėtas pulsavimas, alfa niekada nenukrenta iki nulio – dingsta tik palydovui išeinant
-                    val tw = kotlin.math.sin(t * 1.2f + phase)
-                    val size = 0.075f * (1f + 0.2f * tw)
-                    val alpha = (0.8f + 0.2f * tw) * usedK
-                    billboard(p, eyeI, size, size, starTex, col[0], col[1], col[2], alpha)
-                    billboard(p, eyeI, size * 0.45f, size * 0.45f, starTex, 1f, 1f, 1f, alpha)
-                    val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
-                    billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
-                }
-                sat.cn0 >= 20f -> {
-                    billboard(p, eyeI, 0.05f, 0.05f, starTex, col[0], col[1], col[2], 0.6f * usedK)
-                }
-                else -> {
-                    drawPoint(p, col, 0.3f * usedK, 6f * density)
-                }
+            // Švytėjimas: 0 ties 20 dB-Hz, didžiausias ties 45 dB-Hz
+            val glow = ((sat.cn0 - 20f) / 25f).coerceIn(0f, 1f)
+            if (glow > 0.02f) {
+                billboard(p, eyeI, satSize * (1.2f + 1.3f * glow), satSize * (1.2f + 1.3f * glow), starTex,
+                    col[0], col[1], col[2], 0.55f * glow * usedK)
+            }
+            drawSatModel(p, col, glow, usedK)
+            if (sat.cn0 >= 30f) {
+                val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
+                billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
             }
         }
 
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    // ---------------- PALYDOVŲ 3D MODELIAI (cilindras + 2 saulės baterijos) ----------------
+    private val satSize = 0.10f            // palydovo dydis (didžiausias matmuo), scenos vnt.
+    private var satProg = 0
+    private var satPos: FloatBuffer? = null
+    private var satNrm: FloatBuffer? = null
+    private var satBodyN = 0
+    private var satPanelN = 0
+    private val satModel = FloatArray(16)
+    private val satMvp = FloatArray(16)
+
+    /** Modelio koordinatės: korpusas – cilindras išilgai Z, baterijos – plokštės išilgai X (bendras plotis 2,5). */
+    private fun buildSatMesh() {
+        val pos = ArrayList<Float>(); val nrm = ArrayList<Float>()
+        fun v(x: Float, y: Float, z: Float, nx: Float, ny: Float, nz: Float) {
+            pos.add(x); pos.add(y); pos.add(z); nrm.add(nx); nrm.add(ny); nrm.add(nz)
+        }
+        val seg = 16; val r = 0.25f; val hz = 0.4f
+        for (i in 0 until seg) {
+            val a0 = 2.0 * Math.PI * i / seg; val a1 = 2.0 * Math.PI * (i + 1) / seg
+            val c0 = cos(a0).toFloat(); val s0 = sin(a0).toFloat(); val c1 = cos(a1).toFloat(); val s1 = sin(a1).toFloat()
+            // šonas
+            v(r * c0, r * s0, -hz, c0, s0, 0f); v(r * c1, r * s1, -hz, c1, s1, 0f); v(r * c1, r * s1, hz, c1, s1, 0f)
+            v(r * c0, r * s0, -hz, c0, s0, 0f); v(r * c1, r * s1, hz, c1, s1, 0f); v(r * c0, r * s0, hz, c0, s0, 0f)
+            // dangteliai
+            v(0f, 0f, hz, 0f, 0f, 1f); v(r * c0, r * s0, hz, 0f, 0f, 1f); v(r * c1, r * s1, hz, 0f, 0f, 1f)
+            v(0f, 0f, -hz, 0f, 0f, -1f); v(r * c1, r * s1, -hz, 0f, 0f, -1f); v(r * c0, r * s0, -hz, 0f, 0f, -1f)
+        }
+        satBodyN = pos.size / 3
+        fun box(x0: Float, y0: Float, z0: Float, x1: Float, y1: Float, z1: Float) {
+            val faces = arrayOf(
+                floatArrayOf(1f, 0f, 0f), floatArrayOf(-1f, 0f, 0f), floatArrayOf(0f, 1f, 0f),
+                floatArrayOf(0f, -1f, 0f), floatArrayOf(0f, 0f, 1f), floatArrayOf(0f, 0f, -1f))
+            val lo = floatArrayOf(x0, y0, z0); val hi = floatArrayOf(x1, y1, z1)
+            for (n in faces) {
+                val ax = if (n[0] != 0f) 0 else if (n[1] != 0f) 1 else 2
+                val ua = (ax + 1) % 3; val wa = (ax + 2) % 3
+                val fixed = if (n[ax] > 0) hi[ax] else lo[ax]
+                fun corner(uHi: Boolean, wHi: Boolean): FloatArray {
+                    val c = FloatArray(3)
+                    c[ax] = fixed; c[ua] = if (uHi) hi[ua] else lo[ua]; c[wa] = if (wHi) hi[wa] else lo[wa]
+                    return c
+                }
+                val q = arrayOf(corner(false, false), corner(true, false), corner(true, true), corner(false, true))
+                for (idx in intArrayOf(0, 1, 2, 0, 2, 3)) v(q[idx][0], q[idx][1], q[idx][2], n[0], n[1], n[2])
+            }
+        }
+        box(-1.25f, -0.02f, -0.2f, -0.3f, 0.02f, 0.2f)    // kairė baterija
+        box(0.3f, -0.02f, -0.2f, 1.25f, 0.02f, 0.2f)      // dešinė baterija
+        box(-0.3f, -0.012f, -0.03f, 0.3f, 0.012f, 0.03f)  // laikiklis per korpusą
+        satPanelN = pos.size / 3 - satBodyN
+        satPos = floatBuf(pos.toFloatArray())
+        satNrm = floatBuf(nrm.toFloatArray())
+    }
+
+    /** Palydovas p (sideralinė erdvė): korpusas – konsteliacijos spalva, švytėjimas pagal C/N0. */
+    private fun drawSatModel(p: FloatArray, col: FloatArray, glow: Float, usedK: Float) {
+        if (satProg == 0 || satPos == null) return
+        // Orientacija: Y – nuo Žemės centro, X (baterijos) – statmenai poliui
+        val pl = kotlin.math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).coerceAtLeast(1e-6f)
+        val y = floatArrayOf(p[0] / pl, p[1] / pl, p[2] / pl)
+        var x = floatArrayOf(-y[1], y[0], 0f)
+        var xl = kotlin.math.sqrt(x[0] * x[0] + x[1] * x[1])
+        if (xl < 1e-4f) { x = floatArrayOf(1f, 0f, 0f); xl = 1f }
+        x = floatArrayOf(x[0] / xl, x[1] / xl, 0f)
+        val z = floatArrayOf(x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0])
+        val k = satSize / 2.5f
+        java.util.Arrays.fill(satModel, 0f)
+        for (i in 0..2) { satModel[i] = x[i] * k; satModel[4 + i] = y[i] * k; satModel[8 + i] = z[i] * k }
+        satModel[12] = p[0]; satModel[13] = p[1]; satModel[14] = p[2]; satModel[15] = 1f
+        Matrix.multiplyMM(satMvp, 0, mvpI, 0, satModel, 0)
+        val sun = sunDir()
+
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        GLES20.glUseProgram(satProg)
+        setMat(satProg, "uMVP", satMvp)
+        setMat(satProg, "uModel", satModel)
+        setVec3(satProg, "uLight", sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
+        resetAttribs()
+        val lp = GLES20.glGetAttribLocation(satProg, "aPos")
+        val ln = GLES20.glGetAttribLocation(satProg, "aNormal")
+        GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(ln)
+        satPos!!.position(0); satNrm!!.position(0)
+        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, satPos)
+        GLES20.glVertexAttribPointer(ln, 3, GLES20.GL_FLOAT, false, 0, satNrm)
+        val a = 0.5f + 0.5f * usedK
+        // korpusas
+        setVec4(satProg, "uColor", col[0], col[1], col[2], a)
+        setVec3(satProg, "uGlow", col[0] * glow, col[1] * glow, col[2] * glow)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, satBodyN)
+        // saulės baterijos – tamsiai mėlynos, silpnesnis švytėjimas
+        setVec4(satProg, "uColor", 0.12f, 0.2f, 0.45f, a)
+        setVec3(satProg, "uGlow", col[0] * glow * 0.45f, col[1] * glow * 0.45f, col[2] * glow * 0.45f)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, satBodyN, satPanelN)
+        GLES20.glDisableVertexAttribArray(ln)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+    }
+
+    // ---------------- PALYDOVŲ TRAJEKTORIJOS (paskutinės 2 min, taškas kas sekundę) ----------------
+    private val trailWindowMs = 120_000L
+    private class TrailPt(val t: Long, val p: FloatArray)
+    private val trails = HashMap<String, ArrayDeque<TrailPt>>()
+    private val trailConst = HashMap<String, String>()
+
+    private fun recordTrails(list: List<SatI>) {
+        val now = System.currentTimeMillis()
+        synchronized(trails) {
+            for (si in list) {
+                val key = si.sat.const + si.sat.svid
+                val q = trails.getOrPut(key) { ArrayDeque() }
+                trailConst[key] = si.sat.const
+                if (q.isEmpty() || now - q.last().t >= 1000L) q.addLast(TrailPt(now, si.pos.copyOf()))
+            }
+            val it = trails.entries.iterator()
+            while (it.hasNext()) {
+                val e = it.next()
+                while (e.value.isNotEmpty() && now - e.value.first().t > trailWindowMs) e.value.removeFirst()
+                if (e.value.isEmpty()) { it.remove(); trailConst.remove(e.key) }
+            }
+        }
+    }
+
+    /** Kiekvieno palydovo kreivė per paskutines 2 min (segmentas kas sekundę), spalva – pagal konsteliaciją. */
+    private fun drawTrails() {
+        val snap: List<Pair<String, FloatArray>> = synchronized(trails) {
+            trails.mapNotNull { (k, q) ->
+                if (q.size < 2) null else {
+                    val a = FloatArray(q.size * 3)
+                    var i = 0
+                    for (tp in q) { a[i++] = tp.p[0]; a[i++] = tp.p[1]; a[i++] = tp.p[2] }
+                    (trailConst[k] ?: "GPS") to a
+                }
+            }
+        }
+        if (snap.isEmpty()) return
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glLineWidth(2f * density)
+        for ((c, a) in snap) {
+            val col = constRgb(c)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.85f)
+            bindPos(colorProg, floatBuf(a))
+            GLES20.glDrawArrays(GLES20.GL_LINE_STRIP, 0, a.size / 3)
+        }
+        GLES20.glLineWidth(1f)
     }
 
     // ---------------- ŽEMĖ GAUBLIO VIDUJE ----------------
@@ -2366,6 +2496,30 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform mat4 uMVP;
             uniform float uPoint;
             void main() { gl_Position = uMVP * vec4(aPos, 1.0); gl_PointSize = uPoint; }
+        """
+        private const val SAT_VS = """
+            attribute vec3 aPos;
+            attribute vec3 aNormal;
+            uniform mat4 uMVP;
+            uniform mat4 uModel;
+            varying vec3 vN;
+            void main() {
+                vN = mat3(uModel) * aNormal;
+                gl_Position = uMVP * vec4(aPos, 1.0);
+            }
+        """
+        private const val SAT_FS = """
+            precision mediump float;
+            uniform vec4 uColor;
+            uniform vec3 uGlow;
+            uniform vec3 uLight;
+            varying vec3 vN;
+            void main() {
+                vec3 n = normalize(vN);
+                float d = max(dot(n, normalize(uLight)), 0.0);
+                vec3 c = uColor.rgb * (0.3 + 0.7 * d) + uGlow;
+                gl_FragColor = vec4(min(c, vec3(1.0)), uColor.a);
+            }
         """
         private const val COLOR_FS = """
             precision mediump float;

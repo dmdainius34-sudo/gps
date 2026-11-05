@@ -1,0 +1,64 @@
+name: Screens
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Režimas (shot – vienas ekrano vaizdas po paleidimo)"
+        required: true
+        default: shot
+        type: choice
+        options:
+          - shot
+
+jobs:
+  screens:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run emulator and capture
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          MODE: ${{ inputs.mode }}
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            mkdir -p screens
+            adb install -r -g app/build/outputs/apk/debug/app-debug.apk
+            adb shell settings put secure location_mode 3 || true
+            adb shell am start -W -n lt.example.gnss/.MainActivity
+            sleep 15
+            adb exec-out screencap -p > screens/shot.png
+            adb logcat -d > screens/logcat.txt || true
+            ls -la screens
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gnss-screens
+          path: screens/

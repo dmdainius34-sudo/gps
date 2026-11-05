@@ -1288,6 +1288,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         buildEarth()
         starTex = makeStarTexture()
+        sunTex = makeSunTexture()
+        sunImgTex = 0
+        try {
+            appCtx.assets.open("sun.png").use { ins ->
+                val bmp = android.graphics.BitmapFactory.decodeStream(ins)
+                if (bmp != null) sunImgTex = uploadTexture(bmp)
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("GnssApp", "sun.png nerastas: rodoma nupiešta Saulė")
+        }
         for (d in 0 until 360 step 30) labelTex[labelOf(d)] = makeTexture(labelOf(d), 0xFFFFFFFF.toInt(), if (d % 90 == 0) 170 else 96)
     }
 
@@ -1416,6 +1426,26 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // 6) Palydovai: geras signalas žybsi kaip žvaigždės
         System.arraycopy(mvpI, 0, mvp, 0, 16)
+
+        // Saulė tikroje dangaus kryptyje nuo stebėtojo (švytintis diskas)
+        run {
+            val sd = sunDir()
+            val sp = floatArrayOf(
+                (fP[0] + sd[0] * 0.9).toFloat(), (fP[1] + sd[1] * 0.9).toFloat(), (fP[2] + sd[2] * 0.9).toFloat())
+            val dd = sp[0] * eyeI[0] + sp[1] * eyeI[1] + sp[2] * eyeI[2]
+            val qx = sp[0] - dd * eyeI[0]; val qy = sp[1] - dd * eyeI[1]; val qz = sp[2] - dd * eyeI[2]
+            val hidden = dd < 0f && kotlin.math.sqrt(qx * qx + qy * qy + qz * qz) < EARTH_R
+            if (!hidden && sunTex != 0) {
+                val pulse = 1f + 0.04f * kotlin.math.sin(t * 1.5f)
+                billboard(sp, eyeI, 0.26f * pulse, 0.26f * pulse, sunTex, 1f, 0.75f, 0.35f, 0.55f)   // korona
+                if (sunImgTex != 0) {
+                    // NASA SDO vaizdas: diskas visada atsuktas į žiūrovą
+                    billboard(sp, eyeI, 0.13f, 0.13f, sunImgTex, 1f, 1f, 1f, 1f)
+                } else {
+                    billboard(sp, eyeI, 0.10f, 0.10f, sunTex, 1f, 0.97f, 0.85f, 1f)                 // diskas
+                }
+            }
+        }
         for (si in satsI) {
             val sat = si.sat
             val p = si.pos
@@ -1909,6 +1939,24 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(texProg, "uTex"), 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    }
+
+    private var sunTex = 0
+    private var sunImgTex = 0
+
+    /** Saulės tekstūra: ryškus diskas + minkšta korona (nupiešta programiškai). */
+    private fun makeSunTexture(): Int {
+        val size = 256
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val h = size / 2f
+        val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(h, h, h,
+                intArrayOf(0xFFFFFFFF.toInt(), 0xFFFFF2B0.toInt(), 0x88FFB040.toInt(), 0x00FF8000),
+                floatArrayOf(0f, 0.22f, 0.45f, 1f), Shader.TileMode.CLAMP)
+        }
+        c.drawCircle(h, h, h, glow)
+        return uploadTexture(bmp)
     }
 
     private fun makeStarTexture(): Int {

@@ -9,13 +9,15 @@ MODE="${1:-shot}"
 OUT="${2:-screens}"
 PKG="lt.example.gnss"
 APK="app/build/outputs/apk/debug/app-debug.apk"
-WAIT="${CAPTURE_WAIT:-15}"
+WAIT="${CAPTURE_WAIT:-25}"
 
 mkdir -p "$OUT"
 command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; }
 
 adb install -r -g "$APK"
 adb shell settings put secure location_mode 3 || true
+# Vieta – Vilnius (adb emu geo fix <ilguma> <platuma>)
+adb emu geo fix 25.2545 54.7400
 
 case "$MODE" in
   shot)

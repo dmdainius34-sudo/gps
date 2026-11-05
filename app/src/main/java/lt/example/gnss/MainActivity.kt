@@ -70,6 +70,7 @@ import android.view.Gravity
 import android.view.ScaleGestureDetector
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.animation.LinearInterpolator
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
@@ -2654,8 +2655,38 @@ class MainActivity : AppCompatActivity() {
     private fun setGlobe(on: Boolean) {
         use3d = on
         skyView.visibility = if (on) View.GONE else View.VISIBLE
-        skyDome.visibility = if (on) View.VISIBLE else View.GONE
+        if (!on && fullscreen) toggleFullscreen()
+        skyHolder.visibility = if (on) View.VISIBLE else View.GONE
         if (on) skyDome.start() else skyDome.stop()
+    }
+
+    private lateinit var skyHolder: FrameLayout
+    private lateinit var fsBtn: TextView
+    private var skyHolderParent: ViewGroup? = null
+    private var skyHolderLp: ViewGroup.LayoutParams? = null
+    private var fullscreen = false
+
+    /** Gaublys per visą ekraną ir atgal į langą (permatomas ženklelis kampe). */
+    private fun toggleFullscreen() {
+        if (!::skyHolder.isInitialized) return
+        val pIdx = skyHolderParent?.indexOfChild(skyHolder) ?: -1
+        (skyHolder.parent as? ViewGroup)?.removeView(skyHolder)
+        if (!fullscreen) {
+            container.addView(skyHolder, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            fsBtn.text = "\u2715"
+            fullscreen = true
+        } else {
+            val parent = skyHolderParent
+            if (parent != null) {
+                val idx = if (pIdx >= 0) pIdx else (parent.indexOfChild(skyView) + 1).coerceAtMost(parent.childCount)
+                parent.addView(skyHolder, idx, skyHolderLp)
+            }
+            fsBtn.text = "\u26F6"
+            fullscreen = false
+        }
+        // Plūduriuojantis burbulas lieka virš visko
+        sharePanel?.bringToFront()
     }
 
     /** Prisegti burbulą prie ekrano (veikia ir kitose programose). */
@@ -2852,8 +2883,29 @@ class MainActivity : AppCompatActivity() {
 
         val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         right.addView(skyView, LinearLayout.LayoutParams(skySide, skySide))
-        skyDome = SkyDomeGL(this).apply { visibility = View.GONE }
-        right.addView(skyDome, LinearLayout.LayoutParams(skySide, skySide))
+        skyDome = SkyDomeGL(this)
+        skyHolder = FrameLayout(this).apply { visibility = View.GONE }
+        skyHolder.addView(skyDome, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        val fsSize = (44 * resources.displayMetrics.density).toInt()
+        fsBtn = TextView(this).apply {
+            text = "\u26F6"
+            textSize = 22f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(0x55000000)
+            }
+            alpha = 0.6f
+            setOnClickListener { toggleFullscreen() }
+        }
+        skyHolder.addView(fsBtn, FrameLayout.LayoutParams(fsSize, fsSize, Gravity.TOP or Gravity.END).apply {
+            val m = (10 * resources.displayMetrics.density).toInt()
+            setMargins(m, m, m, m)
+        })
+        skyHolderParent = right
+        skyHolderLp = LinearLayout.LayoutParams(skySide, skySide)
+        right.addView(skyHolder, skyHolderLp)
         skyDome.onDoubleTapCb = { setGlobe(false) }
         val skyGd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean = true

@@ -1286,6 +1286,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         prnTex.clear()
         labelTex.clear()
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
+        sunProg = 0
         buildEarth()
         starTex = makeStarTexture()
         sunTex = makeSunTexture()
@@ -1438,12 +1439,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             if (!hidden && sunTex != 0) {
                 val pulse = 1f + 0.04f * kotlin.math.sin(t * 1.5f)
                 billboard(sp, eyeI, 0.26f * pulse, 0.26f * pulse, sunTex, 1f, 0.75f, 0.35f, 0.55f)   // korona
-                if (sunImgTex != 0) {
-                    // NASA SDO vaizdas: diskas visada atsuktas į žiūrovą
-                    billboard(sp, eyeI, 0.13f, 0.13f, sunImgTex, 1f, 1f, 1f, 1f)
-                } else {
-                    billboard(sp, eyeI, 0.10f, 0.10f, sunTex, 1f, 0.97f, 0.85f, 1f)                 // diskas
-                }
+                drawSun3D(sp, t)
             }
         }
         for (si in satsI) {
@@ -1959,6 +1955,37 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         return uploadTexture(bmp)
     }
 
+    private var sunProg = 0
+    private val sunMat = FloatArray(16)
+    private val sunMvp = FloatArray(16)
+
+    /** 3D Saulės rutulys: animuota granuliacija, dėmės, kraštų patamsėjimas; lėtai sukasi. */
+    private fun drawSun3D(sp: FloatArray, t: Float) {
+        if (earthPos == null) return
+        if (sunProg == 0) sunProg = program(SUN_VS, SUN_FS)
+        val k = 0.26f                                     // spindulys 0,065 scenos vnt.
+        val a = t * 0.08                                  // lėtas sukimasis aplink ašį
+        java.util.Arrays.fill(sunMat, 0f)
+        sunMat[0] = (cos(a) * k).toFloat(); sunMat[1] = (sin(a) * k).toFloat()
+        sunMat[4] = (-sin(a) * k).toFloat(); sunMat[5] = (cos(a) * k).toFloat()
+        sunMat[10] = k
+        sunMat[12] = sp[0]; sunMat[13] = sp[1]; sunMat[14] = sp[2]; sunMat[15] = 1f
+        Matrix.multiplyMM(sunMvp, 0, mvpI, 0, sunMat, 0)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        GLES20.glUseProgram(sunProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(sunProg, "uMVP"), 1, false, sunMvp, 0)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(sunProg, "uModel"), 1, false, sunMat, 0)
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(sunProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uTime"), t)
+        resetAttribs()
+        val lp = GLES20.glGetAttribLocation(sunProg, "aPos")
+        GLES20.glEnableVertexAttribArray(lp)
+        earthPos!!.position(0)
+        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, earthPos)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+    }
+
     private fun makeStarTexture(): Int {
         val size = 128
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
@@ -2186,6 +2213,59 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vUV = aUV;
                 vN = mat3(uModel) * aPos;
                 gl_Position = uMVP * vec4(aPos, 1.0);
+            }
+        """
+        private const val SUN_VS = """
+            attribute vec3 aPos;
+            uniform mat4 uMVP;
+            uniform mat4 uModel;
+            varying vec3 vO;
+            varying vec3 vN;
+            void main() {
+                vO = aPos;
+                vN = mat3(uModel) * aPos;
+                gl_Position = uMVP * vec4(aPos, 1.0);
+            }
+        """
+        private const val SUN_FS = """
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
+            precision mediump float;
+            #endif
+            varying vec3 vO;
+            varying vec3 vN;
+            uniform vec3 uEye;
+            uniform float uTime;
+            float hash(vec3 p) {
+                p = fract(p * 0.3183099 + 0.1);
+                p *= 17.0;
+                return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+            }
+            float noise(vec3 x) {
+                vec3 i = floor(x);
+                vec3 f = fract(x);
+                f = f * f * (3.0 - 2.0 * f);
+                return mix(mix(mix(hash(i), hash(i + vec3(1.0, 0.0, 0.0)), f.x),
+                               mix(hash(i + vec3(0.0, 1.0, 0.0)), hash(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+                           mix(mix(hash(i + vec3(0.0, 0.0, 1.0)), hash(i + vec3(1.0, 0.0, 1.0)), f.x),
+                               mix(hash(i + vec3(0.0, 1.0, 1.0)), hash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+            }
+            void main() {
+                vec3 p = normalize(vO);
+                float t = uTime * 0.06;
+                float n = 0.5 * noise(p * 9.0 + vec3(t, 0.0, 0.0))
+                        + 0.3 * noise(p * 20.0 - vec3(0.0, t * 1.4, 0.0))
+                        + 0.2 * noise(p * 42.0 + vec3(0.0, 0.0, t * 1.9));
+                float spots = smoothstep(0.74, 0.82, noise(p * 3.5 + vec3(7.0)));
+                vec3 hot = vec3(1.0, 0.96, 0.72);
+                vec3 warm = vec3(1.0, 0.52, 0.08);
+                vec3 col = mix(warm, hot, n);
+                col *= 1.0 - 0.65 * spots;
+                float mu = max(dot(normalize(vN), normalize(uEye)), 0.0);
+                col *= 0.42 + 0.58 * pow(mu, 0.5);      // kraštų patamsėjimas (limb darkening)
+                col += vec3(1.0, 0.6, 0.2) * pow(1.0 - mu, 4.0) * 0.6;   // ryškus kraštas
+                gl_FragColor = vec4(col, 1.0);
             }
         """
         private const val ATMO_VS = """

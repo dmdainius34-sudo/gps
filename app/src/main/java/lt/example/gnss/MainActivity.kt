@@ -1,6 +1,9 @@
 package lt.example.gnss
 
 import android.Manifest
+import com.google.android.filament.Texture as FTexture
+import com.google.android.filament.VertexBuffer.AttributeType as FAT
+import com.google.android.filament.VertexBuffer.VertexAttribute as FVA
 import android.graphics.BitmapFactory
 import android.hardware.GeomagneticField
 import android.app.NotificationManager
@@ -1290,6 +1293,335 @@ class FloatingSky(context: Context) : FrameLayout(context) {
     init { addView(dome, FrameLayout.LayoutParams(300, 300)) }
 }
 
+/**
+ * Žemės rutulys per Filament (PBR „lit“ medžiaga su earth.jpg).
+ * Filament piešia į GL tekstūrą (bendras EGL kontekstas su GLSurfaceView),
+ * kuri GlobeRenderer'yje uždedama ant ekrano. Jei assets/earth.filamat nėra
+ * arba Filament nepavyko paleisti – ready == false ir naudojamas senasis GL piešimas.
+ */
+private class FilamentEarth(private val appCtx: Context) {
+    var ready = false
+        private set
+
+    private var engine: com.google.android.filament.Engine? = null
+    private var renderer: com.google.android.filament.Renderer? = null
+    private var scene: com.google.android.filament.Scene? = null
+    private var fview: com.google.android.filament.View? = null
+    private var camera: com.google.android.filament.Camera? = null
+    private var swapChain: com.google.android.filament.SwapChain? = null
+    private var material: com.google.android.filament.Material? = null
+    private var matInst: com.google.android.filament.MaterialInstance? = null
+    private var albedo: com.google.android.filament.Texture? = null
+    private var vb: com.google.android.filament.VertexBuffer? = null
+    private var ib: com.google.android.filament.IndexBuffer? = null
+    private var ibl: com.google.android.filament.IndirectLight? = null
+    private var colorTex: com.google.android.filament.Texture? = null
+    private var depthTex: com.google.android.filament.Texture? = null
+    private var target: com.google.android.filament.RenderTarget? = null
+    private var earthEnt = 0
+    private var sunEnt = 0
+    private var camEnt = 0
+
+    private var glTex = 0
+    private var rtW = 0
+    private var rtH = 0
+    private var quadProg = 0
+    private val quad: FloatBuffer = ByteBuffer.allocateDirect(12 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        .apply { put(floatArrayOf(-1f, -1f, 1f, -1f, 1f, 1f, -1f, -1f, 1f, 1f, -1f, 1f)); position(0) }
+
+    /** Kviečiama GL gijoje (onSurfaceCreated), kai GLSurfaceView kontekstas yra aktyvus. */
+    fun init(radius: Float) {
+        release()
+        try {
+            val matBytes = try {
+                appCtx.assets.open("earth.filamat").use { it.readBytes() }
+            } catch (e: Exception) {
+                android.util.Log.w("GnssApp", "earth.filamat nerastas – Žemė piešiama senuoju GL būdu")
+                return
+            }
+            com.google.android.filament.Filament.init()
+            val eng = com.google.android.filament.Engine.create(android.opengl.EGL14.eglGetCurrentContext())
+            engine = eng
+            renderer = eng.createRenderer().apply {
+                setClearOptions(com.google.android.filament.Renderer.ClearOptions().apply {
+                    clear = true; clearColor = doubleArrayOf(0.0, 0.0, 0.0, 0.0)
+                })
+            }
+            scene = eng.createScene()
+            camEnt = com.google.android.filament.EntityManager.get().create()
+            camera = eng.createCamera(camEnt).apply { setExposure(1f) }
+            fview = eng.createView().apply {
+                setScene(scene)
+                setCamera(camera)
+                setPostProcessingEnabled(false)
+                setBlendMode(com.google.android.filament.View.BlendMode.TRANSLUCENT)
+            }
+            swapChain = eng.createSwapChain(1, 1, 0L)
+
+            val mb = ByteBuffer.allocateDirect(matBytes.size).order(ByteOrder.nativeOrder())
+            mb.put(matBytes); mb.flip()
+            material = com.google.android.filament.Material.Builder().payload(mb, mb.remaining()).build(eng)
+            matInst = material!!.createInstance()
+
+            // earth.jpg – albedo (RGBA8: tekstūros reikšmės naudojamos kaip ir senajame GL šešėliuoklyje)
+            val bmp = appCtx.assets.open("earth.jpg").use {
+                android.graphics.BitmapFactory.decodeStream(it, null,
+                    android.graphics.BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 })
+            } ?: throw IllegalStateException("earth.jpg neskaitomas")
+            val levels = 1 + floor(kotlin.math.ln(max(bmp.width, bmp.height).toDouble()) / kotlin.math.ln(2.0)).toInt()
+            val tex = com.google.android.filament.Texture.Builder()
+                .width(bmp.width).height(bmp.height).levels(levels)
+                .sampler(com.google.android.filament.Texture.Sampler.SAMPLER_2D)
+                .format(com.google.android.filament.Texture.InternalFormat.RGBA8)
+                .build(eng)
+            val px = ByteBuffer.allocateDirect(bmp.byteCount).order(ByteOrder.nativeOrder())
+            bmp.copyPixelsToBuffer(px); px.flip()
+            tex.setImage(eng, 0, com.google.android.filament.Texture.PixelBufferDescriptor(
+                px, com.google.android.filament.Texture.Format.RGBA, com.google.android.filament.Texture.Type.UBYTE))
+            tex.generateMipmaps(eng)
+            bmp.recycle()
+            albedo = tex
+            matInst!!.setParameter("albedo", tex, com.google.android.filament.TextureSampler(
+                com.google.android.filament.TextureSampler.MinFilter.LINEAR_MIPMAP_LINEAR,
+                com.google.android.filament.TextureSampler.MagFilter.LINEAR,
+                com.google.android.filament.TextureSampler.WrapMode.REPEAT))
+            matInst!!.setParameter("roughness", 0.75f)
+            matInst!!.setParameter("metallic", 0f)
+
+            buildSphere(eng, radius)
+            earthEnt = com.google.android.filament.EntityManager.get().create()
+            com.google.android.filament.RenderableManager.Builder(1)
+                .boundingBox(com.google.android.filament.Box(0f, 0f, 0f, radius, radius, radius))
+                .geometry(0, com.google.android.filament.RenderableManager.PrimitiveType.TRIANGLES, vb!!, ib!!)
+                .material(0, matInst!!)
+                .culling(false)
+                .castShadows(false)
+                .receiveShadows(false)
+                .build(eng, earthEnt)
+            scene!!.addEntity(earthEnt)
+
+            // Saulė – kryptinė šviesa; kryptis atnaujinama kiekvieną kadrą iš sunDir()
+            sunEnt = com.google.android.filament.EntityManager.get().create()
+            com.google.android.filament.LightManager.Builder(com.google.android.filament.LightManager.Type.DIRECTIONAL)
+                .color(1f, 0.98f, 0.95f)
+                .intensity(4f)
+                .direction(0f, 0f, -1f)
+                .castShadows(false)
+                .build(eng, sunEnt)
+            scene!!.addEntity(sunEnt)
+            // Silpnas aplinkos apšvietimas, kad naktinė pusė nebūtų visiškai juoda
+            ibl = com.google.android.filament.IndirectLight.Builder()
+                .irradiance(1, floatArrayOf(0.12f, 0.13f, 0.16f))
+                .intensity(1f)
+                .build(eng)
+            scene!!.setIndirectLight(ibl)
+
+            quadProg = glProgram(QUAD_VS, QUAD_FS)
+            ready = true
+            android.util.Log.i("GnssApp", "Filament Žemė paruošta")
+        } catch (t: Throwable) {
+            android.util.Log.e("GnssApp", "Filament nepavyko paleisti – naudojamas senasis GL piešimas", t)
+            release()
+        }
+    }
+
+    private fun buildSphere(eng: com.google.android.filament.Engine, r: Float) {
+        val stacks = 48; val slices = 96
+        val n = (stacks + 1) * (slices + 1)
+        val pos = ByteBuffer.allocateDirect(n * 12).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val nrm = ByteBuffer.allocateDirect(n * 12).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val uv = ByteBuffer.allocateDirect(n * 8).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        for (st in 0..stacks) for (sl in 0..slices) {
+            // Ta pati geometrija ir UV kaip senajame GL rutulyje
+            val lat = Math.toRadians(-90.0 + 180.0 * st / stacks)
+            val lon = Math.toRadians(-180.0 + 360.0 * sl / slices)
+            val x = (cos(lat) * cos(lon)).toFloat()
+            val y = (cos(lat) * sin(lon)).toFloat()
+            val z = sin(lat).toFloat()
+            pos.put(x * r).put(y * r).put(z * r)
+            nrm.put(x).put(y).put(z)
+            uv.put(sl.toFloat() / slices).put((stacks - st).toFloat() / stacks)
+        }
+        pos.flip(); nrm.flip(); uv.flip()
+        val quats = ByteBuffer.allocateDirect(n * 16).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val so = com.google.android.filament.SurfaceOrientation.Builder().vertexCount(n).normals(nrm).build()
+        so.getQuatsAsFloat(quats)
+        so.destroy()
+        quats.position(0)
+
+        val idx = ByteBuffer.allocateDirect(stacks * slices * 6 * 2).order(ByteOrder.nativeOrder()).asShortBuffer()
+        for (st in 0 until stacks) for (sl in 0 until slices) {
+            val a = st * (slices + 1) + sl
+            val b = a + slices + 1
+            idx.put(a.toShort()).put(b.toShort()).put((b + 1).toShort())
+            idx.put(a.toShort()).put((b + 1).toShort()).put((a + 1).toShort())
+        }
+        idx.flip()
+
+        vb = com.google.android.filament.VertexBuffer.Builder()
+            .bufferCount(3).vertexCount(n)
+            .attribute(FVA.POSITION, 0, FAT.FLOAT3, 0, 12)
+            .attribute(FVA.TANGENTS, 1, FAT.FLOAT4, 0, 16)
+            .attribute(FVA.UV0, 2, FAT.FLOAT2, 0, 8)
+            .build(eng).apply {
+                setBufferAt(eng, 0, pos)
+                setBufferAt(eng, 1, quats)
+                setBufferAt(eng, 2, uv)
+            }
+        ib = com.google.android.filament.IndexBuffer.Builder()
+            .indexCount(stacks * slices * 6)
+            .bufferType(com.google.android.filament.IndexBuffer.Builder.IndexType.USHORT)
+            .build(eng).apply { setBuffer(eng, idx) }
+    }
+
+    private fun ensureTarget(eng: com.google.android.filament.Engine, w: Int, h: Int) {
+        if (target != null && w == rtW && h == rtH) return
+        target?.let { eng.destroyRenderTarget(it) }
+        colorTex?.let { eng.destroyTexture(it) }
+        depthTex?.let { eng.destroyTexture(it) }
+        if (glTex != 0) GLES20.glDeleteTextures(1, intArrayOf(glTex), 0)
+        val ids = IntArray(1)
+        GLES20.glGenTextures(1, ids, 0)
+        glTex = ids[0]
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, glTex)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+        GLES20.glFinish()
+        colorTex = FTexture.Builder().width(w).height(h).levels(1)
+            .sampler(FTexture.Sampler.SAMPLER_2D).format(FTexture.InternalFormat.RGBA8)
+            .usage(FTexture.Usage.COLOR_ATTACHMENT or FTexture.Usage.SAMPLEABLE)
+            .importTexture(glTex.toLong())
+            .build(eng)
+        depthTex = FTexture.Builder().width(w).height(h).levels(1)
+            .sampler(FTexture.Sampler.SAMPLER_2D).format(FTexture.InternalFormat.DEPTH24)
+            .usage(FTexture.Usage.DEPTH_ATTACHMENT)
+            .build(eng)
+        target = com.google.android.filament.RenderTarget.Builder()
+            .texture(com.google.android.filament.RenderTarget.AttachmentPoint.COLOR, colorTex)
+            .texture(com.google.android.filament.RenderTarget.AttachmentPoint.DEPTH, depthTex)
+            .build(eng)
+        fview!!.setRenderTarget(target)
+        fview!!.setViewport(com.google.android.filament.Viewport(0, 0, w, h))
+        rtW = w; rtH = h
+    }
+
+    /**
+     * Nupiešia Žemę Filament'u ir uždeda rezultatą ant esamo GL kadro.
+     * @param proj GL projekcijos matrica, @param modelView Žemės modelio-vaizdo matrica,
+     * @param lightView kryptis Į Saulę kameros (vaizdo) koordinatėse.
+     */
+    fun draw(w: Int, h: Int, proj: FloatArray, modelView: FloatArray, lightView: FloatArray): Boolean {
+        val eng = engine ?: return false
+        if (!ready || w <= 0 || h <= 0) return false
+        try {
+            ensureTarget(eng, w, h)
+            camera!!.setCustomProjection(DoubleArray(16) { proj[it].toDouble() }, 0.1, 20.0)
+            val tm = eng.transformManager
+            tm.setTransform(tm.getInstance(earthEnt), modelView)
+            val lm = eng.lightManager
+            lm.setDirection(lm.getInstance(sunEnt), -lightView[0], -lightView[1], -lightView[2])
+            GLES20.glFlush()
+            val r = renderer!!
+            if (r.beginFrame(swapChain!!, System.nanoTime())) {
+                r.render(fview!!)
+                r.endFrame()
+            }
+            eng.flushAndWait()
+        } catch (t: Throwable) {
+            android.util.Log.e("GnssApp", "Filament kadro klaida – grįžtama prie GL", t)
+            release()
+            return false
+        }
+        // Filament tekstūra -> ekranas (permatomas fonas aplink rutulį)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        GLES20.glDepthMask(false)
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glUseProgram(quadProg)
+        for (i in 0 until 8) GLES20.glDisableVertexAttribArray(i)
+        val lp = GLES20.glGetAttribLocation(quadProg, "aPos")
+        GLES20.glEnableVertexAttribArray(lp)
+        quad.position(0)
+        GLES20.glVertexAttribPointer(lp, 2, GLES20.GL_FLOAT, false, 0, quad)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, glTex)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(quadProg, "uTex"), 0)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDepthMask(true)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        return true
+    }
+
+    fun release() {
+        ready = false
+        val eng = engine
+        if (eng != null) {
+            try {
+                eng.flushAndWait()
+                fview?.let { eng.destroyView(it) }
+                renderer?.let { eng.destroyRenderer(it) }
+                target?.let { eng.destroyRenderTarget(it) }
+                colorTex?.let { eng.destroyTexture(it) }
+                depthTex?.let { eng.destroyTexture(it) }
+                if (earthEnt != 0) eng.destroyEntity(earthEnt)
+                if (sunEnt != 0) eng.destroyEntity(sunEnt)
+                matInst?.let { eng.destroyMaterialInstance(it) }
+                material?.let { eng.destroyMaterial(it) }
+                albedo?.let { eng.destroyTexture(it) }
+                vb?.let { eng.destroyVertexBuffer(it) }
+                ib?.let { eng.destroyIndexBuffer(it) }
+                ibl?.let { eng.destroyIndirectLight(it) }
+                scene?.let { eng.destroyScene(it) }
+                if (camEnt != 0) eng.destroyCameraComponent(camEnt)
+                swapChain?.let { eng.destroySwapChain(it) }
+                eng.destroy()
+            } catch (t: Throwable) {
+                android.util.Log.w("GnssApp", "Filament atlaisvinimo klaida", t)
+            }
+        }
+        engine = null; renderer = null; scene = null; fview = null; camera = null; swapChain = null
+        material = null; matInst = null; albedo = null; vb = null; ib = null; ibl = null
+        colorTex = null; depthTex = null; target = null
+        earthEnt = 0; sunEnt = 0; camEnt = 0
+        glTex = 0; rtW = 0; rtH = 0; quadProg = 0
+    }
+
+    private fun glProgram(vs: String, fs: String): Int {
+        fun sh(type: Int, src: String): Int {
+            val s = GLES20.glCreateShader(type)
+            GLES20.glShaderSource(s, src)
+            GLES20.glCompileShader(s)
+            return s
+        }
+        val p = GLES20.glCreateProgram()
+        GLES20.glAttachShader(p, sh(GLES20.GL_VERTEX_SHADER, vs))
+        GLES20.glAttachShader(p, sh(GLES20.GL_FRAGMENT_SHADER, fs))
+        GLES20.glLinkProgram(p)
+        return p
+    }
+
+    private companion object {
+        const val QUAD_VS = """
+            attribute vec2 aPos;
+            varying vec2 vUV;
+            void main() {
+                vUV = aPos * 0.5 + 0.5;
+                gl_Position = vec4(aPos, 0.0, 1.0);
+            }
+        """
+        const val QUAD_FS = """
+            precision mediump float;
+            uniform sampler2D uTex;
+            varying vec2 vUV;
+            void main() { gl_FragColor = texture2D(uTex, vUV); }
+        """
+    }
+}
+
 private class GlobeRenderer(private val appCtx: Context, private val density: Float) : GLSurfaceView.Renderer {
 
     @Volatile private var rot = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
@@ -1413,6 +1745,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         sunProg = 0
         glowProg = 0
         buildEarth()
+        filEarth.init(EARTH_R)
         starTex = makeStarTexture()
         sunTex = makeSunTexture()
         sunImgTex = 0
@@ -1742,6 +2075,36 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         earthCount = pos.size / 3
     }
 
+    private val filEarth = FilamentEarth(appCtx)
+
+    /** Žemė per Filament PBR; Saulės šviesa – iš sunDir(). false – jei Filament neprieinamas. */
+    private fun drawEarthFilament(): Boolean {
+        if (!filEarth.ready) return false
+        val vp = IntArray(4)
+        GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, vp, 0)
+        val inv = FloatArray(16)
+        if (!Matrix.invertM(inv, 0, proj, 0)) return false
+        val mvE = FloatArray(16)
+        Matrix.multiplyMM(mvE, 0, inv, 0, earthMvp, 0)        // Žemės modelio-vaizdo matrica
+        val vm = FloatArray(16)
+        Matrix.multiplyMM(vm, 0, inv, 0, mvpI, 0)             // sideralinė erdvė -> vaizdas
+        val sd = sunDir()
+        var lx = (vm[0] * sd[0] + vm[4] * sd[1] + vm[8] * sd[2]).toFloat()
+        var ly = (vm[1] * sd[0] + vm[5] * sd[1] + vm[9] * sd[2]).toFloat()
+        var lz = (vm[2] * sd[0] + vm[6] * sd[1] + vm[10] * sd[2]).toFloat()
+        val ll = kotlin.math.sqrt(lx * lx + ly * ly + lz * lz).coerceAtLeast(1e-6f)
+        lx /= ll; ly /= ll; lz /= ll
+        if (!filEarth.draw(vp[2], vp[3], proj, mvE, floatArrayOf(lx, ly, lz))) return false
+        // Gylis Žemei (tik gylio buferis), kad kiti objektai būtų teisingai uždengti
+        GLES20.glColorMask(false, false, false, false)
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, earthMvp, 0)
+        bindPos(colorProg, earthPos!!)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+        GLES20.glColorMask(true, true, true, true)
+        return true
+    }
+
     /** Žemės sukimasis: GMST + stebėtojo ilguma; ašis rodo į Polaris (pasvirimas = 90° − platuma). */
     private fun drawEarth() {
         if (earthPos == null) return
@@ -1780,7 +2143,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 0.18f, 0.45f, 0.85f, 1f)
             bindPos(colorProg, earthPos!!)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
-        } else {
+        } else if (!drawEarthFilament()) {
             // 3D apšvietimas: saulės šviesa iš viršaus-dešinės, žemynai matomi tekstūroje
             GLES20.glUseProgram(earthProg)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uMVP"), 1, false, earthMvp, 0)

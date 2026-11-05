@@ -1,0 +1,21 @@
+// Žemės PBR medžiaga (Filament). Kompiliuojama workflow'e su matc į app/src/main/assets/earth.filamat
+material {
+    name : EarthPbr,
+    shadingModel : lit,
+    requires : [ uv0 ],
+    flipUV : false,
+    parameters : [
+        { type : sampler2d, name : albedo },
+        { type : float, name : roughness },
+        { type : float, name : metallic }
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = texture(materialParams_albedo, getUV0());
+        material.roughness = materialParams.roughness;
+        material.metallic = materialParams.metallic;
+    }
+}

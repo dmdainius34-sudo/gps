@@ -33,4 +33,5 @@ android {
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.filament:filament-android:${property("filamentVersion")}")
 }

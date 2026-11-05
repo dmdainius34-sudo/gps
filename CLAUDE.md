@@ -15,3 +15,13 @@ Android GNSS programa (`lt.example.gnss`), Kotlin, viena veikla `app/src/main/ja
 - Vienoje iteracijoje – ne daugiau kaip **vienas** workflow paleidimas.
 - Vienoje iteracijoje peržiūrai – ne daugiau kaip **3** nuotraukos.
 - Nekeisk `MainActivity.kt`, jei to aiškiai neprašoma.
+
+## Atsakymų stilius
+
+- Dirbk be ilgų komentarų; visą darbą (kodas, kompiliavimas, testai) atlik tyliai, be tarpinių pranešimų.
+- Galutiniame atsakyme pateik tik:
+  - ar build pavyko;
+  - APK artifact pavadinimą (`app-debug` iš `build.yml`);
+  - vieną eilutę apie pakeitimus.
+- Ekrano kopijų nežiūrėk ir jų nepasakok, nebent tai tiesiogiai paprašyta.
+- Jei build nukrenta – pateik tik klaidos eilutę (`e:` arba `FAILURE`).

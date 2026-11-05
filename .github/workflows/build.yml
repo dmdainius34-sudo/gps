@@ -19,6 +19,9 @@ jobs:
         with:
           gradle-version: 8.9
 
+      - name: Compile Filament materials (matc)
+        run: bash tools/matc.sh
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
 

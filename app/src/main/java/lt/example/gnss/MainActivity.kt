@@ -632,6 +632,7 @@ class BubbleGL(context: Context) : GLSurfaceView(context) {
     }
 
     fun setSignal(avgDb: Float?, peakDb: Float?) = renderer.setSignal(avgDb, peakDb)
+    fun setRecording(on: Boolean) { renderer.recording = on }
 }
 
 private class BubbleRenderer(private val appCtx: Context, private val density: Float) : GLSurfaceView.Renderer {
@@ -639,6 +640,7 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
     @Volatile private var avg: Float? = null
     @Volatile private var peak: Float? = null
     fun setSignal(a: Float?, p: Float?) { avg = a; peak = p }
+    @Volatile var recording = false
 
     private val proj = FloatArray(16)
     private val view = FloatArray(16)
@@ -747,7 +749,14 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
         val metal = floatArrayOf(col[0] * 0.55f + 0.35f, col[1] * 0.55f + 0.35f, col[2] * 0.55f + 0.38f)
         ufoPart(1.0f, 0.26f, 1.0f, 0f, metal, 0.97f)                               // diskas
         ufoPart(0.62f, 0.12f, 0.62f, -0.12f, floatArrayOf(col[0] * 0.5f, col[1] * 0.5f, col[2] * 0.5f), 0.97f) // apačia
-        ufoPart(0.42f, 0.38f, 0.42f, 0.16f, floatArrayOf(0.75f, 0.9f, 1f), 0.6f)   // stiklinis kupolas
+        if (recording) {
+            // Įrašas vyksta: kabina švyti žaliai ir pulsuoja
+            val g = 0.65f + 0.35f * kotlin.math.sin(frame * 0.15).toFloat()
+            ufoPart(0.42f, 0.38f, 0.42f, 0.16f, floatArrayOf(0.15f * g, 1.0f * g, 0.35f * g), 0.9f)
+            ufoPart(0.50f, 0.45f, 0.50f, 0.16f, floatArrayOf(0.2f, 1f, 0.4f), 0.18f * g)   // švytėjimas aplink
+        } else {
+            ufoPart(0.42f, 0.38f, 0.42f, 0.16f, floatArrayOf(0.75f, 0.9f, 1f), 0.6f)   // stiklinis kupolas
+        }
 
         // Lėkštės plokštumos matrica (spinduliui ir žaibams)
         Matrix.setIdentityM(model, 0)
@@ -766,7 +775,8 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
         for (i in 0 until nLights) {
             val a = 2.0 * Math.PI * i / nLights + Math.toRadians(spinDeg.toDouble())
             val on = ultra || ((i - lead + nLights) % nLights) < 3
-            val br = if (on) 1f else 0.35f
+            var br = if (on) 1f else 0.35f
+            if (recording) br = 0.35f + 0.65f * rnd.nextFloat()      // mirguliavimas įrašo metu
             GLES20.glUniform4f(GLES20.glGetUniformLocation(dotProg, "uColor"),
                 (col[0] * 0.5f + 0.5f) * br, (col[1] * 0.5f + 0.5f) * br, (col[2] * 0.5f + 0.5f) * br, 1f)
             bindAttrib(dotProg, "aPos", floatBuf(floatArrayOf(
@@ -2508,6 +2518,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 object OverlayBus {
     @Volatile var avg: Float? = null
     @Volatile var peak: Float? = null
+    @Volatile var recording = false
     @Volatile var onUnpin: (() -> Unit)? = null
 }
 
@@ -2519,6 +2530,7 @@ class BubbleOverlayService : Service() {
     private val pollSignal = object : Runnable {
         override fun run() {
             bubble?.setSignal(OverlayBus.avg, OverlayBus.peak)
+            bubble?.setRecording(OverlayBus.recording)
             handler.postDelayed(this, 300L)
         }
     }
@@ -2920,8 +2932,14 @@ class DraggablePanel(
     }
 
     /** Atgalinis skaičiavimas: CSV renkamas per visą laikmatį, tada dalinamasi. */
+    private fun setRecordingUi(on: Boolean) {
+        bubble.setRecording(on)
+        OverlayBus.recording = on
+    }
+
     private fun startCountdown(secs: Int, done: () -> Unit) {
         counting = true
+        setRecordingUi(true)
         remaining = secs
         rawSecs.isEnabled = false
         shareBtn.isEnabled = false
@@ -2930,6 +2948,7 @@ class DraggablePanel(
             override fun run() {
                 if (remaining <= 0) {
                     counting = false
+                    setRecordingUi(false)
                     rawSecs.isEnabled = true
                     rawSecs.setText(secs.toString())
                     shareBtn.isEnabled = true
@@ -2947,6 +2966,7 @@ class DraggablePanel(
     override fun onDetachedFromWindow() {
         handler.removeCallbacksAndMessages(null)
         counting = false
+        setRecordingUi(false)
         super.onDetachedFromWindow()
     }
 

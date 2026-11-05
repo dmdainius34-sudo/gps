@@ -988,12 +988,12 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private var lastY = 0f
     private val resumeSensors = Runnable { manual = false }
     var onDoubleTapCb: (() -> Unit)? = null
-    private val scaleDet = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-        override fun onScale(d: ScaleGestureDetector): Boolean {
-            renderer.zoomBy(d.scaleFactor)
-            return true
-        }
-    })
+    private var pinchLast = 0f
+    private fun pinchDist(e: MotionEvent): Float {
+        val dx = e.getX(0) - e.getX(1)
+        val dy = e.getY(0) - e.getY(1)
+        return kotlin.math.sqrt(dx * dx + dy * dy)
+    }
     private val gd = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
         override fun onDoubleTap(e: MotionEvent): Boolean { onDoubleTapCb?.invoke(); return true }
@@ -1086,8 +1086,6 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
-        scaleDet.onTouchEvent(e)
-        if (scaleDet.isInProgress) return true
         gd.onTouchEvent(e)
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -1106,24 +1104,21 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (e.pointerCount >= 2) {
-                    // Du pirštai – perkėlimo režimas
+                    // Du pirštai – žiupsnelis (zoom)
                     moveMode = true
-                    lastRawX = (e.getRawX(0) + e.getRawX(1)) / 2f
-                    lastRawY = (e.getRawY(0) + e.getRawY(1)) / 2f
+                    pinchLast = pinchDist(e)
                 }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                if (moveMode && e.pointerCount >= 2) {
-                    val cx = (e.getRawX(0) + e.getRawX(1)) / 2f
-                    val cy = (e.getRawY(0) + e.getRawY(1)) / 2f
-                    onMove?.invoke(cx - lastRawX, cy - lastRawY)
-                    lastRawX = cx
-                    lastRawY = cy
+                if (e.pointerCount >= 2) {
+                    val d = pinchDist(e)
+                    if (pinchLast > 1f && d > 1f) renderer.zoomBy(d / pinchLast)
+                    pinchLast = d
                 } else if (!moveMode) {
                     // Vienas pirštas – sukimas aplink savo ašį
                     yawD -= (e.x - lastX) * 0.4f
-                    pitchD = (pitchD + (e.y - lastY) * 0.4f).coerceIn(-85f, 85f)
+                    pitchD = (pitchD - (e.y - lastY) * 0.4f).coerceIn(-85f, 85f)
                     renderer.setRotation(composeManual())
                 }
                 lastX = e.x
@@ -1134,6 +1129,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                 // Lieka vienas pirštas – tęsiame sukimą be šuolio
                 val remaining = if (e.actionIndex == 0) 1 else 0
                 moveMode = false
+                pinchLast = 0f
                 if (remaining < e.pointerCount) {
                     lastX = e.getX(remaining)
                     lastY = e.getY(remaining)

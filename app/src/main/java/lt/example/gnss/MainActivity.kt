@@ -1351,7 +1351,12 @@ private class FilamentEarth(private val appCtx: Context) {
     private var rtH = 0
     private var vpW = 0
     private var vpH = 0
-    private var pix: ByteBuffer? = null
+    // Du buferiai: readPixels užpildo juos asinchroniškai (kai GPU baigia), todėl naudojamas atgalinis iškvietimas
+    private var pix: Array<ByteBuffer>? = null
+    private val pixPending = arrayOf(java.util.concurrent.atomic.AtomicBoolean(false), java.util.concurrent.atomic.AtomicBoolean(false))
+    private val pixReady = java.util.concurrent.atomic.AtomicInteger(-1)
+    private var pixFrame = 0
+    private val directExec = java.util.concurrent.Executor { it.run() }
     private var dbgFrames = 0
     private var quadProg = 0
     private val quad: FloatBuffer = ByteBuffer.allocateDirect(12 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
@@ -1525,7 +1530,8 @@ private class FilamentEarth(private val appCtx: Context) {
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, rw, rh, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
-        pix = ByteBuffer.allocateDirect(rw * rh * 4).order(ByteOrder.nativeOrder())
+        pix = Array(2) { ByteBuffer.allocateDirect(rw * rh * 4).order(ByteOrder.nativeOrder()) }
+        pixPending[0].set(false); pixPending[1].set(false); pixReady.set(-1)
         colorTex = FTexture.Builder().width(rw).height(rh).levels(1)
             .sampler(FTexture.Sampler.SAMPLER_2D).format(FTexture.InternalFormat.RGBA8)
             .usage(FTexture.Usage.COLOR_ATTACHMENT or FTexture.Usage.SAMPLEABLE or FTexture.Usage.BLIT_SRC)
@@ -1561,35 +1567,49 @@ private class FilamentEarth(private val appCtx: Context) {
             val lm = eng.lightManager
             lm.setDirection(lm.getInstance(sunEnt), -lightView[0], -lightView[1], -lightView[2])
             val r = renderer!!
-            val buf = pix!!
-            buf.position(0)
-            val began = r.beginFrame(swapChain!!, System.nanoTime())
-            if (began) {
+            val bufs = pix!!
+            // 1) Įkelti paskutinį jau paruoštą kadrą
+            val ready = pixReady.getAndSet(-1)
+            if (ready >= 0) {
+                val buf = bufs[ready]
+                buf.position(0)
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, glTex)
+                GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, rtW, rtH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+                if (dbgFrames < 3) {
+                    dbgFrames++
+                    var n = 0; var opaque = 0; var sr = 0L; var sg = 0L; var sb = 0L
+                    var i = 0
+                    while (i + 3 < buf.capacity()) {
+                        n++
+                        val a = buf.get(i + 3).toInt() and 0xFF
+                        if (a > 128) {
+                            opaque++
+                            sr += buf.get(i).toInt() and 0xFF; sg += buf.get(i + 1).toInt() and 0xFF; sb += buf.get(i + 2).toInt() and 0xFF
+                        }
+                        i += 64
+                    }
+                    val k = opaque.coerceAtLeast(1)
+                    android.util.Log.i("GnssApp", "Filament kadras ${rtW}x$rtH: nepermatomi $opaque/$n, vid. RGB ${sr / k},${sg / k},${sb / k}, palydovų ${satObjs.size}")
+                }
+            }
+            // 2) Nupiešti naują kadrą ir užsakyti jo nuskaitymą į laisvą buferį
+            if (r.beginFrame(swapChain!!, System.nanoTime())) {
                 r.render(fview!!)
-                r.readPixels(target!!, 0, 0, rtW, rtH, com.google.android.filament.Texture.PixelBufferDescriptor(
-                    buf, com.google.android.filament.Texture.Format.RGBA, com.google.android.filament.Texture.Type.UBYTE))
+                val idx = pixFrame % 2
+                if (pixPending[idx].compareAndSet(false, true)) {
+                    pixFrame++
+                    val buf = bufs[idx]
+                    buf.position(0)
+                    r.readPixels(target!!, 0, 0, rtW, rtH, com.google.android.filament.Texture.PixelBufferDescriptor(
+                        buf, com.google.android.filament.Texture.Format.RGBA, com.google.android.filament.Texture.Type.UBYTE,
+                        1, 0, 0, rtW, directExec, Runnable {
+                            pixPending[idx].set(false)
+                            pixReady.set(idx)
+                        }))
+                }
                 r.endFrame()
             }
             eng.flushAndWait()
-            buf.position(0)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, glTex)
-            GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, rtW, rtH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
-            if (dbgFrames < 3 && began) {
-                dbgFrames++
-                var n = 0; var opaque = 0; var sr = 0L; var sg = 0L; var sb = 0L
-                var i = 0
-                while (i + 3 < buf.capacity()) {
-                    n++
-                    val a = buf.get(i + 3).toInt() and 0xFF
-                    if (a > 128) {
-                        opaque++
-                        sr += buf.get(i).toInt() and 0xFF; sg += buf.get(i + 1).toInt() and 0xFF; sb += buf.get(i + 2).toInt() and 0xFF
-                    }
-                    i += 64
-                }
-                val k = opaque.coerceAtLeast(1)
-                android.util.Log.i("GnssApp", "Filament kadras ${rtW}x$rtH: nepermatomi $opaque/$n, vid. RGB ${sr / k},${sg / k},${sb / k}, palydovų ${satObjs.size}")
-            }
         } catch (t: Throwable) {
             android.util.Log.e("GnssApp", "Filament kadro klaida – grįžtama prie GL", t)
             release()

@@ -617,7 +617,7 @@ class BubbleView(context: Context) : View(context) {
 private class GlBolt(val xy: FloatArray, var life: Int)
 private class GlDust(var x: Float, var y: Float, val vx: Float, val vy: Float, var life: Int)
 
-/** Permatomas 3D burbulas: šviesa, spalva pagal signalą, ULTRA kibirkštys, silpno signalo kaukolė. */
+/** Permatomas 3D burbulas: šviesa, spalva pagal signalą, ULTRA kibirkštys, silpno signalo ateivis po atsidariusiu liuku. */
 class BubbleGL(context: Context) : GLSurfaceView(context) {
     private val renderer = BubbleRenderer(context.applicationContext, resources.displayMetrics.density)
 
@@ -652,12 +652,11 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
     private var sphereProg = 0
     private var flatProg = 0
     private var dotProg = 0
-    private var texProg = 0
-    private var texId = 0
     private var sphereBuf: FloatBuffer? = null
     private var sphereCount = 0
-    private var quadPos: FloatBuffer? = null
-    private var quadUv: FloatBuffer? = null
+
+    /** Kabinos liuko atidarymo laipsnis: 0 – uždarytas, 1 – visiškai atidarytas. */
+    private var hatchOpen = 0f
 
     private val bolts = ArrayList<GlBolt>()
     private val dust = ArrayList<GlDust>()
@@ -673,28 +672,10 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
         sphereProg = program(SPHERE_VS, SPHERE_FS)
         flatProg = program(FLAT_VS, FLAT_FS)
         dotProg = program(FLAT_VS, DOT_FS)
-        texProg = program(TEX_VS, TEX_FS)
 
         val sph = buildSphere(24, 32)
         sphereCount = sph.size / 3
         sphereBuf = floatBuf(sph)
-
-        quadPos = floatBuf(floatArrayOf(
-            -0.9f, -0.9f, 1.0f,  0.9f, -0.9f, 1.0f,
-            -0.9f,  0.9f, 1.0f,  0.9f,  0.9f, 1.0f))
-        quadUv = floatBuf(floatArrayOf(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f))
-
-        val ids = IntArray(1)
-        GLES20.glGenTextures(1, ids, 0)
-        texId = ids[0]
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-        val bmp = skullBitmap()
-        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
-        bmp.recycle()
     }
 
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
@@ -730,11 +711,31 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
         val ang = frame * 0.02
         spinAcc = (spinAcc + if (ultra) 2.8f else 1.2f) % 360f            // ULTRA – sukasi greičiau
         val spinDeg = spinAcc
-        fun ufoPart(sx: Float, sy: Float, sz: Float, ty: Float, c: FloatArray, alpha: Float) {
+
+        // Liukas: silpnas signalas -> lėtai atsidaro, signalas atsistato -> užsidaro
+        val hatchTarget = if (weak) 1f else 0f
+        hatchOpen += (hatchTarget - hatchOpen).coerceIn(-HATCH_STEP, HATCH_STEP)
+        val hOpen = hatchOpen * hatchOpen * (3f - 2f * hatchOpen)          // smoothstep – minkštas judesys
+
+        /**
+         * Viena lėkštės dalis (elipsoidas).
+         * [spin] – ar sukasi kartu su lėkšte; [lift]/[hingeZ]/[tilt] – pakėlimas ir pasukimas apie vyrį (liukui),
+         * [dx]/[dz] – poslinkis lėkštės plokštumoje (pvz., akims).
+         */
+        fun part(sx: Float, sy: Float, sz: Float, ty: Float, c: FloatArray, alpha: Float,
+                 spin: Boolean = true, lift: Float = 0f, hingeZ: Float = 0f, tilt: Float = 0f,
+                 dx: Float = 0f, dz: Float = 0f) {
             Matrix.setIdentityM(model, 0)
-            Matrix.translateM(model, 0, 0f, hover + ty, 0f)
+            Matrix.translateM(model, 0, 0f, hover, 0f)
             Matrix.rotateM(model, 0, 22f, 1f, 0f, 0f)                     // pakreipta į žiūrovą
-            Matrix.rotateM(model, 0, spinDeg, 0f, 1f, 0f)
+            if (spin) Matrix.rotateM(model, 0, spinDeg, 0f, 1f, 0f)
+            Matrix.translateM(model, 0, dx * pulse, (ty + lift) * pulse, dz * pulse)
+            if (tilt != 0f) {
+                // Vyris ties užpakaliniu kraštu (toliau nuo žiūrovo): priekinis kraštas kyla aukštyn
+                Matrix.translateM(model, 0, 0f, 0f, hingeZ * pulse)
+                Matrix.rotateM(model, 0, -tilt, 1f, 0f, 0f)
+                Matrix.translateM(model, 0, 0f, 0f, -hingeZ * pulse)
+            }
             Matrix.scaleM(model, 0, sx * pulse, sy * pulse, sz * pulse)
             Matrix.multiplyMM(mvp, 0, vp, 0, model, 0)
             GLES20.glUseProgram(sphereProg)
@@ -747,8 +748,29 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
             GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, sphereCount)
         }
         val metal = floatArrayOf(col[0] * 0.2f + 0.62f, col[1] * 0.2f + 0.64f, col[2] * 0.2f + 0.68f)
-        ufoPart(1.0f, 0.26f, 1.0f, 0f, metal, 0.97f)                               // diskas
-        ufoPart(0.62f, 0.12f, 0.62f, -0.12f, floatArrayOf(col[0] * 0.5f, col[1] * 0.5f, col[2] * 0.5f), 0.97f) // apačia
+        part(1.0f, 0.26f, 1.0f, 0f, metal, 0.97f)                                  // diskas
+        part(0.62f, 0.12f, 0.62f, -0.12f, floatArrayOf(col[0] * 0.5f, col[1] * 0.5f, col[2] * 0.5f), 0.97f) // apačia
+
+        // Ateivis kabinoje (nepermatomas – piešiamas prieš stiklinį kupolą)
+        if (hOpen > 0.01f) {
+            val bob = 0.03f * kotlin.math.sin(frame * 0.035).toFloat()      // lėtas pliūpsnis aukštyn-žemyn
+            val bodyY = 0.14f + (0.12f + bob) * hOpen                        // iškyla, kai liukas atsidaro
+            val headY = bodyY + 0.17f
+            val green = floatArrayOf(0.25f, 0.85f, 0.30f)
+            val black = floatArrayOf(0.04f, 0.04f, 0.05f)
+            val eye = floatArrayOf(0.35f, 1.0f, 0.40f)
+            part(0.15f, 0.14f, 0.15f, bodyY, green, 1f, spin = false)          // žalias kūnas
+            part(0.13f, 0.12f, 0.12f, headY, black, 1f, spin = false)          // juoda galva
+            part(0.035f, 0.045f, 0.02f, headY + 0.01f, eye, 1f, spin = false, dx = -0.055f, dz = 0.105f) // kairė akis
+            part(0.035f, 0.045f, 0.02f, headY + 0.01f, eye, 1f, spin = false, dx = 0.055f, dz = 0.105f)  // dešinė akis
+        }
+
+        // Stiklinis kupolas – kabinos liukas: pakyla ir pasvyra apie užpakalinį kraštą
+        val domeLift = 0.10f * hOpen
+        val domeTilt = 65f * hOpen
+        val domeHinge = -0.42f
+        val domeSpin = hOpen < 0.001f                                       // atidarytas liukas nesisuka su lėkšte
+        GLES20.glDepthMask(false)                                           // stiklas neuždengia ateivio gylio buferyje
         if (recording) {
             // Įrašas vyksta: tik stiklinė kabina švyti, spalva plaukia mėlyna ↔ žalia
             val k = 0.5f + 0.5f * kotlin.math.sin(frame * 0.08).toFloat()
@@ -757,10 +779,13 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
                 (0.15f * k + 0.15f * (1 - k)) * glow,
                 (1.0f * k + 0.55f * (1 - k)) * glow,
                 (0.35f * k + 1.0f * (1 - k)) * glow)
-            ufoPart(0.42f, 0.38f, 0.42f, 0.16f, cab, 0.85f)
+            part(0.42f, 0.38f, 0.42f, 0.16f, cab, 0.85f,
+                spin = domeSpin, lift = domeLift, hingeZ = domeHinge, tilt = domeTilt)
         } else {
-            ufoPart(0.42f, 0.38f, 0.42f, 0.16f, floatArrayOf(0.75f, 0.9f, 1f), 0.6f)   // stiklinis kupolas
+            part(0.42f, 0.38f, 0.42f, 0.16f, floatArrayOf(0.75f, 0.9f, 1f), 0.6f,
+                spin = domeSpin, lift = domeLift, hingeZ = domeHinge, tilt = domeTilt)   // stiklinis kupolas
         }
+        GLES20.glDepthMask(true)
 
         // Lėkštės plokštumos matrica (spinduliui ir žaibams)
         Matrix.setIdentityM(model, 0)
@@ -794,17 +819,8 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
             drawBoltStrips(2f * density, floatArrayOf(1f, 1f, 1f, 1f))
         }
 
-        // 3) Silpnas signalas: kaukolė (tekstūra) ir išsisklaidančios dulkės
+        // 3) Silpnas signalas: išsisklaidančios dulkės (ateivis po liuku – aukščiau)
         if (weak) {
-            GLES20.glUseProgram(texProg)
-            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(texProg, "uMVP"), 1, false, vp, 0)
-            bindAttrib(texProg, "aPos", quadPos!!, 3)
-            bindAttrib(texProg, "aUV", quadUv!!, 2)
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId)
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(texProg, "uTex"), 0)
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-
             GLES20.glUseProgram(dotProg)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(dotProg, "uMVP"), 1, false, vp, 0)
             GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), 10f * density)
@@ -941,27 +957,6 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
         return out.toFloatArray()
     }
 
-    private fun skullBitmap(): Bitmap {
-        val bmp = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        val p = Paint(Paint.ANTI_ALIAS_FLAG)
-        val r = 100f; val cx = 128f; val cy = 128f
-        p.color = 0xFF111827.toInt()
-        c.drawCircle(cx - r * 0.42f, cy + r * 0.05f, r * 0.42f, p)
-        c.drawCircle(cx + r * 0.42f, cy + r * 0.05f, r * 0.42f, p)
-        c.drawCircle(cx, cy - r * 0.18f, r * 0.55f, p)
-        c.drawCircle(cx - r * 0.22f, cy + r * 0.32f, r * 0.38f, p)
-        c.drawCircle(cx + r * 0.22f, cy + r * 0.32f, r * 0.38f, p)
-        c.drawRect(cx - r * 0.5f, cy + r * 0.05f, cx + r * 0.5f, cy + r * 0.36f, p)
-        p.color = 0xFFE5E7EB.toInt()
-        c.drawCircle(cx - r * 0.22f, cy - r * 0.02f, r * 0.16f, p)
-        c.drawCircle(cx + r * 0.22f, cy - r * 0.02f, r * 0.16f, p)
-        p.color = 0xFF111827.toInt()
-        c.drawRect(cx - r * 0.2f, cy + r * 0.2f, cx + r * 0.2f, cy + r * 0.24f, p)
-        c.drawRect(cx - r * 0.05f, cy + r * 0.2f, cx + r * 0.05f, cy + r * 0.34f, p)
-        return bmp
-    }
-
     private fun program(vs: String, fs: String): Int {
         val v = compile(GLES20.GL_VERTEX_SHADER, vs)
         val f = compile(GLES20.GL_FRAGMENT_SHADER, fs)
@@ -1023,19 +1018,7 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
                 gl_FragColor = uColor;
             }
         """
-        private const val TEX_VS = """
-            attribute vec3 aPos;
-            attribute vec2 aUV;
-            uniform mat4 uMVP;
-            varying vec2 vUV;
-            void main() { gl_Position = uMVP * vec4(aPos, 1.0); vUV = aUV; }
-        """
-        private const val TEX_FS = """
-            precision mediump float;
-            uniform sampler2D uTex;
-            varying vec2 vUV;
-            void main() { gl_FragColor = texture2D(uTex, vUV); }
-        """
+        private const val HATCH_STEP = 0.02f                              // ~50 kadrų liukui atsidaryti
     }
 }
 

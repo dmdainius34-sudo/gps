@@ -1349,6 +1349,10 @@ private class FilamentEarth(private val appCtx: Context) {
     private var glTex = 0
     private var rtW = 0
     private var rtH = 0
+    private var vpW = 0
+    private var vpH = 0
+    private var pix: ByteBuffer? = null
+    private var dbgFrames = 0
     private var quadProg = 0
     private val quad: FloatBuffer = ByteBuffer.allocateDirect(12 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
         .apply { put(floatArrayOf(-1f, -1f, 1f, -1f, 1f, 1f, -1f, -1f, 1f, 1f, -1f, 1f)); position(0) }
@@ -1364,7 +1368,8 @@ private class FilamentEarth(private val appCtx: Context) {
                 return
             }
             com.google.android.filament.Filament.init()
-            val eng = com.google.android.filament.Engine.create(android.opengl.EGL14.eglGetCurrentContext())
+            // Atskiras Filament kontekstas (be bendro EGL konteksto); kadras perkeliamas per readPixels
+            val eng = com.google.android.filament.Engine.create()
             engine = eng
             renderer = eng.createRenderer().apply {
                 setClearOptions(com.google.android.filament.Renderer.ClearOptions().apply {
@@ -1502,11 +1507,14 @@ private class FilamentEarth(private val appCtx: Context) {
     }
 
     private fun ensureTarget(eng: com.google.android.filament.Engine, w: Int, h: Int) {
-        if (target != null && w == rtW && h == rtH) return
+        if (target != null && w == vpW && h == vpH) return
         target?.let { eng.destroyRenderTarget(it) }
         colorTex?.let { eng.destroyTexture(it) }
         depthTex?.let { eng.destroyTexture(it) }
         if (glTex != 0) GLES20.glDeleteTextures(1, intArrayOf(glTex), 0)
+        // Pusė ekrano raiškos – mažiau duomenų perkelti kiekvieną kadrą
+        val rw = max(1, w / 2)
+        val rh = max(1, h / 2)
         val ids = IntArray(1)
         GLES20.glGenTextures(1, ids, 0)
         glTex = ids[0]
@@ -1515,14 +1523,13 @@ private class FilamentEarth(private val appCtx: Context) {
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
-        GLES20.glFinish()
-        colorTex = FTexture.Builder().width(w).height(h).levels(1)
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, rw, rh, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+        pix = ByteBuffer.allocateDirect(rw * rh * 4).order(ByteOrder.nativeOrder())
+        colorTex = FTexture.Builder().width(rw).height(rh).levels(1)
             .sampler(FTexture.Sampler.SAMPLER_2D).format(FTexture.InternalFormat.RGBA8)
-            .usage(FTexture.Usage.COLOR_ATTACHMENT or FTexture.Usage.SAMPLEABLE)
-            .importTexture(glTex.toLong())
+            .usage(FTexture.Usage.COLOR_ATTACHMENT or FTexture.Usage.SAMPLEABLE or FTexture.Usage.BLIT_SRC)
             .build(eng)
-        depthTex = FTexture.Builder().width(w).height(h).levels(1)
+        depthTex = FTexture.Builder().width(rw).height(rh).levels(1)
             .sampler(FTexture.Sampler.SAMPLER_2D).format(FTexture.InternalFormat.DEPTH24)
             .usage(FTexture.Usage.DEPTH_ATTACHMENT)
             .build(eng)
@@ -1531,8 +1538,8 @@ private class FilamentEarth(private val appCtx: Context) {
             .texture(com.google.android.filament.RenderTarget.AttachmentPoint.DEPTH, depthTex)
             .build(eng)
         fview!!.setRenderTarget(target)
-        fview!!.setViewport(com.google.android.filament.Viewport(0, 0, w, h))
-        rtW = w; rtH = h
+        fview!!.setViewport(com.google.android.filament.Viewport(0, 0, rw, rh))
+        rtW = rw; rtH = rh; vpW = w; vpH = h
     }
 
     /**
@@ -1552,13 +1559,36 @@ private class FilamentEarth(private val appCtx: Context) {
             tm.setTransform(tm.getInstance(earthEnt), modelView)
             val lm = eng.lightManager
             lm.setDirection(lm.getInstance(sunEnt), -lightView[0], -lightView[1], -lightView[2])
-            GLES20.glFlush()
             val r = renderer!!
-            if (r.beginFrame(swapChain!!, System.nanoTime())) {
+            val buf = pix!!
+            buf.position(0)
+            val began = r.beginFrame(swapChain!!, System.nanoTime())
+            if (began) {
                 r.render(fview!!)
+                r.readPixels(target!!, 0, 0, rtW, rtH, com.google.android.filament.Texture.PixelBufferDescriptor(
+                    buf, com.google.android.filament.Texture.Format.RGBA, com.google.android.filament.Texture.Type.UBYTE))
                 r.endFrame()
             }
             eng.flushAndWait()
+            buf.position(0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, glTex)
+            GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, rtW, rtH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+            if (dbgFrames < 3 && began) {
+                dbgFrames++
+                var n = 0; var opaque = 0; var sr = 0L; var sg = 0L; var sb = 0L
+                var i = 0
+                while (i + 3 < buf.capacity()) {
+                    n++
+                    val a = buf.get(i + 3).toInt() and 0xFF
+                    if (a > 128) {
+                        opaque++
+                        sr += buf.get(i).toInt() and 0xFF; sg += buf.get(i + 1).toInt() and 0xFF; sb += buf.get(i + 2).toInt() and 0xFF
+                    }
+                    i += 64
+                }
+                val k = opaque.coerceAtLeast(1)
+                android.util.Log.i("GnssApp", "Filament kadras ${rtW}x$rtH: nepermatomi $opaque/$n, vid. RGB ${sr / k},${sg / k},${sb / k}, palydovų ${satObjs.size}")
+            }
         } catch (t: Throwable) {
             android.util.Log.e("GnssApp", "Filament kadro klaida – grįžtama prie GL", t)
             release()
@@ -1803,7 +1833,7 @@ private class FilamentEarth(private val appCtx: Context) {
         material = null; matInst = null; albedo = null; vb = null; ib = null; ibl = null
         colorTex = null; depthTex = null; target = null
         earthEnt = 0; sunEnt = 0; camEnt = 0
-        glTex = 0; rtW = 0; rtH = 0; quadProg = 0
+        glTex = 0; rtW = 0; rtH = 0; vpW = 0; vpH = 0; pix = null; dbgFrames = 0; quadProg = 0
     }
 
     private fun glProgram(vs: String, fs: String): Int {
@@ -1917,7 +1947,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     // ---------------- PALYDOVŲ TRAJEKTORIJOS (paskutinės 2 min, taškas kas sekundę) ----------------
-    private val satSize = 0.06f
+    private val satSize = 0.10f
     private val trailWindowMs = 120_000L
     private class TrailPt(val t: Long, val p: FloatArray)
     private val trails = HashMap<String, ArrayDeque<TrailPt>>()

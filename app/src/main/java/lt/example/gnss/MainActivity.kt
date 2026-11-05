@@ -1554,11 +1554,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             billboard(c, eye, if (card) 0.18f else 0.09f, if (card) 0.09f else 0.045f, tex, col[0], col[1], col[2], 1f)
         }
 
-        // 5b) Ryškios žvaigždės (tik virš horizonto)
-        drawStars(eye)
-
         // 6) Palydovai: geras signalas žybsi kaip žvaigždės
         System.arraycopy(mvpI, 0, mvp, 0, 16)
+
+        // Žvaigždės, Oriono linijos, dangaus pusiaujas ir ekliptika (I erdvė, tik virš horizonto)
+        drawSky()
 
         // Saulė tikroje dangaus kryptyje nuo stebėtojo (švytintis diskas)
         run {
@@ -1598,45 +1598,100 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 
-    // ---------------- ŽVAIGŽDŽIŲ KATALOGAS ----------------
-    /** RA (val.), Dec (laipsn.), dydis, spalva. J2000. */
-    private class StarCat(val name: String, val raH: Double, val decDeg: Double, val size: Float, val rgb: FloatArray)
+    // ---------------- ŽVAIGŽDŽIŲ KATALOGAS, PUSIAUJAS, EKLIPTIKA ----------------
+    /** RA (val.), Dec (laipsn.), regimasis ryškis, spalva. J2000. */
+    private class StarCat(val name: String, val raH: Double, val decDeg: Double, val mag: Float, val rgb: FloatArray) {
+        val dir: FloatArray = run {
+            val ra = Math.toRadians(raH * 15.0)
+            val dec = Math.toRadians(decDeg)
+            floatArrayOf((cos(dec) * cos(ra)).toFloat(), (cos(dec) * sin(ra)).toFloat(), sin(dec).toFloat())
+        }
+    }
 
+    private val skyR = 1.5
     private val starCatalog = listOf(
-        StarCat("Polaris", hms(2, 31, 49.0), dms(89, 15, 51.0), 0.045f, floatArrayOf(1f, 0.97f, 0.85f)),
-        StarCat("Betelgeuse", hms(5, 55, 10.3), dms(7, 24, 25.0), 0.05f, floatArrayOf(1f, 0.6f, 0.35f)),
-        StarCat("Rigel", hms(5, 14, 32.3), -dms(8, 12, 6.0), 0.05f, floatArrayOf(0.75f, 0.85f, 1f)),
-        StarCat("Bellatrix", hms(5, 25, 7.9), dms(6, 20, 59.0), 0.038f, floatArrayOf(0.8f, 0.88f, 1f)),
-        StarCat("Alnitak", hms(5, 40, 45.5), -dms(1, 56, 34.0), 0.038f, floatArrayOf(0.8f, 0.88f, 1f)),
-        StarCat("Alnilam", hms(5, 36, 12.8), -dms(1, 12, 7.0), 0.038f, floatArrayOf(0.8f, 0.88f, 1f)),
-        StarCat("Mintaka", hms(5, 32, 0.4), -dms(0, 17, 57.0), 0.036f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Polaris", hms(2, 31, 49.0), dms(89, 15, 51.0), 1.98f, floatArrayOf(1f, 0.97f, 0.85f)),
+        StarCat("Betelgeuse", hms(5, 55, 10.3), dms(7, 24, 25.0), 0.50f, floatArrayOf(1f, 0.6f, 0.35f)),
+        StarCat("Bellatrix", hms(5, 25, 7.9), dms(6, 20, 59.0), 1.64f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Mintaka", hms(5, 32, 0.4), -dms(0, 17, 57.0), 2.23f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Alnilam", hms(5, 36, 12.8), -dms(1, 12, 7.0), 1.69f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Alnitak", hms(5, 40, 45.5), -dms(1, 56, 34.0), 1.77f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Saiph", hms(5, 47, 45.4), -dms(9, 40, 11.0), 2.06f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Rigel", hms(5, 14, 32.3), -dms(8, 12, 6.0), 0.13f, floatArrayOf(0.75f, 0.85f, 1f)),
     )
+    private val orionLines = listOf(
+        "Betelgeuse" to "Bellatrix", "Bellatrix" to "Mintaka", "Mintaka" to "Alnilam", "Alnilam" to "Alnitak",
+        "Alnitak" to "Saiph", "Saiph" to "Rigel", "Rigel" to "Mintaka", "Betelgeuse" to "Alnitak")
 
     private fun hms(h: Int, m: Int, s: Double) = h + m / 60.0 + s / 3600.0
     private fun dms(d: Int, m: Int, s: Double) = d + m / 60.0 + s / 3600.0
 
-    /** Kiekvieną kadrą: azimutas ir aukštis pagal GMST (fG) ir stebėtojo platumą/ilgumą; rodoma tik kai aukštis > 0. */
-    private fun drawStars(eye: FloatArray) {
+    /** Taškas I erdvėje: fP + dir × skyR. */
+    private fun skyPt(d: FloatArray) = floatArrayOf(
+        (fP[0] + d[0] * skyR).toFloat(), (fP[1] + d[1] * skyR).toFloat(), (fP[2] + d[2] * skyR).toFloat())
+
+    /** Aukštis > 0: taško kryptis nuo stebėtojo (fP) turi teigiamą projekciją į zenitą fU. */
+    private fun aboveHorizon(p: FloatArray): Boolean =
+        (p[0] - fP[0]) * fU[0] + (p[1] - fP[1]) * fU[1] + (p[2] - fP[2]) * fU[2] > 0.0
+
+    /** Segmentai tarp gretimų taškų, abu virš horizonto. */
+    private fun visibleSegments(pts: List<FloatArray>, closed: Boolean): FloatArray {
+        val out = ArrayList<Float>()
+        val n = if (closed) pts.size else pts.size - 1
+        for (i in 0 until n) {
+            val a = pts[i]; val b = pts[(i + 1) % pts.size]
+            if (!aboveHorizon(a) || !aboveHorizon(b)) continue
+            out.add(a[0]); out.add(a[1]); out.add(a[2]); out.add(b[0]); out.add(b[1]); out.add(b[2])
+        }
+        return out.toFloatArray()
+    }
+
+    private fun drawLines(seg: FloatArray, r: Float, g: Float, b: Float, a: Float) {
+        if (seg.isEmpty()) return
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), r, g, b, a)
+        bindPos(colorProg, floatBuf(seg))
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, seg.size / 3)
+    }
+
+    private fun drawSky() {
+        // Dangaus pusiaujas (Dec = 0) ir ekliptika (eclToEq(lon, 0)), spindulys 1,5
+        val nRing = 180
+        val eq = ArrayList<FloatArray>(nRing)
+        val ecl = ArrayList<FloatArray>(nRing)
+        for (i in 0 until nRing) {
+            val a = 2.0 * Math.PI * i / nRing
+            eq.add(skyPt(floatArrayOf(cos(a).toFloat(), sin(a).toFloat(), 0f)))
+            val e = eclToEq(a, 0.0)
+            ecl.add(skyPt(floatArrayOf(e[0].toFloat(), e[1].toFloat(), e[2].toFloat())))
+        }
+        GLES20.glLineWidth(1.5f * density)
+        drawLines(visibleSegments(eq, true), 0.55f, 0.85f, 1f, 0.55f)
+        drawLines(visibleSegments(ecl, true), 1f, 0.82f, 0.3f, 0.55f)
+
+        // Oriono linijos
+        val pos = HashMap<String, FloatArray>()
+        for (st in starCatalog) pos[st.name] = skyPt(st.dir)
+        val seg = ArrayList<Float>()
+        for ((a, b) in orionLines) {
+            val pa = pos[a] ?: continue; val pb = pos[b] ?: continue
+            if (!aboveHorizon(pa) || !aboveHorizon(pb)) continue
+            seg.add(pa[0]); seg.add(pa[1]); seg.add(pa[2]); seg.add(pb[0]); seg.add(pb[1]); seg.add(pb[2])
+        }
+        drawLines(seg.toFloatArray(), 0.7f, 0.8f, 1f, 0.5f)
+        GLES20.glLineWidth(1f)
+
+        // Žvaigždės: dydis ir ryškumas pagal regimąjį ryškį (mažesnis – ryškesnė)
         if (starTex == 0) return
-        val lst = fG + Math.toRadians(obsLon)                 // vietinis žvaigždinis laikas
-        val phi = Math.toRadians(obsLat)
-        val sp = sin(phi); val cp = cos(phi)
         for (st in starCatalog) {
-            val ra = Math.toRadians(st.raH * 15.0)
-            val dec = Math.toRadians(st.decDeg)
-            val ha = lst - ra                                   // valandinis kampas
-            val sd = sin(dec); val cd = cos(dec)
-            val sinAlt = sp * sd + cp * cd * cos(ha)
-            val alt = kotlin.math.asin(sinAlt.coerceIn(-1.0, 1.0))
-            if (alt <= 0.0) continue
-            val az = kotlin.math.atan2(-cd * sin(ha), sd * cp - cd * cos(ha) * sp)   // nuo šiaurės į rytus
-            val r = 0.985
-            val c = floatArrayOf(
-                (r * cos(alt) * sin(az)).toFloat(),
-                (r * cos(alt) * cos(az)).toFloat(),
-                (r * sinAlt).toFloat())
-            billboard(c, eye, st.size, st.size, starTex, st.rgb[0], st.rgb[1], st.rgb[2], 0.95f)
-            billboard(c, eye, st.size * 0.45f, st.size * 0.45f, starTex, 1f, 1f, 1f, 0.95f)
+            val p = pos[st.name]!!
+            if (!aboveHorizon(p)) continue
+            val k = ((2.5f - st.mag) / 2.4f).coerceIn(0f, 1f)          // 0..1
+            val size = 0.035f + 0.05f * k
+            val alpha = 0.55f + 0.45f * k
+            billboard(p, eyeI, size, size, starTex, st.rgb[0], st.rgb[1], st.rgb[2], alpha)
+            billboard(p, eyeI, size * 0.45f, size * 0.45f, starTex, 1f, 1f, 1f, alpha)
         }
     }
 

@@ -2719,6 +2719,40 @@ class DraggablePanel(
         adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, envOptions)
         minimumHeight = (44 * resources.displayMetrics.density).toInt()
     }
+    // Etaloninės (žinomos) vertės – išsaugomos, kad nereikėtų kas kartą rašyti iš naujo
+    private val refPrefs = context.getSharedPreferences("known_ref", Context.MODE_PRIVATE)
+    private fun refField(hintText: String, key: String, type: Int) = EditText(context).apply {
+        hint = hintText
+        textSize = 14f
+        setSingleLine()
+        inputType = type
+        setText(refPrefs.getString(key, ""))
+        addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                refPrefs.edit().putString(key, s?.toString() ?: "").apply()
+            }
+        })
+    }
+    private val numType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
+    private val aglInput = refField("Žinomas aukštis virš žemės, m", "agl", numType)
+    private val mslInput = refField("Žinomas aukštis virš jūros, m", "msl", numType)
+    private val coordInput = refField("Žinomos koordinatės: platuma, ilguma", "coord", InputType.TYPE_CLASS_TEXT)
+
+    private fun num(e: EditText): Double? = e.text.toString().trim().replace(',', '.').toDoubleOrNull()
+    val knownAgl: Double? get() = num(aglInput)
+    val knownMsl: Double? get() = num(mslInput)
+    /** Koordinatės „54.7399, 25.2546“ (leidžiamas tarpas, kabliataškis arba kablelis tarp skaičių). */
+    val knownLatLon: Pair<Double, Double>? get() {
+        val parts = coordInput.text.toString().trim().split(Regex("[;\\s]+|,\\s+"))
+            .map { it.trim().replace(',', '.') }.filter { it.isNotEmpty() }
+        if (parts.size < 2) return null
+        val la = parts[0].toDoubleOrNull() ?: return null
+        val lo = parts[1].toDoubleOrNull() ?: return null
+        return if (la in -90.0..90.0 && lo in -180.0..180.0) la to lo else null
+    }
+
     /** Vartotojo nurodyta aplinka (įrašoma į CSV ir ataskaitą). */
     val envTag: String get() = if (envSpinner.selectedItemPosition <= 0) "" else envOptions[envSpinner.selectedItemPosition]
 
@@ -2824,6 +2858,14 @@ class DraggablePanel(
         panel.addView(alphaLabel)
         panel.addView(alphaSeek)
         panel.addView(envSpinner)
+        panel.addView(TextView(context).apply {
+            text = "Žinomos (tikrosios) vertės – paklaidoms skaičiuoti:"
+            textSize = 12f
+            setTextColor(Color.DKGRAY)
+        })
+        panel.addView(aglInput)
+        panel.addView(mslInput)
+        panel.addView(coordInput)
         panel.addView(inputRow)
 
         addView(panel)
@@ -2928,7 +2970,8 @@ class DraggablePanel(
                 isDragging = false
                 touchOnControl = inside(questionInput, ev.rawX, ev.rawY) ||
                     inside(alphaSeek, ev.rawX, ev.rawY) || inside(rawSecs, ev.rawX, ev.rawY) ||
-                    inside(envSpinner, ev.rawX, ev.rawY)
+                    inside(envSpinner, ev.rawX, ev.rawY) || inside(aglInput, ev.rawX, ev.rawY) ||
+                    inside(mslInput, ev.rawX, ev.rawY) || inside(coordInput, ev.rawX, ev.rawY)
                 if (touchOnControl) return false
             }
             MotionEvent.ACTION_MOVE -> {
@@ -3481,8 +3524,8 @@ class MainActivity : AppCompatActivity() {
         }
         panel.onCountdownStart = {
             // Atgalinio skaičiavimo pradžioje CSV buferis pradedamas iš naujo
-            rawLog.setLength(0)
-            rawLog.append(rawHeader)
+            resetRawFile()
+            resetRefStats()
             fixLog.setLength(0)
             fixLog.append(fixHeader)
         }
@@ -3608,15 +3651,17 @@ class MainActivity : AppCompatActivity() {
         "time_nanos,full_bias_nanos,bias_nanos,bias_unc_nanos,drift_nsps,time_offset_ns," +
         "state,recv_sv_time_ns,recv_sv_time_unc_ns,doplerio_mps,doplerio_unc_mps," +
         "adr_m,adr_state,adr_unc_m,multipath,agc_db,aplinka\n"
-    private val rawLog = StringBuilder(rawHeader)
+    private val rawLog = StringBuilder(rawHeader)       // tik dabartinės partijos buferis
+    private var rawWriter: java.io.BufferedWriter? = null
+    private var rawRows = 0L
     private val satMap = HashMap<String, Sat>()
     private val bandsSeen = java.util.TreeSet<String>()
 
     private fun bandName(c: String, hz: Double): String {
         val mhz = hz / 1e6
         return when {
-            kotlin.math.abs(mhz - 1575.42) < 2 -> if (c == "GAL") "E1" else "L1"
-            kotlin.math.abs(mhz - 1176.45) < 2 -> if (c == "GAL") "E5a" else "L5"
+            kotlin.math.abs(mhz - 1575.42) < 2 -> when (c) { "GAL" -> "E1"; "BDS" -> "B1C"; else -> "L1" }
+            kotlin.math.abs(mhz - 1176.45) < 2 -> when (c) { "GAL" -> "E5a"; "BDS" -> "B2a"; else -> "L5" }
             kotlin.math.abs(mhz - 1207.14) < 2 -> if (c == "GAL") "E5b" else "B2b"
             kotlin.math.abs(mhz - 1227.60) < 2 -> "L2"
             kotlin.math.abs(mhz - 1561.098) < 2 -> "B1I"
@@ -3629,8 +3674,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun envTag(): String = sharePanel?.envTag ?: ""
 
+    /** Pradeda naują matavimų failą (kviečiama atgalinio skaičiavimo pradžioje ir paleidus). */
+    private fun resetRawFile() {
+        try { rawWriter?.close() } catch (_: Exception) {}
+        rawRows = 0
+        rawWriter = try {
+            java.io.BufferedWriter(java.io.FileWriter(File(cacheDir, "gnss_raw.csv"), false), 1 shl 16).also { it.write(rawHeader) }
+        } catch (e: Exception) { logError("Matavimų failas nepavyko: ${e.message}"); null }
+    }
+
     private fun appendRaw(m: GnssMeasurement, clk: android.location.GnssClock) {
-        if (rawLog.length > 12_000_000) { rawLog.setLength(0); rawLog.append(rawHeader) }
+        if (rawWriter == null) resetRawFile()
+        // Apsauga: ~200 MB – daugiau nei 2 val. įrašo
+        if (rawRows > 800_000) resetRawFile()
+        rawLog.setLength(0)
         val c = constName(m.constellationType)
         val hz = if (m.hasCarrierFrequencyHz()) m.carrierFrequencyHz.toDouble() else 1575.42e6
         val band = bandName(c, hz)
@@ -3664,12 +3721,14 @@ class MainActivity : AppCompatActivity() {
             .append(m.multipathIndicator).append(',')
             .append(agc).append(',')
             .append(envTag()).append('\n')
+        try { rawWriter?.write(sb.toString()); rawRows++ } catch (_: Exception) {}
     }
 
     // ---------------- FIKSAI KAS SEKUNDĘ (CSV) ----------------
     private val fixHeader = "laikas_ms,platuma,ilguma,aukstis_elips_m,geoido_N_m,aukstis_jura_m," +
         "h_tikslumas_m,v_tikslumas_m,greitis_mps,kryptis_deg,palydovu_naudojama,palydovu_matoma," +
-        "vid_cn0_naudojami,top4_cn0,pitch_deg,roll_deg,azimutas_ekrano_deg,judejimas_mps2,aplinka\n"
+        "vid_cn0_naudojami,top4_cn0,pitch_deg,roll_deg,azimutas_ekrano_deg,judejimas_mps2,aplinka," +
+        "zinomas_agl_m,zinomas_msl_m,zinoma_platuma,zinoma_ilguma,klaida_aukscio_m,klaida_horiz_m,klaida_rytai_m,klaida_siaure_m\n"
     private val fixLog = StringBuilder(fixHeader)
 
     private fun appendFix(loc: Location) {
@@ -3692,8 +3751,35 @@ class MainActivity : AppCompatActivity() {
             .append(t4?.let { fx(it.toDouble(), 1) } ?: "").append(',')
             .append(fx(devPitch, 1)).append(',').append(fx(devRoll, 1)).append(',').append(fx(devAzimuth, 1)).append(',')
             .append(fx(motionLevel, 3)).append(',')
-            .append(envTag()).append('\n')
+            .append(envTag()).append(',')
+        val kAgl = sharePanel?.knownAgl
+        val kMsl = sharePanel?.knownMsl
+        val kLL = sharePanel?.knownLatLon
+        val hNow = if (loc.hasAltitude() && n != null) loc.altitude - n else null
+        val eE = kLL?.let { (loc.longitude - it.second) * 111320.0 * cos(Math.toRadians(it.first)) }
+        val eN = kLL?.let { (loc.latitude - it.first) * 111320.0 }
+        fixLog.append(kAgl?.let { fx(it, 2) } ?: "").append(',')
+            .append(kMsl?.let { fx(it, 2) } ?: "").append(',')
+            .append(kLL?.let { fx(it.first, 8) } ?: "").append(',')
+            .append(kLL?.let { fx(it.second, 8) } ?: "").append(',')
+            .append(if (kMsl != null && hNow != null) fx(hNow - kMsl, 2) else "").append(',')
+            .append(if (eE != null && eN != null) fx(kotlin.math.sqrt(eE * eE + eN * eN), 2) else "").append(',')
+            .append(eE?.let { fx(it, 2) } ?: "").append(',')
+            .append(eN?.let { fx(it, 2) } ?: "").append('\n')
+        refStats(hNow, kMsl, eE, eN)
     }
+
+    // Suvestinė ataskaitai: vidutinės paklaidos nuo etalono
+    private var refN = 0; private var refHSum = 0.0; private var refHAbs = 0.0
+    private var refPN = 0; private var refDSum = 0.0; private var refDMax = 0.0
+    private fun refStats(h: Double?, kMsl: Double?, eE: Double?, eN: Double?) {
+        if (h != null && kMsl != null) { refN++; refHSum += h - kMsl; refHAbs += kotlin.math.abs(h - kMsl) }
+        if (eE != null && eN != null) {
+            val d = kotlin.math.sqrt(eE * eE + eN * eN)
+            refPN++; refDSum += d; if (d > refDMax) refDMax = d
+        }
+    }
+    private fun resetRefStats() { refN = 0; refHSum = 0.0; refHAbs = 0.0; refPN = 0; refDSum = 0.0; refDMax = 0.0 }
 
     private fun fixCsvUri(): Uri? = try {
         val file = File(cacheDir, "gnss_fix.csv")
@@ -3790,8 +3876,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun rawCsvUri(): Uri? = try {
+        rawWriter?.flush()
         val file = File(cacheDir, "gnss_raw.csv")
-        file.writeText(rawLog.toString())
+        if (!file.exists()) file.writeText(rawHeader)
         FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
     } catch (e: Exception) {
         logError("CSV nepavyko: ${e.message}")
@@ -3864,6 +3951,18 @@ class MainActivity : AppCompatActivity() {
             append(gnssChipInfo())
             appendLine("Kosminiai orai (NOAA): $kpText")
             appendLine("Aplinka (vartotojo žyma): ${envTag().ifBlank { "nenurodyta" }}")
+            val kAgl = sharePanel?.knownAgl
+            val kMsl = sharePanel?.knownMsl
+            val kLL = sharePanel?.knownLatLon
+            if (kAgl != null || kMsl != null || kLL != null) {
+                appendLine("=== ETALONAS (žinomos vertės) ===")
+                kAgl?.let { appendLine("Žinomas aukštis virš žemės: ${fx(it, 2)} m") }
+                kMsl?.let { appendLine("Žinomas aukštis virš jūros: ${fx(it, 2)} m") }
+                kLL?.let { appendLine("Žinomos koordinatės: ${fx(it.first, 8)}, ${fx(it.second, 8)}") }
+                if (refN > 0) appendLine("GNSS aukščio paklaida: vidutinė ${fx(refHSum / refN, 2)} m, vid. absoliuti ${fx(refHAbs / refN, 2)} m (${refN} fiksų)")
+                if (refPN > 0) appendLine("Horizontali paklaida: vidutinė ${fx(refDSum / refPN, 2)} m, didžiausia ${fx(refDMax, 2)} m (${refPN} fiksų)")
+                if (kAgl != null && kMsl != null) appendLine("Žemės aukštis virš jūros (iš etalonų): ${fx(kMsl - kAgl, 2)} m")
+            }
             appendLine("Planšetės padėtis: pitch ${fx(devPitch, 0)}°, roll ${fx(devRoll, 0)}°, ekrano azimutas ${fx(devAzimuth, 0)}°, judėjimas ${fx(motionLevel, 2)} m/s²")
             appendLine()
         }

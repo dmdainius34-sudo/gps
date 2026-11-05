@@ -1356,6 +1356,8 @@ private class FilamentEarth(private val appCtx: Context) {
     private val pixPending = arrayOf(java.util.concurrent.atomic.AtomicBoolean(false), java.util.concurrent.atomic.AtomicBoolean(false))
     private val pixReady = java.util.concurrent.atomic.AtomicInteger(-1)
     private var pixFrame = 0
+    private var safeCam = false      // diagnostika: standartinė kamera ir Žemė tiesiai priekyje
+    private var emptyUploads = 0
     private val directExec = java.util.concurrent.Executor { it.run() }
     private var dbgFrames = 0
     private var quadProg = 0
@@ -1561,9 +1563,21 @@ private class FilamentEarth(private val appCtx: Context) {
         try {
             ensureTarget(eng, w, h)
             updateSatellites(eng, viewI, sats)
-            camera!!.setCustomProjection(DoubleArray(16) { proj[it].toDouble() }, 0.1, 20.0)
             val tm = eng.transformManager
-            tm.setTransform(tm.getInstance(earthEnt), modelView)
+            if (!safeCam) {
+                camera!!.setCustomProjection(DoubleArray(16) { proj[it].toDouble() }, 0.1, 20.0)
+                tm.setTransform(tm.getInstance(earthEnt), modelView)
+            } else {
+                camera!!.setProjection(40.0, w.toDouble() / h, 0.1, 20.0, com.google.android.filament.Camera.Fov.VERTICAL)
+                camera!!.lookAt(0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0)
+                tm.setTransform(tm.getInstance(earthEnt), floatArrayOf(1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, -3f, 1f))
+            }
+            if (dbgFrames == 0 && pixFrame == 0) {
+                val pm = camera!!.getProjectionMatrix(DoubleArray(16))
+                android.util.Log.i("GnssApp", "Filament diag: proj ${proj.joinToString(",") { "%.3f".format(it) }}; " +
+                    "mv ${modelView.joinToString(",") { "%.3f".format(it) }}; fil.proj ${pm.joinToString(",") { "%.3f".format(it) }}; " +
+                    "earthTI=${tm.getInstance(earthEnt)} camTI=${tm.getInstance(camEnt)}")
+            }
             val lm = eng.lightManager
             lm.setDirection(lm.getInstance(sunEnt), -lightView[0], -lightView[1], -lightView[2])
             val r = renderer!!
@@ -1589,7 +1603,11 @@ private class FilamentEarth(private val appCtx: Context) {
                         i += 64
                     }
                     val k = opaque.coerceAtLeast(1)
-                    android.util.Log.i("GnssApp", "Filament kadras ${rtW}x$rtH: nepermatomi $opaque/$n, vid. RGB ${sr / k},${sg / k},${sb / k}, palydovų ${satObjs.size}")
+                    android.util.Log.i("GnssApp", "Filament kadras ${rtW}x$rtH${if (safeCam) " (standartinė kamera)" else ""}: nepermatomi $opaque/$n, vid. RGB ${sr / k},${sg / k},${sb / k}, palydovų ${satObjs.size}")
+                    if (opaque == 0 && !safeCam && ++emptyUploads >= 2) {
+                        safeCam = true; dbgFrames = 0
+                        android.util.Log.i("GnssApp", "Filament diag: tuščias kadras – bandoma standartinė kamera")
+                    }
                 }
             }
             // 2) Nupiešti naują kadrą ir užsakyti jo nuskaitymą į laisvą buferį

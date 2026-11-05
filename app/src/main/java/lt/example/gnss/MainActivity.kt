@@ -1397,6 +1397,7 @@ private class FilamentEarth(private val appCtx: Context) {
                 .width(bmp.width).height(bmp.height).levels(levels)
                 .sampler(com.google.android.filament.Texture.Sampler.SAMPLER_2D)
                 .format(com.google.android.filament.Texture.InternalFormat.RGBA8)
+                .usage(FTexture.Usage.SAMPLEABLE or FTexture.Usage.UPLOADABLE or FTexture.Usage.GEN_MIPMAPPABLE)
                 .build(eng)
             val px = ByteBuffer.allocateDirect(bmp.byteCount).order(ByteOrder.nativeOrder())
             bmp.copyPixelsToBuffer(px); px.flip()

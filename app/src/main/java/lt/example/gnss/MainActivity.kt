@@ -2666,26 +2666,34 @@ class MainActivity : AppCompatActivity() {
     private var skyHolderLp: ViewGroup.LayoutParams? = null
     private var fullscreen = false
 
-    /** Gaublys per visą ekraną ir atgal į langą (permatomas ženklelis kampe). */
+    private var leftCol: View? = null
+    private var rootScroll: ScrollView? = null
+
+    /**
+     * Gaublys per visą ekraną ir atgal. GL vaizdas NEperkeliamas į kitą tėvą
+     * (tai gadindavo vaizdą ir uždarydavo programą) – keičiamas tik jo dydis,
+     * o kiti elementai laikinai paslepiami.
+     */
     private fun toggleFullscreen() {
         if (!::skyHolder.isInitialized) return
-        val pIdx = skyHolderParent?.indexOfChild(skyHolder) ?: -1
-        (skyHolder.parent as? ViewGroup)?.removeView(skyHolder)
         if (!fullscreen) {
-            container.addView(skyHolder, FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            val w = container.width
+            val h = container.height
+            if (w <= 0 || h <= 0) return
+            leftCol?.visibility = View.GONE
+            cnoView.visibility = View.GONE
+            rootScroll?.scrollTo(0, 0)
+            skyHolder.layoutParams = LinearLayout.LayoutParams(w, h)
             fsBtn.text = "\u2715"
             fullscreen = true
         } else {
-            val parent = skyHolderParent
-            if (parent != null) {
-                val idx = if (pIdx >= 0) pIdx else (parent.indexOfChild(skyView) + 1).coerceAtMost(parent.childCount)
-                parent.addView(skyHolder, idx, skyHolderLp)
-            }
+            leftCol?.visibility = View.VISIBLE
+            cnoView.visibility = View.VISIBLE
+            skyHolder.layoutParams = skyHolderLp
             fsBtn.text = "\u26F6"
             fullscreen = false
         }
-        // Plūduriuojantis burbulas lieka virš visko
+        skyHolder.requestLayout()
         sharePanel?.bringToFront()
     }
 
@@ -2857,6 +2865,7 @@ class MainActivity : AppCompatActivity() {
         val ww = LinearLayout.LayoutParams.WRAP_CONTENT
 
         val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        leftCol = left
         left.addView(modeSpinner, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnZero, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnGps, LinearLayout.LayoutParams(mw, ww))
@@ -2924,6 +2933,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val root = ScrollView(this).apply { addView(content) }
+        rootScroll = root
 
         container = FrameLayout(this)
         container.addView(bg, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))

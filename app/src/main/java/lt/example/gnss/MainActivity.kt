@@ -1287,6 +1287,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         labelTex.clear()
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
+        glowProg = 0
         buildEarth()
         starTex = makeStarTexture()
         sunTex = makeSunTexture()
@@ -1438,7 +1439,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val hidden = dd < 0f && kotlin.math.sqrt(qx * qx + qy * qy + qz * qz) < EARTH_R
             if (!hidden && sunTex != 0) {
                 val pulse = 1f + 0.04f * kotlin.math.sin(t * 1.5f)
-                billboard(sp, eyeI, 0.30f * pulse, 0.30f * pulse, sunTex, 1f, 0.7f, 0.3f, 0.7f)   // korona (žiedas)
                 drawSun3D(sp, t)
             }
         }
@@ -1996,8 +1996,37 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, earthUv)
         }
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+
+        // 3D korona: didesnis rutulys aplink Saulę, švyti tik prie krašto (pridėtinis maišymas)
+        if (glowProg == 0) glowProg = program(ATMO_VS, SUNGLOW_FS)
+        val gk = k * 1.7f
+        val gm = FloatArray(16)
+        gm[0] = gk; gm[5] = gk; gm[10] = gk
+        gm[12] = sp[0]; gm[13] = sp[1]; gm[14] = sp[2]; gm[15] = 1f
+        val gmvp = FloatArray(16)
+        Matrix.multiplyMM(gmvp, 0, mvpI, 0, gm, 0)
+        GLES20.glDepthMask(false)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        GLES20.glUseProgram(glowProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(glowProg, "uMVP"), 1, false, gmvp, 0)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(glowProg, "uModel"), 1, false, gm, 0)
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(glowProg, "uTime"), t)
+        resetAttribs()
+        val gl = GLES20.glGetAttribLocation(glowProg, "aPos")
+        GLES20.glEnableVertexAttribArray(gl)
+        earthPos!!.position(0)
+        GLES20.glVertexAttribPointer(gl, 3, GLES20.GL_FLOAT, false, 0, earthPos)
+        GLES20.glEnable(GLES20.GL_CULL_FACE)
+        GLES20.glCullFace(GLES20.GL_BACK)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+        GLES20.glDisable(GLES20.GL_CULL_FACE)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDepthMask(true)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
     }
+
+    private var glowProg = 0
 
     private fun makeStarTexture(): Int {
         val size = 128
@@ -2287,6 +2316,24 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 col *= 0.42 + 0.58 * pow(mu, 0.5);      // kraštų patamsėjimas (limb darkening)
                 col += vec3(1.0, 0.6, 0.2) * pow(1.0 - mu, 4.0) * 0.6;   // ryškus kraštas
                 gl_FragColor = vec4(col, 1.0);
+            }
+        """
+        private const val SUNGLOW_FS = """
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
+            precision mediump float;
+            #endif
+            uniform vec3 uEye;
+            uniform float uTime;
+            varying vec3 vN;
+            void main() {
+                float mu = abs(dot(normalize(vN), normalize(uEye)));
+                float pr = sqrt(max(1.0 - mu * mu, 0.0));      // atstumas nuo centro ekrane (0..1)
+                float r0 = 1.0 / 1.7;                            // Saulės kraštas apvalkalo masteliu
+                float g = pr < r0 ? 0.0 : pow(clamp((1.0 - pr) / (1.0 - r0), 0.0, 1.0), 2.2);
+                g *= 0.85 + 0.15 * sin(uTime * 1.5);             // lėtas pulsavimas
+                gl_FragColor = vec4(vec3(1.0, 0.62, 0.22) * g, g * 0.9);
             }
         """
         private const val ATMO_VS = """
@@ -2600,16 +2647,17 @@ class DraggablePanel(
         layoutParams = LinearLayout.LayoutParams((sizeDp * density).toInt(), (sizeDp * density).toInt())
     }
 
-    private val cancelBtn = smallButton("\u2715", 36)     // ✕ (ir atšaukti, ir sumažinti)
+    private val dragSlop = 20f * resources.displayMetrics.density
+    private val cancelBtn = smallButton("\u2715", 44)     // ✕ (ir atšaukti, ir sumažinti)
 
     private val shareBtn = FrameLayout(context).apply {
         isClickable = true
-        layoutParams = LinearLayout.LayoutParams((40 * density).toInt(), (40 * density).toInt())
+        layoutParams = LinearLayout.LayoutParams((52 * density).toInt(), (52 * density).toInt())
         background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(0xFFE2E8F0.toInt())
         }
-        addView(ShareIcon(context), LayoutParams((40 * density * 0.6f).toInt(), (40 * density * 0.6f).toInt(), Gravity.CENTER))
+        addView(ShareIcon(context), LayoutParams((52 * density * 0.6f).toInt(), (52 * density * 0.6f).toInt(), Gravity.CENTER))
     }
 
     private val header = LinearLayout(context).apply {
@@ -2640,7 +2688,8 @@ class DraggablePanel(
         for ((k, v) in opts) {
             val cb = CheckBox(context).apply {
                 text = v
-                textSize = 13f
+                textSize = 15f
+                minHeight = (44 * density).toInt()
                 isChecked = k != "raw"
             }
             boxes[k] = cb
@@ -2787,7 +2836,8 @@ class DraggablePanel(
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!touchOnControl && !isDragging) {
-                    if (abs(ev.rawX - lastX) > 15 || abs(ev.rawY - lastY) > 15) {
+                    // Tempimas tik aiškiai pajudinus (≈20 dp), kad bakstelėjimai nebūtų „suvalgomi“
+                    if (abs(ev.rawX - lastX) > dragSlop || abs(ev.rawY - lastY) > dragSlop) {
                         isDragging = true
                         return true
                     }

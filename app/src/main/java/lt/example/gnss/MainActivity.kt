@@ -1358,6 +1358,7 @@ private class FilamentEarth(private val appCtx: Context) {
     private var pixFrame = 0
     private var safeCam = false      // diagnostika: standartinė kamera ir Žemė tiesiai priekyje
     private var emptyUploads = 0
+    private var clearTest = true     // pirmas kadras – raudonas fonas, tikrinamas nuskaitymo kelias
     private val directExec = java.util.concurrent.Executor { it.run() }
     private var dbgFrames = 0
     private var quadProg = 0
@@ -1604,13 +1605,24 @@ private class FilamentEarth(private val appCtx: Context) {
                     }
                     val k = opaque.coerceAtLeast(1)
                     android.util.Log.i("GnssApp", "Filament kadras ${rtW}x$rtH${if (safeCam) " (standartinė kamera)" else ""}: nepermatomi $opaque/$n, vid. RGB ${sr / k},${sg / k},${sb / k}, palydovų ${satObjs.size}")
-                    if (opaque == 0 && !safeCam && ++emptyUploads >= 2) {
+                    if (clearTest) {
+                        clearTest = false
+                        android.util.Log.i("GnssApp", "Filament diag: raudono fono testas – ${if (opaque > 0 && sr / k > 200) "nuskaitymas veikia" else "nuskaitymas NEVEIKIA"}")
+                    } else if (opaque == 0 && !safeCam && ++emptyUploads >= 2) {
                         safeCam = true; dbgFrames = 0
                         android.util.Log.i("GnssApp", "Filament diag: tuščias kadras – bandoma standartinė kamera")
+                    } else if (opaque == 0 && safeCam && dbgFrames >= 2) {
+                        android.util.Log.w("GnssApp", "Filament nieko nepiešia – grįžtama prie senojo GL piešimo")
+                        release()
+                        return false
                     }
                 }
             }
             // 2) Nupiešti naują kadrą ir užsakyti jo nuskaitymą į laisvą buferį
+            r.setClearOptions(com.google.android.filament.Renderer.ClearOptions().apply {
+                clear = true
+                clearColor = if (clearTest && pixFrame == 0) doubleArrayOf(1.0, 0.0, 0.0, 1.0) else doubleArrayOf(0.0, 0.0, 0.0, 0.0)
+            })
             if (r.beginFrame(swapChain!!, System.nanoTime())) {
                 r.render(fview!!)
                 val idx = pixFrame % 2

@@ -698,7 +698,9 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
         GLES20.glViewport(0, 0, w, h)
         // Kamera žiūri į rutulį iš z=4; matomas plotis ±0.6 ties artimąja plokštuma
-        Matrix.frustumM(proj, 0, -0.6f, 0.6f, -0.6f, 0.6f, 2f, 10f)
+        // Langelis aukštesnis už plotį: lėkštė viršuje, spindulys turi vietos žemyn
+        val asp = if (w > 0) h.toFloat() / w else 1f
+        Matrix.frustumM(proj, 0, -0.6f, 0.6f, 0.6f - 1.2f * asp, 0.6f, 2f, 10f)
         Matrix.setLookAtM(view, 0, 0f, 0f, 4f, 0f, 0f, 0f, 0f, 1f, 0f)
         Matrix.multiplyMM(vp, 0, proj, 0, view, 0)
     }
@@ -2534,7 +2536,7 @@ class BubbleOverlayService : Service() {
         val view = BubbleGL(this)
         bubble = view
         val lp = WindowManager.LayoutParams(
-            size, size,
+            size, size * 3 / 2,
             if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             else WindowManager.LayoutParams.TYPE_PHONE,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
@@ -2547,7 +2549,7 @@ class BubbleOverlayService : Service() {
         var startX = 0; var startY = 0
         var touchX = 0f; var touchY = 0f
         val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent): Boolean = true
+            override fun onDown(e: MotionEvent): Boolean { keyHaptic(view); return true }
             override fun onDoubleTap(e: MotionEvent): Boolean { unpin(); return true }
         })
         view.setOnTouchListener { _, ev ->
@@ -2559,7 +2561,7 @@ class BubbleOverlayService : Service() {
                     val ny = startY + (ev.rawY - touchY).toInt()
                     // Burbulas gali išeiti už krašto, bet bent 10 % lieka matoma
                     lp.x = nx.coerceIn(-(size * 0.9f).toInt(), dm.widthPixels - (size * 0.1f).toInt())
-                    lp.y = ny.coerceIn(-(size * 0.9f).toInt(), dm.heightPixels - (size * 0.1f).toInt())
+                    lp.y = ny.coerceIn(-(size * 1.35f).toInt(), dm.heightPixels - (size * 0.15f).toInt())
                     manager.updateViewLayout(view, lp)
                 }
             }
@@ -2667,7 +2669,7 @@ class DraggablePanel(
     private val bubble = BubbleGL(context).apply {
         visibility = VISIBLE
         isClickable = true
-        layoutParams = LayoutParams(bubbleSize, bubbleSize)
+        layoutParams = LayoutParams(bubbleSize, bubbleSize * 3 / 2)
     }
 
     private val title = TextView(context).apply {
@@ -2820,27 +2822,12 @@ class DraggablePanel(
     var onPin: (() -> Unit)? = null
     private val bubbleAction: () -> Unit = { expandBubble() }
     private val bubbleGd = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
-        override fun onDown(e: MotionEvent): Boolean = true
+        override fun onDown(e: MotionEvent): Boolean { keyHaptic(bubble); return true }
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean { bubbleAction?.invoke(); return true }
         override fun onDoubleTap(e: MotionEvent): Boolean { onPin?.invoke(); return true }
     })
 
     private fun expandBubble() {
-            // Ekrano (lietimo) vibracija – veikia, jei įrenginys ją palaiko
-            bubble.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            try {
-                val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-                if (vibrator != null && vibrator.hasVibrator()) {
-                    if (Build.VERSION.SDK_INT >= 26) {
-                        vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
-                    } else {
-                        @Suppress("DEPRECATION")
-                        vibrator.vibrate(50)
-                    }
-                }
-            } catch (e: Throwable) {
-                android.util.Log.w("GnssApp", "Vibracija nepavyko", e)
-            }
             try {
                 maximize()
             } catch (e: Throwable) {
@@ -3045,6 +3032,25 @@ const val SIG_YELLOW = 0xFFFACC15.toInt()
 const val BG_NEUTRAL = 0xFFF8FAFC.toInt()
 
 /** Bendra spalva visiems elementams (burbulas, fonas, dangaus kupolas) pagal C/N0. */
+/** Trumpas „klaviatūros“ vibracijos atsakas (crisp click), kaip spaudžiant klavišą. */
+fun keyHaptic(v: View) {
+    try {
+        v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        val vib = v.context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        if (vib != null && vib.hasVibrator()) {
+            when {
+                Build.VERSION.SDK_INT >= 29 ->
+                    vib.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK))
+                Build.VERSION.SDK_INT >= 26 ->
+                    vib.vibrate(VibrationEffect.createOneShot(12, VibrationEffect.DEFAULT_AMPLITUDE))
+                else -> @Suppress("DEPRECATION") vib.vibrate(12)
+            }
+        }
+    } catch (e: Throwable) {
+        android.util.Log.w("GnssApp", "Vibracija nepavyko", e)
+    }
+}
+
 /** ULTRA riba: 4 stipriausių naudojamų palydovų C/N0 vidurkis (kaip GNSS Logger). */
 const val ULTRA_DB = 40f
 

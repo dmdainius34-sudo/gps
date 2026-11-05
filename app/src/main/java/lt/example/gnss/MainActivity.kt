@@ -1262,7 +1262,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         fN = doubleArrayOf(-sin(la) * cos(lst), -sin(la) * sin(lst), cos(la))
         fU = doubleArrayOf(cos(la) * cos(lst), cos(la) * sin(lst), sin(la))
         fQ = doubleArrayOf(fE[0], fN[0], fU[0], fE[1], fN[1], fU[1], fE[2], fN[2], fU[2])
-        fP = floatArrayOf((EARTH_R * fU[0]).toFloat(), (EARTH_R * fU[1]).toFloat(), (EARTH_R * fU[2]).toFloat())
+        // Dangaus skliauto centras – Žemės centras, kad gaublys būtų kupolo viduryje
+        // (stebėtojo vietą rodo raudonas smeigtukas ant paviršiaus)
+        fP = floatArrayOf(0f, 0f, 0f)
     }
 
     // Kiekvieno palydovo C/N0 istorija (kaip GNSS Logger „CN0 vs Time“): ~120 s

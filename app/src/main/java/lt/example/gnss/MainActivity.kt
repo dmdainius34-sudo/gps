@@ -1554,6 +1554,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             billboard(c, eye, if (card) 0.18f else 0.09f, if (card) 0.09f else 0.045f, tex, col[0], col[1], col[2], 1f)
         }
 
+        // 5b) Ryškios žvaigždės (tik virš horizonto)
+        drawStars(eye)
+
         // 6) Palydovai: geras signalas žybsi kaip žvaigždės
         System.arraycopy(mvpI, 0, mvp, 0, 16)
 
@@ -1593,6 +1596,48 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
 
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    // ---------------- ŽVAIGŽDŽIŲ KATALOGAS ----------------
+    /** RA (val.), Dec (laipsn.), dydis, spalva. J2000. */
+    private class StarCat(val name: String, val raH: Double, val decDeg: Double, val size: Float, val rgb: FloatArray)
+
+    private val starCatalog = listOf(
+        StarCat("Polaris", hms(2, 31, 49.0), dms(89, 15, 51.0), 0.045f, floatArrayOf(1f, 0.97f, 0.85f)),
+        StarCat("Betelgeuse", hms(5, 55, 10.3), dms(7, 24, 25.0), 0.05f, floatArrayOf(1f, 0.6f, 0.35f)),
+        StarCat("Rigel", hms(5, 14, 32.3), -dms(8, 12, 6.0), 0.05f, floatArrayOf(0.75f, 0.85f, 1f)),
+        StarCat("Bellatrix", hms(5, 25, 7.9), dms(6, 20, 59.0), 0.038f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Alnitak", hms(5, 40, 45.5), -dms(1, 56, 34.0), 0.038f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Alnilam", hms(5, 36, 12.8), -dms(1, 12, 7.0), 0.038f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Mintaka", hms(5, 32, 0.4), -dms(0, 17, 57.0), 0.036f, floatArrayOf(0.8f, 0.88f, 1f)),
+    )
+
+    private fun hms(h: Int, m: Int, s: Double) = h + m / 60.0 + s / 3600.0
+    private fun dms(d: Int, m: Int, s: Double) = d + m / 60.0 + s / 3600.0
+
+    /** Kiekvieną kadrą: azimutas ir aukštis pagal GMST (fG) ir stebėtojo platumą/ilgumą; rodoma tik kai aukštis > 0. */
+    private fun drawStars(eye: FloatArray) {
+        if (starTex == 0) return
+        val lst = fG + Math.toRadians(obsLon)                 // vietinis žvaigždinis laikas
+        val phi = Math.toRadians(obsLat)
+        val sp = sin(phi); val cp = cos(phi)
+        for (st in starCatalog) {
+            val ra = Math.toRadians(st.raH * 15.0)
+            val dec = Math.toRadians(st.decDeg)
+            val ha = lst - ra                                   // valandinis kampas
+            val sd = sin(dec); val cd = cos(dec)
+            val sinAlt = sp * sd + cp * cd * cos(ha)
+            val alt = kotlin.math.asin(sinAlt.coerceIn(-1.0, 1.0))
+            if (alt <= 0.0) continue
+            val az = kotlin.math.atan2(-cd * sin(ha), sd * cp - cd * cos(ha) * sp)   // nuo šiaurės į rytus
+            val r = 0.985
+            val c = floatArrayOf(
+                (r * cos(alt) * sin(az)).toFloat(),
+                (r * cos(alt) * cos(az)).toFloat(),
+                (r * sinAlt).toFloat())
+            billboard(c, eye, st.size, st.size, starTex, st.rgb[0], st.rgb[1], st.rgb[2], 0.95f)
+            billboard(c, eye, st.size * 0.45f, st.size * 0.45f, starTex, 1f, 1f, 1f, 0.95f)
+        }
     }
 
     // ---------------- PALYDOVŲ 3D MODELIAI (cilindras + 2 saulės baterijos) ----------------

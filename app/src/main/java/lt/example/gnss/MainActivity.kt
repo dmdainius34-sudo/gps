@@ -2747,6 +2747,14 @@ class DraggablePanel(
             }
         })
     }
+    // Slenkama panelės dalis (antraštė lieka viršuje)
+    private val bodyInner = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    private val body = ScrollView(context).apply {
+        isFillViewport = false
+        isVerticalScrollBarEnabled = true
+        addView(bodyInner)
+    }
+
     private val numType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
     private val aglInput = refField("Žinomas aukštis virš žemės, m", "agl", numType)
     private val mslInput = refField("Žinomas aukštis virš jūros, m", "msl", numType)
@@ -2865,20 +2873,21 @@ class DraggablePanel(
         inputRow.addView(shareBtn)
 
         panel.addView(header)
-        panel.addView(optionsLayout)
-        panel.addView(rawRow)
-        panel.addView(alphaLabel)
-        panel.addView(alphaSeek)
-        panel.addView(envSpinner)
-        panel.addView(TextView(context).apply {
+        panel.addView(body, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        bodyInner.addView(optionsLayout)
+        bodyInner.addView(rawRow)
+        bodyInner.addView(alphaLabel)
+        bodyInner.addView(alphaSeek)
+        bodyInner.addView(envSpinner)
+        bodyInner.addView(TextView(context).apply {
             text = "Žinomos (tikrosios) vertės – paklaidoms skaičiuoti:"
             textSize = 12f
             setTextColor(Color.DKGRAY)
         })
-        panel.addView(aglInput)
-        panel.addView(mslInput)
-        panel.addView(coordInput)
-        panel.addView(inputRow)
+        bodyInner.addView(aglInput)
+        bodyInner.addView(mslInput)
+        bodyInner.addView(coordInput)
+        bodyInner.addView(inputRow)
 
         addView(panel)
         addView(bubble)
@@ -2963,7 +2972,34 @@ class DraggablePanel(
         handler.post(tick)
     }
 
+    private var kbShift = 0f
+    private val kbListener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+        if (panel.visibility != VISIBLE) return@OnGlobalLayoutListener
+        val r = Rect()
+        rootView.getWindowVisibleDisplayFrame(r)
+        val screenH = rootView.height
+        val kb = screenH - r.bottom
+        val f = findFocus()
+        if (kb > screenH * 0.15f && f is EditText) {
+            // Pirma pasukame slenkamą dalį, kad laukas būtų matomas
+            val fr = Rect(); f.getDrawingRect(fr)
+            try { body.offsetDescendantRectToMyCoords(f, fr); body.requestChildRectangleOnScreen(f, Rect(0, 0, f.width, f.height), true) } catch (_: Exception) {}
+            val loc = IntArray(2); f.getLocationOnScreen(loc)
+            val over = loc[1] + f.height + (12 * density) - r.bottom
+            if (over > 0) { kbShift += over; translationY -= over }
+        } else if (kb <= screenH * 0.15f && kbShift != 0f) {
+            translationY += kbShift
+            kbShift = 0f
+        }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        viewTreeObserver.addOnGlobalLayoutListener(kbListener)
+    }
+
     override fun onDetachedFromWindow() {
+        viewTreeObserver.removeOnGlobalLayoutListener(kbListener)
         handler.removeCallbacksAndMessages(null)
         counting = false
         setRecordingUi(false)
@@ -2995,6 +3031,10 @@ class DraggablePanel(
                 if (touchOnControl) return false
             }
             MotionEvent.ACTION_MOVE -> {
+                val dxm = abs(ev.rawX - lastX); val dym = abs(ev.rawY - lastY)
+                if (inside(body, lastX, lastY) && body.canScrollVertically(if (ev.rawY < lastY) 1 else -1) && dym > dxm) {
+                    return false   // slenkamas turinys
+                }
                 if (!touchOnControl && !isDragging) {
                     // Tempimas tik aiškiai pajudinus (≈20 dp), kad bakstelėjimai nebūtų „suvalgomi“
                     if (abs(ev.rawX - lastX) > dragSlop || abs(ev.rawY - lastY) > dragSlop) {
@@ -3062,7 +3102,19 @@ class DraggablePanel(
         setOwnWidth(target)
         bubble.visibility = GONE
         panel.visibility = VISIBLE
-        post { adjustPositionOnExpand() }
+        post { limitBodyHeight(); post { adjustPositionOnExpand() } }
+    }
+
+    /** Jei turinys netelpa ekrane (telefone), slenkama dalis apribojama ir tampa slenkama. */
+    private fun limitBodyHeight() {
+        val parentH = (parent as? View)?.height ?: return
+        val w = body.width.takeIf { it > 0 } ?: (width - panel.paddingLeft - panel.paddingRight)
+        bodyInner.measure(MeasureSpec.makeMeasureSpec(w.coerceAtLeast(1), MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
+        val maxBody = (parentH * 0.88f).toInt() - header.height - panel.paddingTop - panel.paddingBottom
+        val lp = body.layoutParams
+        lp.height = if (bodyInner.measuredHeight > maxBody && maxBody > 0) maxBody else LinearLayout.LayoutParams.WRAP_CONTENT
+        body.layoutParams = lp
     }
 
     private fun adjustPositionOnExpand() {

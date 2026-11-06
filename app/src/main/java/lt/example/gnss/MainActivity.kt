@@ -1658,36 +1658,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val tint = signalTint(if (used.isNotEmpty()) avgCn0 else null, if (used.isNotEmpty()) peakCn0 else null)
         lastTint = tint
 
-        // 1) Virš horizonto – pulsuojantis GPS kupolas (neįrašo gylio, kad Žemė būtų matoma)
-        GLES20.glDepthMask(false)
-        GLES20.glUseProgram(domeProg)
-        setMat(domeProg, "uMVP", mvp)
-        setVec3(domeProg, "uLight", 0.4f, 0.5f, 0.8f)
-        setVec3(domeProg, "uEye", eye[0], eye[1], eye[2])
-        setFloat(domeProg, "uTime", t)
-        setFloat(domeProg, "uBeat", beat)
-        setVec3(domeProg, "uTint", Color.red(tint) / 255f, Color.green(tint) / 255f, Color.blue(tint) / 255f)
-        bindPos(domeProg, upperBuf!!)
-        GLES20.glEnable(GLES20.GL_CULL_FACE)
-        GLES20.glCullFace(GLES20.GL_FRONT)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, upperN)
-        GLES20.glCullFace(GLES20.GL_BACK)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, upperN)
-        GLES20.glDisable(GLES20.GL_CULL_FACE)
-
-        // 2) Žemiau horizonto – permatoma struktūra
-        GLES20.glDepthMask(false)
-        GLES20.glUseProgram(lowProg)
-        setMat(lowProg, "uMVP", mvp)
-        setVec3(lowProg, "uEye", eye[0], eye[1], eye[2])
-        setVec4(lowProg, "uColor", 0.35f, 0.4f, 0.5f, 0.14f)
-        bindPos(lowProg, lowerBuf!!)
-        GLES20.glEnable(GLES20.GL_CULL_FACE)
-        GLES20.glCullFace(GLES20.GL_FRONT)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, lowerN)
-        GLES20.glCullFace(GLES20.GL_BACK)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, lowerN)
-        GLES20.glDisable(GLES20.GL_CULL_FACE)
+        // Dangaus skliauto kupolas (viršutinis ir apatinis) nebepiešiamas
         GLES20.glDepthMask(true)
 
         // 2b) Žemė gaublio viduryje (pasvirusi į Polaris, sukasi realiu laiku)
@@ -1896,14 +1867,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             seg[k++] = p0[0]; seg[k++] = p0[1]; seg[k++] = p0[2]; seg[k++] = p1[0]; seg[k++] = p1[1]; seg[k++] = p1[2]
         }
         drawLines(seg, 1f, 0.82f, 0.3f, 0.75f)
-        // Pavadinimas – ties labiausiai į kamerą atsuktu orbitos tašku
-        var best = pts[0]; var bestDot = -1e9f
-        for (q in pts) {
-            val dd = q[0] * eyeI[0] + q[1] * eyeI[1] + q[2] * eyeI[2]
-            if (dd > bestDot) { bestDot = dd; best = q }
-        }
-        val (tex, aspect) = wideLabel("Žemės orbita")
-        billboard(floatArrayOf(best[0] * 1.03f, best[1] * 1.03f, best[2] * 1.03f), eyeI, 0.07f * aspect, 0.07f, tex, 1f, 0.82f, 0.3f, 0.95f)
     }
 
     private fun drawSky() {

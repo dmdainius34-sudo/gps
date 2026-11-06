@@ -1866,7 +1866,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val p0 = pts[i]; val p1 = pts[(i + 1) % n]
             seg[k++] = p0[0]; seg[k++] = p0[1]; seg[k++] = p0[2]; seg[k++] = p1[0]; seg[k++] = p1[1]; seg[k++] = p1[2]
         }
+        // Su gylio testu: Žemės rutulys uždengia orbitos dalį, einančią per jį ir už jo
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
         drawLines(seg, 1f, 0.82f, 0.3f, 0.75f)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
     }
 
     private fun drawSky() {

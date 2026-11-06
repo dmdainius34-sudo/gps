@@ -33,4 +33,14 @@ android {
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
+    testImplementation("junit:junit:4.13.2")
+}
+
+tasks.withType<Test>().configureEach {
+    // Testų (ir savikontrolės) išvestis matoma CI žurnale
+    testLogging {
+        showStandardStreams = true
+        events("passed", "failed", "skipped")
+    }
+    System.getenv("GNSS_SAMPLE_DIR")?.let { systemProperty("gnss.sample", it) }
 }

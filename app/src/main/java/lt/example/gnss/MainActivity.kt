@@ -4179,14 +4179,21 @@ class MainActivity : AppCompatActivity() {
             val finish: (Uri?) -> Unit = { shot ->
                 val uris = ArrayList<Uri>()
                 shot?.let { uris.add(it) }
+                val send = {
+                    // Ataskaita (su klausimu) visada kaip tekstinis failas
+                    reportFileUri(report)?.let { uris.add(0, it) }
+                    shareContent(report, uris)
+                }
                 if ("raw" in sections) {
                     rawCsvUri()?.let { uris.add(it) }
                     fixCsvUri()?.let { uris.add(it) }
                     navCsvUri()?.let { uris.add(it) }
-                }
-                // Ataskaita (su klausimu) visada kaip tekstinis failas
-                reportFileUri(report)?.let { uris.add(0, it) }
-                shareContent(report, uris)
+                    // GPS pozicijos skaičiuoklė (1 žingsnis) – fone, rezultatas gnss_solver.csv
+                    Thread {
+                        val u = solverCsvUri()
+                        runOnUiThread { u?.let { uris.add(it) }; send() }
+                    }.start()
+                } else send()
             }
             if (wantScreenshot) {
                 // Burbulas ir panelė NEPATENKA į ekrano kopiją; 3D modeliai – patenka
@@ -4606,6 +4613,17 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             logError("Navigacijos įrašas nepavyko: ${e.message}")
         }
+    }
+
+    /** GPS-only sprendinys iš gnss_raw.csv + gnss_nav.csv -> gnss_solver.csv (kviečiama ne UI gijoje). */
+    private fun solverCsvUri(): Uri? = try {
+        val out = File(cacheDir, "gnss_solver.csv")
+        val sols = PositionSolver.solveFiles(File(cacheDir, "gnss_raw.csv"), File(cacheDir, "gnss_nav.csv"), out)
+        android.util.Log.i("GnssApp", "gnss_solver.csv: sprendinių ${sols.size}")
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", out)
+    } catch (e: Exception) {
+        runOnUiThread { logError("Skaičiuoklė nepavyko: ${e.message}") }
+        null
     }
 
     private fun navCsvUri(): Uri? = try {

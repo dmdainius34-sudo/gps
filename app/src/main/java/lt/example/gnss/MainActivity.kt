@@ -1860,51 +1860,65 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         billboard(floatArrayOf(q[0] * 1.04f, q[1] * 1.04f, q[2] * 1.04f), eyeI, h * aspect, h, tex, r, g, b, 0.95f)
     }
 
+    /** Saulės ekliptinė ilguma (rad) – ta pati formulė kaip sunDir(). */
+    private fun sunEclLon(): Double {
+        val d = jdDays()
+        val m = Math.toRadians(357.5291 + 0.98560028 * d)
+        val c = Math.toRadians(1.9148 * sin(m) + 0.02 * sin(2 * m) + 0.0003 * sin(3 * m))
+        return m + c + Math.toRadians(102.9372) + Math.PI
+    }
+
     /**
-     * Žemės orbita geocentriniame vaizde: elipsė ekliptikos plokštumoje (eclToEq, 23,4397°),
-     * a = 0,25 scenos vnt., e = 0,0167, r = a(1−e²)/(1+e·cos θ). Piešiama per mvpI ekliptikos spalva.
+     * Žemės metinė orbita aplink Saulę geocentriniame vaizde: elipsė ekliptikos plokštumoje (eclToEq, 23,4397°),
+     * centre – Saulė, e = 0,0167, perihelio ilguma 102,9372°. Mastelis parinktas taip, kad Žemė (scenos centras)
+     * šiuo metu gulėtų ant orbitos, o Saulė būtų SUN_DIST atstumu. Piešiama per mvpI.
      */
     private fun drawEarthOrbit() {
-        val a = 0.25; val ecc = 0.0167
-        val n = 240
+        val ecc = 0.0167
+        val peri = Math.toRadians(102.9372)
+        val lEarth = sunEclLon() + Math.PI                  // Žemės heliocentrinė ilguma
+        val rNowUnit = (1 - ecc * ecc) / (1 + ecc * cos(lEarth - peri))
+        val a = SUN_DIST / rNowUnit
+        val sd = sunDir()
+        val sx = fP[0] + sd[0] * SUN_DIST; val sy = fP[1] + sd[1] * SUN_DIST; val sz = fP[2] + sd[2] * SUN_DIST
+        val n = 360
+        val pts = ArrayList<FloatArray>(n)
+        for (i in 0 until n) {
+            val nu = 2.0 * Math.PI * i / n                  // tikroji anomalija
+            val r = a * (1 - ecc * ecc) / (1 + ecc * cos(nu))
+            val d = eclToEq(nu + peri, 0.0)
+            pts.add(floatArrayOf((sx + d[0] * r).toFloat(), (sy + d[1] * r).toFloat(), (sz + d[2] * r).toFloat()))
+        }
         val seg = FloatArray(n * 6)
-        var prev: FloatArray? = null
-        var first: FloatArray? = null
         var k = 0
-        for (i in 0..n) {
-            val th = 2.0 * Math.PI * (i % n) / n
-            val r = a * (1 - ecc * ecc) / (1 + ecc * cos(th))
-            val d = eclToEq(th, 0.0)
-            val q = floatArrayOf((fP[0] + d[0] * r).toFloat(), (fP[1] + d[1] * r).toFloat(), (fP[2] + d[2] * r).toFloat())
-            if (first == null) first = q
-            val pp = prev
-            if (pp != null) {
-                seg[k++] = pp[0]; seg[k++] = pp[1]; seg[k++] = pp[2]
-                seg[k++] = q[0]; seg[k++] = q[1]; seg[k++] = q[2]
-            }
-            prev = q
+        for (i in 0 until n) {
+            val p0 = pts[i]; val p1 = pts[(i + 1) % n]
+            seg[k++] = p0[0]; seg[k++] = p0[1]; seg[k++] = p0[2]; seg[k++] = p1[0]; seg[k++] = p1[1]; seg[k++] = p1[2]
         }
         drawLines(seg, 1f, 0.82f, 0.3f, 0.75f)
+        // Pavadinimas – ties labiausiai į kamerą atsuktu orbitos tašku
+        var best = pts[0]; var bestDot = -1e9f
+        for (q in pts) {
+            val dd = q[0] * eyeI[0] + q[1] * eyeI[1] + q[2] * eyeI[2]
+            if (dd > bestDot) { bestDot = dd; best = q }
+        }
+        val (tex, aspect) = wideLabel("Žemės orbita")
+        billboard(floatArrayOf(best[0] * 1.03f, best[1] * 1.03f, best[2] * 1.03f), eyeI, 0.07f * aspect, 0.07f, tex, 1f, 0.82f, 0.3f, 0.95f)
     }
 
     private fun drawSky() {
         checkEcliptic()
-        // Dangaus pusiaujas (Dec = 0) ir ekliptika (eclToEq(lon, 0), nuolydis 23,4397°), spindulys = SUN_DIST
+        // Dangaus pusiaujas (Dec = 0), spindulys = SUN_DIST; ekliptiką atstoja Žemės orbita aplink Saulę
         val nRing = 180
         val eq = ArrayList<FloatArray>(nRing)
-        val ecl = ArrayList<FloatArray>(nRing)
         for (i in 0 until nRing) {
             val a = 2.0 * Math.PI * i / nRing
             eq.add(skyPt(floatArrayOf(cos(a).toFloat(), sin(a).toFloat(), 0f), ringR))
-            val e = eclToEq(a, 0.0)
-            ecl.add(skyPt(floatArrayOf(e[0].toFloat(), e[1].toFloat(), e[2].toFloat()), ringR))
         }
         GLES20.glLineWidth(1.5f * density)
         drawLines(visibleSegments(eq, true), 0.55f, 0.85f, 1f, 0.55f)
-        drawLines(visibleSegments(ecl, true), 1f, 0.82f, 0.3f, 0.55f)
         drawEarthOrbit()
         ringLabel(eq, "Dangaus pusiaujas", 0.55f, 0.85f, 1f)
-        ringLabel(ecl, "Ekliptika", 1f, 0.82f, 0.3f)
 
         // Oriono linijos
         val pos = HashMap<String, FloatArray>()

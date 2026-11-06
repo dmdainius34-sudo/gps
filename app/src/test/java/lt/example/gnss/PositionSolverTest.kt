@@ -88,10 +88,10 @@ class PositionSolverTest {
     private fun q(x: Double, e: Int) = Math.round(Math.scalb(x, -e))
     private val pi = 3.1415926535898
 
-    private fun frame(id: Int, fill: (IntArray) -> Unit): ByteArray {
+    private fun frame(id: Int, towCount: Int = 0, fill: (IntArray) -> Unit): ByteArray {
         val w = IntArray(10)
         w[0] = 0x8B shl 16
-        w[1] = id shl 2
+        w[1] = ((towCount and 0x1FFFF) shl 7) or (id shl 2)        // HOW: TOW skaičius (×6 s) ir subkadro ID
         fill(w)
         val b = ByteArray(40)
         for (i in 0 until 10) {
@@ -103,20 +103,22 @@ class PositionSolverTest {
     }
 
     /** Efemeridė -> trys LNAV subkadrai (40 baitų kiekvienas). */
-    private fun encode(e: PositionSolver.Ephemeris, iode: Int): List<ByteArray> {
-        val sf1 = frame(1) { w ->
+    private fun encode(e: PositionSolver.Ephemeris, iode: Int, tow: Double = 0.0): List<ByteArray> {
+        // HOW TOW – kito subkadro pradžia (6 s vienetais)
+        val c = ((tow / 6.0).toInt())
+        val sf1 = frame(1, c + 1) { w ->
             put(w, 3, 1, 10, (week % 1024).toLong())
             put(w, 3, 23, 2, 0); put(w, 8, 1, 8, iode.toLong())
             put(w, 7, 17, 8, q(e.tgd, -31)); put(w, 8, 9, 16, (e.toc / 16).toLong())
             put(w, 9, 1, 8, q(e.af2, -55)); put(w, 9, 9, 16, q(e.af1, -43)); put(w, 10, 1, 22, q(e.af0, -31))
         }
-        val sf2 = frame(2) { w ->
+        val sf2 = frame(2, c + 2) { w ->
             put(w, 3, 1, 8, iode.toLong()); put(w, 3, 9, 16, q(e.crs, -5)); put(w, 4, 1, 16, q(e.deltaN / pi, -43))
             putSplit(w, 4, 17, 8, 5, 1, 24, q(e.m0 / pi, -31)); put(w, 6, 1, 16, q(e.cuc, -29))
             putSplit(w, 6, 17, 8, 7, 1, 24, q(e.e, -33)); put(w, 8, 1, 16, q(e.cus, -29))
             putSplit(w, 8, 17, 8, 9, 1, 24, q(e.sqrtA, -19)); put(w, 10, 1, 16, (e.toe / 16).toLong())
         }
-        val sf3 = frame(3) { w ->
+        val sf3 = frame(3, c + 3) { w ->
             put(w, 3, 1, 16, q(e.cic, -29)); putSplit(w, 3, 17, 8, 4, 1, 24, q(e.omega0 / pi, -31))
             put(w, 5, 1, 16, q(e.cis, -29)); putSplit(w, 5, 17, 8, 6, 1, 24, q(e.i0 / pi, -31))
             put(w, 7, 1, 16, q(e.crc, -5)); putSplit(w, 7, 17, 8, 8, 1, 24, q(e.omega / pi, -31))
@@ -186,7 +188,7 @@ class PositionSolverTest {
         for (e in ephs) {
             if (e.svid == missing) continue
             val iode = (e.iode and 0xFF)
-            for (fr in encode(e, iode)) nav.append("1000,GPS,${e.svid},257,1,${fr.joinToString("") { "%02x".format(it) }}\n")
+            for (fr in encode(e, iode, tow0)) nav.append("1000,GPS,${e.svid},257,1,${fr.joinToString("") { "%02x".format(it) }}\n")
         }
         java.io.File(dir, "gnss_nav.csv").writeText(nav.toString())
         val raw = StringBuilder("laikas_ms,konstelacija,svid,signalas,time_nanos,full_bias_nanos,bias_nanos,time_offset_ns,state,recv_sv_time_ns\n")
@@ -206,6 +208,8 @@ class PositionSolverTest {
         java.io.File(dir, "gnss_raw.csv").writeText(raw.toString())
         val sols = PositionSolver.solveFiles(java.io.File(dir, "gnss_raw.csv"), java.io.File(dir, "gnss_nav.csv"), java.io.File(dir, "gnss_solver.csv"))
         println(java.io.File(dir, PositionSolver.DIAG_FILE).readText())
+        val f = sols.firstOrNull()?.second
+        println("Sprendinių: ${sols.size}; pirmasis: ${f?.let { "%.7f, %.7f, h=%.2f m".format(java.util.Locale.US, it.lat, it.lon, it.h) } ?: "nėra"}")
         assertEquals(6, sols.size)
         dir.deleteRecursively()
     }

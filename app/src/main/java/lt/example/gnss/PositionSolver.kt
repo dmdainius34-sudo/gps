@@ -206,6 +206,9 @@ object PositionSolver {
         val noEphSv = java.util.TreeSet<Int>()
         val oldEphSv = java.util.TreeMap<Int, Double>()             // SVID -> mažiausias amžius (s)
         val firstEpochs = ArrayList<String>()
+        val ageFirst = java.util.TreeMap<Int, String>()                  // SVID -> pirmasis amžiaus skaičiavimas
+        var firstNavTow: String? = null
+        var firstRawTow: String? = null
 
         fun text(solutions: Int): String = buildString {
             appendLine("=== GPS SKAIČIUOKLĖS DIAGNOSTIKA ===")
@@ -215,6 +218,7 @@ object PositionSolver {
             appendLine("GPS eilučių: $navGps, iš jų GPS L1 C/A (tipas 257): $navGpsL1ca")
             appendLine("Neiššifruotų subkadrų (preambulė/ID): $navBadSubframe")
             appendLine("Pirmasis iššifruotas subkadras: ${firstSfInfo ?: "nėra"}")
+            appendLine("Pirmasis navigacijos TOW (HOW TOW × 6): ${firstNavTow ?: "nėra"}")
             appendLine("Pirmoji savaitė iš 1 subkadro: ${firstWnInfo ?: "nėra"}")
             appendLine("Subkadrai ir efemeridės pagal SVID (sf1/sf2/sf3/sf4/sf5; 1–3 visi; efemeridžių; nepavyko):")
             if (subframesPerSv.isEmpty()) appendLine("  (nėra GPS L1 C/A subkadrų)")
@@ -227,6 +231,7 @@ object PositionSolver {
             appendLine()
             appendLine("--- Matavimai (gnss_raw.csv) ---")
             appendLine("Pirmoji eilutė: ${firstRawInfo ?: "nėra"}")
+            appendLine("Pirmasis matavimų TOW ((time_nanos − full_bias_nanos − bias_nanos) mod savaitė): ${firstRawTow ?: "nėra"}")
             appendLine("Eilučių iš viso: $rawRows")
             appendLine("GPS L1 C/A eilučių: $rawGpsL1")
             appendLine("Atmesta:")
@@ -242,6 +247,9 @@ object PositionSolver {
             appendLine("Stebėjimų be efemeridės (SVID nėra): $obsNoEph${if (noEphSv.isEmpty()) "" else " – " + noEphSv.joinToString(" ") { "G%02d".format(Locale.US, it) }}")
             appendLine("Stebėjimų su per sena efemeride (> 2 val.): $obsEphOld${if (oldEphSv.isEmpty()) "" else " – " + oldEphSv.entries.joinToString(" ") { "G%02d (%.0f s)".format(Locale.US, it.key, it.value) }}")
             appendLine("Tinkamų stebėjimų: $obsUsable")
+            appendLine("Efemeridės amžius pagal SVID (pirmasis stebėjimas, |t_tx − toe| ≤ 7200 s):")
+            if (ageFirst.isEmpty()) appendLine("  (nėra)")
+            for ((sv, a) in ageFirst) appendLine("  G%02d: %s".format(Locale.US, sv, a))
             appendLine("Epochų iš viso: $epochs, su ≥4 tinkamais palydovais: $epochs4")
             appendLine("Sprendinių įrašyta: $solutions")
             appendLine("Pirmosios 5 epochos:")
@@ -252,22 +260,31 @@ object PositionSolver {
 
     class Solution(val lat: Double, val lon: Double, val h: Double, val sats: Int, val hacc: Double, val ecef: DoubleArray)
 
+    /** Efemeridės amžius (s): t_tx − toe GPS savaitės sekundėmis, su savaitės persivertimu (±302400 s). */
+    fun ephAge(tTxTow: Double, eph: Ephemeris): Double = wrapWeek(tTxTow - eph.toe)
+
     fun solve(epoch: Epoch, ephs: Map<Int, List<Ephemeris>>, diag: Diag? = null): Solution? {
-        val tAbs = epoch.week * WEEK_S + epoch.tRxTow
         data class Row(val pos: DoubleArray, val pr: Double)
         val rows = ArrayList<Row>()
         val epInfo = if (diag != null && diag.firstEpochs.size < 5) ArrayList<String>() else null
         for (o in epoch.obs) {
             val list = ephs[o.svid]
-            val eph = list?.filter { abs(tAbs - it.toeAbs) <= MAX_EPH_AGE_S }
-                ?.minByOrNull { abs(tAbs - it.toeAbs) }
+            // Vienas laiko pagrindas: palydovo siuntimo laikas GPS savaitės sekundėmis, lyginamas su toe
+            val tTxTow = epoch.tRxTow - o.pr / C
+            val eph = list?.filter { abs(ephAge(tTxTow, it)) <= MAX_EPH_AGE_S }
+                ?.minByOrNull { abs(ephAge(tTxTow, it)) }
+            if (diag != null && !list.isNullOrEmpty()) {
+                val best = list.minByOrNull { abs(ephAge(tTxTow, it)) }!!
+                diag.ageFirst.putIfAbsent(o.svid, "t_tx %.3f s, toe %.0f s, amžius %+.0f s%s".format(Locale.US,
+                    tTxTow, best.toe, ephAge(tTxTow, best), if (eph == null) " (per sena)" else ""))
+            }
             if (diag != null) {
                 val tag = "G%02d".format(Locale.US, o.svid)
                 when {
                     list.isNullOrEmpty() -> { diag.obsNoEph++; diag.noEphSv.add(o.svid); epInfo?.add("$tag(nėra eph)") }
                     eph == null -> {
                         diag.obsEphOld++
-                        val age = list.minOf { abs(tAbs - it.toeAbs) }
+                        val age = list.minOf { abs(ephAge(tTxTow, it)) }
                         diag.oldEphSv[o.svid] = minOf(diag.oldEphSv[o.svid] ?: Double.MAX_VALUE, age)
                         epInfo?.add("$tag(sena eph %.0f s)".format(Locale.US, age))
                     }
@@ -419,6 +436,8 @@ object PositionSolver {
                     if (diag.firstSfInfo == null) {
                         val tow = ((sf.words[1] ushr 7) and 0x1FFFF) * 6       // HOW TOW (kito subkadro pradžia)
                         diag.firstSfInfo = "laikas_ms=${p[0]}, G%02d, subkadras %d, TOW %d s (%s)".format(Locale.US, sv, sf.id, tow, dhms(tow.toDouble()))
+                        // HOW TOW – kito subkadro pradžia; šio subkadro pradžia = TOW − 6 s
+                        diag.firstNavTow = "%d s (subkadro pradžia %d s, %s)".format(Locale.US, tow, tow - 6, dhms((tow - 6).toDouble().coerceAtLeast(0.0)))
                     }
                     if (diag.firstWnInfo == null && sf.id == 1) {
                         val wn10 = (sf.words[2] ushr 14) and 0x3FF
@@ -477,6 +496,7 @@ object PositionSolver {
                     val g = tn0 - fb0
                     val wk = Math.floorDiv(g, 604_800_000_000_000L)
                     val tow = (g - wk * 604_800_000_000_000L - b0) * 1e-9
+                    diag.firstRawTow = "%.3f s (%s)".format(Locale.US, tow, dhms(tow))
                     "laikas_ms=${p[iMs]}, time_nanos=$tn0, full_bias_nanos=$fb0, bias_nanos=$b0 -> savaitė $wk, TOW %.3f s (%s)".format(Locale.US, tow, dhms(tow))
                 } else "laikas_ms=${p[iMs]}, time_nanos=${p[iTn]}, full_bias_nanos=${p[iFb]} (nėra laiko)"
             }

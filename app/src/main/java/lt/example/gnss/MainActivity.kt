@@ -4009,6 +4009,7 @@ class MainActivity : AppCompatActivity() {
 
     private val navCallback = object : GnssNavigationMessage.Callback() {
         override fun onGnssNavigationMessageReceived(event: GnssNavigationMessage) {
+            navMsgCount++
             appendNav(event)
         }
     }
@@ -4242,6 +4243,7 @@ class MainActivity : AppCompatActivity() {
         lm.unregisterGnssStatusCallback(statusCallback)
         lm.unregisterGnssMeasurementsCallback(measCallback)
         lm.unregisterGnssNavigationMessageCallback(navCallback)
+        navRegistered = false
         lm.removeUpdates(locationListener)
     }
 
@@ -4254,7 +4256,10 @@ class MainActivity : AppCompatActivity() {
         }
         lm.registerGnssStatusCallback(statusCallback, mainHandler)
         if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
-        lm.registerGnssNavigationMessageCallback(navCallback, mainHandler)
+        navRegistered = try {
+            lm.registerGnssNavigationMessageCallback(navCallback, mainHandler)
+        } catch (e: Exception) { logError("Navigacijos klausytojas: ${e.message}"); false }
+        android.util.Log.i("GnssApp", "Navigacijos klausytojas: ${if (navRegistered) "užregistruotas" else "neužregistruotas"}")
         lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
     }
 
@@ -4567,6 +4572,8 @@ class MainActivity : AppCompatActivity() {
     private val navHeader = "laikas_ms,konstelacija,svid,tipas,statusas,duomenys_hex\n"
     private var navWriter: java.io.BufferedWriter? = null
     private var navRows = 0L
+    private var navMsgCount = 0L
+    private var navRegistered = false
 
     /** Pradeda naują navigacijos pranešimų failą (kartu su gnss_raw.csv). */
     private fun resetNavFile() {
@@ -4713,6 +4720,8 @@ class MainActivity : AppCompatActivity() {
             appendLine("=== PALYDOVAI ===")
             appendLine(satText)
             appendLine(measText)
+            appendLine("Navigacinių žinučių gauta: $navMsgCount")
+            appendLine("Navigacijos klausytojas: ${if (navRegistered) "užregistruotas" else "neužregistruotas"}")
             appendLine("Palydovų sąrašas:")
             lastSats.sortedWith(compareBy({ it.const }, { it.svid })).forEach { s ->
                 appendLine("${s.const} ${s.svid}: C/N0 ${fx(s.cn0.toDouble())}, kampas ${fx(s.elev.toDouble(), 0)}°, az ${fx(s.az.toDouble(), 0)}°, fiksui: ${if (s.used) "taip" else "ne"}")

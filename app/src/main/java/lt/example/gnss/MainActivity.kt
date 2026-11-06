@@ -1860,6 +1860,33 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         billboard(floatArrayOf(q[0] * 1.04f, q[1] * 1.04f, q[2] * 1.04f), eyeI, h * aspect, h, tex, r, g, b, 0.95f)
     }
 
+    /**
+     * Žemės orbita geocentriniame vaizde: elipsė ekliptikos plokštumoje (eclToEq, 23,4397°),
+     * a = 0,25 scenos vnt., e = 0,0167, r = a(1−e²)/(1+e·cos θ). Piešiama per mvpI ekliptikos spalva.
+     */
+    private fun drawEarthOrbit() {
+        val a = 0.25; val ecc = 0.0167
+        val n = 240
+        val seg = FloatArray(n * 6)
+        var prev: FloatArray? = null
+        var first: FloatArray? = null
+        var k = 0
+        for (i in 0..n) {
+            val th = 2.0 * Math.PI * (i % n) / n
+            val r = a * (1 - ecc * ecc) / (1 + ecc * cos(th))
+            val d = eclToEq(th, 0.0)
+            val q = floatArrayOf((fP[0] + d[0] * r).toFloat(), (fP[1] + d[1] * r).toFloat(), (fP[2] + d[2] * r).toFloat())
+            if (first == null) first = q
+            val pp = prev
+            if (pp != null) {
+                seg[k++] = pp[0]; seg[k++] = pp[1]; seg[k++] = pp[2]
+                seg[k++] = q[0]; seg[k++] = q[1]; seg[k++] = q[2]
+            }
+            prev = q
+        }
+        drawLines(seg, 1f, 0.82f, 0.3f, 0.75f)
+    }
+
     private fun drawSky() {
         checkEcliptic()
         // Dangaus pusiaujas (Dec = 0) ir ekliptika (eclToEq(lon, 0), nuolydis 23,4397°), spindulys = SUN_DIST
@@ -1875,6 +1902,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glLineWidth(1.5f * density)
         drawLines(visibleSegments(eq, true), 0.55f, 0.85f, 1f, 0.55f)
         drawLines(visibleSegments(ecl, true), 1f, 0.82f, 0.3f, 0.55f)
+        drawEarthOrbit()
         ringLabel(eq, "Dangaus pusiaujas", 0.55f, 0.85f, 1f)
         ringLabel(ecl, "Ekliptika", 1f, 0.82f, 0.3f)
 

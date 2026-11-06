@@ -102,10 +102,8 @@ class PositionSolverTest {
         return b
     }
 
-    @Test
-    fun decodesLnavSubframes() {
-        val e = eph(7, 123.0, -45.0, 302_400.0)
-        val iode = 77
+    /** Efemeridė -> trys LNAV subkadrai (40 baitų kiekvienas). */
+    private fun encode(e: PositionSolver.Ephemeris, iode: Int): List<ByteArray> {
         val sf1 = frame(1) { w ->
             put(w, 3, 1, 10, (week % 1024).toLong())
             put(w, 3, 23, 2, 0); put(w, 8, 1, 8, iode.toLong())
@@ -124,6 +122,14 @@ class PositionSolverTest {
             put(w, 7, 1, 16, q(e.crc, -5)); putSplit(w, 7, 17, 8, 8, 1, 24, q(e.omega / pi, -31))
             put(w, 9, 1, 24, q(e.omegaDot / pi, -43)); put(w, 10, 1, 8, iode.toLong()); put(w, 10, 9, 14, q(e.idot / pi, -43))
         }
+        return listOf(sf1, sf2, sf3)
+    }
+
+    @Test
+    fun decodesLnavSubframes() {
+        val e = eph(7, 123.0, -45.0, 302_400.0)
+        val iode = 77
+        val (sf1, sf2, sf3) = encode(e, iode)
         val s1 = PositionSolver.subframeFromBytes(sf1)!!
         val s2 = PositionSolver.subframeFromBytes(sf2)!!
         val s3 = PositionSolver.subframeFromBytes(sf3)!!
@@ -153,6 +159,55 @@ class PositionSolverTest {
         val sub = PositionSolver.pseudorange(0L, fullBias, 0.0, 0.0, PositionSolver.STATE_SUBFRAME_SYNC, svTime % 6_000_000_000L)!!
         assertEquals(0.07 * PositionSolver.C, sub.first, 1e-3)
         assertEquals(null, PositionSolver.pseudorange(0L, fullBias, 0.0, 0.0, 1, svTime))
+    }
+
+    /** Sintetiniai gnss_nav.csv + gnss_raw.csv -> solveFiles -> gnss_solver_diag.txt (spausdinama). */
+    @Test
+    fun syntheticFilesDiag() {
+        val dir = createTempDir("gnss")
+        val lat = 54.74; val lon = 25.2545
+        val rx = PositionSolver.llhToEcef(Math.toRadians(lat), Math.toRadians(lon), 150.0)
+        val tow0 = 300_000.0
+        val weekNs = 604_800_000_000_000L
+        val nav = StringBuilder("laikas_ms,konstelacija,svid,tipas,statusas,duomenys_hex\n")
+        val ephs = ArrayList<PositionSolver.Ephemeris>()
+        var sv = 1
+        for (om in listOf(0.0, 60.0, 120.0, 180.0, 240.0, 300.0)) for (m in listOf(0.0, 90.0, 180.0, 270.0)) {
+            val e = eph(sv, om, m + om / 3, 302_400.0 - 7200.0 + 7200.0)   // toe 302400 (± 2 val. nuo matavimų)
+            val st = PositionSolver.satState(e, tow0)
+            val up = doubleArrayOf(cos(Math.toRadians(lat)) * cos(Math.toRadians(lon)), cos(Math.toRadians(lat)) * sin(Math.toRadians(lon)), sin(Math.toRadians(lat)))
+            val d = doubleArrayOf(st[0] - rx[0], st[1] - rx[1], st[2] - rx[2])
+            val el = (d[0] * up[0] + d[1] * up[1] + d[2] * up[2]) / sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+            if (el > 0.17) ephs.add(e)
+            sv++
+        }
+        // Vienam palydovui efemeridės „nėra“ (nerašome jos į nav failą)
+        val missing = ephs.last().svid
+        for (e in ephs) {
+            if (e.svid == missing) continue
+            val iode = (e.iode and 0xFF)
+            for (fr in encode(e, iode)) nav.append("1000,GPS,${e.svid},257,1,${fr.joinToString("") { "%02x".format(it) }}\n")
+        }
+        java.io.File(dir, "gnss_nav.csv").writeText(nav.toString())
+        val raw = StringBuilder("laikas_ms,konstelacija,svid,signalas,time_nanos,full_bias_nanos,bias_nanos,time_offset_ns,state,recv_sv_time_ns\n")
+        for (k in 0 until 6) {
+            val tRx = tow0 + k
+            val timeNanos = k * 1_000_000_000L
+            val fullBias = -(2440 * weekNs + (tow0 * 1e9).toLong())
+            for (e in ephs) {
+                val pr = simPr(e, rx, tRx, 0.0)
+                val svTime = ((tRx - pr / PositionSolver.C) * 1e9).toLong()
+                raw.append("${1000 + k * 1000},GPS,${e.svid},L1,$timeNanos,$fullBias,0.0,0.0,15,$svTime\n")
+            }
+            raw.append("${1000 + k * 1000},GLO,5,L1,$timeNanos,$fullBias,0.0,0.0,15,1\n")
+            raw.append("${1000 + k * 1000},GPS,${ephs[0].svid},L5,$timeNanos,$fullBias,0.0,0.0,15,1\n")
+            raw.append("${1000 + k * 1000},GPS,${ephs[1].svid},L1,$timeNanos,$fullBias,0.0,0.0,1,1\n")
+        }
+        java.io.File(dir, "gnss_raw.csv").writeText(raw.toString())
+        val sols = PositionSolver.solveFiles(java.io.File(dir, "gnss_raw.csv"), java.io.File(dir, "gnss_nav.csv"), java.io.File(dir, "gnss_solver.csv"))
+        println(java.io.File(dir, PositionSolver.DIAG_FILE).readText())
+        assertEquals(6, sols.size)
+        dir.deleteRecursively()
     }
 
     /** Savikontrolė su tikrais failais: -Dgnss.sample=<katalogas> arba GNSS_SAMPLE_DIR (gnss_raw.csv, gnss_nav.csv, gnss_fix.csv). */

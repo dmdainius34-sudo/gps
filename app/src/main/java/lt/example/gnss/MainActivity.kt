@@ -4191,7 +4191,8 @@ class MainActivity : AppCompatActivity() {
                     // GPS pozicijos skaičiuoklė (1 žingsnis) – fone, rezultatas gnss_solver.csv
                     Thread {
                         val u = solverCsvUri()
-                        runOnUiThread { u?.let { uris.add(it) }; send() }
+                        val d = solverDiagUri()
+                        runOnUiThread { u?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
                     }.start()
                 } else send()
             }
@@ -4625,6 +4626,12 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { logError("Skaičiuoklė nepavyko: ${e.message}") }
         null
     }
+
+    /** Skaičiuoklės diagnostika (gnss_solver_diag.txt), sukurta kartu su gnss_solver.csv. */
+    private fun solverDiagUri(): Uri? = try {
+        val f = File(cacheDir, PositionSolver.DIAG_FILE)
+        if (f.exists()) FileProvider.getUriForFile(this, "$packageName.fileprovider", f) else null
+    } catch (e: Exception) { null }
 
     private fun navCsvUri(): Uri? = try {
         navWriter?.flush()

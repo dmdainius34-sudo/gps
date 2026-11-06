@@ -187,20 +187,105 @@ object PositionSolver {
     }
 
     // ---------------- Mažiausių kvadratų sprendimas ----------------
+    // ---------------- Diagnostika (gnss_solver_diag.txt) ----------------
+    class Diag {
+        // navigacija
+        var navRows = 0; var navGps = 0; var navGpsL1ca = 0; var navBadSubframe = 0
+        val subframesPerSv = java.util.TreeMap<Int, IntArray>()       // [sf1, sf2, sf3, sf4, sf5]
+        val ephPerSv = java.util.TreeMap<Int, Int>()
+        val ephFailPerSv = java.util.TreeMap<Int, Int>()
+        var firstSfInfo: String? = null
+        var firstWnInfo: String? = null
+        // matavimai
+        var rawRows = 0; var rawNotGps = 0; var rawGpsNotL1 = 0; var rawGpsL1 = 0; var rawParseErr = 0
+        var rawNoState = 0; var rawTimeMismatch = 0; var rawDuplicate = 0; var rawAccepted = 0
+        var firstRawInfo: String? = null
+        // sprendimas
+        var obsNoEph = 0; var obsEphOld = 0; var obsUsable = 0
+        var epochs = 0; var epochs4 = 0
+        val noEphSv = java.util.TreeSet<Int>()
+        val oldEphSv = java.util.TreeMap<Int, Double>()             // SVID -> mažiausias amžius (s)
+        val firstEpochs = ArrayList<String>()
+
+        fun text(solutions: Int): String = buildString {
+            appendLine("=== GPS SKAIČIUOKLĖS DIAGNOSTIKA ===")
+            appendLine()
+            appendLine("--- Navigacijos pranešimai (gnss_nav.csv) ---")
+            appendLine("Eilučių iš viso: $navRows")
+            appendLine("GPS eilučių: $navGps, iš jų GPS L1 C/A (tipas 257): $navGpsL1ca")
+            appendLine("Neiššifruotų subkadrų (preambulė/ID): $navBadSubframe")
+            appendLine("Pirmasis iššifruotas subkadras: ${firstSfInfo ?: "nėra"}")
+            appendLine("Pirmoji savaitė iš 1 subkadro: ${firstWnInfo ?: "nėra"}")
+            appendLine("Subkadrai ir efemeridės pagal SVID (sf1/sf2/sf3/sf4/sf5; 1–3 visi; efemeridžių; nepavyko):")
+            if (subframesPerSv.isEmpty()) appendLine("  (nėra GPS L1 C/A subkadrų)")
+            for ((sv, c) in subframesPerSv) {
+                val all = c[0] > 0 && c[1] > 0 && c[2] > 0
+                appendLine("  G%02d: %d/%d/%d/%d/%d; %s; %d; %d".format(Locale.US, sv, c[0], c[1], c[2], c[3], c[4],
+                    if (all) "taip" else "ne", ephPerSv[sv] ?: 0, ephFailPerSv[sv] ?: 0))
+            }
+            appendLine("Efemeridžių iš viso: ${ephPerSv.values.sum()} (${ephPerSv.size} SVID)")
+            appendLine()
+            appendLine("--- Matavimai (gnss_raw.csv) ---")
+            appendLine("Pirmoji eilutė: ${firstRawInfo ?: "nėra"}")
+            appendLine("Eilučių iš viso: $rawRows")
+            appendLine("GPS L1 C/A eilučių: $rawGpsL1")
+            appendLine("Atmesta:")
+            appendLine("  ne GPS konsteliacija: $rawNotGps")
+            appendLine("  GPS, bet ne L1: $rawGpsNotL1")
+            appendLine("  netinkamas eilutės formatas: $rawParseErr")
+            appendLine("  nėra state bito STATE_SUBFRAME_SYNC (4): $rawNoState")
+            appendLine("  laiko neatitikimas (pseudoatstumas už 15 000–35 000 km): $rawTimeMismatch")
+            appendLine("  pasikartojantis SVID epochoje: $rawDuplicate")
+            appendLine("Priimta pseudoatstumų: $rawAccepted")
+            appendLine()
+            appendLine("--- Sprendimas ---")
+            appendLine("Stebėjimų be efemeridės (SVID nėra): $obsNoEph${if (noEphSv.isEmpty()) "" else " – " + noEphSv.joinToString(" ") { "G%02d".format(Locale.US, it) }}")
+            appendLine("Stebėjimų su per sena efemeride (> 2 val.): $obsEphOld${if (oldEphSv.isEmpty()) "" else " – " + oldEphSv.entries.joinToString(" ") { "G%02d (%.0f s)".format(Locale.US, it.key, it.value) }}")
+            appendLine("Tinkamų stebėjimų: $obsUsable")
+            appendLine("Epochų iš viso: $epochs, su ≥4 tinkamais palydovais: $epochs4")
+            appendLine("Sprendinių įrašyta: $solutions")
+            appendLine("Pirmosios 5 epochos:")
+            if (firstEpochs.isEmpty()) appendLine("  (nėra)")
+            firstEpochs.forEach { appendLine("  $it") }
+        }
+    }
+
     class Solution(val lat: Double, val lon: Double, val h: Double, val sats: Int, val hacc: Double, val ecef: DoubleArray)
 
-    fun solve(epoch: Epoch, ephs: Map<Int, List<Ephemeris>>): Solution? {
+    fun solve(epoch: Epoch, ephs: Map<Int, List<Ephemeris>>, diag: Diag? = null): Solution? {
         val tAbs = epoch.week * WEEK_S + epoch.tRxTow
         data class Row(val pos: DoubleArray, val pr: Double)
         val rows = ArrayList<Row>()
+        val epInfo = if (diag != null && diag.firstEpochs.size < 5) ArrayList<String>() else null
         for (o in epoch.obs) {
-            val eph = ephs[o.svid]?.filter { abs(tAbs - it.toeAbs) <= MAX_EPH_AGE_S }
-                ?.minByOrNull { abs(tAbs - it.toeAbs) } ?: continue
+            val list = ephs[o.svid]
+            val eph = list?.filter { abs(tAbs - it.toeAbs) <= MAX_EPH_AGE_S }
+                ?.minByOrNull { abs(tAbs - it.toeAbs) }
+            if (diag != null) {
+                val tag = "G%02d".format(Locale.US, o.svid)
+                when {
+                    list.isNullOrEmpty() -> { diag.obsNoEph++; diag.noEphSv.add(o.svid); epInfo?.add("$tag(nėra eph)") }
+                    eph == null -> {
+                        diag.obsEphOld++
+                        val age = list.minOf { abs(tAbs - it.toeAbs) }
+                        diag.oldEphSv[o.svid] = minOf(diag.oldEphSv[o.svid] ?: Double.MAX_VALUE, age)
+                        epInfo?.add("$tag(sena eph %.0f s)".format(Locale.US, age))
+                    }
+                    else -> { diag.obsUsable++; epInfo?.add("${tag}✓") }
+                }
+            }
+            if (eph == null) continue
             var tTx = epoch.tRxTow - o.pr / C
             var st = satState(eph, tTx)
             tTx -= st[3]
             st = satState(eph, tTx)
             rows.add(Row(st, o.pr + C * st[3]))
+        }
+        if (diag != null) {
+            diag.epochs++
+            if (rows.size >= 4) diag.epochs4++
+            if (epInfo != null) diag.firstEpochs.add("%d (savaitė %d, TOW %.3f s): tinkami %d – %s".format(Locale.US,
+                epoch.timeMs, epoch.week, epoch.tRxTow, rows.size, epInfo.joinToString(" ")))
         }
         if (rows.size < 4) return null
         val x = DoubleArray(4)                                   // x, y, z, c·dt
@@ -311,7 +396,7 @@ object PositionSolver {
      * gnss_nav.csv -> efemeridės pagal SVID. Iš eilės renkami 1, 2 ir 3 subkadrai; laikomos visos galiojančios
      * (pasirenkama artimiausia epochai, ne senesnė nei 2 val.).
      */
-    fun readEphemerides(nav: File, refWeek: Int): Map<Int, List<Ephemeris>> {
+    fun readEphemerides(nav: File, refWeek: Int, diag: Diag? = null): Map<Int, List<Ephemeris>> {
         val out = HashMap<Int, MutableList<Ephemeris>>()
         if (!nav.exists()) return out
         val last = HashMap<Int, Array<Subframe?>>()
@@ -323,16 +408,36 @@ object PositionSolver {
             br.forEachLine { line ->
                 val p = line.split(',')
                 if (p.size <= iHex) return@forEachLine
+                diag?.let { it.navRows++; if (p[iConst] == "GPS") it.navGps++ }
                 if (p[iConst] != "GPS" || p[iType].toIntOrNull() != NAV_TYPE_GPS_L1CA) return@forEachLine
+                diag?.let { it.navGpsL1ca++ }
                 val sv = p[iSv].toIntOrNull() ?: return@forEachLine
-                val sf = subframeFromBytes(hexToBytes(p[iHex])) ?: return@forEachLine
+                val sf = subframeFromBytes(hexToBytes(p[iHex]))
+                if (sf == null) { diag?.let { it.navBadSubframe++ }; return@forEachLine }
+                if (diag != null) {
+                    diag.subframesPerSv.getOrPut(sv) { IntArray(5) }[sf.id - 1]++
+                    if (diag.firstSfInfo == null) {
+                        val tow = ((sf.words[1] ushr 7) and 0x1FFFF) * 6       // HOW TOW (kito subkadro pradžia)
+                        diag.firstSfInfo = "laikas_ms=${p[0]}, G%02d, subkadras %d, TOW %d s (%s)".format(Locale.US, sv, sf.id, tow, dhms(tow.toDouble()))
+                    }
+                    if (diag.firstWnInfo == null && sf.id == 1) {
+                        val wn10 = (sf.words[2] ushr 14) and 0x3FF
+                        val full = if (refWeek > 0) refWeek + (((wn10 - refWeek) % 1024 + 1536) % 1024 - 512) else wn10
+                        diag.firstWnInfo = "WN(10 bitų)=$wn10 -> pilna savaitė $full (iš gnss_raw.csv: $refWeek)"
+                    }
+                }
                 if (sf.id > 3) return@forEachLine
                 val slot = last.getOrPut(sv) { arrayOfNulls(3) }
                 slot[sf.id - 1] = sf
                 val s1 = slot[0]; val s2 = slot[1]; val s3 = slot[2]
                 if (s1 != null && s2 != null && s3 != null) {
-                    val eph = decodeEphemeris(sv, s1, s2, s3, refWeek) ?: return@forEachLine
+                    val eph = decodeEphemeris(sv, s1, s2, s3, refWeek)
+                    if (eph == null) {
+                        diag?.let { it.ephFailPerSv[sv] = (it.ephFailPerSv[sv] ?: 0) + 1 }
+                        return@forEachLine
+                    }
                     val list = out.getOrPut(sv) { ArrayList() }
+                    if (list.none { it.iode == eph.iode && it.toe == eph.toe }) diag?.let { it.ephPerSv[sv] = (it.ephPerSv[sv] ?: 0) + 1 }
                     // Ta pati efemeridė (IODE + toe) – pakeičiama naujausia
                     list.removeAll { it.iode == eph.iode && it.toe == eph.toe }
                     list.add(eph)
@@ -343,12 +448,12 @@ object PositionSolver {
     }
 
     /** gnss_raw.csv -> epochos (grupuojama pagal time_nanos), tik GPS L1 su subkadro sinchronizacija. */
-    fun readEpochs(raw: File, consumer: (Epoch) -> Unit) {
+    fun readEpochs(raw: File, diag: Diag? = null, consumer: (Epoch) -> Unit) {
         if (!raw.exists()) return
-        raw.bufferedReader().use { br -> readEpochs(br, consumer) }
+        raw.bufferedReader().use { br -> readEpochs(br, diag, consumer) }
     }
 
-    fun readEpochs(br: BufferedReader, consumer: (Epoch) -> Unit) {
+    fun readEpochs(br: BufferedReader, diag: Diag? = null, consumer: (Epoch) -> Unit) {
         val head = br.readLine()?.split(',') ?: return
         fun idx(n: String) = head.indexOf(n)
         val iMs = idx("laikas_ms"); val iC = idx("konstelacija"); val iSv = idx("svid"); val iSig = idx("signalas")
@@ -364,21 +469,39 @@ object PositionSolver {
         }
         br.forEachLine { line ->
             val p = line.split(',')
-            if (p.size <= maxOf(iSvt, iSt, iTn)) return@forEachLine
-            if (p[iC] != "GPS" || p[iSig] != "L1") return@forEachLine
-            val tn = p[iTn].toLongOrNull() ?: return@forEachLine
-            val fb = p[iFb].toLongOrNull() ?: return@forEachLine
+            diag?.let { it.rawRows++ }
+            if (p.size <= maxOf(iSvt, iSt, iTn)) { diag?.let { it.rawParseErr++ }; return@forEachLine }
+            if (diag != null && diag.firstRawInfo == null) {
+                val tn0 = p[iTn].toLongOrNull(); val fb0 = p[iFb].toLongOrNull(); val b0 = p[iB].toDoubleOrNull() ?: 0.0
+                diag.firstRawInfo = if (tn0 != null && fb0 != null) {
+                    val g = tn0 - fb0
+                    val wk = Math.floorDiv(g, 604_800_000_000_000L)
+                    val tow = (g - wk * 604_800_000_000_000L - b0) * 1e-9
+                    "laikas_ms=${p[iMs]}, time_nanos=$tn0, full_bias_nanos=$fb0, bias_nanos=$b0 -> savaitė $wk, TOW %.3f s (%s)".format(Locale.US, tow, dhms(tow))
+                } else "laikas_ms=${p[iMs]}, time_nanos=${p[iTn]}, full_bias_nanos=${p[iFb]} (nėra laiko)"
+            }
+            if (p[iC] != "GPS") { diag?.let { it.rawNotGps++ }; return@forEachLine }
+            if (p[iSig] != "L1") { diag?.let { it.rawGpsNotL1++ }; return@forEachLine }
+            diag?.let { it.rawGpsL1++ }
+            val tn = p[iTn].toLongOrNull()
+            val fb = p[iFb].toLongOrNull()
             val b = p[iB].toDoubleOrNull() ?: 0.0
             val off = if (iOff >= 0) p[iOff].toDoubleOrNull() ?: 0.0 else 0.0
-            val st = p[iSt].toIntOrNull() ?: return@forEachLine
-            val svt = p[iSvt].toLongOrNull() ?: return@forEachLine
-            val sv = p[iSv].toIntOrNull() ?: return@forEachLine
+            val st = p[iSt].toIntOrNull()
+            val svt = p[iSvt].toLongOrNull()
+            val sv = p[iSv].toIntOrNull()
+            if (tn == null || fb == null || st == null || svt == null || sv == null) { diag?.let { it.rawParseErr++ }; return@forEachLine }
             if (tn != curTn) { flush(); curTn = tn }
-            val r = pseudorange(tn, fb, b, off, st, svt) ?: return@forEachLine
+            val r = pseudorange(tn, fb, b, off, st, svt)
+            if (r == null) {
+                diag?.let { if (st and STATE_SUBFRAME_SYNC == 0) it.rawNoState++ else it.rawTimeMismatch++ }
+                return@forEachLine
+            }
             curMs = p[iMs].toLongOrNull() ?: curMs
             curWeek = r.second
             curTow = r.third - off * 1e-9               // epochos imtuvo laikas be signalo poslinkio
-            if (obs.none { it.svid == sv }) obs.add(Obs(sv, r.first))
+            if (obs.none { it.svid == sv }) { obs.add(Obs(sv, r.first)); diag?.let { it.rawAccepted++ } }
+            else diag?.let { it.rawDuplicate++ }
         }
         flush()
     }
@@ -405,17 +528,32 @@ object PositionSolver {
 
     /** Pagrindinis įėjimas: nuskaito failus, sprendžia ir rašo gnss_solver.csv. Grąžina sprendinius. */
     fun solveFiles(raw: File, nav: File, out: File): List<Pair<Long, Solution>> {
-        val ephs = readEphemerides(nav, firstWeek(raw))
+        val diag = Diag()
+        val ephs = readEphemerides(nav, firstWeek(raw), diag)
         val sols = ArrayList<Pair<Long, Solution>>()
         out.bufferedWriter().use { w ->
             w.write(SOLVER_HEADER)
-            readEpochs(raw) { ep ->
-                val s = solve(ep, ephs) ?: return@readEpochs
+            readEpochs(raw, diag) { ep ->
+                val s = solve(ep, ephs, diag) ?: return@readEpochs
                 sols.add(ep.timeMs to s)
                 w.write(String.format(Locale.US, "%d,%.8f,%.8f,%.2f,%d,%.2f\n", ep.timeMs, s.lat, s.lon, s.h, s.sats, s.hacc))
             }
         }
+        lastDiagText = diag.text(sols.size)
+        File(out.parentFile, DIAG_FILE).writeText(lastDiagText)
         return sols
+    }
+
+    const val DIAG_FILE = "gnss_solver_diag.txt"
+    /** Paskutinės solveFiles() diagnostikos tekstas. */
+    @Volatile var lastDiagText: String = ""
+
+    /** Savaitės laikas -> „d hh:mm:ss“. */
+    fun dhms(tow: Double): String {
+        val t = tow.toLong()
+        val d = t / 86400; val h = (t % 86400) / 3600; val m = (t % 3600) / 60; val sec = t % 60
+        val days = arrayOf("sk", "pr", "an", "tr", "kt", "pn", "št")
+        return "%s %02d:%02d:%02d".format(Locale.US, days.getOrElse(d.toInt()) { "?" }, h, m, sec)
     }
 
     /** Horizontalus atstumas (m) tarp dviejų taškų (laipsniai). */

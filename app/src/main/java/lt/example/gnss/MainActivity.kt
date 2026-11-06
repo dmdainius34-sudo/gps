@@ -1763,7 +1763,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
     }
 
-    private val skyR = 1.5
+    // Vienas RA/Dec -> I konvertavimas ir mvpI visiems dangaus objektams.
+    private val starR = 3.0                 // žvaigždės – tolimas fonas
+    private val ringR get() = SUN_DIST      // pusiaujas ir ekliptika – Saulės atstumu, kad Saulė gulėtų ant ekliptikos
+    private var eclCheckMs = 0L
     private val starCatalog = listOf(
         StarCat("Polaris", hms(2, 31, 49.0), dms(89, 15, 51.0), 1.98f, floatArrayOf(1f, 0.97f, 0.85f)),
         StarCat("Betelgeuse", hms(5, 55, 10.3), dms(7, 24, 25.0), 0.50f, floatArrayOf(1f, 0.6f, 0.35f)),
@@ -1781,9 +1784,29 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun hms(h: Int, m: Int, s: Double) = h + m / 60.0 + s / 3600.0
     private fun dms(d: Int, m: Int, s: Double) = d + m / 60.0 + s / 3600.0
 
-    /** Taškas I erdvėje: fP + dir × skyR. */
-    private fun skyPt(d: FloatArray) = floatArrayOf(
-        (fP[0] + d[0] * skyR).toFloat(), (fP[1] + d[1] * skyR).toFloat(), (fP[2] + d[2] * skyR).toFloat())
+    /** Taškas I erdvėje: fP + dir × r. */
+    private fun skyPt(d: FloatArray, r: Double) = floatArrayOf(
+        (fP[0] + d[0] * r).toFloat(), (fP[1] + d[1] * r).toFloat(), (fP[2] + d[2] * r).toFloat())
+
+    /** Ekliptinė platuma (laipsniais) krypčiai I erdvėje; ekliptikos polius = eclToEq(0, π/2). */
+    private fun eclLatDeg(d: DoubleArray): Double {
+        val pole = eclToEq(0.0, Math.PI / 2)
+        val dot = (d[0] * pole[0] + d[1] * pole[1] + d[2] * pole[2]) /
+            kotlin.math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).coerceAtLeast(1e-12)
+        return Math.toDegrees(kotlin.math.asin(dot.coerceIn(-1.0, 1.0)))
+    }
+
+    /** Kiekvieną kadrą: Saulė turi gulėti ant ekliptikos, Mėnulis – ±5° (5,3° su paklaida). */
+    private fun checkEcliptic() {
+        val sunB = eclLatDeg(sunDir())
+        val moonB = eclLatDeg(moonDir())
+        val ok = kotlin.math.abs(sunB) < 0.05 && kotlin.math.abs(moonB) <= 5.3
+        val now = System.currentTimeMillis()
+        if (!ok && now - eclCheckMs > 10_000L) {
+            eclCheckMs = now
+            android.util.Log.w("GnssApp", "Ekliptikos patikra: Saulė β=%.3f°, Mėnulis β=%.2f°".format(sunB, moonB))
+        }
+    }
 
     /** Aukštis > 0: taško kryptis nuo stebėtojo (fP) turi teigiamą projekciją į zenitą fU. */
     private fun aboveHorizon(p: FloatArray): Boolean =
@@ -1838,15 +1861,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     private fun drawSky() {
-        // Dangaus pusiaujas (Dec = 0) ir ekliptika (eclToEq(lon, 0)), spindulys 1,5
+        checkEcliptic()
+        // Dangaus pusiaujas (Dec = 0) ir ekliptika (eclToEq(lon, 0), nuolydis 23,4397°), spindulys = SUN_DIST
         val nRing = 180
         val eq = ArrayList<FloatArray>(nRing)
         val ecl = ArrayList<FloatArray>(nRing)
         for (i in 0 until nRing) {
             val a = 2.0 * Math.PI * i / nRing
-            eq.add(skyPt(floatArrayOf(cos(a).toFloat(), sin(a).toFloat(), 0f)))
+            eq.add(skyPt(floatArrayOf(cos(a).toFloat(), sin(a).toFloat(), 0f), ringR))
             val e = eclToEq(a, 0.0)
-            ecl.add(skyPt(floatArrayOf(e[0].toFloat(), e[1].toFloat(), e[2].toFloat())))
+            ecl.add(skyPt(floatArrayOf(e[0].toFloat(), e[1].toFloat(), e[2].toFloat()), ringR))
         }
         GLES20.glLineWidth(1.5f * density)
         drawLines(visibleSegments(eq, true), 0.55f, 0.85f, 1f, 0.55f)
@@ -1856,7 +1880,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // Oriono linijos
         val pos = HashMap<String, FloatArray>()
-        for (st in starCatalog) pos[st.name] = skyPt(st.dir)
+        for (st in starCatalog) pos[st.name] = skyPt(st.dir, starR)
         // Po horizontu – blankiai (orientacijai), virš – ryškiai
         val seg = ArrayList<Float>()
         val segDim = ArrayList<Float>()
@@ -1875,7 +1899,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val p = pos[st.name]!!
             val above = aboveHorizon(p)
             val k = ((2.5f - st.mag) / 2.4f).coerceIn(0f, 1f)          // 0..1
-            val size = (0.035f + 0.05f * k) * (if (above) 1f else 0.7f)
+            val size = (0.035f + 0.05f * k) * (if (above) 1f else 0.7f) * (starR / 1.5).toFloat()   // toliau – didesnės, kad regimas dydis nesikeistų
             val alpha = (0.55f + 0.45f * k) * (if (above) 1f else 0.3f)   // po horizontu – blanki
             billboard(p, eyeI, size, size, starTex, st.rgb[0], st.rgb[1], st.rgb[2], alpha)
             billboard(p, eyeI, size * 0.45f, size * 0.45f, starTex, 1f, 1f, 1f, alpha)

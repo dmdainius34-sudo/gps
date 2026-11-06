@@ -52,6 +52,7 @@ import android.hardware.SensorManager
 import android.location.GnssMeasurement
 import android.location.GnssMeasurementRequest
 import android.location.GnssMeasurementsEvent
+import android.location.GnssNavigationMessage
 import android.location.GnssStatus
 import android.location.Location
 import android.location.LocationListener
@@ -4006,6 +4007,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val navCallback = object : GnssNavigationMessage.Callback() {
+        override fun onGnssNavigationMessageReceived(event: GnssNavigationMessage) {
+            appendNav(event)
+        }
+    }
+
     private val locationListener = LocationListener { loc -> onLocation(loc) }
 
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -4174,6 +4181,7 @@ class MainActivity : AppCompatActivity() {
                 if ("raw" in sections) {
                     rawCsvUri()?.let { uris.add(it) }
                     fixCsvUri()?.let { uris.add(it) }
+                    navCsvUri()?.let { uris.add(it) }
                 }
                 // Ataskaita (su klausimu) visada kaip tekstinis failas
                 reportFileUri(report)?.let { uris.add(0, it) }
@@ -4191,6 +4199,7 @@ class MainActivity : AppCompatActivity() {
         panel.onCountdownStart = {
             // Atgalinio skaičiavimo pradžioje CSV buferis pradedamas iš naujo
             resetRawFile()
+            resetNavFile()
             resetRefStats()
             fixLog.setLength(0)
             fixLog.append(fixHeader)
@@ -4232,6 +4241,7 @@ class MainActivity : AppCompatActivity() {
         if (::skyDome.isInitialized) skyDome.stop()
         lm.unregisterGnssStatusCallback(statusCallback)
         lm.unregisterGnssMeasurementsCallback(measCallback)
+        lm.unregisterGnssNavigationMessageCallback(navCallback)
         lm.removeUpdates(locationListener)
     }
 
@@ -4244,6 +4254,7 @@ class MainActivity : AppCompatActivity() {
         }
         lm.registerGnssStatusCallback(statusCallback, mainHandler)
         if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
+        lm.registerGnssNavigationMessageCallback(navCallback, mainHandler)
         lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
     }
 
@@ -4549,6 +4560,54 @@ class MainActivity : AppCompatActivity() {
         FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
     } catch (e: Exception) {
         logError("CSV nepavyko: ${e.message}")
+        null
+    }
+
+    // ---------------- NAVIGACIJOS PRANEŠIMAI (CSV) ----------------
+    private val navHeader = "laikas_ms,konstelacija,svid,tipas,statusas,duomenys_hex\n"
+    private var navWriter: java.io.BufferedWriter? = null
+    private var navRows = 0L
+
+    /** Pradeda naują navigacijos pranešimų failą (kartu su gnss_raw.csv). */
+    private fun resetNavFile() {
+        try { navWriter?.close() } catch (_: Exception) {}
+        navRows = 0
+        navWriter = try {
+            java.io.BufferedWriter(java.io.FileWriter(File(cacheDir, "gnss_nav.csv"), false), 1 shl 14).also { it.write(navHeader) }
+        } catch (e: Exception) { logError("Navigacijos failas nepavyko: ${e.message}"); null }
+    }
+
+    /** Konsteliacija pagal getType() vyresnįjį baitą (0x01 GPS, 0x02 SBAS, 0x03 GLONASS, 0x04 QZSS, 0x05 BeiDou, 0x06 Galileo, 0x07 IRNSS). */
+    private fun navConst(type: Int): String = when ((type shr 8) and 0xFF) {
+        0x01 -> "GPS"; 0x02 -> "SBS"; 0x03 -> "GLO"; 0x04 -> "QZS"; 0x05 -> "BDS"; 0x06 -> "GAL"; 0x07 -> "NVC"
+        else -> "?"
+    }
+
+    private fun appendNav(n: GnssNavigationMessage) {
+        if (navWriter == null) resetNavFile()
+        if (navRows > 400_000) resetNavFile()
+        val data = n.data ?: ByteArray(0)
+        val hex = StringBuilder(data.size * 2)
+        for (b in data) {
+            val v = b.toInt() and 0xFF
+            hex.append(Character.forDigit(v shr 4, 16)).append(Character.forDigit(v and 0xF, 16))
+        }
+        try {
+            navWriter?.write("${System.currentTimeMillis()},${navConst(n.type)},${n.svid},${n.type},${n.status},$hex\n")
+            navRows++
+            if (navRows == 1L) android.util.Log.i("GnssApp", "gnss_nav.csv: gautas pirmas navigacijos pranešimas (${navConst(n.type)} ${n.svid})")
+        } catch (e: Exception) {
+            logError("Navigacijos įrašas nepavyko: ${e.message}")
+        }
+    }
+
+    private fun navCsvUri(): Uri? = try {
+        navWriter?.flush()
+        val file = File(cacheDir, "gnss_nav.csv")
+        if (!file.exists()) file.writeText(navHeader)
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+    } catch (e: Exception) {
+        logError("Navigacijos CSV nepavyko: ${e.message}")
         null
     }
 

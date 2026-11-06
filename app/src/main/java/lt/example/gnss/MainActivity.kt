@@ -1857,12 +1857,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Oriono linijos
         val pos = HashMap<String, FloatArray>()
         for (st in starCatalog) pos[st.name] = skyPt(st.dir)
+        // Po horizontu – blankiai (orientacijai), virš – ryškiai
         val seg = ArrayList<Float>()
+        val segDim = ArrayList<Float>()
         for ((a, b) in orionLines) {
             val pa = pos[a] ?: continue; val pb = pos[b] ?: continue
-            if (!aboveHorizon(pa) || !aboveHorizon(pb)) continue
-            seg.add(pa[0]); seg.add(pa[1]); seg.add(pa[2]); seg.add(pb[0]); seg.add(pb[1]); seg.add(pb[2])
+            val dst = if (aboveHorizon(pa) && aboveHorizon(pb)) seg else segDim
+            dst.add(pa[0]); dst.add(pa[1]); dst.add(pa[2]); dst.add(pb[0]); dst.add(pb[1]); dst.add(pb[2])
         }
+        drawLines(segDim.toFloatArray(), 0.7f, 0.8f, 1f, 0.15f)
         drawLines(seg.toFloatArray(), 0.7f, 0.8f, 1f, 0.5f)
         GLES20.glLineWidth(1f)
 
@@ -1870,10 +1873,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (starTex == 0) return
         for (st in starCatalog) {
             val p = pos[st.name]!!
-            if (!aboveHorizon(p)) continue
+            val above = aboveHorizon(p)
             val k = ((2.5f - st.mag) / 2.4f).coerceIn(0f, 1f)          // 0..1
-            val size = 0.035f + 0.05f * k
-            val alpha = 0.55f + 0.45f * k
+            val size = (0.035f + 0.05f * k) * (if (above) 1f else 0.7f)
+            val alpha = (0.55f + 0.45f * k) * (if (above) 1f else 0.3f)   // po horizontu – blanki
             billboard(p, eyeI, size, size, starTex, st.rgb[0], st.rgb[1], st.rgb[2], alpha)
             billboard(p, eyeI, size * 0.45f, size * 0.45f, starTex, 1f, 1f, 1f, alpha)
         }

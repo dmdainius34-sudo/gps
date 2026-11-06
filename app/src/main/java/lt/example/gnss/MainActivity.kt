@@ -1110,12 +1110,34 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     private val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val rotSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+    private val gyroSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+    private val gravSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_GRAVITY)
+        ?: sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
     private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val renderer = GlobeRenderer(context.applicationContext, resources.displayMetrics.density)
     private val handler = Handler(Looper.getMainLooper())
     private val calPrefs = context.getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
     private var offsetDeg = calPrefs.getFloat("offset", 0f)
-    private var declDeg = 0f
+    private var declDeg = calPrefs.getFloat("decl0", 0f)
+
+    // ---- Orientacijos sintezė: giroskopas + gravitacija (komplementarus filtras), magnetometras – tik pradžiai ----
+    /** Stabili šiaurė: po pradinio nustatymo posūkis (yaw) imamas tik iš giroskopo. */
+    var stableNorth = calPrefs.getBoolean("stable_north", true)
+        private set
+    private val fR = DoubleArray(9)          // įrenginys -> pasaulis (ENU), eilutėmis, kaip getRotationMatrixFromVector
+    private var fInit = false
+    private var lastGyroNs = 0L
+    private var gyroSteps = 0
+    private val gUp = DoubleArray(3)         // gravitacijos kryptis įrenginio koordinatėmis (normuota)
+    private var gValid = false
+    private var spikeSinceNs = 0L            // magnetinio šuolio pradžia (ne stabiliame režime)
+    private val tiltK = 0.02                 // 98 % giroskopas, 2 % akselerometras/gravitacija
+    private val yawK = 0.02                  // ne stabiliame režime – lėta yaw korekcija iš rotation vector
+
+    fun setStableNorth(on: Boolean) {
+        stableNorth = on
+        calPrefs.edit().putBoolean("stable_north", on).apply()
+    }
     private var running = false
     private var manual = false
     private var lastRaw = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
@@ -1143,14 +1165,21 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     fun setLocation(lat: Double, lon: Double, alt: Double) {
         renderer.setLocation(lat, lon)
+        // Stabili šiaurė: deklinacija taikoma tik pirmą kartą, vėliau – įrašyta reikšmė
+        if (stableNorth && calPrefs.contains("decl0")) {
+            declDeg = calPrefs.getFloat("decl0", 0f)
+            return
+        }
         declDeg = try {
             GeomagneticField(lat.toFloat(), lon.toFloat(), alt.toFloat(), System.currentTimeMillis()).declination
         } catch (e: Exception) { 0f }
+        if (stableNorth) calPrefs.edit().putFloat("decl0", declDeg).apply()
     }
 
     fun saveNorth() {
         offsetDeg += Math.toDegrees(renderer.northDeltaRad()).toFloat()
-        calPrefs.edit().putFloat("offset", offsetDeg).apply()
+        // Įrašytas kampas ir deklinacija lieka – magnetometras jų nebeatnaujina
+        calPrefs.edit().putFloat("offset", offsetDeg).putFloat("decl0", declDeg).putBoolean("north_saved", true).apply()
         renderer.resetUser()
         manual = false
         handler.removeCallbacks(resumeSensors)
@@ -1158,7 +1187,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     fun resetNorth() {
         offsetDeg = 0f
-        calPrefs.edit().putFloat("offset", 0f).apply()
+        calPrefs.edit().putFloat("offset", 0f).remove("decl0").remove("north_saved").apply()
+        fInit = false          // pradinė kryptis bus vėl paimta iš rotation vector
         renderer.resetUser()
         manual = false
     }
@@ -1167,7 +1197,10 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         if (running) return
         running = true
         onResume()
+        fInit = false; lastGyroNs = 0L; gValid = false
         rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        gyroSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        gravSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
     }
 
     fun stop() {
@@ -1179,8 +1212,137 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-        val raw = FloatArray(9)
-        SensorManager.getRotationMatrixFromVector(raw, event.values)
+        when (event.sensor.type) {
+            Sensor.TYPE_ROTATION_VECTOR -> onRotationVector(event)
+            Sensor.TYPE_GYROSCOPE -> onGyro(event)
+            Sensor.TYPE_GRAVITY, Sensor.TYPE_ACCELEROMETER -> onGravity(event)
+        }
+    }
+
+    private fun onRotationVector(event: SensorEvent) {
+        val rv = FloatArray(9)
+        SensorManager.getRotationMatrixFromVector(rv, event.values)
+        if (gyroSensor == null) {                      // be giroskopo – kaip anksčiau, tiesiai iš rotation vector
+            for (i in 0..8) fR[i] = rv[i].toDouble()
+            fInit = true
+            publish()
+            return
+        }
+        if (!fInit) {                                  // pradinė orientacija (vienintelis kartas, kai naudojamas magnetometras)
+            for (i in 0..8) fR[i] = rv[i].toDouble()
+            fInit = true
+            publish()
+            return
+        }
+        if (stableNorth) return                        // stabili šiaurė: magnetometro nebeklausome
+        // Lėta yaw korekcija; trumpi magnetiniai šuoliai (>20°, trumpiau nei 2 s) ignoruojami
+        // Δ = RV · Rᵀ – pasaulio posūkis nuo filtro iki rotation vector; imame jo dalį apie vertikalę
+        val d = DoubleArray(9)
+        for (i in 0..2) for (j in 0..2) {
+            var sum = 0.0
+            for (k in 0..2) sum += rv[i * 3 + k] * fR[j * 3 + k]
+            d[i * 3 + j] = sum
+        }
+        val yawErr = kotlin.math.atan2(d[3] - d[1], d[0] + d[4])
+        if (kotlin.math.abs(yawErr) > Math.toRadians(20.0)) {
+            if (spikeSinceNs == 0L) spikeSinceNs = event.timestamp
+            if (event.timestamp - spikeSinceNs < 2_000_000_000L) return
+        } else spikeSinceNs = 0L
+        rotWorldZ(yawK * yawErr)
+    }
+
+    private fun onGyro(event: SensorEvent) {
+        val ts = event.timestamp
+        val prev = lastGyroNs
+        lastGyroNs = ts
+        if (!fInit || prev == 0L) return
+        val dt = (ts - prev) / 1e9
+        if (dt <= 0.0 || dt > 0.2) return
+        val wx = event.values[0].toDouble(); val wy = event.values[1].toDouble(); val wz = event.values[2].toDouble()
+        val w = kotlin.math.sqrt(wx * wx + wy * wy + wz * wz)
+        if (w * dt > 1e-9) {
+            // R ← R · exp([ω]·dt) (posūkis įrenginio koordinatėmis)
+            val m = axisAngle(wx / w, wy / w, wz / w, w * dt)
+            val o = DoubleArray(9)
+            for (i in 0..2) for (j in 0..2) {
+                var sum = 0.0
+                for (k in 0..2) sum += fR[i * 3 + k] * m[k * 3 + j]
+                o[i * 3 + j] = sum
+            }
+            o.copyInto(fR)
+        }
+        if (++gyroSteps % 50 == 0) orthonormalize()
+        publish()
+    }
+
+    private fun onGravity(event: SensorEvent) {
+        val x = event.values[0].toDouble(); val y = event.values[1].toDouble(); val z = event.values[2].toDouble()
+        val n = kotlin.math.sqrt(x * x + y * y + z * z)
+        if (n < 1e-3) return
+        if (event.sensor.type == Sensor.TYPE_ACCELEROMETER && gValid) {
+            // akselerometras – žemo dažnio filtras
+            gUp[0] = 0.8 * gUp[0] + 0.2 * x / n; gUp[1] = 0.8 * gUp[1] + 0.2 * y / n; gUp[2] = 0.8 * gUp[2] + 0.2 * z / n
+        } else {
+            gUp[0] = x / n; gUp[1] = y / n; gUp[2] = z / n
+        }
+        gValid = true
+        if (!fInit || gyroSensor == null) return
+        // Pitch/roll korekcija: R·g turi rodyti į pasaulio viršų (0,0,1); posūkis tik apie horizontalią ašį
+        val ux = fR[0] * gUp[0] + fR[1] * gUp[1] + fR[2] * gUp[2]
+        val uy = fR[3] * gUp[0] + fR[4] * gUp[1] + fR[5] * gUp[2]
+        val uz = fR[6] * gUp[0] + fR[7] * gUp[1] + fR[8] * gUp[2]
+        val ax = uy; val ay = -ux                      // u × z
+        val s = kotlin.math.sqrt(ax * ax + ay * ay)
+        if (s < 1e-9) return
+        val ang = kotlin.math.atan2(s, uz)
+        val c = axisAngle(ax / s, ay / s, 0.0, tiltK * ang)
+        val o = DoubleArray(9)
+        for (i in 0..2) for (j in 0..2) {
+            var sum = 0.0
+            for (k in 0..2) sum += c[i * 3 + k] * fR[k * 3 + j]
+            o[i * 3 + j] = sum
+        }
+        o.copyInto(fR)
+    }
+
+    /** Posūkis apie pasaulio vertikalę (tik yaw). */
+    private fun rotWorldZ(a: Double) {
+        val m = axisAngle(0.0, 0.0, 1.0, a)
+        val o = DoubleArray(9)
+        for (i in 0..2) for (j in 0..2) {
+            var sum = 0.0
+            for (k in 0..2) sum += m[i * 3 + k] * fR[k * 3 + j]
+            o[i * 3 + j] = sum
+        }
+        o.copyInto(fR)
+    }
+
+    private fun axisAngle(x: Double, y: Double, z: Double, th: Double): DoubleArray {
+        val c = cos(th); val s = sin(th); val t = 1 - c
+        return doubleArrayOf(
+            t * x * x + c, t * x * y - s * z, t * x * z + s * y,
+            t * x * y + s * z, t * y * y + c, t * y * z - s * x,
+            t * x * z - s * y, t * y * z + s * x, t * z * z + c)
+    }
+
+    /** Gram–Schmidt eilutėms, kad skaitinės paklaidos nesikauptų. */
+    private fun orthonormalize() {
+        fun norm(i: Int) {
+            val l = kotlin.math.sqrt(fR[i] * fR[i] + fR[i + 1] * fR[i + 1] + fR[i + 2] * fR[i + 2]).coerceAtLeast(1e-12)
+            fR[i] /= l; fR[i + 1] /= l; fR[i + 2] /= l
+        }
+        norm(0)
+        val d = fR[0] * fR[3] + fR[1] * fR[4] + fR[2] * fR[5]
+        fR[3] -= d * fR[0]; fR[4] -= d * fR[1]; fR[5] -= d * fR[2]
+        norm(3)
+        fR[6] = fR[1] * fR[5] - fR[2] * fR[4]
+        fR[7] = fR[2] * fR[3] - fR[0] * fR[5]
+        fR[8] = fR[0] * fR[4] - fR[1] * fR[3]
+    }
+
+    /** Filtro orientacija -> ekrano pasukimas -> šiaurės korekcija -> modelis (kaip anksčiau). */
+    private fun publish() {
+        val raw = FloatArray(9) { fR[it].toFloat() }
         val out = FloatArray(9)
         when (wm.defaultDisplay.rotation) {
             Surface.ROTATION_90 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_Y, SensorManager.AXIS_MINUS_X, out)
@@ -3909,6 +4071,15 @@ class MainActivity : AppCompatActivity() {
         }
         left.addView(btnSaveN, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnResetN, LinearLayout.LayoutParams(mw, ww))
+        val cbStableN = CheckBox(this).apply {
+            text = "Stabili šiaurė (ignoruoti magnetometrą)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("stable_north", true)
+            setOnCheckedChangeListener { _, on ->
+                if (::skyDome.isInitialized) skyDome.setStableNorth(on)
+                else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("stable_north", on).apply()
+            }
+        }
+        left.addView(cbStableN, LinearLayout.LayoutParams(mw, ww))
         left.addView(info, LinearLayout.LayoutParams(mw, ww))
 
         val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }

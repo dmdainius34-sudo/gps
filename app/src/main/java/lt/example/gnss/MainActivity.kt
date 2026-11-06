@@ -1908,17 +1908,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     private fun drawSky() {
         checkEcliptic()
-        // Dangaus pusiaujas (Dec = 0), spindulys = SUN_DIST; ekliptiką atstoja Žemės orbita aplink Saulę
-        val nRing = 180
-        val eq = ArrayList<FloatArray>(nRing)
-        for (i in 0 until nRing) {
-            val a = 2.0 * Math.PI * i / nRing
-            eq.add(skyPt(floatArrayOf(cos(a).toFloat(), sin(a).toFloat(), 0f), ringR))
-        }
+        // Žemės orbita aplink Saulę (dangaus pusiaujo žiedas pašalintas)
         GLES20.glLineWidth(1.5f * density)
-        drawLines(visibleSegments(eq, true), 0.55f, 0.85f, 1f, 0.55f)
         drawEarthOrbit()
-        ringLabel(eq, "Dangaus pusiaujas", 0.55f, 0.85f, 1f)
 
         // Oriono linijos
         val pos = HashMap<String, FloatArray>()

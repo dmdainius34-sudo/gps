@@ -4208,7 +4208,7 @@ class MainActivity : AppCompatActivity() {
         panel.onCountdownStart = {
             // Atgalinio skaičiavimo pradžioje CSV buferis pradedamas iš naujo
             resetRawFile()
-            resetNavFile()
+            // gnss_nav.csv neištrinamas: efemeridėms reikia ir senesnių subkadrų; laikomas iki dalinimosi
             resetRefStats()
             fixLog.setLength(0)
             fixLog.append(fixHeader)
@@ -4581,6 +4581,7 @@ class MainActivity : AppCompatActivity() {
     private var navWriter: java.io.BufferedWriter? = null
     private var navRows = 0L
     private var navMsgCount = 0L
+    private var navWritten = 0L
     private var navRegistered = false
 
     /** Pradeda naują navigacijos pranešimų failą (kartu su gnss_raw.csv). */
@@ -4608,8 +4609,12 @@ class MainActivity : AppCompatActivity() {
             hex.append(Character.forDigit(v shr 4, 16)).append(Character.forDigit(v and 0xF, 16))
         }
         try {
-            navWriter?.write("${System.currentTimeMillis()},${navConst(n.type)},${n.svid},${n.type},${n.status},$hex\n")
+            val w = navWriter ?: run { resetNavFile(); navWriter }
+            if (w == null) return
+            w.write("${System.currentTimeMillis()},${navConst(n.type)},${n.svid},${n.type},${n.status},$hex\n")
+            w.flush()                                   // kiekvienas pranešimas iškart faile
             navRows++
+            navWritten++
             if (navRows == 1L) android.util.Log.i("GnssApp", "gnss_nav.csv: gautas pirmas navigacijos pranešimas (${navConst(n.type)} ${n.svid})")
         } catch (e: Exception) {
             logError("Navigacijos įrašas nepavyko: ${e.message}")
@@ -4745,7 +4750,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("=== PALYDOVAI ===")
             appendLine(satText)
             appendLine(measText)
-            appendLine("Navigacinių žinučių gauta: $navMsgCount")
+            appendLine("Navigacinių žinučių gauta: $navMsgCount, įrašyta į gnss_nav.csv: $navWritten")
             appendLine("Navigacijos klausytojas: ${if (navRegistered) "užregistruotas" else "neužregistruotas"}")
             appendLine("Palydovų sąrašas:")
             lastSats.sortedWith(compareBy({ it.const }, { it.svid })).forEach { s ->

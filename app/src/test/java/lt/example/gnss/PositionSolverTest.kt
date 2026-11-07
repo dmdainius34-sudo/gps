@@ -93,11 +93,25 @@ class PositionSolverTest {
         w[0] = 0x8B shl 16
         w[1] = ((towCount and 0x1FFFF) shl 7) or (id shl 2)        // HOW: TOW skaičius (×6 s) ir subkadro ID
         fill(w)
+        // IS-GPS-200 paritetas ir inversija pagal ankstesnio žodžio D30*
+        val ham = intArrayOf(0xBB1F3480.toInt(), 0x5D8F9A40, 0xAEC7CD00.toInt(), 0x5763E680, 0x6BB1F340, 0x8B7A89C0.toInt())
         val b = ByteArray(40)
+        var prev = 0
         for (i in 0 until 10) {
-            val v = (w[i] and 0xFFFFFF) shl 6           // D30 = 0 -> be inversijos
+            val d = w[i] and 0xFFFFFF
+            val ww = (prev shl 30) or (d shl 6)
+            var par = 0
+            for (h in ham) {
+                par = par shl 1
+                var x = (ww and h) ushr 6; var bit = 0
+                while (x != 0) { bit = bit xor (x and 1); x = x ushr 1 }
+                par = par or bit
+            }
+            val tx = (if (prev and 1 == 1) d.inv() and 0xFFFFFF else d)
+            val v = (tx shl 6) or par                 // 30 bitų žodis jaunesniuose bituose
             b[4 * i] = (v ushr 24).toByte(); b[4 * i + 1] = (v ushr 16).toByte()
             b[4 * i + 2] = (v ushr 8).toByte(); b[4 * i + 3] = v.toByte()
+            prev = v and 0x3
         }
         return b
     }
@@ -136,6 +150,8 @@ class PositionSolverTest {
         val s2 = PositionSolver.subframeFromBytes(sf2)!!
         val s3 = PositionSolver.subframeFromBytes(sf3)!!
         assertEquals(1, s1.id); assertEquals(2, s2.id); assertEquals(3, s3.id)
+        // Visi žodžiai praeina pariteto patikrą
+        assertEquals(10, s1.parityOk); assertEquals(10, s2.parityOk); assertEquals(10, s3.parityOk)
         val d = PositionSolver.decodeEphemeris(7, s1, s2, s3, week)!!
         assertEquals(week, d.week)
         assertEquals(e.sqrtA, d.sqrtA, 1e-5)

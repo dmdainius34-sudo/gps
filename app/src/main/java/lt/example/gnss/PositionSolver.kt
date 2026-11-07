@@ -64,9 +64,87 @@ object PositionSolver {
         var preamble = 0          // rasta preambulė 0x8B (1 žodžio pradžioje)
         var parityOk = 0          // žodžių su teisingu paritetu
         var parityBad = 0
-        var alignLow = 0          // 30 bitų žodyje – jaunesnieji bitai (B31–B32 praleisti)
-        var alignHigh = 0         // 30 bitų žodyje – vyresnieji bitai
+        var chosen: Alignment = DEFAULT_ALIGNMENT
+        var chosenCount = 0
+        var top: List<Pair<Alignment, Int>> = emptyList()
     }
+
+    /**
+     * Žodžių išdėstymas 320 bitų sraute (40 baitų): pirmojo žodžio bitų poslinkis, žingsnis tarp žodžių
+     * (30 arba 32 bitai) ir poliškumas (inverted – visi bitai apversti).
+     */
+    data class Alignment(val offset: Int, val stride: Int, val inverted: Boolean) {
+        override fun toString() = "poslinkis $offset b, žingsnis $stride b, poliškumas ${if (inverted) "invertuotas" else "normalus"}"
+    }
+
+    /** Numatytasis (Android dokumentacija): 30 bitų žodis 32 bitų žodžio jaunesniuose bituose. */
+    val DEFAULT_ALIGNMENT = Alignment(offset = 2, stride = 32, inverted = false)
+
+    /** Šiam failui parinktas išdėstymas (nustatomas readEphemerides()). */
+    @Volatile var alignment: Alignment = DEFAULT_ALIGNMENT
+
+    /** Bitai [pos, pos+len) iš baitų srauto (vyriausias bitas pirmas), len ≤ 32. */
+    private fun bits(data: ByteArray, pos: Int, len: Int): Int {
+        var v = 0L
+        for (k in 0 until len) {
+            val b = pos + k
+            val bit = (data[b ushr 3].toInt() ushr (7 - (b and 7))) and 1
+            v = (v shl 1) or bit.toLong()
+        }
+        return v.toInt()
+    }
+
+    /** Ar visi 10 žodžių (po 30 bitų) telpa į pranešimą su šiuo išdėstymu. */
+    private fun fits(a: Alignment, nBits: Int) = a.offset + 9 * a.stride + 30 <= nBits
+
+    /** Visi kandidatai: poslinkis 0–31, žingsnis 30/32, abu poliškumai (tik tie, kur telpa 10 žodžių). */
+    fun candidates(nBits: Int = 320): List<Alignment> {
+        val out = ArrayList<Alignment>()
+        for (o in 0..31) for (st in intArrayOf(30, 32)) for (inv in booleanArrayOf(false, true)) {
+            val a = Alignment(o, st, inv)
+            if (fits(a, nBits)) out.add(a)
+        }
+        return out
+    }
+
+    /** Kiek žodžių pradžių (kas stride bitų) turi preambulę 10001011 su šiuo išdėstymu. */
+    fun preambleCount(data: ByteArray, a: Alignment): Int {
+        var n = 0
+        for (i in 0 until 10) {
+            val pos = a.offset + i * a.stride
+            if (pos + 8 > data.size * 8) break
+            var v = bits(data, pos, 8)
+            if (a.inverted) v = v.inv() and 0xFF
+            if (v == 0x8B) n++
+        }
+        return n
+    }
+
+    /** Parenka išdėstymą su daugiausia preambulių per visus pranešimus; grąžina visų kandidatų rezultatus. */
+    fun chooseAlignment(messages: List<ByteArray>): List<Pair<Alignment, Int>> {
+        val cands = candidates()
+        val score = IntArray(cands.size)
+        for (m in messages) {
+            if (m.size < 40) continue
+            for ((k, a) in cands.withIndex()) score[k] += preambleCount(m, a)
+        }
+        // Preambulė yra tik 1 žodyje, todėl skirtingi žingsniai (30/32) su tuo pačiu poslinkiu gali surinkti vienodai –
+        // lygiems (≥ 90 % maksimumo) kandidatams papildomai skaičiuojami žodžiai, praėję paritetą.
+        val max = score.maxOrNull() ?: 0
+        val parity = IntArray(cands.size)
+        if (max > 0) for ((k, a) in cands.withIndex()) {
+            if (score[k] * 10 < max * 9) continue
+            for (m in messages) parity[k] += subframeFromBytes(m, null, a)?.parityOk ?: 0
+        }
+        lastParityScore = cands.indices.associate { cands[it] to parity[it] }
+        return cands.indices.sortedWith(
+            compareByDescending<Int> { score[it] }.thenByDescending { parity[it] }
+                .thenBy { if (cands[it] == DEFAULT_ALIGNMENT) 0 else 1 }
+        ).map { cands[it] to score[it] }
+    }
+
+    /** Paskutinio chooseAlignment() pariteto balai (žodžių su teisingu paritetu) lygiems kandidatams. */
+    @Volatile var lastParityScore: Map<Alignment, Int> = emptyMap()
 
     private val HAMMING = intArrayOf(
         0xBB1F3480.toInt(), 0x5D8F9A40, 0xAEC7CD00.toInt(), 0x5763E680, 0x6BB1F340, 0x8B7A89C0.toInt())
@@ -90,51 +168,39 @@ object PositionSolver {
     }
 
     /**
-     * 40 baitų (10 žodžių po 4 baitus) -> subkadras. Kiekviename 4 baitų žodyje 30 bitų žodis gali būti
-     * jaunesniuose (Android dokumentacija) arba vyresniuose bituose – išbandomi abu, pasirenkamas tas, kur
-     * 1 žodžio pradžioje randama preambulė 10001011 ir daugiau žodžių praeina paritetą.
-     * Duomenų inversija – pagal ankstesnio žodžio D30*; D29* ir D30* naudojami pariteto skaičiavimui.
+     * 40 baitų -> subkadras pagal parinktą išdėstymą (alignment): 10 žodžių po 30 bitų,
+     * IS-GPS-200 pariteto patikra (D29*, D30* iš ankstesnio žodžio), duomenų inversija pagal D30*,
+     * preambulė 10001011 1 žodžio pradžioje.
      */
-    fun subframeFromBytes(data: ByteArray, stats: UnpackStats? = null): Subframe? {
-        if (data.size < 40) return null
+    fun subframeFromBytes(data: ByteArray, stats: UnpackStats? = null, align: Alignment = alignment): Subframe? {
+        if (data.size < 40 || !fits(align, data.size * 8)) return null
         stats?.let { it.unpacked++ }
-        val raw = IntArray(10) { i ->
-            ((data[4 * i].toInt() and 0xFF) shl 24) or ((data[4 * i + 1].toInt() and 0xFF) shl 16) or
-                ((data[4 * i + 2].toInt() and 0xFF) shl 8) or (data[4 * i + 3].toInt() and 0xFF)
+        val w30 = IntArray(10) { i ->
+            val v = bits(data, align.offset + i * align.stride, 30)
+            if (align.inverted) v.inv() and 0x3FFFFFFF else v
         }
-        var best: Subframe? = null
-        var bestHigh = false
-        for (high in booleanArrayOf(false, true)) {
-            val w30 = IntArray(10) { if (high) raw[it] ushr 2 else raw[it] and 0x3FFFFFFF }
-            // 1 žodis: ankstesnio subkadro 10 žodžio D29*/D30* = 0 (t bitai), bet leidžiame ir invertuotą preambulę
-            val words = IntArray(10)
-            var ok = 0
-            var prev = 0                                            // D29*, D30* (2 bitai)
-            for (i in 0 until 10) {
-                var d = checkWord((prev shl 30) or w30[i])
-                if (i == 0 && d < 0) {
-                    for (p0 in 1..3) { d = checkWord((p0 shl 30) or w30[i]); if (d >= 0) break }
-                }
-                if (d >= 0) ok++ else {
-                    // paritetas neteisingas – duomenys pagal D30* taisyklę (be pariteto)
-                    d = (w30[i] ushr 6) and 0xFFFFFF
-                    val inv = if (i == 0) ((d ushr 16) and 0xFF) == 0x74 else (prev and 1) == 1
-                    if (inv) d = d.inv() and 0xFFFFFF
-                }
-                words[i] = d
-                prev = w30[i] and 0x3
+        val words = IntArray(10)
+        var ok = 0
+        var prev = 0                                                // ankstesnio žodžio D29*, D30*
+        for (i in 0 until 10) {
+            var d = checkWord((prev shl 30) or w30[i])
+            if (i == 0 && d < 0) {
+                // 1 žodžiui ankstesnio subkadro D29*/D30* nežinomi – bandomi visi
+                for (p0 in 1..3) { d = checkWord((p0 shl 30) or w30[i]); if (d >= 0) break }
             }
-            if (((words[0] ushr 16) and 0xFF) != 0x8B) continue
-            val id = (words[1] ushr 2) and 0x7
-            if (id !in 1..5) continue
-            if (best == null || ok > best.parityOk) { best = Subframe(id, words, ok); bestHigh = high }
+            if (d >= 0) ok++ else {
+                d = (w30[i] ushr 6) and 0xFFFFFF
+                val inv = if (i == 0) ((d ushr 16) and 0xFF) == 0x74 else (prev and 1) == 1
+                if (inv) d = d.inv() and 0xFFFFFF
+            }
+            words[i] = d
+            prev = w30[i] and 0x3
         }
-        if (best != null && stats != null) {
-            stats.preamble++
-            stats.parityOk += best.parityOk; stats.parityBad += 10 - best.parityOk
-            if (bestHigh) stats.alignHigh++ else stats.alignLow++
-        }
-        return best
+        if (((words[0] ushr 16) and 0xFF) != 0x8B) return null
+        val id = (words[1] ushr 2) and 0x7
+        if (id !in 1..5) return null
+        if (stats != null) { stats.preamble++; stats.parityOk += ok; stats.parityBad += 10 - ok }
+        return Subframe(id, words, ok)
     }
 
     /** Žodžio (1..10) bitai [start, start+len) (1 – vyriausias iš 24). */
@@ -277,7 +343,12 @@ object PositionSolver {
             appendLine("GPS pranešimų išpakuota į 10 žodžių: ${unpack.unpacked}")
             appendLine("Rasta preambulių 0x8B (1 žodžio pradžioje): ${unpack.preamble}")
             appendLine("Žodžių su teisingu paritetu: ${unpack.parityOk}, su klaidingu: ${unpack.parityBad}")
-            appendLine("30 bitų išdėstymas: jaunesnieji bitai ${unpack.alignLow}, vyresnieji ${unpack.alignHigh}")
+            appendLine("Parinktas žodžių išdėstymas: ${unpack.chosen}; preambulių su juo: ${unpack.chosenCount}")
+            appendLine("Geriausi 3 kandidatai:")
+            if (unpack.top.isEmpty()) appendLine("  (nėra GPS pranešimų)")
+            unpack.top.forEachIndexed { k, (a, n) ->
+                appendLine("  ${k + 1}. $a – preambulių $n, žodžių su teisingu paritetu ${lastParityScore[a] ?: 0}")
+            }
             appendLine("Neiššifruotų subkadrų (nėra preambulės/ID): $navBadSubframe")
             appendLine("Pirmasis iššifruotas subkadras: ${firstSfInfo ?: "nėra"}")
             appendLine("Pirmasis navigacijos TOW (HOW TOW × 6): ${firstNavTow ?: "nėra"}")
@@ -479,6 +550,25 @@ object PositionSolver {
         val out = HashMap<Int, MutableList<Ephemeris>>()
         if (!nav.exists()) return out
         val last = HashMap<Int, Array<Subframe?>>()
+        // 1 praėjimas: žodžių išdėstymo paieška per visus GPS L1 C/A pranešimus
+        val msgs = ArrayList<ByteArray>()
+        nav.bufferedReader().use { br ->
+            val head = br.readLine()?.split(',') ?: return out
+            val iC = head.indexOf("konstelacija"); val iT = head.indexOf("tipas"); val iH = head.indexOf("duomenys_hex")
+            if (minOf(iC, iT, iH) < 0) return out
+            br.forEachLine { line ->
+                val p = line.split(',')
+                if (p.size > iH && p[iC] == "GPS" && p[iT].toIntOrNull() == NAV_TYPE_GPS_L1CA) msgs.add(hexToBytes(p[iH]))
+            }
+        }
+        val ranked = chooseAlignment(msgs)
+        alignment = ranked.firstOrNull()?.takeIf { it.second > 0 }?.first ?: DEFAULT_ALIGNMENT
+        diag?.unpack?.let { u ->
+            u.chosen = alignment
+            u.chosenCount = ranked.firstOrNull { it.first == alignment }?.second ?: 0
+            u.top = ranked.take(3)
+        }
+        // 2 praėjimas: išpakavimas tik su parinktu išdėstymu
         nav.bufferedReader().use { br ->
             val head = br.readLine()?.split(',') ?: return out
             val iConst = head.indexOf("konstelacija"); val iSv = head.indexOf("svid")

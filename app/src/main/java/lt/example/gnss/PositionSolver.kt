@@ -93,7 +93,7 @@ object PositionSolver {
      * 40 baitų (10 žodžių po 4 baitus) -> subkadras. Kiekviename 4 baitų žodyje 30 bitų žodis gali būti
      * jaunesniuose (Android dokumentacija) arba vyresniuose bituose – išbandomi abu, pasirenkamas tas, kur
      * 1 žodžio pradžioje randama preambulė 10001011 ir daugiau žodžių praeina paritetą.
-     * Duomenų inversija – pagal ankstesnio žodžio D30*, D29*/D30* naudojami pariteto skaičiavimui.
+     * Duomenų inversija – pagal ankstesnio žodžio D30*; D29* ir D30* naudojami pariteto skaičiavimui.
      */
     fun subframeFromBytes(data: ByteArray, stats: UnpackStats? = null): Subframe? {
         if (data.size < 40) return null

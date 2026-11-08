@@ -149,32 +149,39 @@ object PositionSolver {
     /** Paskutinio chooseAlignment() pariteto balai (žodžių su teisingu paritetu) lygiems kandidatams. */
     @Volatile var lastParityScore: Map<Alignment, Int> = emptyMap()
 
-    private val HAMMING = intArrayOf(
-        0xBB1F3480.toInt(), 0x5D8F9A40, 0xAEC7CD00.toInt(), 0x5763E680, 0x6BB1F340, 0x8B7A89C0.toInt())
+    /**
+     * IS-GPS-200 pariteto lygtys (20-XIV lentelė): kiekvienam D25..D30 – D29* arba D30* ir šaltinio
+     * duomenų bitų d1..d24 numeriai (d_i = D_i ⊕ D30*).
+     */
+    private val PARITY_EQ: Array<Pair<Int, IntArray>> = arrayOf(
+        29 to intArrayOf(1, 2, 3, 5, 6, 10, 11, 12, 13, 14, 17, 18, 20, 23),          // D25
+        30 to intArrayOf(2, 3, 4, 6, 7, 11, 12, 13, 14, 15, 18, 19, 21, 24),          // D26
+        29 to intArrayOf(1, 3, 4, 5, 7, 8, 12, 13, 14, 15, 16, 19, 20, 22),           // D27
+        30 to intArrayOf(2, 4, 5, 6, 8, 9, 13, 14, 15, 16, 17, 20, 21, 23),           // D28
+        30 to intArrayOf(1, 3, 5, 6, 7, 9, 10, 14, 15, 16, 17, 18, 21, 22, 24),       // D29
+        29 to intArrayOf(3, 5, 6, 8, 9, 10, 11, 13, 15, 19, 22, 23, 24),              // D30
+    )
 
     /**
-     * IS-GPS-200 pariteto patikra. w32: bitai 31–30 = ankstesnio žodžio D29*, D30*; bitai 29–0 = šis 30 bitų žodis.
-     * Grąžina 24 duomenų bitus (jau su inversija pagal D30*) arba −1, jei paritetas neteisingas.
+     * Pariteto patikra pagal IS-GPS-200. w32: bitai 31–30 = ankstesnio žodžio D29*, D30* (kaip perduoti);
+     * bitai 29–0 = šis žodis D1..D30 (D1 – vyriausias). Jei D30* = 1, D1..D24 invertuojami (gaunami d1..d24),
+     * iš jų ir D29*, D30* apskaičiuojami D25..D30 ir lyginami su perduotais.
+     * Grąžina d1..d24 (24 bitai) arba −1, jei paritetas nesutampa.
      */
-    fun checkWord(w32In: Int): Int {
-        var w = w32In
-        if (w and 0x40000000 != 0) w = w xor 0x3FFFFFC0            // D30* = 1 -> d1..d24 invertuoti
+    fun checkWord(w32: Int): Int {
+        val d29s = (w32 ushr 31) and 1
+        val d30s = (w32 ushr 30) and 1
+        var data = (w32 ushr 6) and 0xFFFFFF                    // D1..D24 (D1 = bitas 23)
+        if (d30s == 1) data = data.inv() and 0xFFFFFF           // d_i = D_i ⊕ D30*
         var parity = 0
-        for (h in HAMMING) {
-            parity = parity shl 1
-            var x = (w and h) ushr 6
-            var b = 0
-            while (x != 0) { b = b xor (x and 1); x = x ushr 1 }
-            parity = parity or b
+        for ((star, idx) in PARITY_EQ) {
+            var b = if (star == 29) d29s else d30s
+            for (i in idx) b = b xor ((data ushr (24 - i)) and 1)
+            parity = (parity shl 1) or b
         }
-        return if (parity == (w and 0x3F)) (w ushr 6) and 0xFFFFFF else -1
+        return if (parity == (w32 and 0x3F)) data else -1
     }
 
-    /**
-     * 40 baitų -> subkadras pagal parinktą išdėstymą (alignment): 10 žodžių po 30 bitų,
-     * IS-GPS-200 pariteto patikra (D29*, D30* iš ankstesnio žodžio), duomenų inversija pagal D30*,
-     * preambulė 10001011 1 žodžio pradžioje.
-     */
     /** Išpakuoti 10 žodžių: 24 duomenų bitai kiekvienam ir kiek žodžių praėjo paritetą. */
     class Decoded(val words: IntArray, val parityOk: Int)
 

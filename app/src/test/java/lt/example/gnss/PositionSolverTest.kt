@@ -166,6 +166,33 @@ class PositionSolverTest {
         assertTrue("padėties skirtumas $dist m", dist < 1.0)
     }
 
+    /** Nepriklausomas ICD koduotojas: d1..d24 + D29*, D30* -> perduotas 30 bitų žodis; checkWord turi jį priimti. */
+    @Test
+    fun parityMatchesIcdEquations() {
+        val eq = arrayOf(
+            29 to intArrayOf(1, 2, 3, 5, 6, 10, 11, 12, 13, 14, 17, 18, 20, 23),
+            30 to intArrayOf(2, 3, 4, 6, 7, 11, 12, 13, 14, 15, 18, 19, 21, 24),
+            29 to intArrayOf(1, 3, 4, 5, 7, 8, 12, 13, 14, 15, 16, 19, 20, 22),
+            30 to intArrayOf(2, 4, 5, 6, 8, 9, 13, 14, 15, 16, 17, 20, 21, 23),
+            30 to intArrayOf(1, 3, 5, 6, 7, 9, 10, 14, 15, 16, 17, 18, 21, 22, 24),
+            29 to intArrayOf(3, 5, 6, 8, 9, 10, 11, 13, 15, 19, 22, 23, 24))
+        val rnd = java.util.Random(1)
+        repeat(2000) {
+            val d = rnd.nextInt(1 shl 24)
+            val p29 = rnd.nextInt(2); val p30 = rnd.nextInt(2)
+            var par = 0
+            for ((star, idx) in eq) {
+                var b = if (star == 29) p29 else p30
+                for (i in idx) b = b xor ((d ushr (24 - i)) and 1)
+                par = (par shl 1) or b
+            }
+            val tx = if (p30 == 1) d.inv() and 0xFFFFFF else d
+            val w32 = (p29 shl 31) or (p30 shl 30) or (tx shl 6) or par
+            assertEquals(d, PositionSolver.checkWord(w32))
+            assertEquals(-1, PositionSolver.checkWord(w32 xor 1))       // sugadintas paritetas
+        }
+    }
+
     @Test
     fun pseudorangeFromRawFields() {
         val weekNs = 604_800_000_000_000L

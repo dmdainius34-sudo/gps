@@ -64,6 +64,9 @@ object PositionSolver {
         var preamble = 0          // rasta preambulė 0x8B (1 žodžio pradžioje)
         var parityOk = 0          // žodžių su teisingu paritetu
         var parityBad = 0
+        var rejParity = 0         // subkadrų atmesta: ne visi 10 žodžių praėjo paritetą
+        var rejTow = 0            // subkadrų atmesta: HOW TOW × 6 ≥ 604800 s
+        var lastParityOk = 0
         var chosen: Alignment = DEFAULT_ALIGNMENT
         var chosenCount = 0
         var top: List<Pair<Alignment, Int>> = emptyList()
@@ -134,7 +137,7 @@ object PositionSolver {
         val parity = IntArray(cands.size)
         if (max > 0) for ((k, a) in cands.withIndex()) {
             if (score[k] * 10 < max * 9) continue
-            for (m in messages) parity[k] += subframeFromBytes(m, null, a)?.parityOk ?: 0
+            for (m in messages) parity[k] += decodeWords(m, a)?.parityOk ?: 0
         }
         lastParityScore = cands.indices.associate { cands[it] to parity[it] }
         return cands.indices.sortedWith(
@@ -172,35 +175,50 @@ object PositionSolver {
      * IS-GPS-200 pariteto patikra (D29*, D30* iš ankstesnio žodžio), duomenų inversija pagal D30*,
      * preambulė 10001011 1 žodžio pradžioje.
      */
-    fun subframeFromBytes(data: ByteArray, stats: UnpackStats? = null, align: Alignment = alignment): Subframe? {
+    /** Išpakuoti 10 žodžių: 24 duomenų bitai kiekvienam ir kiek žodžių praėjo paritetą. */
+    class Decoded(val words: IntArray, val parityOk: Int)
+
+    /**
+     * 10 žodžių po 30 bitų pagal išdėstymą. Kiekvienam žodžiui k = 1..10 – standartinė GPS L1 C/A pariteto patikra:
+     * D29*, D30* imami iš ankstesnio žodžio (1 žodžiui D29* = D30* = 0); jei D30* = 1, 24 duomenų bitai invertuojami.
+     */
+    fun decodeWords(data: ByteArray, align: Alignment = alignment): Decoded? {
         if (data.size < 40 || !fits(align, data.size * 8)) return null
-        stats?.let { it.unpacked++ }
         val w30 = IntArray(10) { i ->
             val v = bits(data, align.offset + i * align.stride, 30)
             if (align.inverted) v.inv() and 0x3FFFFFFF else v
         }
         val words = IntArray(10)
         var ok = 0
-        var prev = 0                                                // ankstesnio žodžio D29*, D30*
+        var prev = 0                                                // 1 žodžiui D29* = D30* = 0
         for (i in 0 until 10) {
             var d = checkWord((prev shl 30) or w30[i])
-            if (i == 0 && d < 0) {
-                // 1 žodžiui ankstesnio subkadro D29*/D30* nežinomi – bandomi visi
-                for (p0 in 1..3) { d = checkWord((p0 shl 30) or w30[i]); if (d >= 0) break }
-            }
             if (d >= 0) ok++ else {
                 d = (w30[i] ushr 6) and 0xFFFFFF
-                val inv = if (i == 0) ((d ushr 16) and 0xFF) == 0x74 else (prev and 1) == 1
-                if (inv) d = d.inv() and 0xFFFFFF
+                if (prev and 1 == 1) d = d.inv() and 0xFFFFFF
             }
             words[i] = d
             prev = w30[i] and 0x3
         }
+        return Decoded(words, ok)
+    }
+
+    /**
+     * Subkadras priimamas tik jei: rasta preambulė 0x8B, visi 10 žodžių praėjo paritetą,
+     * subkadro ID 1–5 ir HOW TOW × 6 yra [0, 604800) s.
+     */
+    fun subframeFromBytes(data: ByteArray, stats: UnpackStats? = null, align: Alignment = alignment): Subframe? {
+        val dec = decodeWords(data, align) ?: return null
+        stats?.let { it.unpacked++; it.lastParityOk = dec.parityOk; it.parityOk += dec.parityOk; it.parityBad += 10 - dec.parityOk }
+        val words = dec.words
         if (((words[0] ushr 16) and 0xFF) != 0x8B) return null
+        stats?.let { it.preamble++ }
+        if (dec.parityOk < 10) { stats?.let { it.rejParity++ }; return null }
         val id = (words[1] ushr 2) and 0x7
         if (id !in 1..5) return null
-        if (stats != null) { stats.preamble++; stats.parityOk += ok; stats.parityBad += 10 - ok }
-        return Subframe(id, words, ok)
+        val tow = ((words[1] ushr 7) and 0x1FFFF).toLong() * 6
+        if (tow < 0 || tow >= 604_800L) { stats?.let { it.rejTow++ }; return null }
+        return Subframe(id, words, dec.parityOk)
     }
 
     /** Žodžio (1..10) bitai [start, start+len) (1 – vyriausias iš 24). */
@@ -315,7 +333,8 @@ object PositionSolver {
         // navigacija
         var navRows = 0; var navGps = 0; var navGpsL1ca = 0; var navBadSubframe = 0
         val unpack = UnpackStats()
-        val subframesPerSv = java.util.TreeMap<Int, IntArray>()       // [sf1, sf2, sf3, sf4, sf5]
+        val subframesPerSv = java.util.TreeMap<Int, IntArray>()       // priimti [sf1, sf2, sf3, sf4, sf5]
+        val parityPerSv = java.util.TreeMap<Int, IntArray>()          // [žodžių su teisingu paritetu, iš viso]
         val ephPerSv = java.util.TreeMap<Int, Int>()
         val ephFailPerSv = java.util.TreeMap<Int, Int>()
         var firstSfInfo: String? = null
@@ -349,11 +368,18 @@ object PositionSolver {
             unpack.top.forEachIndexed { k, (a, n) ->
                 appendLine("  ${k + 1}. $a – preambulių $n, žodžių su teisingu paritetu ${lastParityScore[a] ?: 0}")
             }
-            appendLine("Neiššifruotų subkadrų (nėra preambulės/ID): $navBadSubframe")
+            appendLine("Neiššifruotų / atmestų subkadrų iš viso: $navBadSubframe")
+            appendLine("Atmesta dėl pariteto (ne visi 10 žodžių teisingi): ${unpack.rejParity}")
+            appendLine("Atmesta dėl TOW ribų (HOW TOW × 6 ≥ 604800 s): ${unpack.rejTow}")
+            appendLine("Žodžiai su teisingu paritetu pagal SVID:")
+            if (parityPerSv.isEmpty()) appendLine("  (nėra)")
+            for ((sv, a) in parityPerSv) appendLine("  G%02d: %d iš %d".format(Locale.US, sv, a[0], a[1]))
+            appendLine("Iš viso: ${parityPerSv.values.sumOf { it[0] }} iš ${parityPerSv.values.sumOf { it[1] }}")
+            appendLine("Pirmasis priimtas TOW: ${firstNavTow ?: "nėra"}")
             appendLine("Pirmasis iššifruotas subkadras: ${firstSfInfo ?: "nėra"}")
             appendLine("Pirmasis navigacijos TOW (HOW TOW × 6): ${firstNavTow ?: "nėra"}")
             appendLine("Pirmoji savaitė iš 1 subkadro: ${firstWnInfo ?: "nėra"}")
-            appendLine("Subkadrai ir efemeridės pagal SVID (sf1/sf2/sf3/sf4/sf5; 1–3 visi; efemeridžių; nepavyko):")
+            appendLine("Priimti subkadrai ir efemeridės pagal SVID (sf1/sf2/sf3/sf4/sf5; 1–3 visi; efemeridžių; nepavyko):")
             if (subframesPerSv.isEmpty()) appendLine("  (nėra GPS L1 C/A subkadrų)")
             for ((sv, c) in subframesPerSv) {
                 val all = c[0] > 0 && c[1] > 0 && c[2] > 0
@@ -581,7 +607,16 @@ object PositionSolver {
                 if (p[iConst] != "GPS" || p[iType].toIntOrNull() != NAV_TYPE_GPS_L1CA) return@forEachLine
                 diag?.let { it.navGpsL1ca++ }
                 val sv = p[iSv].toIntOrNull() ?: return@forEachLine
-                val sf = subframeFromBytes(hexToBytes(p[iHex]), diag?.unpack)
+                val bytes = hexToBytes(p[iHex])
+                diag?.unpack?.lastParityOk = -1
+                val sf = subframeFromBytes(bytes, diag?.unpack)
+                diag?.let { d ->
+                    val ok = d.unpack.lastParityOk
+                    if (ok >= 0) {
+                        val a = d.parityPerSv.getOrPut(sv) { IntArray(2) }
+                        a[0] += ok; a[1] += 10
+                    }
+                }
                 if (sf == null) { diag?.let { it.navBadSubframe++ }; return@forEachLine }
                 if (diag != null) {
                     diag.subframesPerSv.getOrPut(sv) { IntArray(5) }[sf.id - 1]++

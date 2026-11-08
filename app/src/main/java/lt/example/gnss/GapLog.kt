@@ -66,7 +66,7 @@ object GapLog {
     @Synchronized fun newSession(ctx: Context) {
         gapCount = 0; longestMs = 0; firstGaps.clear(); lastRaw = 0
         val prev = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong("last_raw", 0L)
-        write(ctx, "${ts(System.currentTimeMillis())} SESIJA naujas gnss_raw.csv; ankstesnės sesijos paskutinis matavimas: ${if (prev > 0) ts(prev) else "nėra"}")
+        write(ctx, "${ts(System.currentTimeMillis())} SESIJA failai atidaryti; paskutinis ankstesnis matavimas: ${if (prev > 0) ts(prev) else "nėra"}")
         if (prev > 0) lastRaw = prev
         sessionStarted = true
     }
@@ -100,6 +100,8 @@ object GapLog {
         appendLine("Ilgiausia pertrauka: %.1f s".format(Locale.US, longestMs / 1000.0))
         appendLine("Baterijos optimizavimo išimtis: ${if (batteryExempt(ctx)) "taip" else "ne"}")
         appendLine("Įrašymo paslauga: ${if (NavRecordService.running) "veikia" else "neveikia"}")
+        appendLine("Sesijos paleidimų iš naujo: ${SessionFiles.restarts(ctx)}")
+        appendLine("Įrašant aptikta netinkamų CSV eilučių: ${SessionFiles.badWritten}")
         appendLine("Pirmosios 5 gap_log eilutės:")
         if (firstGaps.isEmpty()) appendLine("  (pertraukų nėra)")
         firstGaps.forEach { appendLine("  $it") }

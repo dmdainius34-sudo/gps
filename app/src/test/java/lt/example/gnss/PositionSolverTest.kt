@@ -297,8 +297,8 @@ class PositionSolverTest {
         val f = sols.firstOrNull()?.second
         println("Sprendinių: ${sols.size}; pirmasis: ${f?.let { "%.7f, %.7f, h=%.2f m".format(java.util.Locale.US, it.lat, it.lon, it.h) } ?: "nėra"}")
         assertEquals(6, sols.size)
-        assertEquals(PositionSolver.PolarityRule.CURRENT, PositionSolver.polarity)
-        assert(java.io.File(dir, PositionSolver.DIAG_FILE).readText().contains("PARINKTA TAISYKLĖ"))
+        val dtext = java.io.File(dir, PositionSolver.DIAG_FILE).readText()
+        assert(dtext.contains("TEISINGAS IŠDĖSTYMAS: 2, 32,"))
         dir.deleteRecursively()
     }
 

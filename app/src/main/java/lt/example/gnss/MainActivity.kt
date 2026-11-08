@@ -4103,8 +4103,7 @@ class MainActivity : AppCompatActivity() {
     private val measCallback = object : GnssMeasurementsEvent.Callback() {
         override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
             measText = "Neapdoroti matavimai: ${event.measurements.size}"
-            GapLog.onRaw(this@MainActivity)
-            for (m in event.measurements) appendRaw(m, event.clock)
+            RawRecorder.envTag = envTag()
             render()
         }
     }
@@ -4284,7 +4283,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupShareBubble() {
         if (sharePanel != null) return
         val panel = DraggablePanel(this) { sections, question, wantScreenshot ->
-            val report = buildReport(sections - "screenshot" - "raw", question) +
+            var report = buildReport(sections - "screenshot" - "raw", question) +
                 "\n=== ĮRAŠYMO PERTRAUKOS ===\n" + GapLog.report(this)
             val finish: (Uri?) -> Unit = { shot ->
                 val uris = ArrayList<Uri>()
@@ -4301,6 +4300,11 @@ class MainActivity : AppCompatActivity() {
                     gapLogUri()?.let { uris.add(it) }
                     // GPS pozicijos skaičiuoklė (1 žingsnis) – fone, rezultatas gnss_solver.csv
                     Thread {
+                        val (bad, total) = SessionFiles.badLines(File(cacheDir, SessionFiles.RAW))
+                        val (badF, totalF) = SessionFiles.badLines(File(cacheDir, SessionFiles.FIX))
+                        val (badN, totalN) = SessionFiles.badLines(File(cacheDir, NavRecorder.FILE))
+                        report += "CSV savitikra (laukų skaičius = antraštės): gnss_raw.csv netinkamų $bad iš $total; " +
+                            "gnss_fix.csv $badF iš $totalF; gnss_nav.csv $badN iš $totalN\n"
                         val u = solverCsvUri()
                         val d = solverDiagUri()
                         runOnUiThread { u?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
@@ -4318,11 +4322,9 @@ class MainActivity : AppCompatActivity() {
         }
         panel.onCountdownStart = {
             // Atgalinio skaičiavimo pradžioje CSV buferis pradedamas iš naujo
-            resetRawFile()
+            SessionFiles.resetRawFix(this)
             // gnss_nav.csv neištrinamas: efemeridėms reikia ir senesnių subkadrų; laikomas iki dalinimosi
             resetRefStats()
-            fixLog.setLength(0)
-            fixLog.append(fixHeader)
         }
         val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         
@@ -4363,9 +4365,9 @@ class MainActivity : AppCompatActivity() {
         stopDeviceSensors()
         if (::skyDome.isInitialized) skyDome.stop()
         activityStarted = false
-        // Kol veikia NavRecordService (priekinis planas), matavimai ir fiksai rašomi ir fone
-        if (NavRecordService.running) GapLog.event(this, "veikla onStop – įrašymas tęsiamas fone")
-        else unregisterGnss()
+        // Fone matavimus ir fiksus rašo NavRecordService; veiklos klausytojai – tik ekranui
+        if (NavRecordService.running) GapLog.event(this, "veikla onStop – įrašymas tęsiamas paslaugoje")
+        unregisterGnss()
     }
 
     private var gnssRegistered = false
@@ -4379,6 +4381,7 @@ class MainActivity : AppCompatActivity() {
             lm.unregisterGnssMeasurementsCallback(measCallback)
             lm.removeUpdates(locationListener)
         } catch (_: Exception) {}
+        SessionFiles.activityWritesFixes = false
         gnssRegistered = false
     }
 
@@ -4390,6 +4393,7 @@ class MainActivity : AppCompatActivity() {
             sharePanel?.setRecording(false)
         } else {
             recordEnded = false
+            SessionFiles.startNew(this)
             try { ContextCompat.startForegroundService(this, Intent(this, NavRecordService::class.java)) } catch (e: Exception) { logError("Įrašymo paslauga: ${e.message}") }
             sharePanel?.setRecording(true)
         }
@@ -4424,11 +4428,12 @@ class MainActivity : AppCompatActivity() {
             logError("GPS išjungtas")
             render()
         }
-        NavRecordService.onEnded = { if (!activityStarted) unregisterGnss(); sharePanel?.setRecording(false) }
+        NavRecordService.onEnded = { sharePanel?.setRecording(false) }
         if (!gnssRegistered) {
             lm.registerGnssStatusCallback(statusCallback, mainHandler)
             if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
+            SessionFiles.activityWritesFixes = true
             gnssRegistered = true
         }
         if (recordEnded) return
@@ -4508,95 +4513,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------- NEAPDOROTI MATAVIMAI (CSV) – išplėstiniai AI analizei ----------------
-    private val rawHeader = "laikas_ms,konstelacija,svid,signalas,dazniu_hz,cn0_dbhz,baseband_cn0_dbhz," +
-        "kampas_deg,azimutas_deg,fiksui," +
-        "time_nanos,full_bias_nanos,bias_nanos,bias_unc_nanos,drift_nsps,time_offset_ns," +
-        "state,recv_sv_time_ns,recv_sv_time_unc_ns,doplerio_mps,doplerio_unc_mps," +
-        "adr_m,adr_state,adr_unc_m,multipath,agc_db,aplinka\n"
-    private val rawLog = StringBuilder(rawHeader)       // tik dabartinės partijos buferis
-    private var rawWriter: java.io.BufferedWriter? = null
-    private var rawRows = 0L
+    // gnss_raw.csv rašo NavRecordService per RawRecorder / SessionFiles (vienas rašytojas)
     private val satMap = HashMap<String, Sat>()
-    private val bandsSeen = java.util.TreeSet<String>()
-
-    private fun bandName(c: String, hz: Double): String {
-        val mhz = hz / 1e6
-        return when {
-            kotlin.math.abs(mhz - 1575.42) < 2 -> when (c) { "GAL" -> "E1"; "BDS" -> "B1C"; else -> "L1" }
-            kotlin.math.abs(mhz - 1176.45) < 2 -> when (c) { "GAL" -> "E5a"; "BDS" -> "B2a"; else -> "L5" }
-            kotlin.math.abs(mhz - 1207.14) < 2 -> if (c == "GAL") "E5b" else "B2b"
-            kotlin.math.abs(mhz - 1227.60) < 2 -> "L2"
-            kotlin.math.abs(mhz - 1561.098) < 2 -> "B1I"
-            kotlin.math.abs(mhz - 1268.52) < 2 -> "B3I"
-            mhz in 1598.0..1607.0 -> "G1"
-            mhz in 1242.0..1249.0 -> "G2"
-            else -> fx(mhz, 2) + "MHz"
-        }
-    }
+    private val bandsSeen get() = synchronized(RawRecorder.bandsSeen) { RawRecorder.bandsSeen.toSortedSet() }
 
     // Kableliai pakeičiami kabliataškiais, kad CSV stulpeliai nesusimaišytų
-    private fun envTag(): String = (sharePanel?.envTag ?: "").replace(',', ';')
-
-    /** Pradeda naują matavimų failą (kviečiama atgalinio skaičiavimo pradžioje ir paleidus). */
-    private fun resetRawFile() {
-        try { rawWriter?.close() } catch (_: Exception) {}
-        rawRows = 0
-        GapLog.newSession(this)
-        rawWriter = try {
-            java.io.BufferedWriter(java.io.FileWriter(File(cacheDir, "gnss_raw.csv"), false), 1 shl 16).also { it.write(rawHeader) }
-        } catch (e: Exception) { logError("Matavimų failas nepavyko: ${e.message}"); null }
-    }
-
-    private fun appendRaw(m: GnssMeasurement, clk: android.location.GnssClock) {
-        if (rawWriter == null) resetRawFile()
-        // Apsauga: ~200 MB – daugiau nei 2 val. įrašo
-        if (rawRows > 800_000) resetRawFile()
-        rawLog.setLength(0)
-        val c = constName(m.constellationType)
-        val hz = if (m.hasCarrierFrequencyHz()) m.carrierFrequencyHz.toDouble() else 1575.42e6
-        val band = bandName(c, hz)
-        bandsSeen.add("$c $band")
-        val sat = satMap["$c${m.svid}"]
-        val bb = if (Build.VERSION.SDK_INT >= 30 && m.hasBasebandCn0DbHz()) m.basebandCn0DbHz.toString() else ""
-        @Suppress("DEPRECATION")
-        val agc = if (m.hasAutomaticGainControlLevelDb()) m.automaticGainControlLevelDb.toString() else ""
-        val sb = rawLog
-        sb.append(System.currentTimeMillis()).append(',')
-            .append(c).append(',').append(m.svid).append(',').append(band).append(',')
-            .append(if (m.hasCarrierFrequencyHz()) m.carrierFrequencyHz.toString() else "").append(',')
-            .append(m.cn0DbHz).append(',').append(bb).append(',')
-            .append(sat?.elev?.let { fx(it.toDouble(), 1) } ?: "").append(',')
-            .append(sat?.az?.let { fx(it.toDouble(), 1) } ?: "").append(',')
-            .append(if (sat?.used == true) 1 else 0).append(',')
-            .append(clk.timeNanos).append(',')
-            .append(if (clk.hasFullBiasNanos()) clk.fullBiasNanos.toString() else "").append(',')
-            .append(if (clk.hasBiasNanos()) clk.biasNanos.toString() else "").append(',')
-            .append(if (clk.hasBiasUncertaintyNanos()) clk.biasUncertaintyNanos.toString() else "").append(',')
-            .append(if (clk.hasDriftNanosPerSecond()) clk.driftNanosPerSecond.toString() else "").append(',')
-            .append(m.timeOffsetNanos).append(',')
-            .append(m.state).append(',')
-            .append(m.receivedSvTimeNanos).append(',')
-            .append(m.receivedSvTimeUncertaintyNanos).append(',')
-            .append(m.pseudorangeRateMetersPerSecond).append(',')
-            .append(m.pseudorangeRateUncertaintyMetersPerSecond).append(',')
-            .append(m.accumulatedDeltaRangeMeters).append(',')
-            .append(m.accumulatedDeltaRangeState).append(',')
-            .append(m.accumulatedDeltaRangeUncertaintyMeters).append(',')
-            .append(m.multipathIndicator).append(',')
-            .append(agc).append(',')
-            .append(envTag()).append('\n')
-        try { rawWriter?.write(sb.toString()); rawRows++ } catch (_: Exception) {}
-    }
+    private fun envTag(): String = SessionFiles.clean(sharePanel?.envTag ?: "")
 
     // ---------------- FIKSAI KAS SEKUNDĘ (CSV) ----------------
-    private val fixHeader = "laikas_ms,platuma,ilguma,aukstis_elips_m,geoido_N_m,aukstis_jura_m," +
-        "h_tikslumas_m,v_tikslumas_m,greitis_mps,kryptis_deg,palydovu_naudojama,palydovu_matoma," +
-        "vid_cn0_naudojami,top4_cn0,pitch_deg,roll_deg,azimutas_ekrano_deg,judejimas_mps2,aplinka," +
-        "zinomas_agl_m,zinomas_msl_m,zinoma_platuma,zinoma_ilguma,klaida_aukscio_m,klaida_horiz_m,klaida_rytai_m,klaida_siaure_m\n"
-    private val fixLog = StringBuilder(fixHeader)
 
     private fun appendFix(loc: Location) {
-        if (fixLog.length > 4_000_000) { fixLog.setLength(0); fixLog.append(fixHeader) }
+        val fixLog = StringBuilder(256)
         val n = Geoid.undulation(loc.latitude, loc.longitude)
         val used = lastSats.filter { it.used }
         val avg = if (used.isNotEmpty()) used.map { it.cn0 }.average() else Double.NaN
@@ -4630,6 +4557,7 @@ class MainActivity : AppCompatActivity() {
             .append(if (eE != null && eN != null) fx(kotlin.math.sqrt(eE * eE + eN * eN), 2) else "").append(',')
             .append(eE?.let { fx(it, 2) } ?: "").append(',')
             .append(eN?.let { fx(it, 2) } ?: "").append('\n')
+        if (NavRecordService.running) SessionFiles.writeFix(this, fixLog.toString())
         refStats(hNow, kMsl, eE, eN)
     }
 
@@ -4646,8 +4574,7 @@ class MainActivity : AppCompatActivity() {
     private fun resetRefStats() { refN = 0; refHSum = 0.0; refHAbs = 0.0; refPN = 0; refDSum = 0.0; refDMax = 0.0 }
 
     private fun fixCsvUri(): Uri? = try {
-        val file = File(cacheDir, "gnss_fix.csv")
-        file.writeText(fixLog.toString())
+        val file = SessionFiles.file(this, SessionFiles.FIX)
         FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
     } catch (e: Exception) {
         logError("Fiksų CSV nepavyko: ${e.message}")
@@ -4740,9 +4667,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun rawCsvUri(): Uri? = try {
-        rawWriter?.flush()
-        val file = File(cacheDir, "gnss_raw.csv")
-        if (!file.exists()) file.writeText(rawHeader)
+        val file = SessionFiles.file(this, SessionFiles.RAW)
         FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
     } catch (e: Exception) {
         logError("CSV nepavyko: ${e.message}")

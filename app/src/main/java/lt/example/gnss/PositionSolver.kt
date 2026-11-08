@@ -76,8 +76,15 @@ object PositionSolver {
      * Žodžių išdėstymas 320 bitų sraute (40 baitų): pirmojo žodžio bitų poslinkis, žingsnis tarp žodžių
      * (30 arba 32 bitai) ir poliškumas (inverted – visi bitai apversti).
      */
-    data class Alignment(val offset: Int, val stride: Int, val inverted: Boolean) {
-        override fun toString() = "poslinkis $offset b, žingsnis $stride b, poliškumas ${if (inverted) "invertuotas" else "normalus"}"
+    data class Alignment(
+        val offset: Int, val stride: Int, val inverted: Boolean,
+        val rule: PolarityRule = PolarityRule.CURRENT,
+        /** D29* ir D30* imami iš 2 bitų prieš žodį (32 bitų žodžio užpildas), o ne iš ankstesnio žodžio. */
+        val starsFromPad: Boolean = false
+    ) {
+        override fun toString() = "poslinkis $offset b, žingsnis $stride b, " +
+            (if (rule == PolarityRule.NONE) "be inversijos" else "su D30* inversija") +
+            (if (starsFromPad) ", D29*/D30* iš užpildo bitų" else "") + (if (inverted) ", bitai apversti" else "")
     }
 
     /** Numatytasis (Android dokumentacija): 30 bitų žodis 32 bitų žodžio jaunesniuose bituose. */
@@ -103,9 +110,10 @@ object PositionSolver {
     /** Visi kandidatai: poslinkis 0–31, žingsnis 30/32, abu poliškumai (tik tie, kur telpa 10 žodžių). */
     fun candidates(nBits: Int = 320): List<Alignment> {
         val out = ArrayList<Alignment>()
-        for (o in 0..31) for (st in intArrayOf(30, 32)) for (inv in booleanArrayOf(false, true)) {
-            val a = Alignment(o, st, inv)
+        for (o in 0..31) for (st in intArrayOf(30, 32)) for (r in arrayOf(PolarityRule.NONE, PolarityRule.CURRENT)) {
+            val a = Alignment(o, st, false, r)
             if (fits(a, nBits)) out.add(a)
+            if (st == 32 && o >= 2 && fits(a, nBits)) out.add(a.copy(starsFromPad = true))
         }
         return out
     }
@@ -123,30 +131,33 @@ object PositionSolver {
         return n
     }
 
-    /** Parenka išdėstymą su daugiausia preambulių per visus pranešimus; grąžina visų kandidatų rezultatus. */
+    /** Pilnas subkadras: visi 10 žodžių praėjo paritetą. */
+    fun fullSubframe(data: ByteArray, a: Alignment): Boolean = (decodeWords(data, a)?.parityOk ?: 0) == 10
+
+    /**
+     * Empirinė išdėstymo paieška: kiekvienam kandidatui (poslinkis 0–31, žingsnis 30/32, be inversijos ir su D30*
+     * inversija) skaičiuojami pranešimai, kuriuose visi 10 žodžių praėjo paritetą. Grąžina (kandidatas, pilnų subkadrų),
+     * surikiuota mažėjančiai; lygiems – daugiau preambulių, tada numatytasis išdėstymas.
+     */
     fun chooseAlignment(messages: List<ByteArray>): List<Pair<Alignment, Int>> {
         val cands = candidates()
-        val score = IntArray(cands.size)
+        val full = IntArray(cands.size)
+        val pre = IntArray(cands.size)
         for (m in messages) {
             if (m.size < 40) continue
-            for ((k, a) in cands.withIndex()) score[k] += preambleCount(m, a)
+            for ((k, a) in cands.withIndex()) {
+                if (fullSubframe(m, a)) full[k]++
+                if (preambleCount(m, a.copy(stride = 1000)) > 0) pre[k]++          // tik 1 žodžio pradžia
+            }
         }
-        // Preambulė yra tik 1 žodyje, todėl skirtingi žingsniai (30/32) su tuo pačiu poslinkiu gali surinkti vienodai –
-        // lygiems (≥ 90 % maksimumo) kandidatams papildomai skaičiuojami žodžiai, praėję paritetą.
-        val max = score.maxOrNull() ?: 0
-        val parity = IntArray(cands.size)
-        if (max > 0) for ((k, a) in cands.withIndex()) {
-            if (score[k] * 10 < max * 9) continue
-            for (m in messages) parity[k] += decodeWords(m, a)?.parityOk ?: 0
-        }
-        lastParityScore = cands.indices.associate { cands[it] to parity[it] }
+        lastParityScore = cands.indices.associate { cands[it] to pre[it] }
         return cands.indices.sortedWith(
-            compareByDescending<Int> { score[it] }.thenByDescending { parity[it] }
+            compareByDescending<Int> { full[it] }.thenByDescending { pre[it] }
                 .thenBy { if (cands[it] == DEFAULT_ALIGNMENT) 0 else 1 }
-        ).map { cands[it] to score[it] }
+        ).map { cands[it] to full[it] }
     }
 
-    /** Paskutinio chooseAlignment() pariteto balai (žodžių su teisingu paritetu) lygiems kandidatams. */
+    /** Paskutinio chooseAlignment() preambulių 1 žodžio pradžioje skaičius kiekvienam kandidatui. */
     @Volatile var lastParityScore: Map<Alignment, Int> = emptyMap()
 
     /**
@@ -224,19 +235,10 @@ object PositionSolver {
     /** Duomenų bitų inversijos taisyklė (pagal ankstesnio žodžio D29* ir D30*). */
     enum class PolarityRule(val label: String) {
         CURRENT("invertuoti, kai D30* = 1 (IS-GPS-200)"),
-        NONE("be inversijos"),
-        INV_D30_0("invertuoti, kai D30* = 0"),
-        INV_D29_1("invertuoti, kai D29* = 1");
-        fun invert(d29s: Int, d30s: Int): Boolean = when (this) {
-            CURRENT -> d30s == 1
-            NONE -> false
-            INV_D30_0 -> d30s == 0
-            INV_D29_1 -> d29s == 1
-        }
+        NONE("be inversijos");
+        fun invert(@Suppress("UNUSED_PARAMETER") d29s: Int, d30s: Int): Boolean = this == CURRENT && d30s == 1
     }
 
-    /** Parinkta taisyklė (nustatoma readEphemerides pagal realius duomenis). */
-    @Volatile var polarity: PolarityRule = PolarityRule.CURRENT
 
     /** Išpakuoti 10 žodžių: 24 duomenų bitai kiekvienam ir kiek žodžių praėjo paritetą. */
     class Decoded(val words: IntArray, val parityOk: Int)
@@ -245,7 +247,7 @@ object PositionSolver {
      * 10 žodžių po 30 bitų pagal išdėstymą. Kiekvienam žodžiui k = 1..10 – standartinė GPS L1 C/A pariteto patikra:
      * D29*, D30* imami iš ankstesnio žodžio (1 žodžiui D29* = D30* = 0); jei D30* = 1, 24 duomenų bitai invertuojami.
      */
-    fun decodeWords(data: ByteArray, align: Alignment = alignment, rule: PolarityRule = polarity): Decoded? {
+    fun decodeWords(data: ByteArray, align: Alignment = alignment, rule: PolarityRule = align.rule): Decoded? {
         if (data.size < 40 || !fits(align, data.size * 8)) return null
         val w30 = IntArray(10) { i ->
             val v = bits(data, align.offset + i * align.stride, 30)
@@ -255,6 +257,10 @@ object PositionSolver {
         var ok = 0
         var prev = 0                                                // 1 žodžiui D29* = D30* = 0
         for (i in 0 until 10) {
+            if (align.starsFromPad) {
+                val pos = align.offset + i * align.stride - 2
+                prev = if (pos >= 0) bits(data, pos, 2).let { if (align.inverted) it.inv() and 3 else it } else 0
+            }
             var d = checkWord((prev shl 30) or w30[i], rule)
             if (d >= 0) ok++ else {
                 d = (w30[i] ushr 6) and 0xFFFFFF
@@ -402,9 +408,11 @@ object PositionSolver {
         val ephPerSv = java.util.TreeMap<Int, Int>()
         val ephFailPerSv = java.util.TreeMap<Int, Int>()
         var firstSfInfo: String? = null
-        var ruleStats: Map<PolarityRule, java.util.TreeMap<Int, IntArray>> = emptyMap()
-        var ruleChosen: PolarityRule = PolarityRule.CURRENT
-        var ruleNote = "nevertinta"
+        var layoutFound = 0
+        var layoutCandidates = 0
+        val towLast = HashMap<Int, LongArray>()                           // SVID -> [laikas_ms, TOW]
+        var towPairs = 0; var towOk = 0
+        val towBad = ArrayList<String>()
         var firstWnInfo: String? = null
         // matavimai
         var rawRows = 0; var rawNotGps = 0; var rawGpsNotL1 = 0; var rawGpsL1 = 0; var rawParseErr = 0
@@ -430,18 +438,21 @@ object PositionSolver {
             appendLine("GPS pranešimų išpakuota į 10 žodžių: ${unpack.unpacked}")
             appendLine("Rasta preambulių 0x8B (1 žodžio pradžioje): ${unpack.preamble}")
             appendLine("Žodžių su teisingu paritetu: ${unpack.parityOk}, su klaidingu: ${unpack.parityBad}")
-            appendLine("Parinktas žodžių išdėstymas: ${unpack.chosen}; preambulių su juo: ${unpack.chosenCount}")
+            appendLine("Parinktas žodžių išdėstymas: ${unpack.chosen}; pilnų subkadrų su juo: ${unpack.chosenCount}")
             appendLine("Geriausi 3 kandidatai:")
             if (unpack.top.isEmpty()) appendLine("  (nėra GPS pranešimų)")
             unpack.top.forEachIndexed { k, (a, n) ->
-                appendLine("  ${k + 1}. $a – preambulių $n, žodžių su teisingu paritetu ${lastParityScore[a] ?: 0}")
+                appendLine("  ${k + 1}. $a – pilnų subkadrų $n, preambulių ${lastParityScore[a] ?: 0}")
             }
-            appendLine("Žodžių inversijos taisyklių palyginimas (sutampa/iš viso; pilnų subkadrų):")
-            for ((r, m) in ruleStats) {
-                appendLine("  ${r.label}: ${m.values.sumOf { it[0] }}/${m.values.sumOf { it[1] }}; pilnų subkadrų ${m.values.sumOf { it[2] }}")
-                for ((sv, a) in m) appendLine("    G%02d: %d/%d; pilnų %d".format(Locale.US, sv, a[0], a[1], a[2]))
-            }
-            appendLine("PARINKTA TAISYKLĖ: ${ruleChosen.label} – $ruleNote")
+            appendLine("TEISINGAS IŠDĖSTYMAS: ${unpack.chosen.offset}, ${unpack.chosen.stride}, $layoutFound" +
+                (if (layoutFound == 0) " (nė vienas iš $layoutCandidates kandidatų nedavė pilno subkadro; naudojamas numatytasis)" else " (${unpack.chosen})"))
+            appendLine("HOW TOW +6 s patikra (gretimi to paties SVID subkadrai, 4–8 s tarpas): " +
+                (if (towPairs == 0) "nėra porų – ne" else "$towOk iš $towPairs – ${if (towOk == towPairs) "taip" else "ne"}"))
+            towBad.take(5).forEach { appendLine("  neatitinka: $it") }
+            appendLine("Iššifruota subkadrų 1/2/3 pagal SVID:")
+            if (subframesPerSv.isEmpty()) appendLine("  (nėra)")
+            for ((sv, c) in subframesPerSv) appendLine("  G%02d: %d/%d/%d".format(Locale.US, sv, c[0], c[1], c[2]))
+            appendLine("Iš viso 1/2/3: ${subframesPerSv.values.sumOf { it[0] }}/${subframesPerSv.values.sumOf { it[1] }}/${subframesPerSv.values.sumOf { it[2] }}")
             appendLine("Neiššifruotų / atmestų subkadrų iš viso: $navBadSubframe")
             appendLine("Atmesta dėl pariteto (ne visi 10 žodžių teisingi): ${unpack.rejParity}")
             appendLine("Atmesta dėl TOW ribų (HOW TOW × 6 ≥ 604800 s): ${unpack.rejTow}")
@@ -661,48 +672,13 @@ object PositionSolver {
                 if (p.size > iH && p[iC] == "GPS" && p[iT].toIntOrNull() == NAV_TYPE_GPS_L1CA) msgs.add(hexToBytes(p[iH]))
             }
         }
-        polarity = PolarityRule.CURRENT
         val ranked = chooseAlignment(msgs)
         alignment = ranked.firstOrNull()?.takeIf { it.second > 0 }?.first ?: DEFAULT_ALIGNMENT
+        diag?.let { it.layoutFound = ranked.firstOrNull()?.second ?: 0; it.layoutCandidates = ranked.size }
         diag?.unpack?.let { u ->
             u.chosen = alignment
             u.chosenCount = ranked.firstOrNull { it.first == alignment }?.second ?: 0
             u.top = ranked.take(3)
-        }
-        // 1b: inversijos taisyklių palyginimas (tie patys gretimi žodžiai, kiekviena taisyklė)
-        val ruleStats = java.util.EnumMap<PolarityRule, java.util.TreeMap<Int, IntArray>>(PolarityRule::class.java)
-        PolarityRule.values().forEach { ruleStats[it] = java.util.TreeMap() }
-        nav.bufferedReader().use { br ->
-            val head = br.readLine()?.split(',') ?: return out
-            val iC = head.indexOf("konstelacija"); val iS = head.indexOf("svid")
-            val iT = head.indexOf("tipas"); val iH = head.indexOf("duomenys_hex")
-            if (minOf(iC, iS, iT, iH) < 0) return out
-            br.forEachLine { line ->
-                val p = line.split(',')
-                if (p.size <= iH || p[iC] != "GPS" || p[iT].toIntOrNull() != NAV_TYPE_GPS_L1CA) return@forEachLine
-                val sv = p[iS].toIntOrNull() ?: return@forEachLine
-                val bytes = hexToBytes(p[iH])
-                for (r in PolarityRule.values()) {
-                    val dec = decodeWords(bytes, alignment, r) ?: continue
-                    val a = ruleStats[r]!!.getOrPut(sv) { IntArray(3) }   // [sutampa, iš viso, pilnų subkadrų]
-                    a[0] += dec.parityOk; a[1] += 10
-                    if (dec.parityOk == 10 && ((dec.words[0] ushr 16) and 0xFF) == 0x8B) a[2]++
-                }
-            }
-        }
-        fun tot(r: PolarityRule, k: Int) = ruleStats[r]!!.values.sumOf { it[k] }
-        val best = PolarityRule.values().maxByOrNull { tot(it, 0) } ?: PolarityRule.CURRENT
-        val fullOk = PolarityRule.values().any { tot(it, 2) > 0 }
-        polarity = if (fullOk && tot(best, 2) > 0) best else PolarityRule.CURRENT
-        diag?.let { d ->
-            d.ruleStats = ruleStats
-            d.ruleChosen = polarity
-            d.ruleNote = when {
-                tot(PolarityRule.CURRENT, 1) == 0 -> "nėra GPS L1 C/A žodžių – palikta dabartinė taisyklė"
-                !fullOk -> "nė viena taisyklė nedavė pilno subkadro (visi 10 žodžių) – skaičiuoklė nekeista, palikta dabartinė taisyklė"
-                polarity != best -> "daugiausia sutapimų davusi taisyklė neturi nė vieno pilno subkadro – palikta dabartinė"
-                else -> "parinkta pagal didžiausią sutapimų skaičių (pilnų subkadrų: ${tot(polarity, 2)})"
-            }
         }
         // 2 praėjimas: išpakavimas tik su parinktu išdėstymu ir taisykle
         nav.bufferedReader().use { br ->
@@ -730,6 +706,18 @@ object PositionSolver {
                 if (sf == null) { diag?.let { it.navBadSubframe++ }; return@forEachLine }
                 if (diag != null) {
                     diag.subframesPerSv.getOrPut(sv) { IntArray(5) }[sf.id - 1]++
+                    val tms = p[0].toLongOrNull()
+                    val towNow = ((sf.words[1] ushr 7) and 0x1FFFF).toLong() * 6
+                    if (tms != null) {
+                        diag.towLast[sv]?.let { (t0, tow0) ->
+                            if (tms - t0 in 4000..8000) {
+                                diag.towPairs++
+                                if ((towNow - tow0 + 604_800) % 604_800 == 6L) diag.towOk++
+                                else if (diag.towBad.size < 5) diag.towBad.add("G%02d: TOW %d -> %d (%d ms)".format(Locale.US, sv, tow0, towNow, tms - t0))
+                            }
+                        }
+                        diag.towLast[sv] = longArrayOf(tms, towNow)
+                    }
                     if (diag.firstSfInfo == null) {
                         val tow = ((sf.words[1] ushr 7) and 0x1FFFF) * 6       // HOW TOW (kito subkadro pradžia)
                         diag.firstSfInfo = "laikas_ms=${p[0]}, G%02d, subkadras %d, TOW %d s (%s)".format(Locale.US, sv, sf.id, tow, dhms(tow.toDouble()))

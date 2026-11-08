@@ -10,7 +10,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.location.GnssMeasurementRequest
+import android.location.GnssMeasurementsEvent
 import android.location.GnssStatus
+import android.location.LocationListener
 import android.os.PowerManager
 import android.content.pm.ServiceInfo
 import android.location.GnssNavigationMessage
@@ -46,6 +49,28 @@ class NavRecordService : Service() {
         override fun onStarted() { GapLog.event(this@NavRecordService, "GNSS būsena: pradėta (onStarted)") }
         override fun onStopped() { GapLog.event(this@NavRecordService, "GNSS būsena: sustabdyta (onStopped)") }
         override fun onFirstFix(ttffMillis: Int) { GapLog.event(this@NavRecordService, "GNSS būsena: pirmas fiksas po $ttffMillis ms") }
+        override fun onSatelliteStatusChanged(status: GnssStatus) {
+            val m = HashMap<String, Sat>()
+            for (i in 0 until status.satelliteCount) {
+                val x = Sat(const = constName(status.getConstellationType(i)), svid = status.getSvid(i),
+                    cn0 = status.getCn0DbHz(i), elev = status.getElevationDegrees(i),
+                    az = status.getAzimuthDegrees(i), used = status.usedInFix(i))
+                m[x.const + x.svid] = x
+            }
+            RawRecorder.sats = m
+        }
+    }
+
+    /** gnss_raw.csv rašo tik paslauga (vienas rašytojas); kiekviena partija nuplaunama. */
+    private val measCb = object : GnssMeasurementsEvent.Callback() {
+        override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
+            RawRecorder.onEvent(this@NavRecordService, event)
+        }
+    }
+
+    /** Fiksai: kol veikla gyva, juos rašo ji (su padėties laukais); kitaip – paslauga. */
+    private val locCb = LocationListener { loc ->
+        if (!SessionFiles.activityWritesFixes) SessionFiles.writeFix(this, RawRecorder.fixLineWithoutActivity(loc))
     }
 
     private val sysReceiver = object : BroadcastReceiver() {
@@ -92,6 +117,7 @@ class NavRecordService : Service() {
         GapLog.event(this, "paslauga onStartCommand${if (intent?.action == ACTION_END) " (Baigti)" else if (intent == null) " (sistemos perkrauta)" else ""}")
         if (intent?.action == ACTION_END) {
             Log.i("GnssApp", "NavRecordService: sustabdyta (Baigti)")
+            SessionFiles.end(this)
             stopForegroundCompat()
             stopSelf()
             return START_NOT_STICKY
@@ -105,6 +131,8 @@ class NavRecordService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent == null) GapLog.event(this, "PALEISTA IŠ NAUJO (START_STICKY): sistema atkūrė sustabdytą paslaugą")
+        SessionFiles.open(this)
         if (startedAt == 0L) startedAt = System.currentTimeMillis()
         register()
         acquireWakeLock()
@@ -134,6 +162,11 @@ class NavRecordService : Service() {
             Log.e("GnssApp", "NavRecordService: klausytojas: ${e.message}"); false
         }
         try { m.registerGnssStatusCallback(statusCb, handler) } catch (_: Exception) {}
+        try {
+            if (Build.VERSION.SDK_INT >= 31) m.registerGnssMeasurementsCallback(GnssMeasurementRequest.Builder().setFullTracking(true).build(), mainExecutor, measCb)
+            else m.registerGnssMeasurementsCallback(measCb, handler)
+        } catch (e: Exception) { Log.e("GnssApp", "NavRecordService: matavimai: ${e.message}") }
+        try { m.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locCb, Looper.getMainLooper()) } catch (_: Exception) {}
     }
 
     private fun acquireWakeLock() {
@@ -149,6 +182,9 @@ class NavRecordService : Service() {
         GapLog.event(this, "paslauga onDestroy")
         try { lm?.unregisterGnssNavigationMessageCallback(callback) } catch (_: Exception) {}
         try { lm?.unregisterGnssStatusCallback(statusCb) } catch (_: Exception) {}
+        try { lm?.unregisterGnssMeasurementsCallback(measCb) } catch (_: Exception) {}
+        try { lm?.removeUpdates(locCb) } catch (_: Exception) {}
+        SessionFiles.flush()
         if (receiverOn) { try { unregisterReceiver(sysReceiver) } catch (_: Exception) {}; receiverOn = false }
         try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
         wakeLock = null

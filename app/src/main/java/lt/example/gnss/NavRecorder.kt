@@ -27,19 +27,23 @@ object NavRecorder {
         else -> "?"
     }
 
+    /** Atidaro gnss_nav.csv: append = true – tęsiama sesija (failas neperrašomas). */
     @Synchronized
-    private fun reset(dir: File) {
+    fun open(dir: File, append: Boolean) {
         try { writer?.close() } catch (_: Exception) {}
         rows = 0
+        val f = File(dir, FILE)
+        val keep = append && f.exists() && f.length() > 0
         writer = try {
-            BufferedWriter(FileWriter(File(dir, FILE), false), 1 shl 14).also { it.write(HEADER) }
+            BufferedWriter(FileWriter(f, keep), 1 shl 14).also { if (!keep) { it.write(HEADER); it.flush() } }
         } catch (e: Exception) { Log.e("GnssApp", "Navigacijos failas nepavyko: ${e.message}"); null }
     }
 
     @Synchronized
     fun append(dir: File, n: GnssNavigationMessage) {
         received++
-        if (writer == null || rows > 400_000) reset(dir)
+        if (writer == null) open(dir, append = true)
+        if (rows > 400_000) open(dir, append = false)
         val w = writer ?: return
         val data = n.data ?: ByteArray(0)
         val hex = StringBuilder(data.size * 2)

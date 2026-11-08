@@ -298,7 +298,8 @@ class PositionSolverTest {
         println("Sprendinių: ${sols.size}; pirmasis: ${f?.let { "%.7f, %.7f, h=%.2f m".format(java.util.Locale.US, it.lat, it.lon, it.h) } ?: "nėra"}")
         assertEquals(6, sols.size)
         val dtext = java.io.File(dir, PositionSolver.DIAG_FILE).readText()
-        assert(dtext.contains("TEISINGAS IŠDĖSTYMAS: 2, 32,"))
+        assert(dtext.contains("TEISINGAS IŠDĖSTYMAS: H1,"))
+        assert(dtext.contains("FORMATO TESTAS"))
         dir.deleteRecursively()
     }
 

@@ -3530,6 +3530,11 @@ class DraggablePanel(
         gravity = Gravity.CENTER_VERTICAL
     }
 
+    private val recRow = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+    }
+
     init {
         isClickable = true
         isFocusable = true
@@ -3566,12 +3571,15 @@ class DraggablePanel(
         header.addView(cancelBtn)
 
         inputRow.addView(questionInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        inputRow.addView(coldBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
-        inputRow.addView(endRecBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         inputRow.addView(shareBtn)
+        recRow.addView(coldBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
+        recRow.addView(endRecBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
 
+        // Veiksmų eilutės neslenka, todėl dalinimosi mygtukas visada matomas
         panel.addView(header)
         panel.addView(body, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        panel.addView(recRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        panel.addView(inputRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(optionsLayout)
         bodyInner.addView(rawRow)
         bodyInner.addView(alphaLabel)
@@ -3586,7 +3594,6 @@ class DraggablePanel(
         bodyInner.addView(mslInput)
         bodyInner.addView(coordInput)
         bodyInner.addView(sp3Btn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
-        bodyInner.addView(inputRow)
 
         addView(panel)
         addView(bubble)
@@ -3818,7 +3825,12 @@ class DraggablePanel(
         val w = body.width.takeIf { it > 0 } ?: (width - panel.paddingLeft - panel.paddingRight)
         bodyInner.measure(MeasureSpec.makeMeasureSpec(w.coerceAtLeast(1), MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
-        val maxBody = (parentH * 0.88f).toInt() - header.height - panel.paddingTop - panel.paddingBottom
+        val rowW = MeasureSpec.makeMeasureSpec(w.coerceAtLeast(1), MeasureSpec.EXACTLY)
+        val rowH = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
+        recRow.measure(rowW, rowH)
+        inputRow.measure(rowW, rowH)
+        val maxBody = (parentH * 0.88f).toInt() - header.height - recRow.measuredHeight - inputRow.measuredHeight -
+            panel.paddingTop - panel.paddingBottom
         val lp = body.layoutParams
         lp.height = if (bodyInner.measuredHeight > maxBody && maxBody > 0) maxBody else LinearLayout.LayoutParams.WRAP_CONTENT
         body.layoutParams = lp
@@ -3828,16 +3840,15 @@ class DraggablePanel(
         val parentW = (parent as? View)?.width?.toFloat() ?: return
         val parentH = (parent as? View)?.height?.toFloat() ?: return
 
-        val minTx = -width * 0.1f
-        val maxTx = parentW - width * 0.9f
-        val minTy = -height * 0.1f
-        val maxTy = parentH - height * 0.9f
+        // Visa panelė ekrane: dalinimosi mygtukas apačioje neturi likti už krašto
+        translationX = translationX.coerceIn(0f, (parentW - width).coerceAtLeast(0f))
+        translationY = translationY.coerceIn(0f, (parentH - height).coerceAtLeast(0f))
+    }
 
-        translationX = translationX.coerceIn(minTx, maxTx)
-        translationY = translationY.coerceIn(minTy, maxTy)
-
-        if (width > parentW) translationX = 0f
-        if (height > parentH) translationY = 0f
+    /** Pasukus ekraną: panelė perskaičiuojama, burbulas grąžinamas į ekraną. */
+    fun onParentResized() {
+        kbShift = 0f
+        if (panel.visibility == VISIBLE) maximize() else adjustPositionOnExpand()
     }
 
     // Burbulas/panelė gali išeiti už ekrano, bet bent 10 % lieka matoma
@@ -3995,6 +4006,8 @@ class MainActivity : AppCompatActivity() {
     private var fullscreen = false
 
     private var leftCol: View? = null
+    private var rightCol: View? = null
+    private var contentCol: LinearLayout? = null
     private var rootScroll: ScrollView? = null
 
     /**
@@ -4319,6 +4332,8 @@ class MainActivity : AppCompatActivity() {
         right.addView(cnoView, LinearLayout.LayoutParams(mw, cnoH))
 
         val content = LinearLayout(this).apply { orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL }
+        contentCol = content
+        rightCol = right
         if (landscape) {
             content.addView(left, LinearLayout.LayoutParams(0, ww, 1f))
             content.addView(right, LinearLayout.LayoutParams(0, ww, 1f))
@@ -4405,6 +4420,33 @@ class MainActivity : AppCompatActivity() {
             // Kadangi gravitacija START, translationX pastums į dešinę
             panel.translationX = (container.width - panel.width - margin).toFloat()
             panel.translationY = margin.toFloat()
+        }
+    }
+
+    /**
+     * Pasukus ekraną veikla neperkuriama (manifestas: configChanges), todėl įrašo laikmatis,
+     * 3D režimas ir GL vaizdas išlieka; čia pritaikomas tik išdėstymas.
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val content = contentCol ?: return
+        val right = rightCol ?: return
+        val dm = resources.displayMetrics
+        val landscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val colW = if (landscape) dm.widthPixels / 2 else dm.widthPixels
+        val skySide = if (landscape) min(colW, dm.heightPixels) else colW
+        val mw = LinearLayout.LayoutParams.MATCH_PARENT
+        val ww = LinearLayout.LayoutParams.WRAP_CONTENT
+        content.orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        leftCol?.layoutParams = if (landscape) LinearLayout.LayoutParams(0, ww, 1f) else LinearLayout.LayoutParams(mw, ww)
+        right.layoutParams = if (landscape) LinearLayout.LayoutParams(0, ww, 1f) else LinearLayout.LayoutParams(mw, ww)
+        skyView.layoutParams = LinearLayout.LayoutParams(skySide, skySide)
+        val holderLp = LinearLayout.LayoutParams(skySide, skySide)
+        skyHolderLp = holderLp
+        if (!fullscreen) skyHolder.layoutParams = holderLp
+        container.post {
+            if (fullscreen) skyHolder.layoutParams = LinearLayout.LayoutParams(container.width, container.height)
+            sharePanel?.onParentResized()
         }
     }
 

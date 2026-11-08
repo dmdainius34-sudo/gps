@@ -3493,6 +3493,16 @@ class DraggablePanel(
     }
     fun setRecording(on: Boolean) { endRecBtn.text = if (on) "Baigti įrašą" else "Tęsti įrašą" }
 
+    /** „Šaltas startas“ – ištrinti GNSS pagalbos duomenis. */
+    var onColdStart: (() -> Unit)? = null
+    private val coldBtn = Button(context).apply {
+        text = "Šaltas startas"
+        textSize = 12f
+        isAllCaps = false
+        minWidth = 0; minimumWidth = 0
+        setPadding((8 * resources.displayMetrics.density).toInt(), 0, (8 * resources.displayMetrics.density).toInt(), 0)
+    }
+
     private val shareBtn = FrameLayout(context).apply {
         isClickable = true
         layoutParams = LinearLayout.LayoutParams((52 * density).toInt(), (52 * density).toInt())
@@ -3549,6 +3559,7 @@ class DraggablePanel(
         header.addView(cancelBtn)
 
         inputRow.addView(questionInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        inputRow.addView(coldBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         inputRow.addView(endRecBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         inputRow.addView(shareBtn)
 
@@ -3575,6 +3586,7 @@ class DraggablePanel(
         cancelBtn.setOnClickListener { minimize() }
         shareBtn.setOnClickListener { runShare() }
         endRecBtn.setOnClickListener { onEndRecord?.invoke() }
+        coldBtn.setOnClickListener { onColdStart?.invoke() }
 
         bubble.setOnTouchListener { _, ev -> bubbleGd.onTouchEvent(ev); false }
     }
@@ -4334,6 +4346,7 @@ class MainActivity : AppCompatActivity() {
         container.addView(panel, params)
         panel.onPin = { pinBubble() }
         panel.onEndRecord = { toggleRecording() }
+        panel.onColdStart = { askColdStart() }
         panel.setRecording(NavRecordService.running || !recordEnded)
         sharePanel = panel
         
@@ -4397,6 +4410,31 @@ class MainActivity : AppCompatActivity() {
             try { ContextCompat.startForegroundService(this, Intent(this, NavRecordService::class.java)) } catch (e: Exception) { logError("Įrašymo paslauga: ${e.message}") }
             sharePanel?.setRecording(true)
         }
+    }
+
+    /** Šaltas startas: patvirtinimas, tada GNSS atjungiamas, pagalbos duomenys ištrinami ir GNSS paleidžiamas iš naujo. */
+    private fun askColdStart() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Šaltas startas")
+            .setMessage("Bus ištrinti GNSS pagalbos duomenys (efemeridės, almanachas, padėtis, laikas). " +
+                "Prieš tai išjunkite mobiliuosius duomenis ir Wi-Fi, kad planšetė jų iškart negautų iš interneto. " +
+                "Pirmas fiksas gali užtrukti kelias minutes.")
+            .setPositiveButton("Ištrinti") { _, _ -> coldStart() }
+            .setNegativeButton("Atšaukti", null)
+            .show()
+    }
+
+    private fun coldStart() {
+        unregisterGnss()
+        if (NavRecordService.running) {
+            startService(Intent(this, NavRecordService::class.java).setAction(NavRecordService.ACTION_COLD_START))
+        } else {
+            val ok = deleteAidingData(lm)
+            GapLog.event(this, "ŠALTAS STARTAS: pagalbos duomenų trynimas ${if (ok) "priimtas" else "nepriimtas"} (paslauga neveikė)")
+        }
+        posText = "Šaltas startas: laukiama fikso..."
+        render()
+        mainHandler.postDelayed({ if (activityStarted) startGnss() }, 3500)
     }
 
     /** Vieną kartą paprašoma baterijos optimizavimo išimties (įrašymas išjungus ekraną). */

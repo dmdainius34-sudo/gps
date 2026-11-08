@@ -32,6 +32,7 @@ class NavRecordService : Service() {
 
     companion object {
         const val ACTION_END = "lt.example.gnss.NAV_RECORD_END"
+        const val ACTION_COLD_START = "lt.example.gnss.NAV_COLD_START"
         private const val CHANNEL = "nav_record"
         private const val NOTIF_ID = 4711
         @Volatile var running = false
@@ -137,6 +138,10 @@ class NavRecordService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_COLD_START && running) {
+            coldStart()
+            return START_STICKY
+        }
         try {
             val notif = buildNotification()
             if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
@@ -193,12 +198,27 @@ class NavRecordService : Service() {
         } catch (e: Exception) { Log.e("GnssApp", "NavRecordService: wake lock: ${e.message}"); null }
     }
 
-    override fun onDestroy() {
-        GapLog.event(this, "paslauga onDestroy")
+    private fun unregisterAll() {
         try { lm?.unregisterGnssNavigationMessageCallback(callback) } catch (_: Exception) {}
         try { lm?.unregisterGnssStatusCallback(statusCb) } catch (_: Exception) {}
         try { lm?.unregisterGnssMeasurementsCallback(measCb) } catch (_: Exception) {}
         try { lm?.removeUpdates(locCb) } catch (_: Exception) {}
+        listenerRegistered = false
+    }
+
+    /** Šaltas startas: GNSS klausytojai atjungiami, pagalbos duomenys ištrinami, po 3 s prijungiama iš naujo. */
+    private fun coldStart() {
+        unregisterAll()
+        SessionFiles.flush()
+        val m = lm ?: (getSystemService(LOCATION_SERVICE) as LocationManager)
+        val ok = deleteAidingData(m)
+        GapLog.event(this, "ŠALTAS STARTAS: pagalbos duomenų trynimas ${if (ok) "priimtas" else "nepriimtas"}; GNSS klausytojai atjungti 3 s")
+        handler.postDelayed({ if (running) { register(); GapLog.event(this, "ŠALTAS STARTAS: GNSS klausytojai prijungti iš naujo") } }, 3000)
+    }
+
+    override fun onDestroy() {
+        GapLog.event(this, "paslauga onDestroy")
+        unregisterAll()
         SessionFiles.flush()
         if (receiverOn) { try { unregisterReceiver(sysReceiver) } catch (_: Exception) {}; receiverOn = false }
         try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
@@ -241,3 +261,8 @@ class NavRecordService : Service() {
         } catch (_: Exception) {}
     }
 }
+
+/** LocationManager „delete_aiding_data“ (efemeridės, almanachas, padėtis, laikas, ionosfera, UTC, sveikata). */
+fun deleteAidingData(m: LocationManager): Boolean = try {
+    m.sendExtraCommand(LocationManager.GPS_PROVIDER, "delete_aiding_data", null)
+} catch (e: Exception) { Log.e("GnssApp", "delete_aiding_data: ${e.message}"); false }

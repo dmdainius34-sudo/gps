@@ -44,8 +44,16 @@ class Sp3LocatorTest {
     @Test
     fun fallsBackToPickedFile() {
         val picked = Sp3Locator.Found(day312, "content://x/1") { ByteArrayInputStream(ByteArray(0)) }
-        val s = Sp3Locator.search(listOf(dirWith())) { Sp3Locator.Check("content://x/1", Sp3Locator.FOUND) to picked }
+        val s = Sp3Locator.search(listOf(dirWith())) { Sp3Locator.Check("content://x/tree", Sp3Locator.FOUND, day312) to picked }
         assertEquals("content://x/1", s.used?.location)
+        assertTrue(s.lines().contains("content://x/tree – found: $day312"))
+    }
+
+    @Test
+    fun newestAmongFolderRows() {
+        val rows = listOf("1" to day311, "2" to day312, "3" to "notes.txt", "4" to "kitas.SP3")
+        assertEquals("2", Sp3Locator.newest(rows) { it.second }?.first)
+        assertNull(Sp3Locator.newest(listOf("3" to "notes.txt")) { it.second })
     }
 
     @Test

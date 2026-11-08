@@ -3503,6 +3503,13 @@ class DraggablePanel(
         setPadding((8 * resources.displayMetrics.density).toInt(), 0, (8 * resources.displayMetrics.density).toInt(), 0)
     }
 
+    var onPickSp3: (() -> Unit)? = null
+    private val sp3Btn = Button(context).apply {
+        text = "Pasirinkti SP3 aplanką"
+        textSize = 12f
+        isAllCaps = false
+    }
+
     private val shareBtn = FrameLayout(context).apply {
         isClickable = true
         layoutParams = LinearLayout.LayoutParams((52 * density).toInt(), (52 * density).toInt())
@@ -3578,6 +3585,7 @@ class DraggablePanel(
         bodyInner.addView(aglInput)
         bodyInner.addView(mslInput)
         bodyInner.addView(coordInput)
+        bodyInner.addView(sp3Btn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(inputRow)
 
         addView(panel)
@@ -3587,6 +3595,7 @@ class DraggablePanel(
         shareBtn.setOnClickListener { runShare() }
         endRecBtn.setOnClickListener { onEndRecord?.invoke() }
         coldBtn.setOnClickListener { onColdStart?.invoke() }
+        sp3Btn.setOnClickListener { onPickSp3?.invoke() }
 
         bubble.setOnTouchListener { _, ev -> bubbleGd.onTouchEvent(ev); false }
     }
@@ -4132,13 +4141,29 @@ class MainActivity : AppCompatActivity() {
 
     private var afterSp3Pick: (() -> Unit)? = null
 
-    private val sp3PickLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null && !Sp3Storage.savePick(this, uri)) logError("Pasirinktas failas netinka: reikia *.SP3.gz")
+    private val sp3PickLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            if (Sp3Storage.savePick(this, uri)) Toast.makeText(this, "SP3 aplankas pasirinktas", Toast.LENGTH_SHORT).show()
+            else logError("SP3 aplanko leidimas nesuteiktas")
+        }
         afterSp3Pick?.invoke()
         afterSp3Pick = null
     }
 
-    /** Vieną kartą pasiūlo pasirinkti SP3 failą, jei jo nerasta; po to tęsia eksportą. */
+    private fun launchSp3Picker(next: (() -> Unit)? = null) {
+        afterSp3Pick = next
+        // Android 11+ neleidžia pasirinkti paties Download, tik jo poaplankį
+        Toast.makeText(this, "Pasirinkite arba sukurkite Download poaplankį (pvz. SP3) ir laikykite SP3 failus jame", Toast.LENGTH_LONG).show()
+        try {
+            sp3PickLauncher.launch(Sp3Storage.initialUri())
+        } catch (e: android.content.ActivityNotFoundException) {
+            afterSp3Pick = null
+            logError("Aplanko pasirinkimas nepasiekiamas: ${e.message}")
+            next?.invoke()
+        }
+    }
+
+    /** Vieną kartą pasiūlo pasirinkti SP3 aplanką, jei failo nerasta; po to tęsia eksportą. */
     private fun offerSp3PickerOnce(next: () -> Unit) {
         if (Sp3Storage.pickerOffered(this)) { next(); return }
         Thread {
@@ -4148,14 +4173,7 @@ class MainActivity : AppCompatActivity() {
                 val visible = lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
                 if (!missing || !visible) { next(); return@runOnUiThread }
                 Sp3Storage.markPickerOffered(this)
-                afterSp3Pick = next
-                try {
-                    sp3PickLauncher.launch(arrayOf("*/*"))
-                } catch (e: android.content.ActivityNotFoundException) {
-                    afterSp3Pick = null
-                    logError("Failų pasirinkimas nepasiekiamas: ${e.message}")
-                    next()
-                }
+                launchSp3Picker(next)
             }
         }.start()
     }
@@ -4377,6 +4395,7 @@ class MainActivity : AppCompatActivity() {
         panel.onPin = { pinBubble() }
         panel.onEndRecord = { toggleRecording() }
         panel.onColdStart = { askColdStart() }
+        panel.onPickSp3 = { launchSp3Picker() }
         panel.setRecording(NavRecordService.running || !recordEnded)
         sharePanel = panel
         

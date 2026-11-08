@@ -10,13 +10,16 @@ object Sp3Locator {
     const val ABSENT = "not found"
     const val BLOCKED = "not accessible"
 
-    class Check(val location: String, val status: String)
+    /** location – aplanko kelias arba URI; file – jame rastas naujausias failas. */
+    class Check(val location: String, val status: String, val file: String? = null)
 
     /** name – failo vardas; location – pilnas kelias arba URI. */
     class Found(val name: String, val location: String, val open: () -> InputStream)
 
     class Search(val used: Found?, val checks: List<Check>) {
-        fun lines(): List<String> = checks.map { "${it.location} – ${it.status}" }
+        fun lines(): List<String> = checks.map { c ->
+            "${c.location} – ${c.status}" + (c.file?.let { ": $it" } ?: "")
+        }
     }
 
     private val DATE = Regex("_(\\d{11})_")
@@ -26,7 +29,9 @@ object Sp3Locator {
     /** Metai + diena + laikas iš vardo (_20263120000_ -> 20263120000); be datos – -1. */
     fun dateKey(name: String): Long = DATE.find(name)?.groupValues?.get(1)?.toLong() ?: -1L
 
-    private val NEWEST = compareBy<File>({ dateKey(it.name) }, { it.name })
+    /** Naujausias tinkamo vardo elementas (aplanko failai arba SAF eilutės). */
+    fun <T> newest(items: List<T>, name: (T) -> String): T? =
+        items.filter { matches(name(it)) }.maxWithOrNull(compareBy<T>({ dateKey(name(it)) }, { name(it) }))
 
     /** Naujausias tinkamas ir skaitomas failas aplanke (arba null). */
     fun newestIn(dir: File): File? = inspect(dir).first
@@ -37,8 +42,7 @@ object Sp3Locator {
             all == null -> null to (if (dir.exists()) BLOCKED else ABSENT)
             else -> {
                 val hits = all.filter { it.isFile && matches(it.name) }
-                val readable = hits.filter { it.canRead() }
-                val best = readable.maxWithOrNull(NEWEST)
+                val best = newest(hits.filter { it.canRead() }) { it.name }
                 best to when {
                     best != null -> FOUND
                     hits.isNotEmpty() -> BLOCKED
@@ -56,7 +60,7 @@ object Sp3Locator {
         var used: Found? = null
         for (dir in dirs) {
             val (file, status) = inspect(dir)
-            checks.add(Check(dir.path, status))
+            checks.add(Check(dir.path, status, file?.name))
             if (used == null && file != null) {
                 used = Found(file.name, file.absolutePath) { file.inputStream() }
             }

@@ -3482,6 +3482,17 @@ class DraggablePanel(
     private val dragSlop = 10f * resources.displayMetrics.density
     private val cancelBtn = smallButton("\u2715", 44)     // ✕ (ir atšaukti, ir sumažinti)
 
+    /** „Baigti įrašą“ / „Tęsti įrašą“ – kviečiama veiklos. */
+    var onEndRecord: (() -> Unit)? = null
+    private val endRecBtn = Button(context).apply {
+        text = "Baigti įrašą"
+        textSize = 12f
+        isAllCaps = false
+        minWidth = 0; minimumWidth = 0
+        setPadding((8 * resources.displayMetrics.density).toInt(), 0, (8 * resources.displayMetrics.density).toInt(), 0)
+    }
+    fun setRecording(on: Boolean) { endRecBtn.text = if (on) "Baigti įrašą" else "Tęsti įrašą" }
+
     private val shareBtn = FrameLayout(context).apply {
         isClickable = true
         layoutParams = LinearLayout.LayoutParams((52 * density).toInt(), (52 * density).toInt())
@@ -3538,6 +3549,7 @@ class DraggablePanel(
         header.addView(cancelBtn)
 
         inputRow.addView(questionInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        inputRow.addView(endRecBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         inputRow.addView(shareBtn)
 
         panel.addView(header)
@@ -3562,6 +3574,7 @@ class DraggablePanel(
 
         cancelBtn.setOnClickListener { minimize() }
         shareBtn.setOnClickListener { runShare() }
+        endRecBtn.setOnClickListener { onEndRecord?.invoke() }
 
         bubble.setOnTouchListener { _, ev -> bubbleGd.onTouchEvent(ev); false }
     }
@@ -4090,6 +4103,7 @@ class MainActivity : AppCompatActivity() {
     private val measCallback = object : GnssMeasurementsEvent.Callback() {
         override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
             measText = "Neapdoroti matavimai: ${event.measurements.size}"
+            GapLog.onRaw(this@MainActivity)
             for (m in event.measurements) appendRaw(m, event.clock)
             render()
         }
@@ -4270,7 +4284,8 @@ class MainActivity : AppCompatActivity() {
     private fun setupShareBubble() {
         if (sharePanel != null) return
         val panel = DraggablePanel(this) { sections, question, wantScreenshot ->
-            val report = buildReport(sections - "screenshot" - "raw", question)
+            val report = buildReport(sections - "screenshot" - "raw", question) +
+                "\n=== ĮRAŠYMO PERTRAUKOS ===\n" + GapLog.report(this)
             val finish: (Uri?) -> Unit = { shot ->
                 val uris = ArrayList<Uri>()
                 shot?.let { uris.add(it) }
@@ -4283,6 +4298,7 @@ class MainActivity : AppCompatActivity() {
                     rawCsvUri()?.let { uris.add(it) }
                     fixCsvUri()?.let { uris.add(it) }
                     navCsvUri()?.let { uris.add(it) }
+                    gapLogUri()?.let { uris.add(it) }
                     // GPS pozicijos skaičiuoklė (1 žingsnis) – fone, rezultatas gnss_solver.csv
                     Thread {
                         val u = solverCsvUri()
@@ -4315,6 +4331,8 @@ class MainActivity : AppCompatActivity() {
         
         container.addView(panel, params)
         panel.onPin = { pinBubble() }
+        panel.onEndRecord = { toggleRecording() }
+        panel.setRecording(NavRecordService.running || !recordEnded)
         sharePanel = panel
         
         // Nustatome pradinę poziciją viršutiniame dešiniajame kampe
@@ -4328,6 +4346,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        activityStarted = true
         baro.start()
         startDeviceSensors()
         if (use3d && ::skyDome.isInitialized) skyDome.start()
@@ -4343,10 +4362,59 @@ class MainActivity : AppCompatActivity() {
         baro.stop()
         stopDeviceSensors()
         if (::skyDome.isInitialized) skyDome.stop()
-        lm.unregisterGnssStatusCallback(statusCallback)
-        lm.unregisterGnssMeasurementsCallback(measCallback)
-        // Navigacijos įrašymas tęsiamas NavRecordService (priekinis planas) – sustabdomas pranešimo mygtuku „Baigti“
-        lm.removeUpdates(locationListener)
+        activityStarted = false
+        // Kol veikia NavRecordService (priekinis planas), matavimai ir fiksai rašomi ir fone
+        if (NavRecordService.running) GapLog.event(this, "veikla onStop – įrašymas tęsiamas fone")
+        else unregisterGnss()
+    }
+
+    private var gnssRegistered = false
+    private var activityStarted = false
+    private var recordEnded = false
+
+    private fun unregisterGnss() {
+        if (!gnssRegistered) return
+        try {
+            lm.unregisterGnssStatusCallback(statusCallback)
+            lm.unregisterGnssMeasurementsCallback(measCallback)
+            lm.removeUpdates(locationListener)
+        } catch (_: Exception) {}
+        gnssRegistered = false
+    }
+
+    /** „Baigti įrašą“ / „Tęsti įrašą“ mygtukas. */
+    private fun toggleRecording() {
+        if (NavRecordService.running) {
+            recordEnded = true
+            startService(Intent(this, NavRecordService::class.java).setAction(NavRecordService.ACTION_END))
+            sharePanel?.setRecording(false)
+        } else {
+            recordEnded = false
+            try { ContextCompat.startForegroundService(this, Intent(this, NavRecordService::class.java)) } catch (e: Exception) { logError("Įrašymo paslauga: ${e.message}") }
+            sharePanel?.setRecording(true)
+        }
+    }
+
+    /** Vieną kartą paprašoma baterijos optimizavimo išimties (įrašymas išjungus ekraną). */
+    @SuppressLint("BatteryLife")
+    private fun askBatteryExemptionOnce() {
+        val prefs = getSharedPreferences("gap_log", MODE_PRIVATE)
+        if (prefs.getBoolean("battery_asked", false)) return
+        prefs.edit().putBoolean("battery_asked", true).apply()
+        if (GapLog.batteryExempt(this)) { GapLog.event(this, "baterijos išimtis jau suteikta"); return }
+        try {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Įrašymas išjungus ekraną")
+                .setMessage("Kad GNSS matavimai būtų įrašomi be pertraukų, kai ekranas išjungtas ar atidaryta kita programa, leiskite programai veikti be baterijos optimizavimo.")
+                .setPositiveButton("Leisti") { _, _ ->
+                    GapLog.event(this, "baterijos išimties prašymas: atidarytas sistemos langas")
+                    try {
+                        startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+                    } catch (e: Exception) { logError("Baterijos išimtis: ${e.message}") }
+                }
+                .setNegativeButton("Ne dabar") { _, _ -> GapLog.event(this, "baterijos išimties prašymas: atmesta") }
+                .show()
+        } catch (_: Exception) {}
     }
 
     @SuppressLint("MissingPermission")
@@ -4356,8 +4424,15 @@ class MainActivity : AppCompatActivity() {
             logError("GPS išjungtas")
             render()
         }
-        lm.registerGnssStatusCallback(statusCallback, mainHandler)
-        if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
+        NavRecordService.onEnded = { if (!activityStarted) unregisterGnss(); sharePanel?.setRecording(false) }
+        if (!gnssRegistered) {
+            lm.registerGnssStatusCallback(statusCallback, mainHandler)
+            if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
+            gnssRegistered = true
+        }
+        if (recordEnded) return
+        sharePanel?.setRecording(true)
         // Navigacijos pranešimai – priekinio plano paslaugoje (veikia ir išjungus ekraną)
         try {
             if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, "android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
@@ -4365,7 +4440,7 @@ class MainActivity : AppCompatActivity() {
             }
             ContextCompat.startForegroundService(this, Intent(this, NavRecordService::class.java))
         } catch (e: Exception) { logError("Navigacijos paslauga: ${e.message}") }
-        lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
+        askBatteryExemptionOnce()
     }
 
     @RequiresApi(31)
@@ -4466,6 +4541,7 @@ class MainActivity : AppCompatActivity() {
     private fun resetRawFile() {
         try { rawWriter?.close() } catch (_: Exception) {}
         rawRows = 0
+        GapLog.newSession(this)
         rawWriter = try {
             java.io.BufferedWriter(java.io.FileWriter(File(cacheDir, "gnss_raw.csv"), false), 1 shl 16).also { it.write(rawHeader) }
         } catch (e: Exception) { logError("Matavimų failas nepavyko: ${e.message}"); null }
@@ -4690,6 +4766,12 @@ class MainActivity : AppCompatActivity() {
     private fun solverDiagUri(): Uri? = try {
         val f = File(cacheDir, PositionSolver.DIAG_FILE)
         if (f.exists()) FileProvider.getUriForFile(this, "$packageName.fileprovider", f) else null
+    } catch (e: Exception) { null }
+
+    private fun gapLogUri(): Uri? = try {
+        val f = GapLog.file(this)
+        if (!f.exists()) f.writeText("")
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", f)
     } catch (e: Exception) { null }
 
     private fun navCsvUri(): Uri? = try {

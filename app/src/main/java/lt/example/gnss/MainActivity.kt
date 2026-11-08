@@ -3984,6 +3984,8 @@ class GradientBackground(context: Context) : View(context) {
 //  PAGRINDINIS EKRANAS
 // ============================================================
 
+private const val REPORT_FILE = "ataskaita.txt"
+
 class MainActivity : AppCompatActivity() {
     private lateinit var lm: LocationManager
     private lateinit var info: TextView
@@ -4364,6 +4366,7 @@ class MainActivity : AppCompatActivity() {
                 val uris = ArrayList<Uri>()
                 shot?.let { uris.add(it) }
                 val send = {
+                    report += "Eksportuota: " + (listOf(REPORT_FILE) + uris.mapNotNull { it.lastPathSegment }).joinToString(", ") + "\n"
                     // Ataskaita (su klausimu) visada kaip tekstinis failas
                     reportFileUri(report)?.let { uris.add(0, it) }
                     shareContent(report, uris)
@@ -4381,8 +4384,9 @@ class MainActivity : AppCompatActivity() {
                         report += "CSV savitikra (laukų skaičius = antraštės): gnss_raw.csv netinkamų $bad iš $total; " +
                             "gnss_fix.csv $badF iš $totalF; gnss_nav.csv $badN iš $totalN\n"
                         val u = solverCsvUri()
+                        val s = sp3TestCsvUri()
                         val d = solverDiagUri()
-                        runOnUiThread { u?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
+                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
                     }.start() }
                 } else send()
             }
@@ -4787,7 +4791,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun reportFileUri(text: String): Uri? = try {
-        val file = File(cacheDir, "ataskaita.txt")
+        val file = File(cacheDir, REPORT_FILE)
         file.writeText(text)
         FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
     } catch (e: Exception) {
@@ -4808,6 +4812,8 @@ class MainActivity : AppCompatActivity() {
     /** GPS-only sprendinys iš gnss_raw.csv + gnss_nav.csv -> gnss_solver.csv (kviečiama ne UI gijoje). */
     private fun solverCsvUri(): Uri? = try {
         val out = File(cacheDir, "gnss_solver.csv")
+        // Ankstesnio eksporto rezultatas neturi būti išsiųstas, jei šįkart SP3 sprendimas nevyks
+        File(cacheDir, Sp3Solver.OUT_FILE).delete()
         // „SP3 TESTAS“ / „SP3 INTERPOLIACIJA“ diagnostikai (skaičiuoklė SP3 nenaudoja)
         val sols = PositionSolver.solveFiles(File(cacheDir, "gnss_raw.csv"), File(cacheDir, "gnss_nav.csv"), out) {
             Sp3Storage.search(this)
@@ -4818,6 +4824,12 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { logError("Skaičiuoklė nepavyko: ${e.message}") }
         null
     }
+
+    /** SP3 sprendinio testas; failo nėra, jei SP3 sprendimas nevyko – tada praleidžiama. */
+    private fun sp3TestCsvUri(): Uri? = try {
+        val f = File(cacheDir, Sp3Solver.OUT_FILE)
+        if (f.exists()) FileProvider.getUriForFile(this, "$packageName.fileprovider", f) else null
+    } catch (e: Exception) { null }
 
     /** Skaičiuoklės diagnostika (gnss_solver_diag.txt), sukurta kartu su gnss_solver.csv. */
     private fun solverDiagUri(): Uri? = try {

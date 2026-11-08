@@ -880,8 +880,8 @@ object PositionSolver {
     }
 
     /** Pagrindinis įėjimas: nuskaito failus, sprendžia ir rašo gnss_solver.csv. Grąžina sprendinius. */
-    /** sp3: (failo vardas, srautas) „SP3 TESTAS“ blokui; skaičiuoklė SP3 dar nenaudoja. */
-    fun solveFiles(raw: File, nav: File, out: File, sp3: (() -> Pair<String, java.io.InputStream>)? = null): List<Pair<Long, Solution>> {
+    /** sp3: SP3 failo paieška „SP3 TESTAS“ blokui; skaičiuoklė SP3 dar nenaudoja. */
+    fun solveFiles(raw: File, nav: File, out: File, sp3: (() -> Sp3Locator.Search)? = null): List<Pair<Long, Solution>> {
         val diag = Diag()
         val ephs = readEphemerides(nav, firstWeek(raw), diag)
         val sols = ArrayList<Pair<Long, Solution>>()
@@ -893,16 +893,21 @@ object PositionSolver {
                 w.write(String.format(Locale.US, "%d,%.8f,%.8f,%.2f,%d,%.2f\n", ep.timeMs, s.lat, s.lon, s.h, s.sats, s.hacc))
             }
         }
-        lastDiagText = diag.text(sols.size) + (sp3?.let { open ->
+        lastDiagText = diag.text(sols.size) + (sp3?.let { locate ->
+            var location = "nėra"
+            var searched = emptyList<String>()
             try {
-                val (name, input) = open()
-                val r = input.use { Sp3Reader.read(it, gzip = name.endsWith(".gz", true)) }
+                val search = locate()
+                searched = search.lines()
+                val used = search.used ?: throw java.io.FileNotFoundException(Sp3Locator.NOT_FOUND)
+                location = used.location
+                val r = used.open().use { Sp3Reader.read(it, gzip = used.name.endsWith(".gz", true)) }
                 // SP3 sprendinys – tik testui, atskiras failas (pagrindinė išvestis nekeičiama)
                 val sp3Sol = try { Sp3Solver.diagBlock(Sp3Solver.solveFile(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE))) }
                     catch (e: Exception) { Sp3Solver.diagBlock(null, e.message) }
-                Sp3Reader.diagBlock(name, r) + sp3Sol
+                Sp3Reader.diagBlock(location, r, searched = searched) + sp3Sol
             }
-            catch (e: Exception) { Sp3Reader.diagBlock("?", null, e.message) + Sp3Solver.diagBlock(null, e.message) }
+            catch (e: Exception) { Sp3Reader.diagBlock(location, null, e.message, searched) + Sp3Solver.diagBlock(null, e.message) }
         } ?: "")
         File(out.parentFile, DIAG_FILE).writeText(lastDiagText)
         return sols

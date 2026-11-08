@@ -4130,6 +4130,36 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private var afterSp3Pick: (() -> Unit)? = null
+
+    private val sp3PickLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null && !Sp3Storage.savePick(this, uri)) logError("Pasirinktas failas netinka: reikia *.SP3.gz")
+        afterSp3Pick?.invoke()
+        afterSp3Pick = null
+    }
+
+    /** Vieną kartą pasiūlo pasirinkti SP3 failą, jei jo nerasta; po to tęsia eksportą. */
+    private fun offerSp3PickerOnce(next: () -> Unit) {
+        if (Sp3Storage.pickerOffered(this)) { next(); return }
+        Thread {
+            val missing = try { Sp3Storage.search(this).used == null } catch (e: Exception) { false }
+            runOnUiThread {
+                // Iš fono veiklos paleisti nepavyktų ir eksportas liktų laukti rezultato
+                val visible = lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+                if (!missing || !visible) { next(); return@runOnUiThread }
+                Sp3Storage.markPickerOffered(this)
+                afterSp3Pick = next
+                try {
+                    sp3PickLauncher.launch(arrayOf("*/*"))
+                } catch (e: android.content.ActivityNotFoundException) {
+                    afterSp3Pick = null
+                    logError("Failų pasirinkimas nepasiekiamas: ${e.message}")
+                    next()
+                }
+            }
+        }.start()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Geoidas pradedamas krauti iš karto (fone), kol kuriamas vaizdas ir laukiama fikso.
@@ -4311,7 +4341,7 @@ class MainActivity : AppCompatActivity() {
                     navCsvUri()?.let { uris.add(it) }
                     gapLogUri()?.let { uris.add(it) }
                     // GPS pozicijos skaičiuoklė (1 žingsnis) – fone, rezultatas gnss_solver.csv
-                    Thread {
+                    offerSp3PickerOnce { Thread {
                         val (bad, total) = SessionFiles.badLines(File(cacheDir, SessionFiles.RAW))
                         val (badF, totalF) = SessionFiles.badLines(File(cacheDir, SessionFiles.FIX))
                         val (badN, totalN) = SessionFiles.badLines(File(cacheDir, NavRecorder.FILE))
@@ -4320,7 +4350,7 @@ class MainActivity : AppCompatActivity() {
                         val u = solverCsvUri()
                         val d = solverDiagUri()
                         runOnUiThread { u?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
-                    }.start()
+                    }.start() }
                 } else send()
             }
             if (wantScreenshot) {
@@ -4717,13 +4747,9 @@ class MainActivity : AppCompatActivity() {
     /** GPS-only sprendinys iš gnss_raw.csv + gnss_nav.csv -> gnss_solver.csv (kviečiama ne UI gijoje). */
     private fun solverCsvUri(): Uri? = try {
         val out = File(cacheDir, "gnss_solver.csv")
-        // „SP3 TESTAS“ / „SP3 INTERPOLIACIJA“ diagnostikai: SP3 failas programos aplanke (skaičiuoklė jo nenaudoja)
-        val sp3Dirs = listOfNotNull(getExternalFilesDir(null), filesDir, cacheDir)
+        // „SP3 TESTAS“ / „SP3 INTERPOLIACIJA“ diagnostikai (skaičiuoklė SP3 nenaudoja)
         val sols = PositionSolver.solveFiles(File(cacheDir, "gnss_raw.csv"), File(cacheDir, "gnss_nav.csv"), out) {
-            val f = sp3Dirs.flatMap { it.listFiles()?.toList() ?: emptyList() }
-                .firstOrNull { it.name.endsWith(".SP3.gz", true) || it.name.endsWith(".sp3", true) }
-                ?: throw java.io.FileNotFoundException("SP3 failo nėra (įkelkite *.SP3.gz į ${sp3Dirs.first().path})")
-            f.name to f.inputStream()
+            Sp3Storage.search(this)
         }
         android.util.Log.i("GnssApp", "gnss_solver.csv: sprendinių ${sols.size}")
         FileProvider.getUriForFile(this, "$packageName.fileprovider", out)

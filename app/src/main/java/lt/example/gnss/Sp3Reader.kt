@@ -197,10 +197,14 @@ class Sp3Reader private constructor(
         }
 
         /** „SP3 TESTAS“ blokas diagnostikai. */
-        fun diagBlock(name: String, r: Sp3Reader?, error: String? = null): String = buildString {
+        fun diagBlock(name: String, r: Sp3Reader?, error: String? = null, searched: List<String> = emptyList()): String = buildString {
             appendLine()
             appendLine("--- SP3 TESTAS ---")
             appendLine("Failas: $name")
+            if (searched.isNotEmpty()) {
+                appendLine("Paieškos vietos:")
+                searched.forEach { appendLine("  $it") }
+            }
             if (r == null) { appendLine("Nepavyko nuskaityti: ${error ?: "failo nėra"}"); return@buildString }
             appendLine("Pradžia: GPS savaitė ${r.startWeek}, ${"%.0f".format(Locale.US, r.startSow)} s; intervalas ${"%.0f".format(Locale.US, r.intervalSec)} s")
             appendLine("Epochų: ${r.epochCount} (antraštėje ${r.headerEpochs})")

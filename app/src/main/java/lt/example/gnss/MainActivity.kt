@@ -1135,6 +1135,11 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private val tiltK = 0.02                 // 98 % giroskopas, 2 % akselerometras/gravitacija
     private val yawK = 0.02                  // ne stabiliame režime – lėta yaw korekcija iš rotation vector
 
+    fun setCmb(on: Boolean) {
+        renderer.cmbOn = on
+        calPrefs.edit().putBoolean("cmb_bg", on).apply()
+    }
+
     fun setStableNorth(on: Boolean) {
         stableNorth = on
         calPrefs.edit().putBoolean("stable_north", on).apply()
@@ -1156,6 +1161,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         setEGLContextClientVersion(2)
         setEGLConfigChooser(MsaaConfigChooser())
         preserveEGLContextOnPause = true
+        renderer.cmbOn = calPrefs.getBoolean("cmb_bg", true)
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
     }
@@ -1580,6 +1586,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         sunProg = 0
         glowProg = 0
         buildEarth()
+        loadCmb()
         starTex = makeStarTexture()
         sunTex = makeSunTexture()
         sunImgTex = 0
@@ -1659,6 +1666,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val tint = signalTint(if (used.isNotEmpty()) avgCn0 else null, if (used.isNotEmpty()) peakCn0 else null)
         lastTint = tint
 
+        // CMB fonas (Planck) – didelė sfera pusiaujo (RA/Dec) sistemoje, sukasi kartu su žvaigždėmis
+        drawCmb()
+
         // Dangaus skliauto kupolas (viršutinis ir apatinis) nebepiešiamas
         GLES20.glDepthMask(true)
 
@@ -1722,6 +1732,70 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             }
         }
 
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    // ---------------- CMB FONAS (ESA Planck Collaboration) ----------------
+    @Volatile var cmbOn = true
+    @Volatile var cmbAlpha = 0.25f
+    private var cmbTex = 0
+    private var cmbProg = 0
+    private val cmbModel = FloatArray(16)
+    private val cmbMvp = FloatArray(16)
+
+    /** assets/cmb.jpg – lygiakampė projekcija RA/Dec (u: RA −180°..180°, v: Dec +90°..−90°). */
+    private fun loadCmb() {
+        cmbTex = 0
+        cmbProg = program(CMB_VS, CMB_FS)
+        try {
+            appCtx.assets.open("cmb.jpg").use { ins ->
+                val bmp = android.graphics.BitmapFactory.decodeStream(ins)
+                if (bmp != null) {
+                    cmbTex = uploadTexture(bmp)
+                    android.util.Log.i("GnssApp", "CMB tekstūra įkelta: ${bmp.width}x${bmp.height}")
+                } else android.util.Log.w("GnssApp", "cmb.jpg neskaitomas – naudojamas paprastas fonas")
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("GnssApp", "cmb.jpg nerastas (app/src/main/assets/cmb.jpg) – naudojamas paprastas fonas")
+        }
+    }
+
+    /** Sfera R = 50 aplink stebėtoją (fP), ta pati transformacija kaip žvaigždžių (mvpI); atskira projekcija su tolima riba. */
+    private fun drawCmb() {
+        if (!cmbOn || cmbTex == 0 || earthPos == null || earthUv == null) return
+        val inv = FloatArray(16)
+        if (!Matrix.invertM(inv, 0, proj, 0)) return
+        val vm = FloatArray(16)
+        Matrix.multiplyMM(vm, 0, inv, 0, mvpI, 0)                 // vaizdas × sideralinė erdvė
+        val pFar = proj.copyOf()
+        val n = 0.1f; val f = 200f
+        pFar[10] = -(f + n) / (f - n); pFar[14] = -2f * f * n / (f - n)
+        val k = 50f / EARTH_R                                     // Žemės rutulio tinklelis (0,25) -> 50
+        java.util.Arrays.fill(cmbModel, 0f)
+        cmbModel[0] = k; cmbModel[5] = k; cmbModel[10] = k
+        cmbModel[12] = fP[0]; cmbModel[13] = fP[1]; cmbModel[14] = fP[2]; cmbModel[15] = 1f
+        val tmp = FloatArray(16)
+        Matrix.multiplyMM(tmp, 0, vm, 0, cmbModel, 0)
+        Matrix.multiplyMM(cmbMvp, 0, pFar, 0, tmp, 0)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        GLES20.glDepthMask(false)
+        GLES20.glDisable(GLES20.GL_CULL_FACE)
+        GLES20.glUseProgram(cmbProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(cmbProg, "uMVP"), 1, false, cmbMvp, 0)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(cmbProg, "uAlpha"), cmbAlpha)
+        resetAttribs()
+        val lp = GLES20.glGetAttribLocation(cmbProg, "aPos")
+        val lu = GLES20.glGetAttribLocation(cmbProg, "aUV")
+        GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lu)
+        earthPos!!.position(0); earthUv!!.position(0)
+        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, earthPos)
+        GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, earthUv)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cmbTex)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(cmbProg, "uTex"), 0)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+        GLES20.glDisableVertexAttribArray(lu)
+        GLES20.glDepthMask(true)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 
@@ -3070,6 +3144,20 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 gl_FragColor = vec4(col, 1.0);
             }
         """
+        private const val CMB_VS = """
+            attribute vec3 aPos;
+            attribute vec2 aUV;
+            uniform mat4 uMVP;
+            varying vec2 vUV;
+            void main() { vUV = aUV; gl_Position = uMVP * vec4(aPos, 1.0); }
+        """
+        private const val CMB_FS = """
+            precision mediump float;
+            uniform sampler2D uTex;
+            uniform float uAlpha;
+            varying vec2 vUV;
+            void main() { gl_FragColor = vec4(texture2D(uTex, vUV).rgb, uAlpha); }
+        """
         private const val TEX_VS = """
             attribute vec3 aPos;
             attribute vec2 aUV;
@@ -4115,6 +4203,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbStableN, LinearLayout.LayoutParams(mw, ww))
+        val cbCmb = CheckBox(this).apply {
+            text = "Fonas: CMB"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("cmb_bg", true)
+            setOnCheckedChangeListener { _, on ->
+                if (::skyDome.isInitialized) skyDome.setCmb(on)
+                else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("cmb_bg", on).apply()
+            }
+        }
+        left.addView(cbCmb, LinearLayout.LayoutParams(mw, ww))
+        left.addView(TextView(this).apply {
+            text = "CMB map: ESA Planck Collaboration"
+            textSize = 11f
+            alpha = 0.7f
+        }, LinearLayout.LayoutParams(mw, ww))
         left.addView(info, LinearLayout.LayoutParams(mw, ww))
 
         val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }

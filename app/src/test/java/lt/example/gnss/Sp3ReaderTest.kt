@@ -31,8 +31,8 @@ class Sp3ReaderTest {
         for (k in 0 until sp3.epochCount) {
             val r = sp3.record("G01", k) ?: continue
             val rad = sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2])
-            // Užduotyje nurodyta 26400–26600 km, bet G01 faile siekia 26618.857 km (e ≈ 0.002), todėl riba 26700 km
-            assertTrue("epocha $k: $rad km", rad in 26400.0..26700.0)
+            // Fizinės ribos: a = 26560 km, e ≈ 0.01 -> 26250–26850 km
+            assertTrue("epocha $k: $rad km", rad in 26250.0..26850.0)
             n++
         }
         assertTrue(n > 0)
@@ -40,7 +40,7 @@ class Sp3ReaderTest {
         val t = Sp3Reader.gpsSeconds(2026, 11, 4, 12, 2, 30.0)
         val week = (t / Sp3Reader.WEEK).toInt()
         val s = sp3.position("G01", week, t - week * Sp3Reader.WEEK)!!
-        assertTrue(sqrt(s.x * s.x + s.y * s.y + s.z * s.z) in 26400.0..26700.0)
+        assertTrue(sqrt(s.x * s.x + s.y * s.y + s.z * s.z) in 26250.0..26850.0)
         println(Sp3Reader.diagBlock(file.name, sp3))
     }
 

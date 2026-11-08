@@ -894,7 +894,7 @@ object PositionSolver {
             }
         }
         lastDiagText = diag.text(sols.size) + (sp3?.let { open ->
-            try { val (name, input) = open(); Sp3Reader.diagBlock(name, input.use { Sp3Reader.read(it) }) }
+            try { val (name, input) = open(); Sp3Reader.diagBlock(name, input.use { Sp3Reader.read(it, gzip = name.endsWith(".gz", true)) }) }
             catch (e: Exception) { Sp3Reader.diagBlock("?", null, e.message) }
         } ?: "")
         File(out.parentFile, DIAG_FILE).writeText(lastDiagText)

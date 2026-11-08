@@ -4717,7 +4717,14 @@ class MainActivity : AppCompatActivity() {
     /** GPS-only sprendinys iš gnss_raw.csv + gnss_nav.csv -> gnss_solver.csv (kviečiama ne UI gijoje). */
     private fun solverCsvUri(): Uri? = try {
         val out = File(cacheDir, "gnss_solver.csv")
-        val sols = PositionSolver.solveFiles(File(cacheDir, "gnss_raw.csv"), File(cacheDir, "gnss_nav.csv"), out)
+        // „SP3 TESTAS“ / „SP3 INTERPOLIACIJA“ diagnostikai: SP3 failas programos aplanke (skaičiuoklė jo nenaudoja)
+        val sp3Dirs = listOfNotNull(getExternalFilesDir(null), filesDir, cacheDir)
+        val sols = PositionSolver.solveFiles(File(cacheDir, "gnss_raw.csv"), File(cacheDir, "gnss_nav.csv"), out) {
+            val f = sp3Dirs.flatMap { it.listFiles()?.toList() ?: emptyList() }
+                .firstOrNull { it.name.endsWith(".SP3.gz", true) || it.name.endsWith(".sp3", true) }
+                ?: throw java.io.FileNotFoundException("SP3 failo nėra (įkelkite *.SP3.gz į ${sp3Dirs.first().path})")
+            f.name to f.inputStream()
+        }
         android.util.Log.i("GnssApp", "gnss_solver.csv: sprendinių ${sols.size}")
         FileProvider.getUriForFile(this, "$packageName.fileprovider", out)
     } catch (e: Exception) {

@@ -50,5 +50,42 @@ class Sp3ReaderTest {
         assertEquals(2443, sp3.startWeek)
     }
 
+    @Test
+    fun leaveOneOutAt0005() {
+        val k = 1                                                  // 00:05:00
+        val e = sp3.leaveOneOutError("G01", k)!!
+        println("SP3 leave-one-out G01 00:05: %.4f m".format(java.util.Locale.US, e))
+        assertTrue("$e m", e < 0.05)
+    }
+
+    @Test
+    fun leaveOneOutFiveEpochs() {
+        var mx = 0.0
+        for (k in sp3.looEpochs()) {
+            val e = sp3.leaveOneOutError("G01", k)!!
+            val t = sp3.epochs[k] - sp3.epochs[0]
+            println("SP3 leave-one-out G01 %02d:%02d: %.4f m".format(java.util.Locale.US, (t / 3600).toInt(), ((t % 3600) / 60).toInt(), e))
+            assertTrue("epocha $k: $e m", e < 0.05)
+            mx = maxOf(mx, e)
+        }
+        assertEquals(5, sp3.looEpochs().size)
+        println("SP3 leave-one-out maks.: %.4f m".format(java.util.Locale.US, mx))
+    }
+
+    @Test
+    fun edgesReturnEdgeValues() {
+        assertTrue(sp3.edgeCheck("G01"))
+        val t = sp3.epochs.last() + 3600.0
+        val w = (t / Sp3Reader.WEEK).toInt()
+        val c = sp3.clock("G01", w, t - w * Sp3Reader.WEEK)
+        assertEquals(sp3.record("G01", sp3.epochCount - 1)!![3], c!!, 0.0)
+    }
+
+    @Test
+    fun diagBlocks() {
+        val text = Sp3Reader.diagBlock(file.name, sp3)
+        assertTrue(text.contains("SP3 TESTAS") && text.contains("SP3 INTERPOLIACIJA"))
+    }
+
     companion object { const val SAMPLE = "WUM0MGXRAP_20263080000_01D_05M_ORB.SP3.gz" }
 }

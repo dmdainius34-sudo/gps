@@ -34,36 +34,92 @@ class Sp3Reader private constructor(
         return doubleArrayOf(d[4 * k], d[4 * k + 1], d[4 * k + 2], d[4 * k + 3])
     }
 
-    /**
-     * Padėtis (ECEF, km) ir laikrodžio pataisa (μs) duotu GPS laiku.
-     * Padėtis – 11 eilės Lagranžo interpoliacija (12 gretimų 5 min. įrašų, langas centruojamas, kraštuose pastumiamas);
-     * laikrodis – tiesinė interpoliacija tarp gretimų įrašų. Grąžina null, jei laikas už failo ribų ar trūksta įrašų.
-     */
-    fun position(sat: String, gpsWeek: Int, gpsSeconds: Double): State? {
-        val d = data[sat] ?: return null
-        val t = gpsWeek * WEEK + gpsSeconds
-        val n = epochs.size
-        if (n < ORDER + 1 || t < epochs[0] - 1e-6 || t > epochs[n - 1] + 1e-6) return null
-        // artimiausias įrašas
-        var k = ((t - epochs[0]) / intervalSec).toInt().coerceIn(0, n - 1)
-        while (k + 1 < n && epochs[k + 1] <= t) k++
-        while (k > 0 && epochs[k] > t) k--
-        val pts = ORDER + 1
-        var s = k - (pts / 2 - 1)
-        s = s.coerceIn(0, n - pts)
-        val xyz = DoubleArray(3)
-        for (i in s until s + pts) {
-            if (d[4 * i].isNaN()) return null
-            var li = 1.0
-            for (j in s until s + pts) if (j != i) li *= (t - epochs[j]) / (epochs[i] - epochs[j])
-            xyz[0] += li * d[4 * i]; xyz[1] += li * d[4 * i + 1]; xyz[2] += li * d[4 * i + 2]
+    private val validPos = HashMap<String, IntArray>()
+    private val validClk = HashMap<String, IntArray>()
+
+    /** Palydovo epochų indeksai su padėtimi (pos = true) arba su laikrodžiu (pos = false). */
+    private fun valid(sat: String, pos: Boolean): IntArray? = synchronized(this) {
+        val cache = if (pos) validPos else validClk
+        cache[sat] ?: run {
+            val d = data[sat] ?: return null
+            val off = if (pos) 0 else 3
+            epochs.indices.filter { !d[4 * it + off].isNaN() }.toIntArray().also { cache[sat] = it }
         }
-        val c0 = d[4 * k + 3]
-        val clk = if (k + 1 < n && t > epochs[k]) {
-            val c1 = d[4 * (k + 1) + 3]
-            c0 + (c1 - c0) * (t - epochs[k]) / (epochs[k + 1] - epochs[k])
-        } else c0
-        return State(xyz[0], xyz[1], xyz[2], clk)
+    }
+
+    /**
+     * Lagranžo interpoliacija per POINTS artimiausių to paties palydovo įrašų: langas centruojamas ties artimiausia epocha,
+     * failo kraštuose pastumiamas, kad liktų įrašų ribose. Už pirmo / paskutinio įrašo grąžinama krašto reikšmė.
+     * comp – komponentų poslinkiai įraše (0..3); exclude – praleidžiamas epochos indeksas (leave-one-out patikrai).
+     */
+    private fun lagrange(sat: String, t: Double, comps: IntArray, pos: Boolean, exclude: Int = -1): DoubleArray? {
+        val d = data[sat] ?: return null
+        val idx = (valid(sat, pos) ?: return null).let { v -> if (exclude >= 0) v.filter { it != exclude }.toIntArray() else v }
+        if (idx.isEmpty()) return null
+        val out = DoubleArray(comps.size)
+        fun take(k: Int) { for (c in comps.indices) out[c] = d[4 * k + comps[c]] }
+        if (t <= epochs[idx.first()]) { take(idx.first()); return out }
+        if (t >= epochs[idx.last()]) { take(idx.last()); return out }
+        // artimiausias įrašas (dvejetainė paieška)
+        var lo = 0; var hi = idx.size - 1
+        while (hi - lo > 1) { val m = (lo + hi) ushr 1; if (epochs[idx[m]] <= t) lo = m else hi = m }
+        val near = if (t - epochs[idx[lo]] <= epochs[idx[hi]] - t) lo else hi
+        if (idx.size < POINTS) {                                   // per mažai įrašų – tiesinė
+            val a = idx[lo]; val b = idx[hi]; val f = (t - epochs[a]) / (epochs[b] - epochs[a])
+            for (c in comps.indices) out[c] = d[4 * a + comps[c]] + f * (d[4 * b + comps[c]] - d[4 * a + comps[c]])
+            return out
+        }
+        val s = (near - POINTS / 2).coerceIn(0, idx.size - POINTS)
+        for (a in s until s + POINTS) {
+            val i = idx[a]
+            var li = 1.0
+            for (b in s until s + POINTS) if (b != a) { val j = idx[b]; li *= (t - epochs[j]) / (epochs[i] - epochs[j]) }
+            for (c in comps.indices) out[c] += li * d[4 * i + comps[c]]
+        }
+        return out
+    }
+
+    private val XYZ = intArrayOf(0, 1, 2)
+    private val CLK = intArrayOf(3)
+
+    /** Padėtis X, Y, Z (km, ECEF): 11 eilės Lagranžo interpoliacija per 11 artimiausių įrašų. */
+    fun positionXyz(sat: String, gpsWeek: Int, gpsSeconds: Double): DoubleArray? =
+        lagrange(sat, gpsWeek * WEEK + gpsSeconds, XYZ, true)
+
+    /** Laikrodžio pataisa (μs): ta pati interpoliacija (tiesinė, jei įrašų mažiau nei 11). */
+    fun clock(sat: String, gpsWeek: Int, gpsSeconds: Double): Double? =
+        lagrange(sat, gpsWeek * WEEK + gpsSeconds, CLK, false)?.get(0)
+
+    /** Padėtis ir laikrodis kartu. */
+    fun position(sat: String, gpsWeek: Int, gpsSeconds: Double): State? {
+        val p = positionXyz(sat, gpsWeek, gpsSeconds) ?: return null
+        return State(p[0], p[1], p[2], clock(sat, gpsWeek, gpsSeconds) ?: Double.NaN)
+    }
+
+    /** Leave-one-out: įrašas k interpoliuojamas iš kaimynų be jo paties; grąžina 3D paklaidą metrais. */
+    fun leaveOneOutError(sat: String, k: Int): Double? {
+        val truth = record(sat, k) ?: return null
+        val p = lagrange(sat, epochs[k], XYZ, true, exclude = k) ?: return null
+        val dx = p[0] - truth[0]; val dy = p[1] - truth[1]; val dz = p[2] - truth[2]
+        return sqrt(dx * dx + dy * dy + dz * dz) * 1000.0
+    }
+
+    /** Krašto patikra: prieš pirmą ir po paskutinio įrašo grąžinamos krašto reikšmės, be išimčių. */
+    fun edgeCheck(sat: String): Boolean = try {
+        val v = valid(sat, true)
+        if (v == null || v.isEmpty()) false else {
+            val first = record(sat, v.first())!!; val last = record(sat, v.last())!!
+            val t0 = epochs[v.first()] - 600.0; val t1 = epochs[v.last()] + 600.0
+            val w0 = Math.floorDiv(t0.toLong(), WEEK.toLong()).toInt(); val w1 = Math.floorDiv(t1.toLong(), WEEK.toLong()).toInt()
+            val a = positionXyz(sat, w0, t0 - w0 * WEEK); val b = positionXyz(sat, w1, t1 - w1 * WEEK)
+            a != null && b != null && (0..2).all { a[it] == first[it] && b[it] == last[it] }
+        }
+    } catch (e: Exception) { false }
+
+    /** Leave-one-out epochos: 00:05, 06:00, 12:00, 18:00 ir priešpaskutinė (23:55). */
+    fun looEpochs(): List<Int> {
+        val n = epochs.size
+        return if (n < 3) emptyList() else listOf(1, n / 4, n / 2, 3 * n / 4, n - 2).distinct()
     }
 
     /** Palydovų skaičius pagal konsteliaciją (G, R, E, C, J ...). */
@@ -83,6 +139,8 @@ class Sp3Reader private constructor(
 
     companion object {
         const val ORDER = 11
+        /** Interpoliacijos taškų skaičius (11 artimiausių įrašų). */
+        const val POINTS = 11
         const val WEEK = 604800.0
         /** G01 2026-11-04 00:00:00 pavyzdiniame faile (km). */
         val G01_REF = doubleArrayOf(15137.948274, -16111.611868, 14635.953497)
@@ -154,6 +212,19 @@ class Sp3Reader private constructor(
             if (g != null) appendLine("G01 spindulys pirmojoje epochoje: %.3f km".format(Locale.US, sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2])))
             val rr = r.radiusRange("G01")
             appendLine("G01 spindulio intervalas: " + (rr?.let { "%.3f – %.3f km".format(Locale.US, it.first, it.second) } ?: "nėra"))
+            appendLine()
+            appendLine("--- SP3 INTERPOLIACIJA ---")
+            appendLine("G01 leave-one-out (11 artimiausių įrašų be tikrinamo, 11 eilės Lagranžas):")
+            var mx = 0.0
+            for (k in r.looEpochs()) {
+                val e = r.leaveOneOutError("G01", k)
+                val t = r.epochs[k] - r.epochs[0]
+                appendLine("  %02d:%02d – %s".format(Locale.US, (t / 3600).toInt(), ((t % 3600) / 60).toInt(),
+                    e?.let { "%.4f m".format(Locale.US, it) } ?: "nėra"))
+                if (e != null && e > mx) mx = e
+            }
+            appendLine("Didžiausia paklaida: %.4f m (riba 0.05 m: %s)".format(Locale.US, mx, if (mx < 0.05) "PASS" else "FAIL"))
+            appendLine("Krašto patikra (prieš pirmą / po paskutinio įrašo): ${if (r.edgeCheck("G01")) "PASS" else "FAIL"}")
         }
     }
 }

@@ -203,7 +203,7 @@ object PositionSolver {
     /**
      * Pariteto savitikra: (1) nulinis žodis su D29* = D30* = 0 turi nulinį paritetą;
      * (2) checkWord (IS-GPS-200 20-XIV lentelė) sutampa su nepriklausomu įgyvendinimu 4096 žodžiams
-     * (visos D29*/D30* kombinacijos); (3) vieno bito klaida aptinkama.
+     * (visos D29* ir D30* kombinacijos); (3) vieno bito klaida aptinkama.
      */
     fun paritySelfTest(): Boolean {
         if (checkWord(0) != 0) return false

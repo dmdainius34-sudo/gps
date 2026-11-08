@@ -26,6 +26,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    // SP3 pavyzdys (samples/) – į APK assets „SP3 TESTAS“ diagnostikai
+    sourceSets.getByName("main").assets.srcDir("../samples")
+
     kotlinOptions {
         jvmTarget = "17"
     }

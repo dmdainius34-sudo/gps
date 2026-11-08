@@ -4717,7 +4717,8 @@ class MainActivity : AppCompatActivity() {
     /** GPS-only sprendinys iš gnss_raw.csv + gnss_nav.csv -> gnss_solver.csv (kviečiama ne UI gijoje). */
     private fun solverCsvUri(): Uri? = try {
         val out = File(cacheDir, "gnss_solver.csv")
-        val sols = PositionSolver.solveFiles(File(cacheDir, "gnss_raw.csv"), File(cacheDir, "gnss_nav.csv"), out)
+        val sp3Name = "WUM0MGXRAP_20263080000_01D_05M_ORB.SP3.gz"
+        val sols = PositionSolver.solveFiles(File(cacheDir, "gnss_raw.csv"), File(cacheDir, "gnss_nav.csv"), out) { sp3Name to assets.open(sp3Name) }
         android.util.Log.i("GnssApp", "gnss_solver.csv: sprendinių ${sols.size}")
         FileProvider.getUriForFile(this, "$packageName.fileprovider", out)
     } catch (e: Exception) {

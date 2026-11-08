@@ -880,7 +880,8 @@ object PositionSolver {
     }
 
     /** Pagrindinis įėjimas: nuskaito failus, sprendžia ir rašo gnss_solver.csv. Grąžina sprendinius. */
-    fun solveFiles(raw: File, nav: File, out: File): List<Pair<Long, Solution>> {
+    /** sp3: (failo vardas, srautas) „SP3 TESTAS“ blokui; skaičiuoklė SP3 dar nenaudoja. */
+    fun solveFiles(raw: File, nav: File, out: File, sp3: (() -> Pair<String, java.io.InputStream>)? = null): List<Pair<Long, Solution>> {
         val diag = Diag()
         val ephs = readEphemerides(nav, firstWeek(raw), diag)
         val sols = ArrayList<Pair<Long, Solution>>()
@@ -892,7 +893,10 @@ object PositionSolver {
                 w.write(String.format(Locale.US, "%d,%.8f,%.8f,%.2f,%d,%.2f\n", ep.timeMs, s.lat, s.lon, s.h, s.sats, s.hacc))
             }
         }
-        lastDiagText = diag.text(sols.size)
+        lastDiagText = diag.text(sols.size) + (sp3?.let { open ->
+            try { val (name, input) = open(); Sp3Reader.diagBlock(name, input.use { Sp3Reader.read(it) }) }
+            catch (e: Exception) { Sp3Reader.diagBlock("?", null, e.message) }
+        } ?: "")
         File(out.parentFile, DIAG_FILE).writeText(lastDiagText)
         return sols
     }

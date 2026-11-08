@@ -894,8 +894,15 @@ object PositionSolver {
             }
         }
         lastDiagText = diag.text(sols.size) + (sp3?.let { open ->
-            try { val (name, input) = open(); Sp3Reader.diagBlock(name, input.use { Sp3Reader.read(it, gzip = name.endsWith(".gz", true)) }) }
-            catch (e: Exception) { Sp3Reader.diagBlock("?", null, e.message) }
+            try {
+                val (name, input) = open()
+                val r = input.use { Sp3Reader.read(it, gzip = name.endsWith(".gz", true)) }
+                // SP3 sprendinys – tik testui, atskiras failas (pagrindinė išvestis nekeičiama)
+                val sp3Sol = try { Sp3Solver.diagBlock(Sp3Solver.solveFile(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE))) }
+                    catch (e: Exception) { Sp3Solver.diagBlock(null, e.message) }
+                Sp3Reader.diagBlock(name, r) + sp3Sol
+            }
+            catch (e: Exception) { Sp3Reader.diagBlock("?", null, e.message) + Sp3Solver.diagBlock(null, e.message) }
         } ?: "")
         File(out.parentFile, DIAG_FILE).writeText(lastDiagText)
         return sols

@@ -4095,13 +4095,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private val navCallback = object : GnssNavigationMessage.Callback() {
-        override fun onGnssNavigationMessageReceived(event: GnssNavigationMessage) {
-            navMsgCount++
-            appendNav(event)
-        }
-    }
-
     private val locationListener = LocationListener { loc -> onLocation(loc) }
 
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -4352,8 +4345,7 @@ class MainActivity : AppCompatActivity() {
         if (::skyDome.isInitialized) skyDome.stop()
         lm.unregisterGnssStatusCallback(statusCallback)
         lm.unregisterGnssMeasurementsCallback(measCallback)
-        lm.unregisterGnssNavigationMessageCallback(navCallback)
-        navRegistered = false
+        // Navigacijos įrašymas tęsiamas NavRecordService (priekinis planas) – sustabdomas pranešimo mygtuku „Baigti“
         lm.removeUpdates(locationListener)
     }
 
@@ -4366,10 +4358,13 @@ class MainActivity : AppCompatActivity() {
         }
         lm.registerGnssStatusCallback(statusCallback, mainHandler)
         if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
-        navRegistered = try {
-            lm.registerGnssNavigationMessageCallback(navCallback, mainHandler)
-        } catch (e: Exception) { logError("Navigacijos klausytojas: ${e.message}"); false }
-        android.util.Log.i("GnssApp", "Navigacijos klausytojas: ${if (navRegistered) "užregistruotas" else "neužregistruotas"}")
+        // Navigacijos pranešimai – priekinio plano paslaugoje (veikia ir išjungus ekraną)
+        try {
+            if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, "android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 77)
+            }
+            ContextCompat.startForegroundService(this, Intent(this, NavRecordService::class.java))
+        } catch (e: Exception) { logError("Navigacijos paslauga: ${e.message}") }
         lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
     }
 
@@ -4678,50 +4673,7 @@ class MainActivity : AppCompatActivity() {
         null
     }
 
-    // ---------------- NAVIGACIJOS PRANEŠIMAI (CSV) ----------------
-    private val navHeader = "laikas_ms,konstelacija,svid,tipas,statusas,duomenys_hex\n"
-    private var navWriter: java.io.BufferedWriter? = null
-    private var navRows = 0L
-    private var navMsgCount = 0L
-    private var navWritten = 0L
-    private var navRegistered = false
-
-    /** Pradeda naują navigacijos pranešimų failą (kartu su gnss_raw.csv). */
-    private fun resetNavFile() {
-        try { navWriter?.close() } catch (_: Exception) {}
-        navRows = 0
-        navWriter = try {
-            java.io.BufferedWriter(java.io.FileWriter(File(cacheDir, "gnss_nav.csv"), false), 1 shl 14).also { it.write(navHeader) }
-        } catch (e: Exception) { logError("Navigacijos failas nepavyko: ${e.message}"); null }
-    }
-
-    /** Konsteliacija pagal getType() vyresnįjį baitą (0x01 GPS, 0x02 SBAS, 0x03 GLONASS, 0x04 QZSS, 0x05 BeiDou, 0x06 Galileo, 0x07 IRNSS). */
-    private fun navConst(type: Int): String = when ((type shr 8) and 0xFF) {
-        0x01 -> "GPS"; 0x02 -> "SBS"; 0x03 -> "GLO"; 0x04 -> "QZS"; 0x05 -> "BDS"; 0x06 -> "GAL"; 0x07 -> "NVC"
-        else -> "?"
-    }
-
-    private fun appendNav(n: GnssNavigationMessage) {
-        if (navWriter == null) resetNavFile()
-        if (navRows > 400_000) resetNavFile()
-        val data = n.data ?: ByteArray(0)
-        val hex = StringBuilder(data.size * 2)
-        for (b in data) {
-            val v = b.toInt() and 0xFF
-            hex.append(Character.forDigit(v shr 4, 16)).append(Character.forDigit(v and 0xF, 16))
-        }
-        try {
-            val w = navWriter ?: run { resetNavFile(); navWriter }
-            if (w == null) return
-            w.write("${System.currentTimeMillis()},${navConst(n.type)},${n.svid},${n.type},${n.status},$hex\n")
-            w.flush()                                   // kiekvienas pranešimas iškart faile
-            navRows++
-            navWritten++
-            if (navRows == 1L) android.util.Log.i("GnssApp", "gnss_nav.csv: gautas pirmas navigacijos pranešimas (${navConst(n.type)} ${n.svid})")
-        } catch (e: Exception) {
-            logError("Navigacijos įrašas nepavyko: ${e.message}")
-        }
-    }
+    // ---------------- NAVIGACIJOS PRANEŠIMAI (CSV) – NavRecorder / NavRecordService ----------------
 
     /** GPS-only sprendinys iš gnss_raw.csv + gnss_nav.csv -> gnss_solver.csv (kviečiama ne UI gijoje). */
     private fun solverCsvUri(): Uri? = try {
@@ -4741,9 +4693,7 @@ class MainActivity : AppCompatActivity() {
     } catch (e: Exception) { null }
 
     private fun navCsvUri(): Uri? = try {
-        navWriter?.flush()
-        val file = File(cacheDir, "gnss_nav.csv")
-        if (!file.exists()) file.writeText(navHeader)
+        val file = NavRecorder.file(cacheDir)
         FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
     } catch (e: Exception) {
         logError("Navigacijos CSV nepavyko: ${e.message}")
@@ -4852,8 +4802,9 @@ class MainActivity : AppCompatActivity() {
             appendLine("=== PALYDOVAI ===")
             appendLine(satText)
             appendLine(measText)
-            appendLine("Navigacinių žinučių gauta: $navMsgCount, įrašyta į gnss_nav.csv: $navWritten")
-            appendLine("Navigacijos klausytojas: ${if (navRegistered) "užregistruotas" else "neužregistruotas"}")
+            appendLine("Navigacinių žinučių gauta: ${NavRecorder.received}, įrašyta į gnss_nav.csv: ${NavRecorder.written}")
+            appendLine("Navigacijos klausytojas: ${if (NavRecordService.listenerRegistered) "užregistruotas" else "neužregistruotas"}")
+            appendLine("Navigacijos paslauga (priekinis planas): ${if (NavRecordService.running) "veikia" else "neveikia"}")
             appendLine("Palydovų sąrašas:")
             lastSats.sortedWith(compareBy({ it.const }, { it.svid })).forEach { s ->
                 appendLine("${s.const} ${s.svid}: C/N0 ${fx(s.cn0.toDouble())}, kampas ${fx(s.elev.toDouble(), 0)}°, az ${fx(s.az.toDouble(), 0)}°, fiksui: ${if (s.used) "taip" else "ne"}")

@@ -166,6 +166,40 @@ class PositionSolverTest {
         assertTrue("padėties skirtumas $dist m", dist < 1.0)
     }
 
+    /**
+     * Poliškumas tarp žodžių: kai ankstesnio perduoto žodžio D30 = 1, kito žodžio d1..d24 perduodami invertuoti.
+     * Imami du gretimi žodžiai iš ICD koduoto subkadro, kur D30* = 1; dekoduoti duomenys turi sutapti su šaltiniu,
+     * o paritetas – praeiti.
+     */
+    @Test
+    fun polarityBetweenConsecutiveWords() {
+        val e = eph(5, 30.0, 60.0, 302_400.0)
+        var cases = 0
+        for (fr in encode(e, 33, 300_000.0)) {
+            val raw = IntArray(10) { i ->
+                ((fr[4 * i].toInt() and 0xFF) shl 24) or ((fr[4 * i + 1].toInt() and 0xFF) shl 16) or
+                    ((fr[4 * i + 2].toInt() and 0xFF) shl 8) or (fr[4 * i + 3].toInt() and 0xFF)
+            }
+            val dec = PositionSolver.decodeWords(fr, PositionSolver.DEFAULT_ALIGNMENT)!!
+            assertEquals(10, dec.parityOk)
+            for (i in 0 until 9) {
+                if (raw[i] and 1 == 1) {                                  // D30* = 1 -> kitas žodis invertuotas
+                    cases++
+                    val txData = (raw[i + 1] ushr 6) and 0xFFFFFF
+                    // perduoti bitai yra invertuoti šaltinio duomenys
+                    assertEquals(txData.inv() and 0xFFFFFF, dec.words[i + 1])
+                    // su teisingais D29*/D30* paritetas praeina, be inversijos (D30* = 0) – ne
+                    val prev = raw[i] and 0x3
+                    val word = raw[i + 1] and 0x3FFFFFFF
+                    assertTrue(PositionSolver.checkWord((prev shl 30) or word) >= 0)
+                    assertEquals(-1, PositionSolver.checkWord(((prev and 2) shl 30) or word))
+                }
+            }
+        }
+        println("Poliškumo testas: atvejų su D30* = 1: $cases – PASS")
+        assertTrue("nėra atvejų su D30* = 1", cases > 0)
+    }
+
     /** Pariteto funkcija: nulinis žodis (D29* = D30* = 0) ir savitikra su nepriklausomu įgyvendinimu. */
     @Test
     fun parityKnownVectorsAndSelfTest() {

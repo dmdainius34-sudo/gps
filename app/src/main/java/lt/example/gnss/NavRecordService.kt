@@ -38,7 +38,17 @@ class NavRecordService : Service() {
             private set
         @Volatile var listenerRegistered = false
             private set
-        /** Kviečiama paslaugai sustojus (veikla atregistruoja savo GNSS klausytojus, jei ji fone). */
+        /** Paskutinis GnssNavigationMessage.Callback.onStatusChanged (−1 – dar negautas). */
+        @Volatile var navStatus = -1
+            private set
+        fun navStatusText(): String = when (navStatus) {
+            GnssNavigationMessage.Callback.STATUS_READY -> "STATUS_READY (palaikoma, žinutės siunčiamos)"
+            GnssNavigationMessage.Callback.STATUS_NOT_SUPPORTED -> "STATUS_NOT_SUPPORTED (telefonas nepalaiko)"
+            GnssNavigationMessage.Callback.STATUS_LOCATION_DISABLED -> "STATUS_LOCATION_DISABLED (vieta išjungta)"
+            -1 -> "dar negautas"
+            else -> "kodas $navStatus"
+        }
+                /** Kviečiama paslaugai sustojus (veikla atregistruoja savo GNSS klausytojus, jei ji fone). */
         @Volatile var onEnded: (() -> Unit)? = null
     }
 
@@ -108,6 +118,11 @@ class NavRecordService : Service() {
             // pranešimo tekstą atnaujiname retai
             val n = NavRecorder.written
             if (n - lastNotifCount >= 50) { lastNotifCount = n; notifyCount() }
+        }
+        override fun onStatusChanged(status: Int) {
+            navStatus = status
+            GapLog.event(this@NavRecordService, "navigacijos žinučių statusas: ${navStatusText()}")
+            Log.i("GnssApp", "NavRecordService: navigacijos statusas ${navStatusText()}")
         }
     }
 

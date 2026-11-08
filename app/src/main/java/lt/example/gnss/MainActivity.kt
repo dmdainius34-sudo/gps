@@ -4811,6 +4811,7 @@ class MainActivity : AppCompatActivity() {
             appendLine(measText)
             appendLine("Navigacinių žinučių gauta: ${NavRecorder.received}, įrašyta į gnss_nav.csv: ${NavRecorder.written}")
             appendLine("Navigacijos klausytojas: ${if (NavRecordService.listenerRegistered) "užregistruotas" else "neužregistruotas"}")
+            appendLine("Navigacijos žinučių statusas: ${NavRecordService.navStatusText()}")
             appendLine("Navigacijos paslauga (priekinis planas): ${if (NavRecordService.running) "veikia" else "neveikia"}")
             appendLine("Palydovų sąrašas:")
             lastSats.sortedWith(compareBy({ it.const }, { it.svid })).forEach { s ->

@@ -182,6 +182,45 @@ object PositionSolver {
         return if (parity == (w32 and 0x3F)) data else -1
     }
 
+    /**
+     * Nepriklausomas pariteto skaičiavimas (RTKLIB decode_word Hamingo kaukės, plačiai naudojamas viešas įgyvendinimas),
+     * naudojamas tik savitikrai. Grąžina 6 apskaičiuotus pariteto bitus.
+     */
+    private fun parityReference(w32In: Int): Int {
+        val ham = intArrayOf(0xBB1F3480.toInt(), 0x5D8F9A40, 0xAEC7CD00.toInt(), 0x5763E680, 0x6BB1F340, 0x8B7A89C0.toInt())
+        var w = w32In
+        if (w and 0x40000000 != 0) w = w xor 0x3FFFFFC0
+        var par = 0
+        for (h in ham) {
+            par = par shl 1
+            var x = (w and h) ushr 6; var b = 0
+            while (x != 0) { b = b xor (x and 1); x = x ushr 1 }
+            par = par or b
+        }
+        return par
+    }
+
+    /**
+     * Pariteto savitikra: (1) nulinis žodis su D29* = D30* = 0 turi nulinį paritetą;
+     * (2) checkWord (IS-GPS-200 20-XIV lentelė) sutampa su nepriklausomu įgyvendinimu 4096 žodžiams
+     * (visos D29*/D30* kombinacijos); (3) vieno bito klaida aptinkama.
+     */
+    fun paritySelfTest(): Boolean {
+        if (checkWord(0) != 0) return false
+        val rnd = java.util.Random(20)
+        repeat(4096) {
+            val d24 = rnd.nextInt(1 shl 24)
+            val stars = it and 3
+            // perduodamas žodis su teisingu paritetu pagal nepriklausomą įgyvendinimą
+            val tx = if (stars and 1 == 1) d24.inv() and 0xFFFFFF else d24
+            val noPar = (stars shl 30) or (tx shl 6)
+            val w32 = noPar or parityReference(noPar)
+            if (checkWord(w32) != d24) return false
+            if (checkWord(w32 xor (1 shl (6 + rnd.nextInt(24)))) != -1) return false
+        }
+        return true
+    }
+
     /** Išpakuoti 10 žodžių: 24 duomenų bitai kiekvienam ir kiek žodžių praėjo paritetą. */
     class Decoded(val words: IntArray, val parityOk: Int)
 
@@ -339,6 +378,7 @@ object PositionSolver {
     class Diag {
         // navigacija
         var navRows = 0; var navGps = 0; var navGpsL1ca = 0; var navBadSubframe = 0
+        val paritySelfTestOk = paritySelfTest()
         val unpack = UnpackStats()
         val subframesPerSv = java.util.TreeMap<Int, IntArray>()       // priimti [sf1, sf2, sf3, sf4, sf5]
         val parityPerSv = java.util.TreeMap<Int, IntArray>()          // [žodžių su teisingu paritetu, iš viso]
@@ -364,6 +404,7 @@ object PositionSolver {
             appendLine("=== GPS SKAIČIUOKLĖS DIAGNOSTIKA ===")
             appendLine()
             appendLine("--- Navigacijos pranešimai (gnss_nav.csv) ---")
+            appendLine("Pariteto savitikra (IS-GPS-200 20-XIV): ${if (paritySelfTestOk) "PASS" else "FAIL"}")
             appendLine("Eilučių iš viso: $navRows")
             appendLine("GPS eilučių: $navGps, iš jų GPS L1 C/A (tipas 257): $navGpsL1ca")
             appendLine("GPS pranešimų išpakuota į 10 žodžių: ${unpack.unpacked}")

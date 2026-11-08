@@ -166,6 +166,15 @@ class PositionSolverTest {
         assertTrue("padėties skirtumas $dist m", dist < 1.0)
     }
 
+    /** Pariteto funkcija: nulinis žodis (D29* = D30* = 0) ir savitikra su nepriklausomu įgyvendinimu. */
+    @Test
+    fun parityKnownVectorsAndSelfTest() {
+        assertEquals(0, PositionSolver.checkWord(0))                 // d = 0, D29* = D30* = 0 -> D25..D30 = 0
+        assertEquals(-1, PositionSolver.checkWord(1))                // klaidingas paritetas
+        assertTrue(PositionSolver.paritySelfTest())
+        println("Pariteto savitikra: PASS")
+    }
+
     /** Nepriklausomas ICD koduotojas: d1..d24 + D29*, D30* -> perduotas 30 bitų žodis; checkWord turi jį priimti. */
     @Test
     fun parityMatchesIcdEquations() {

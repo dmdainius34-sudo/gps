@@ -905,8 +905,8 @@ object PositionSolver {
                 // SP3 sprendinys – tik testui, atskiras failas (pagrindinė išvestis nekeičiama)
                 val sp3Sol = try {
                     val v1 = Sp3Solver.solveFile(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE))
-                    val v2 = try { Sp3Solver.solveFile(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE_V2), tropo = true) } catch (e: Exception) { null }
-                    Sp3Solver.diagBlock(v1) + Sp3Solver.compareBlock(v1, v2, File(raw.parentFile, SessionFiles.FIX))
+                    val v2 = try { Sp3Solver.solveFile(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE_V2), corrected = true) } catch (e: Exception) { null }
+                    Sp3Solver.diagBlock(v1) + Sp3Solver.v2Block(v1, v2, File(raw.parentFile, SessionFiles.FIX))
                 } catch (e: Exception) { Sp3Solver.diagBlock(null, e.message) }
                 Sp3Reader.diagBlock(location, r, searched = searched) + sp3Sol
             }
@@ -946,6 +946,20 @@ object PositionSolver {
     /** Procentilis p (0..1) didėjančiai surūšiuotame sąraše (artimiausio rango metodas). */
     fun percentile(sorted: List<Double>, p: Double): Double =
         sorted[(kotlin.math.ceil(p * sorted.size).toInt() - 1).coerceIn(0, sorted.size - 1)]
+
+    /** Fiksų elipsoidinio aukščio (gnss_fix.csv, aukstis_elips_m) mediana. */
+    fun medianFixHeight(fix: File): Double? {
+        if (!fix.exists()) return null
+        val hs = ArrayList<Double>()
+        fix.bufferedReader().use { br ->
+            val iH = br.readLine()?.split(',')?.indexOf("aukstis_elips_m") ?: return null
+            if (iH < 0) return null
+            br.forEachLine { l -> l.split(',').getOrNull(iH)?.toDoubleOrNull()?.let { hs.add(it) } }
+        }
+        if (hs.isEmpty()) return null
+        hs.sort()
+        return percentile(hs, 0.5)
+    }
 
     /** Sprendinių ir fiksų horizontalūs skirtumai (artimiausias laikas ≤ 1,5 s), didėjančia tvarka. */
     fun diffsToFix(sols: List<Pair<Long, Solution>>, fix: File): List<Double> {

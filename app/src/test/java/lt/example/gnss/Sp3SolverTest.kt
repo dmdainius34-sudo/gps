@@ -73,42 +73,66 @@ class Sp3SolverTest {
     }
 
     @Test
-    fun syntheticReceiverRecoveredWithTropo() {
+    fun klobucharPlausible() {
+        val la = Math.toRadians(Sp3Solver.REF_LAT); val lo = Math.toRadians(Sp3Solver.REF_LON)
+        // Naktį lieka tik 5 ns pastovioji dalis (apie 1,5 m zenite)
+        val night = (0 until 24).minOf { Sp3Solver.klobuchar(la, lo, 0.0, Math.PI / 2, it * 3600.0) }
+        assertEquals(1.5, night, 0.05)
+        val low = Sp3Solver.klobuchar(la, lo, 0.0, Math.toRadians(10.0), 43200.0)
+        assertTrue("$low m", low > night && low < 40.0)
+    }
+
+    @Test
+    fun syntheticReceiverRecoveredWithCorrections() {
         val t = Sp3Reader.gpsSeconds(2026, 11, 4, 12, 0, 0.0)
         val week = (t / Sp3Reader.WEEK).toInt()
+        val tow = t - week * Sp3Reader.WEEK
         val sats = visible(t, 6)
         val obs = sats.map { sat ->
             val st = Sp3Solver.satState(sp3, sat, t - 0.07)!!
             val rho = sqrt((0..2).sumOf { (st.pos[it] - rx[it]) * (st.pos[it] - rx[it]) })
-            PositionSolver.Obs(sat.substring(1).toInt(), simPr(sat, t)!! + Sp3Solver.slantTropo(rx, st.pos, rho))
+            PositionSolver.Obs(sat.substring(1).toInt(), simPr(sat, t)!! + Sp3Solver.atmosphereDelay(rx, st.pos, rho, tow))
         }
-        val ep = PositionSolver.Epoch(week, t - week * Sp3Reader.WEEK, 0L, obs)
-        fun err(tropo: Boolean): Double {
-            val s = Sp3Solver.solve(ep, sp3, tropo)!!
+        val ep = PositionSolver.Epoch(week, tow, 0L, obs)
+        fun err(corrected: Boolean): Double {
+            val s = Sp3Solver.solve(ep, sp3, corrected)!!
             return sqrt((0..2).sumOf { (s.ecef[it] - rx[it]) * (s.ecef[it] - rx[it]) })
         }
-        println("SP3 su troposfera: v1 %.3f m, v2 %.3f m".format(Locale.US, err(false), err(true)))
+        println("SP3 su atmosfera: v1 %.3f m, v2 %.3f m".format(Locale.US, err(false), err(true)))
         assertTrue(err(true) < 1.0)
         assertTrue(err(false) > 1.0)
     }
 
     @Test
-    fun comparisonWithTabletFix() {
+    fun elevationMaskDropsLowSatellites() {
+        val t = Sp3Reader.gpsSeconds(2026, 11, 4, 12, 0, 0.0)
+        val week = (t / Sp3Reader.WEEK).toInt()
+        val high = visible(t, 6)
+        val low = (1..32).map { "G%02d".format(Locale.US, it) }.first { elevation(it, t) in -60.0..5.0 }
+        val obs = (high + low).map { PositionSolver.Obs(it.substring(1).toInt(), simPr(it, t)!!) }
+        var dropped = -1
+        val s = Sp3Solver.solve(PositionSolver.Epoch(week, t - week * Sp3Reader.WEEK, 0L, obs), sp3, true) { dropped = it }
+        assertEquals(1, dropped)
+        assertEquals(6, s!!.sats)
+    }
+
+    @Test
+    fun v2BlockReportsDistancesAndHeights() {
         val dir = createTempDir("sp3cmp")
         val fix = File(dir, "gnss_fix.csv")
-        fix.writeText("laikas_ms,platuma,ilguma\n" + (1..10).joinToString("") { "${it * 1000L},54.0,25.0\n" })
-        // Kiekviena sekundė: 1 m, 2 m ... 10 m į šiaurę nuo fikso
+        fix.writeText("laikas_ms,platuma,ilguma,aukstis_elips_m\n1000,54.0,25.0,100.0\n2000,54.0,25.0,102.0\n3000,54.0,25.0,\n")
+        // 1 m, 2 m ... 10 m į šiaurę nuo fikso taško, aukštis 110 m
         val perM = 1.0 / Math.toRadians(1.0) / 6_371_000.0
         val sols = (1..10).map { k ->
-            k * 1000L to PositionSolver.Solution(54.0 + k * perM, 25.0, 0.0, 6, 1.0, doubleArrayOf(0.0, 0.0, 0.0))
+            k * 1000L to PositionSolver.Solution(Sp3Solver.FIX_LAT + k * perM, Sp3Solver.FIX_LON, 110.0, 6, 1.0, doubleArrayOf(0.0, 0.0, 0.0))
         }
-        val d = PositionSolver.diffsToFix(sols, fix)
-        assertEquals(5.0, PositionSolver.percentile(d, 0.5), 1e-6)
-        assertEquals(9.0, PositionSolver.percentile(d, 0.9), 1e-6)
-        val r = Sp3Solver.Result(10, 10, 0, sols)
-        val text = Sp3Solver.compareBlock(r, null, fix)
-        assertTrue(text, text.contains("v1: mediana 5.00 m, 90 % 9.00 m, palyginta 10"))
-        assertTrue(text, text.contains("v2: nėra duomenų"))
+        val text = Sp3Solver.v2Block(Sp3Solver.Result(10, 10, 0, sols), Sp3Solver.Result(10, 10, 0, sols, List(10) { it % 2 }), fix)
+        assertTrue(text, text.contains("--- SP3 TESTAS v2 ---"))
+        assertTrue(text, text.contains("elipsoidinio aukščio mediana: 100.00 m"))
+        assertTrue(text, text.contains("v2: mediana 5.00 m, 90 % 9.00 m, maks. 10.00 m; aukščio mediana 110.00 m, skirtumas nuo fikso 10.00 m; sprendinių 10"))
+        assertTrue(text, text.contains("v1: mediana 5.00 m"))
+        assertTrue(text, text.contains("iš viso 5; per epochą: 0 1 0 1 0 1 0 1 0 1"))
+        assertEquals("nėra", PositionSolver.medianFixHeight(File(dir, "nera.csv"))?.toString() ?: "nėra")
         dir.deleteRecursively()
     }
 

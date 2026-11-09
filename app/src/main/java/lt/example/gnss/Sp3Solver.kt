@@ -2,8 +2,10 @@ package lt.example.gnss
 
 import java.io.File
 import java.util.Locale
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.asin
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.pow
@@ -19,6 +21,10 @@ import kotlin.math.sqrt
 object Sp3Solver {
     const val OUT_FILE = "gnss_solver_sp3_test.csv"
     const val OUT_FILE_V2 = "gnss_solver_sp3_test_v2.csv"
+    /** Planšetės fiksas palyginimui. */
+    const val FIX_LAT = 54.73998
+    const val FIX_LON = 25.25466
+    private val ELEV_MASK_RAD = Math.toRadians(10.0)
     val REF_LAT = 54.7400
     val REF_LON = 25.2545
 
@@ -47,30 +53,61 @@ object Sp3Solver {
     fun inRange(sp3: Sp3Reader, t: Double) = sp3.epochCount > 0 && t >= sp3.epochs.first() && t <= sp3.epochs.last()
 
     /**
-     * Saastamoinen troposferos vėlinimas (m), standartinė atmosfera, santykinė drėgmė 70 %.
-     * Žemiau 5° formulė per daug didėja, todėl naudojama 5° vertė; po horizontu arba už aukščių ribų – 0.
+     * Saastamoinen troposferos vėlinimas (m), kartografavimas 1/sin(el). Meteorologija jūros lygyje:
+     * 1013,25 hPa, 15 °C, santykinė drėgmė 50 %, perskaičiuota į imtuvo aukštį. Po horizontu arba už aukščių ribų – 0.
      */
     fun saastamoinen(latRad: Double, hM: Double, elRad: Double): Double {
         if (elRad <= 0.0 || hM < -100.0 || hM > 10_000.0) return 0.0
-        val sinEl = sin(elRad.coerceAtLeast(Math.toRadians(5.0)))
         val pres = 1013.25 * (1.0 - 2.2557e-5 * hM).pow(5.2568)
         val temp = 15.0 - 6.5e-3 * hM + 273.16
-        val e = 6.108 * 0.7 * exp((17.15 * temp - 4684.0) / (temp - 38.45))
+        val e = 6.108 * 0.5 * exp((17.15 * temp - 4684.0) / (temp - 38.45))
         val dry = 0.0022768 * pres / (1.0 - 0.00266 * cos(2.0 * latRad) - 0.00028 * hM / 1000.0)
         val wet = 0.002277 * (1255.0 / temp + 0.05) * e
-        return (dry + wet) / sinEl
+        return (dry + wet) / sin(elRad)
     }
 
-    /** Troposferos vėlinimas (m) nuo imtuvo s (ECEF) iki palydovo q (ECEF), atstumas rho. */
-    fun slantTropo(s: DoubleArray, q: DoubleArray, rho: Double): Double {
+    private val KLOB_ALPHA = doubleArrayOf(0.1118e-7, 0.1490e-7, -0.5960e-7, -0.5960e-7)
+    private val KLOB_BETA = doubleArrayOf(0.1167e6, 0.1638e6, -0.3277e6, -0.2621e6)
+
+    /** Klobuchar L1 jonosferos vėlinimas (m), IS-GPS-200 algoritmas su numatytaisiais koeficientais. */
+    fun klobuchar(latRad: Double, lonRad: Double, azRad: Double, elRad: Double, towSec: Double): Double {
+        val el = elRad / PI                                          // pusapskritimiai
+        val psi = 0.0137 / (el + 0.11) - 0.022
+        val phiI = (latRad / PI + psi * cos(azRad)).coerceIn(-0.416, 0.416)
+        val lamI = lonRad / PI + psi * sin(azRad) / cos(phiI * PI)
+        val phiM = phiI + 0.064 * cos((lamI - 1.617) * PI)
+        val t = Math.floorMod((43200.0 * lamI + towSec).toLong(), 86400L).toDouble()
+        val poly = { k: DoubleArray -> k[0] + phiM * (k[1] + phiM * (k[2] + phiM * k[3])) }
+        val amp = poly(KLOB_ALPHA).coerceAtLeast(0.0)
+        val per = poly(KLOB_BETA).coerceAtLeast(72_000.0)
+        val x = 2.0 * PI * (t - 50_400.0) / per
+        val f = 1.0 + 16.0 * (0.53 - el).pow(3)
+        val day = if (abs(x) < 1.57) amp * (1.0 - x * x / 2.0 + x * x * x * x / 24.0) else 0.0
+        return C * f * (5e-9 + day)
+    }
+
+    /** Palydovo q matymo kampai iš imtuvo s (ECEF): platuma, ilguma, aukštis, azimutas, aukščio kampas. */
+    private fun look(s: DoubleArray, q: DoubleArray, rho: Double): DoubleArray {
         val llh = PositionSolver.ecefToLlh(s[0], s[1], s[2])
-        val ux = cos(llh[0]) * cos(llh[1]); val uy = cos(llh[0]) * sin(llh[1]); val uz = sin(llh[0])
-        val sinEl = ((q[0] - s[0]) * ux + (q[1] - s[1]) * uy + (q[2] - s[2]) * uz) / rho
-        return saastamoinen(llh[0], llh[2], asin(sinEl.coerceIn(-1.0, 1.0)))
+        val sLa = sin(llh[0]); val cLa = cos(llh[0]); val sLo = sin(llh[1]); val cLo = cos(llh[1])
+        val dx = (q[0] - s[0]) / rho; val dy = (q[1] - s[1]) / rho; val dz = (q[2] - s[2]) / rho
+        val e = -sLo * dx + cLo * dy
+        val n = -sLa * cLo * dx - sLa * sLo * dy + cLa * dz
+        val u = cLa * cLo * dx + cLa * sLo * dy + sLa * dz
+        return doubleArrayOf(llh[0], llh[1], llh[2], atan2(e, n), asin(u.coerceIn(-1.0, 1.0)))
     }
 
-    /** Vienos epochos sprendinys arba null (< 4 palydovai, nekonverguoja). tropo = true – v2 su troposferos pataisa. */
-    fun solve(ep: PositionSolver.Epoch, sp3: Sp3Reader, tropo: Boolean = false): PositionSolver.Solution? {
+    /** Troposferos ir jonosferos (L1) vėlinimas kelyje iki palydovo, m. */
+    fun atmosphereDelay(s: DoubleArray, q: DoubleArray, rho: Double, towSec: Double): Double {
+        val l = look(s, q, rho)
+        return saastamoinen(l[0], l[2], l[4]) + klobuchar(l[0], l[1], l[3], l[4], towSec)
+    }
+
+    /**
+     * Vienos epochos sprendinys arba null (< 4 palydovai, nekonverguoja).
+     * corrected = true – v2: 10° maska ir atmosferos pataisos; onDropped gauna atmestų palydovų skaičių.
+     */
+    fun solve(ep: PositionSolver.Epoch, sp3: Sp3Reader, corrected: Boolean = false, onDropped: ((Int) -> Unit)? = null): PositionSolver.Solution? {
         val tRx = ep.week * W + ep.tRxTow
         val sats = ArrayList<DoubleArray>()   // x, y, z, pr pataisytas palydovo laikrodžiu
         for (o in ep.obs) {
@@ -86,34 +123,43 @@ object Sp3Solver {
         }
         if (sats.size < 4) return null
         val s = doubleArrayOf(0.0, 0.0, 6_378_137.0, 0.0)
+        var active: List<DoubleArray> = sats
+        var masked = false
         var ok = false
         var lastStep = Double.MAX_VALUE
+        fun range(q: DoubleArray): Double {
+            val dx = s[0] - q[0]; val dy = s[1] - q[1]; val dz = s[2] - q[2]
+            return sqrt(dx * dx + dy * dy + dz * dz)
+        }
         for (it in 0 until 30) {
-            // Pataisa taikoma tik padėčiai priartėjus: pradinis taškas (ašigalis) aukščio kampui netinka
-            val applyTropo = tropo && lastStep < 1000.0
-            val h = Array(sats.size) { DoubleArray(4) }
-            val r = DoubleArray(sats.size)
-            for ((i, q) in sats.withIndex()) {
-                val dx = s[0] - q[0]; val dy = s[1] - q[1]; val dz = s[2] - q[2]
-                val rho = sqrt(dx * dx + dy * dy + dz * dz)
-                h[i][0] = dx / rho; h[i][1] = dy / rho; h[i][2] = dz / rho; h[i][3] = 1.0
-                r[i] = q[3] - (rho + s[3] + (if (applyTropo) slantTropo(s, q, rho) else 0.0))
+            // Maska ir pataisos – tik padėčiai priartėjus: pradinis taškas (ašigalis) aukščio kampui netinka
+            if (corrected && !masked && lastStep < 1000.0) {
+                active = sats.filter { q -> look(s, q, range(q))[4] >= ELEV_MASK_RAD }
+                masked = true
+                onDropped?.invoke(sats.size - active.size)
+                if (active.size < 4) return null
+            }
+            val h = Array(active.size) { DoubleArray(4) }
+            val r = DoubleArray(active.size)
+            for ((i, q) in active.withIndex()) {
+                val rho = range(q)
+                h[i][0] = (s[0] - q[0]) / rho; h[i][1] = (s[1] - q[1]) / rho; h[i][2] = (s[2] - q[2]) / rho; h[i][3] = 1.0
+                r[i] = q[3] - (rho + s[3] + (if (masked) atmosphereDelay(s, q, rho, ep.tRxTow) else 0.0))
             }
             val d = lsq(h, r) ?: return null
             for (k in 0..3) s[k] += d[k]
             lastStep = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
-            if (lastStep < 1e-3 && (applyTropo || !tropo)) { ok = true; break }
+            if (lastStep < 1e-3 && (masked || !corrected)) { ok = true; break }
         }
         if (!ok) return null
         var ss = 0.0
-        for (q in sats) {
-            val dx = s[0] - q[0]; val dy = s[1] - q[1]; val dz = s[2] - q[2]
-            val rho = sqrt(dx * dx + dy * dy + dz * dz)
-            val v = q[3] - (rho + s[3] + (if (tropo) slantTropo(s, q, rho) else 0.0)); ss += v * v
+        for (q in active) {
+            val rho = range(q)
+            val v = q[3] - (rho + s[3] + (if (masked) atmosphereDelay(s, q, rho, ep.tRxTow) else 0.0)); ss += v * v
         }
-        val rms = sqrt(ss / sats.size)
+        val rms = sqrt(ss / active.size)
         val llh = PositionSolver.ecefToLlh(s[0], s[1], s[2])
-        return PositionSolver.Solution(Math.toDegrees(llh[0]), Math.toDegrees(llh[1]), llh[2], sats.size, rms * 2.0,
+        return PositionSolver.Solution(Math.toDegrees(llh[0]), Math.toDegrees(llh[1]), llh[2], active.size, rms * 2.0,
             doubleArrayOf(s[0], s[1], s[2]))
     }
 
@@ -138,7 +184,9 @@ object Sp3Solver {
         return DoubleArray(n) { a[it][n] / a[it][it] }
     }
 
-    class Result(val epochsTotal: Int, val inRange: Int, val skipped: Int, val sols: List<Pair<Long, PositionSolver.Solution>>) {
+    class Result(val epochsTotal: Int, val inRange: Int, val skipped: Int, val sols: List<Pair<Long, PositionSolver.Solution>>,
+        /** Atmestų palydovų skaičius kiekvienoje SP3 intervalo epochoje (tik v2). */
+        val dropped: List<Int> = emptyList()) {
         fun medianHoriz(): Double? {
             if (sols.isEmpty()) return null
             val d = sols.map { PositionSolver.horizDist(it.second.lat, it.second.lon, REF_LAT, REF_LON) }.sorted()
@@ -147,8 +195,9 @@ object Sp3Solver {
     }
 
     /** gnss_raw.csv + SP3 -> gnss_solver_sp3_test.csv; epochos už SP3 intervalo praleidžiamos ir skaičiuojamos. */
-    fun solveFile(raw: File, sp3: Sp3Reader, out: File, tropo: Boolean = false): Result {
+    fun solveFile(raw: File, sp3: Sp3Reader, out: File, corrected: Boolean = false): Result {
         var total = 0; var inR = 0; var skipped = 0
+        val dropped = ArrayList<Int>()
         val sols = ArrayList<Pair<Long, PositionSolver.Solution>>()
         out.bufferedWriter().use { w ->
             w.write(PositionSolver.SOLVER_HEADER)
@@ -156,27 +205,39 @@ object Sp3Solver {
                 total++
                 if (!inRange(sp3, ep.week * W + ep.tRxTow)) { skipped++; return@readEpochs }
                 inR++
-                val s = solve(ep, sp3, tropo) ?: return@readEpochs
+                var drop = 0
+                val s = solve(ep, sp3, corrected) { drop = it }
+                if (corrected) dropped.add(drop)
+                if (s == null) return@readEpochs
                 sols.add(ep.timeMs to s)
                 w.write(String.format(Locale.US, "%d,%.8f,%.8f,%.2f,%d,%.2f\n", ep.timeMs, s.lat, s.lon, s.h, s.sats, s.hacc))
             }
         }
-        return Result(total, inR, skipped, sols)
+        return Result(total, inR, skipped, sols, dropped)
     }
 
-    /** v1 ir v2 horizontalus skirtumas iki planšetės fikso (gnss_fix.csv). */
-    fun compareBlock(v1: Result, v2: Result?, fix: File): String = buildString {
+    /** „SP3 TESTAS v2“: atstumai iki planšetės fikso ir aukščiai, v2 ir v1 palyginimui. */
+    fun v2Block(v1: Result, v2: Result?, fix: File): String = buildString {
         appendLine()
-        appendLine("--- SP3 V1 / V2 PALYGINIMAS SU PLANŠETĖS FIKSU ---")
-        appendLine("v2: Saastamoinen troposfera ($OUT_FILE_V2); jonosfera nepataisyta (nėra Klobuchar koeficientų)")
+        appendLine("--- SP3 TESTAS v2 ---")
+        appendLine("Pataisos: Saastamoinen, Klobuchar (numatytieji koeficientai), maska 10°; failas $OUT_FILE_V2")
+        val fixH = PositionSolver.medianFixHeight(fix)
+        appendLine("Planšetės fiksas: $FIX_LAT, $FIX_LON; elipsoidinio aukščio mediana: " +
+            (fixH?.let { "%.2f m".format(Locale.US, it) } ?: "nėra"))
         fun line(name: String, r: Result?) {
-            val d = r?.let { PositionSolver.diffsToFix(it.sols, fix) } ?: emptyList()
-            if (d.isEmpty()) appendLine("$name: nėra duomenų")
-            else appendLine("$name: mediana %.2f m, 90 %% %.2f m, palyginta %d".format(Locale.US,
-                PositionSolver.percentile(d, 0.5), PositionSolver.percentile(d, 0.9), d.size))
+            val sols = r?.sols ?: emptyList()
+            if (sols.isEmpty()) { appendLine("$name: nėra sprendinių"); return }
+            val d = sols.map { PositionSolver.horizDist(it.second.lat, it.second.lon, FIX_LAT, FIX_LON) }.sorted()
+            val h = PositionSolver.percentile(sols.map { it.second.h }.sorted(), 0.5)
+            appendLine("$name: mediana %.2f m, 90 %% %.2f m, maks. %.2f m; aukščio mediana %.2f m, skirtumas nuo fikso %s; sprendinių %d".format(Locale.US,
+                PositionSolver.percentile(d, 0.5), PositionSolver.percentile(d, 0.9), d.last(), h,
+                fixH?.let { "%.2f m".format(Locale.US, h - it) } ?: "nėra", sols.size))
         }
-        line("v1", v1)
         line("v2", v2)
+        line("v1", v1)
+        val dropped = v2?.dropped ?: emptyList()
+        appendLine("Atmesta palydovų (< 10°): iš viso ${dropped.sum()}; per epochą: " +
+            if (dropped.isEmpty()) "nėra" else dropped.joinToString(" "))
     }
 
     fun diagBlock(r: Result?, error: String? = null): String = buildString {

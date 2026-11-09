@@ -903,8 +903,11 @@ object PositionSolver {
                 location = used.location
                 val r = used.open().use { Sp3Reader.read(it, gzip = used.name.endsWith(".gz", true)) }
                 // SP3 sprendinys – tik testui, atskiras failas (pagrindinė išvestis nekeičiama)
-                val sp3Sol = try { Sp3Solver.diagBlock(Sp3Solver.solveFile(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE))) }
-                    catch (e: Exception) { Sp3Solver.diagBlock(null, e.message) }
+                val sp3Sol = try {
+                    val v1 = Sp3Solver.solveFile(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE))
+                    val v2 = try { Sp3Solver.solveFile(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE_V2), tropo = true) } catch (e: Exception) { null }
+                    Sp3Solver.diagBlock(v1) + Sp3Solver.compareBlock(v1, v2, File(raw.parentFile, SessionFiles.FIX))
+                } catch (e: Exception) { Sp3Solver.diagBlock(null, e.message) }
                 Sp3Reader.diagBlock(location, r, searched = searched) + sp3Sol
             }
             catch (e: Exception) { Sp3Reader.diagBlock(location, null, e.message, searched) + Sp3Solver.diagBlock(null, e.message) }
@@ -935,10 +938,21 @@ object PositionSolver {
 
     /** Mediana: sprendinio ir telefono fikso (gnss_fix.csv, artimiausias laikas ≤ 1,5 s) horizontalus skirtumas. */
     fun medianDiffToFix(sols: List<Pair<Long, Solution>>, fix: File): Double? {
-        if (!fix.exists() || sols.isEmpty()) return null
+        val d = diffsToFix(sols, fix)
+        if (d.isEmpty()) return null
+        return if (d.size % 2 == 1) d[d.size / 2] else (d[d.size / 2 - 1] + d[d.size / 2]) / 2
+    }
+
+    /** Procentilis p (0..1) didėjančiai surūšiuotame sąraše (artimiausio rango metodas). */
+    fun percentile(sorted: List<Double>, p: Double): Double =
+        sorted[(kotlin.math.ceil(p * sorted.size).toInt() - 1).coerceIn(0, sorted.size - 1)]
+
+    /** Sprendinių ir fiksų horizontalūs skirtumai (artimiausias laikas ≤ 1,5 s), didėjančia tvarka. */
+    fun diffsToFix(sols: List<Pair<Long, Solution>>, fix: File): List<Double> {
+        if (!fix.exists() || sols.isEmpty()) return emptyList()
         val fixes = ArrayList<Triple<Long, Double, Double>>()
         fix.bufferedReader().use { br ->
-            val head = br.readLine()?.split(',') ?: return null
+            val head = br.readLine()?.split(',') ?: return emptyList()
             val iT = head.indexOf("laikas_ms"); val iLa = head.indexOf("platuma"); val iLo = head.indexOf("ilguma")
             br.forEachLine { l ->
                 val p = l.split(',')
@@ -948,15 +962,14 @@ object PositionSolver {
                 fixes.add(Triple(t, la, lo))
             }
         }
-        if (fixes.isEmpty()) return null
+        if (fixes.isEmpty()) return emptyList()
         fixes.sortBy { it.first }
         val d = ArrayList<Double>()
         for ((t, s) in sols) {
             val f = fixes.minByOrNull { abs(it.first - t) } ?: continue
             if (abs(f.first - t) <= 1500) d.add(horizDist(s.lat, s.lon, f.second, f.third))
         }
-        if (d.isEmpty()) return null
         d.sort()
-        return if (d.size % 2 == 1) d[d.size / 2] else (d[d.size / 2 - 1] + d[d.size / 2]) / 2
+        return d
     }
 }

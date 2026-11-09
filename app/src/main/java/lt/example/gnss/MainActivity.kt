@@ -4384,9 +4384,10 @@ class MainActivity : AppCompatActivity() {
                         report += "CSV savitikra (laukų skaičius = antraštės): gnss_raw.csv netinkamų $bad iš $total; " +
                             "gnss_fix.csv $badF iš $totalF; gnss_nav.csv $badN iš $totalN\n"
                         val u = solverCsvUri()
-                        val s = sp3TestCsvUri()
+                        val s = sp3TestCsvUri(Sp3Solver.OUT_FILE)
+                        val s2 = sp3TestCsvUri(Sp3Solver.OUT_FILE_V2)
                         val d = solverDiagUri()
-                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
+                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; s2?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
                     }.start() }
                 } else send()
             }
@@ -4814,6 +4815,7 @@ class MainActivity : AppCompatActivity() {
         val out = File(cacheDir, "gnss_solver.csv")
         // Ankstesnio eksporto rezultatas neturi būti išsiųstas, jei šįkart SP3 sprendimas nevyks
         File(cacheDir, Sp3Solver.OUT_FILE).delete()
+        File(cacheDir, Sp3Solver.OUT_FILE_V2).delete()
         // „SP3 TESTAS“ / „SP3 INTERPOLIACIJA“ diagnostikai (skaičiuoklė SP3 nenaudoja)
         val sols = PositionSolver.solveFiles(File(cacheDir, "gnss_raw.csv"), File(cacheDir, "gnss_nav.csv"), out) {
             Sp3Storage.search(this)
@@ -4826,8 +4828,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** SP3 sprendinio testas; failo nėra, jei SP3 sprendimas nevyko – tada praleidžiama. */
-    private fun sp3TestCsvUri(): Uri? = try {
-        val f = File(cacheDir, Sp3Solver.OUT_FILE)
+    private fun sp3TestCsvUri(name: String): Uri? = try {
+        val f = File(cacheDir, name)
         if (f.exists()) FileProvider.getUriForFile(this, "$packageName.fileprovider", f) else null
     } catch (e: Exception) { null }
 

@@ -62,6 +62,57 @@ class Sp3SolverTest {
     }
 
     @Test
+    fun saastamoinenZenithAtSeaLevel() {
+        val lat = Math.toRadians(Sp3Solver.REF_LAT)
+        val zenith = Sp3Solver.saastamoinen(lat, 0.0, Math.PI / 2)
+        println("Saastamoinen 0 m, zenitas: %.3f m".format(Locale.US, zenith))
+        assertTrue("$zenith m", zenith in 2.2..2.5)
+        // Žemiau zenito kelias per atmosferą ilgesnis, po horizontu pataisos nėra
+        assertTrue(Sp3Solver.saastamoinen(lat, 0.0, Math.toRadians(30.0)) > 1.9 * zenith)
+        assertEquals(0.0, Sp3Solver.saastamoinen(lat, 0.0, -0.1), 0.0)
+    }
+
+    @Test
+    fun syntheticReceiverRecoveredWithTropo() {
+        val t = Sp3Reader.gpsSeconds(2026, 11, 4, 12, 0, 0.0)
+        val week = (t / Sp3Reader.WEEK).toInt()
+        val sats = visible(t, 6)
+        val obs = sats.map { sat ->
+            val st = Sp3Solver.satState(sp3, sat, t - 0.07)!!
+            val rho = sqrt((0..2).sumOf { (st.pos[it] - rx[it]) * (st.pos[it] - rx[it]) })
+            PositionSolver.Obs(sat.substring(1).toInt(), simPr(sat, t)!! + Sp3Solver.slantTropo(rx, st.pos, rho))
+        }
+        val ep = PositionSolver.Epoch(week, t - week * Sp3Reader.WEEK, 0L, obs)
+        fun err(tropo: Boolean): Double {
+            val s = Sp3Solver.solve(ep, sp3, tropo)!!
+            return sqrt((0..2).sumOf { (s.ecef[it] - rx[it]) * (s.ecef[it] - rx[it]) })
+        }
+        println("SP3 su troposfera: v1 %.3f m, v2 %.3f m".format(Locale.US, err(false), err(true)))
+        assertTrue(err(true) < 1.0)
+        assertTrue(err(false) > 1.0)
+    }
+
+    @Test
+    fun comparisonWithTabletFix() {
+        val dir = createTempDir("sp3cmp")
+        val fix = File(dir, "gnss_fix.csv")
+        fix.writeText("laikas_ms,platuma,ilguma\n" + (1..10).joinToString("") { "${it * 1000L},54.0,25.0\n" })
+        // Kiekviena sekundė: 1 m, 2 m ... 10 m į šiaurę nuo fikso
+        val perM = 1.0 / Math.toRadians(1.0) / 6_371_000.0
+        val sols = (1..10).map { k ->
+            k * 1000L to PositionSolver.Solution(54.0 + k * perM, 25.0, 0.0, 6, 1.0, doubleArrayOf(0.0, 0.0, 0.0))
+        }
+        val d = PositionSolver.diffsToFix(sols, fix)
+        assertEquals(5.0, PositionSolver.percentile(d, 0.5), 1e-6)
+        assertEquals(9.0, PositionSolver.percentile(d, 0.9), 1e-6)
+        val r = Sp3Solver.Result(10, 10, 0, sols)
+        val text = Sp3Solver.compareBlock(r, null, fix)
+        assertTrue(text, text.contains("v1: mediana 5.00 m, 90 % 9.00 m, palyginta 10"))
+        assertTrue(text, text.contains("v2: nėra duomenų"))
+        dir.deleteRecursively()
+    }
+
+    @Test
     fun rawFileWithSkippedEpochs() {
         val dir = createTempDir("sp3")
         val weekNs = 604_800_000_000_000L

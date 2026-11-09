@@ -3,7 +3,10 @@ package lt.example.gnss
 import java.io.File
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.asin
 import kotlin.math.cos
+import kotlin.math.exp
+import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -15,6 +18,7 @@ import kotlin.math.sqrt
  */
 object Sp3Solver {
     const val OUT_FILE = "gnss_solver_sp3_test.csv"
+    const val OUT_FILE_V2 = "gnss_solver_sp3_test_v2.csv"
     val REF_LAT = 54.7400
     val REF_LON = 25.2545
 
@@ -42,8 +46,31 @@ object Sp3Solver {
     /** Ar laikas (GPS s nuo 1980-01-06) yra SP3 failo intervale. */
     fun inRange(sp3: Sp3Reader, t: Double) = sp3.epochCount > 0 && t >= sp3.epochs.first() && t <= sp3.epochs.last()
 
-    /** Vienos epochos sprendinys arba null (< 4 palydovai, nekonverguoja). */
-    fun solve(ep: PositionSolver.Epoch, sp3: Sp3Reader): PositionSolver.Solution? {
+    /**
+     * Saastamoinen troposferos vėlinimas (m), standartinė atmosfera, santykinė drėgmė 70 %.
+     * Žemiau 5° formulė per daug didėja, todėl naudojama 5° vertė; po horizontu arba už aukščių ribų – 0.
+     */
+    fun saastamoinen(latRad: Double, hM: Double, elRad: Double): Double {
+        if (elRad <= 0.0 || hM < -100.0 || hM > 10_000.0) return 0.0
+        val sinEl = sin(elRad.coerceAtLeast(Math.toRadians(5.0)))
+        val pres = 1013.25 * (1.0 - 2.2557e-5 * hM).pow(5.2568)
+        val temp = 15.0 - 6.5e-3 * hM + 273.16
+        val e = 6.108 * 0.7 * exp((17.15 * temp - 4684.0) / (temp - 38.45))
+        val dry = 0.0022768 * pres / (1.0 - 0.00266 * cos(2.0 * latRad) - 0.00028 * hM / 1000.0)
+        val wet = 0.002277 * (1255.0 / temp + 0.05) * e
+        return (dry + wet) / sinEl
+    }
+
+    /** Troposferos vėlinimas (m) nuo imtuvo s (ECEF) iki palydovo q (ECEF), atstumas rho. */
+    fun slantTropo(s: DoubleArray, q: DoubleArray, rho: Double): Double {
+        val llh = PositionSolver.ecefToLlh(s[0], s[1], s[2])
+        val ux = cos(llh[0]) * cos(llh[1]); val uy = cos(llh[0]) * sin(llh[1]); val uz = sin(llh[0])
+        val sinEl = ((q[0] - s[0]) * ux + (q[1] - s[1]) * uy + (q[2] - s[2]) * uz) / rho
+        return saastamoinen(llh[0], llh[2], asin(sinEl.coerceIn(-1.0, 1.0)))
+    }
+
+    /** Vienos epochos sprendinys arba null (< 4 palydovai, nekonverguoja). tropo = true – v2 su troposferos pataisa. */
+    fun solve(ep: PositionSolver.Epoch, sp3: Sp3Reader, tropo: Boolean = false): PositionSolver.Solution? {
         val tRx = ep.week * W + ep.tRxTow
         val sats = ArrayList<DoubleArray>()   // x, y, z, pr pataisytas palydovo laikrodžiu
         for (o in ep.obs) {
@@ -60,24 +87,29 @@ object Sp3Solver {
         if (sats.size < 4) return null
         val s = doubleArrayOf(0.0, 0.0, 6_378_137.0, 0.0)
         var ok = false
+        var lastStep = Double.MAX_VALUE
         for (it in 0 until 30) {
+            // Pataisa taikoma tik padėčiai priartėjus: pradinis taškas (ašigalis) aukščio kampui netinka
+            val applyTropo = tropo && lastStep < 1000.0
             val h = Array(sats.size) { DoubleArray(4) }
             val r = DoubleArray(sats.size)
             for ((i, q) in sats.withIndex()) {
                 val dx = s[0] - q[0]; val dy = s[1] - q[1]; val dz = s[2] - q[2]
                 val rho = sqrt(dx * dx + dy * dy + dz * dz)
                 h[i][0] = dx / rho; h[i][1] = dy / rho; h[i][2] = dz / rho; h[i][3] = 1.0
-                r[i] = q[3] - (rho + s[3])
+                r[i] = q[3] - (rho + s[3] + (if (applyTropo) slantTropo(s, q, rho) else 0.0))
             }
             val d = lsq(h, r) ?: return null
             for (k in 0..3) s[k] += d[k]
-            if (sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) < 1e-3) { ok = true; break }
+            lastStep = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+            if (lastStep < 1e-3 && (applyTropo || !tropo)) { ok = true; break }
         }
         if (!ok) return null
         var ss = 0.0
         for (q in sats) {
             val dx = s[0] - q[0]; val dy = s[1] - q[1]; val dz = s[2] - q[2]
-            val v = q[3] - (sqrt(dx * dx + dy * dy + dz * dz) + s[3]); ss += v * v
+            val rho = sqrt(dx * dx + dy * dy + dz * dz)
+            val v = q[3] - (rho + s[3] + (if (tropo) slantTropo(s, q, rho) else 0.0)); ss += v * v
         }
         val rms = sqrt(ss / sats.size)
         val llh = PositionSolver.ecefToLlh(s[0], s[1], s[2])
@@ -115,7 +147,7 @@ object Sp3Solver {
     }
 
     /** gnss_raw.csv + SP3 -> gnss_solver_sp3_test.csv; epochos už SP3 intervalo praleidžiamos ir skaičiuojamos. */
-    fun solveFile(raw: File, sp3: Sp3Reader, out: File): Result {
+    fun solveFile(raw: File, sp3: Sp3Reader, out: File, tropo: Boolean = false): Result {
         var total = 0; var inR = 0; var skipped = 0
         val sols = ArrayList<Pair<Long, PositionSolver.Solution>>()
         out.bufferedWriter().use { w ->
@@ -124,12 +156,27 @@ object Sp3Solver {
                 total++
                 if (!inRange(sp3, ep.week * W + ep.tRxTow)) { skipped++; return@readEpochs }
                 inR++
-                val s = solve(ep, sp3) ?: return@readEpochs
+                val s = solve(ep, sp3, tropo) ?: return@readEpochs
                 sols.add(ep.timeMs to s)
                 w.write(String.format(Locale.US, "%d,%.8f,%.8f,%.2f,%d,%.2f\n", ep.timeMs, s.lat, s.lon, s.h, s.sats, s.hacc))
             }
         }
         return Result(total, inR, skipped, sols)
+    }
+
+    /** v1 ir v2 horizontalus skirtumas iki planšetės fikso (gnss_fix.csv). */
+    fun compareBlock(v1: Result, v2: Result?, fix: File): String = buildString {
+        appendLine()
+        appendLine("--- SP3 V1 / V2 PALYGINIMAS SU PLANŠETĖS FIKSU ---")
+        appendLine("v2: Saastamoinen troposfera ($OUT_FILE_V2); jonosfera nepataisyta (nėra Klobuchar koeficientų)")
+        fun line(name: String, r: Result?) {
+            val d = r?.let { PositionSolver.diffsToFix(it.sols, fix) } ?: emptyList()
+            if (d.isEmpty()) appendLine("$name: nėra duomenų")
+            else appendLine("$name: mediana %.2f m, 90 %% %.2f m, palyginta %d".format(Locale.US,
+                PositionSolver.percentile(d, 0.5), PositionSolver.percentile(d, 0.9), d.size))
+        }
+        line("v1", v1)
+        line("v2", v2)
     }
 
     fun diagBlock(r: Result?, error: String? = null): String = buildString {

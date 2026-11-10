@@ -116,6 +116,61 @@ class Sp3SolverTest {
         assertEquals(6, s!!.sats)
     }
 
+    /**
+     * Nepriklausomas Sagnac testas: pseudoatstumai sudaromi be skaičiuoklės kodo (tik Sp3Reader padėtys ir laikrodis):
+     * iteruojamas sklidimo laikas, palydovo padėtis siuntimo momentu pasukama apie Z kampu α = −ω·τ.
+     */
+    @Test
+    fun sagnacIndependentSynthetic() {
+        val omega = 7.2921151467e-5; val c = 299_792_458.0
+        val lat0 = 54.74; val lon0 = 25.2545
+        val me = PositionSolver.llhToEcef(Math.toRadians(lat0), Math.toRadians(lon0), 150.0)
+        val t = Sp3Reader.gpsSeconds(2026, 11, 4, 9, 30, 0.0)
+        val week = (t / Sp3Reader.WEEK).toInt()
+        fun xyz(sat: String, tt: Double): DoubleArray? {
+            val w = (tt / Sp3Reader.WEEK).toInt()
+            return sp3.positionXyz(sat, w, tt - w * Sp3Reader.WEEK)?.let { p -> DoubleArray(3) { p[it] * 1000.0 } }
+        }
+        fun pr(sat: String): Double? {
+            var tau = 0.075; var rho = 0.0; var dts = 0.0
+            repeat(8) {
+                val tTx = t - tau
+                val p = xyz(sat, tTx) ?: return null
+                val a = xyz(sat, tTx - 0.5) ?: return null; val b = xyz(sat, tTx + 0.5) ?: return null
+                val w = (tTx / Sp3Reader.WEEK).toInt()
+                val clk = sp3.clock(sat, w, tTx - w * Sp3Reader.WEEK) ?: return null
+                dts = clk * 1e-6 - 2.0 * (p[0] * (b[0] - a[0]) + p[1] * (b[1] - a[1]) + p[2] * (b[2] - a[2])) / (c * c)
+                val al = -omega * tau                                 // pasukimas apie Z kampu −ω·τ
+                val x = cos(al) * p[0] - sin(al) * p[1]; val y = sin(al) * p[0] + cos(al) * p[1]
+                rho = sqrt((x - me[0]) * (x - me[0]) + (y - me[1]) * (y - me[1]) + (p[2] - me[2]) * (p[2] - me[2]))
+                tau = rho / c
+            }
+            return rho + 250.0 - c * dts
+        }
+        val up = me.map { it / sqrt(me[0] * me[0] + me[1] * me[1] + me[2] * me[2]) }
+        val obs = (1..32).mapNotNull { n ->
+            val sat = "G%02d".format(Locale.US, n)
+            val p = xyz(sat, t) ?: return@mapNotNull null
+            val d = DoubleArray(3) { p[it] - me[it] }
+            val el = Math.toDegrees(Math.asin((d[0] * up[0] + d[1] * up[1] + d[2] * up[2]) / sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])))
+            if (el < 15.0) null else pr(sat)?.let { PositionSolver.Obs(n, it) }
+        }
+        assertTrue("palydovų ${obs.size}", obs.size >= 6)
+        val ep = PositionSolver.Epoch(week, t - week * Sp3Reader.WEEK, 0L, obs)
+        fun east(s: PositionSolver.Solution) = Math.toRadians(s.lon - lon0) * 6_371_000.0 * cos(Math.toRadians(lat0))
+        fun err(s: PositionSolver.Solution) = sqrt((0..2).sumOf { (s.ecef[it] - me[it]) * (s.ecef[it] - me[it]) })
+        val ok = Sp3Solver.solve(ep, sp3, false, Sp3Solver.Rot.MINUS)!!
+        val legacy = Sp3Solver.solve(ep, sp3, false, Sp3Solver.Rot.LEGACY)!!
+        val none = Sp3Solver.solve(ep, sp3, false, Sp3Solver.Rot.NONE)!!
+        val plus = Sp3Solver.solve(ep, sp3, false, Sp3Solver.Rot.PLUS)!!
+        println("SAGNAC sintetinis (%d palydovų): −ω·τ paklaida %.4f m; v1/v2 (LEGACY) %.4f m; be pasukimo rytai %+.2f m (3D %.2f m); +ω·τ rytai %+.2f m"
+            .format(Locale.US, obs.size, err(ok), err(legacy), east(none), err(none), east(plus)))
+        assertTrue("−ω·τ: ${err(ok)} m", err(ok) < 1.0)
+        assertTrue("LEGACY: ${err(legacy)} m", err(legacy) < 1.0)
+        assertTrue("be pasukimo rytai: ${east(none)} m", kotlin.math.abs(east(none)) in 15.0..25.0)
+        assertTrue("+ω·τ rytai: ${east(plus)} m", kotlin.math.abs(east(plus)) in 30.0..50.0)
+    }
+
     @Test
     fun v2BlockReportsDistancesAndHeights() {
         val dir = createTempDir("sp3cmp")

@@ -1580,6 +1580,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // GL kontekstas atkuriamas po išėjimo/įėjimo – senos tekstūrų ID nebegalioja, todėl viską perkuriame
         prnTex.clear()
+        monthTex.clear()
         labelTex.clear()
         wideLabels.clear()
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
@@ -1907,8 +1908,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     /** Saulės ekliptinė ilguma (rad) – ta pati formulė kaip sunDir(). */
-    private fun sunEclLon(): Double {
-        val d = jdDays()
+    private val monthTex = HashMap<Int, Int>()
+    private val MONTHS_LT = arrayOf("Sau", "Vas", "Kov", "Bal", "Geg", "Bir", "Lie", "Rgp", "Rgs", "Spa", "Lap", "Gru")
+
+    private fun sunEclLon(): Double = sunEclLonAt(jdDays())
+
+    /** Saulės ekliptinė ilguma (rad) dienai d nuo J2000. */
+    private fun sunEclLonAt(d: Double): Double {
         val m = Math.toRadians(357.5291 + 0.98560028 * d)
         val c = Math.toRadians(1.9148 * sin(m) + 0.02 * sin(2 * m) + 0.0003 * sin(3 * m))
         return m + c + Math.toRadians(102.9372) + Math.PI
@@ -1941,10 +1947,33 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val p0 = pts[i]; val p1 = pts[(i + 1) % n]
             seg[k++] = p0[0]; seg[k++] = p0[1]; seg[k++] = p0[2]; seg[k++] = p1[0]; seg[k++] = p1[1]; seg[k++] = p1[2]
         }
+        // Mėnesių žymės: Žemės vieta orbitoje kiekvieno mėnesio 1 d. (brūkšnelis skersai orbitos ir pavadinimas)
+        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+        val year = cal.get(java.util.Calendar.YEAR); val monthNow = cal.get(java.util.Calendar.MONTH)
+        val ticks = FloatArray(12 * 6)
+        val labels = ArrayList<Pair<FloatArray, Int>>(12)
+        for (mo in 0 until 12) {
+            cal.clear(); cal.set(year, mo, 1, 0, 0, 0)
+            val dJ = cal.timeInMillis / 86400000.0 + 2440587.5 - 2451545.0
+            val lon = sunEclLonAt(dJ) + Math.PI                 // Žemės heliocentrinė ilguma mėnesio 1 d.
+            val r = a * (1 - ecc * ecc) / (1 + ecc * cos(lon - peri))
+            val d = eclToEq(lon, 0.0)
+            fun at(k: Double) = floatArrayOf((sx + d[0] * r * k).toFloat(), (sy + d[1] * r * k).toFloat(), (sz + d[2] * r * k).toFloat())
+            val p0 = at(0.975); val p1 = at(1.025)
+            System.arraycopy(p0, 0, ticks, mo * 6, 3); System.arraycopy(p1, 0, ticks, mo * 6 + 3, 3)
+            labels.add(at(1.07) to mo)
+        }
         // Su gylio testu: Žemės rutulys uždengia orbitos dalį, einančią per jį ir už jo
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
         drawLines(seg, 1f, 0.82f, 0.3f, 0.75f)
+        drawLines(ticks, 1f, 0.9f, 0.5f, 0.95f)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        for ((p, mo) in labels) {
+            val tex = monthTex.getOrPut(mo) { makeTexture(MONTHS_LT[mo], 0xFFFFFFFF.toInt(), 64) }
+            // einamasis mėnuo (Žemė dabar tarp šios ir kitos žymės) – ryškesnis
+            val cur = mo == monthNow
+            billboard(p, eyeI, if (cur) 0.2f else 0.16f, if (cur) 0.1f else 0.08f, tex, 1f, if (cur) 1f else 0.85f, if (cur) 1f else 0.45f, if (cur) 1f else 0.8f)
+        }
     }
 
     private fun drawSky() {
@@ -4628,8 +4657,9 @@ class MainActivity : AppCompatActivity() {
                         PositionSolver.lastSp3Note?.let { report += it + "\n" }
                         val s = sp3TestCsvUri(Sp3Solver.OUT_FILE)
                         val s2 = sp3TestCsvUri(Sp3Solver.OUT_FILE_V2)
+                        val s3 = sp3TestCsvUri(Sp3Solver.OUT_FILE_V3)
                         val d = solverDiagUri()
-                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; s2?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
+                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; s2?.let { uris.add(it) }; s3?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
                     }.start() }
                 } else send()
             }
@@ -5060,6 +5090,7 @@ class MainActivity : AppCompatActivity() {
         // Ankstesnio eksporto rezultatas neturi būti išsiųstas, jei šįkart SP3 sprendimas nevyks
         File(cacheDir, Sp3Solver.OUT_FILE).delete()
         File(cacheDir, Sp3Solver.OUT_FILE_V2).delete()
+        File(cacheDir, Sp3Solver.OUT_FILE_V3).delete()
         // „SP3 TESTAS“ / „SP3 INTERPOLIACIJA“ diagnostikai (skaičiuoklė SP3 nenaudoja)
         val sols = PositionSolver.solveFiles(File(cacheDir, "gnss_raw.csv"), File(cacheDir, "gnss_nav.csv"), out) {
             Sp3Storage.search(this)

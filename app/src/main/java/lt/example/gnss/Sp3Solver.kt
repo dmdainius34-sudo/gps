@@ -21,6 +21,15 @@ import kotlin.math.sqrt
 object Sp3Solver {
     const val OUT_FILE = "gnss_solver_sp3_test.csv"
     const val OUT_FILE_V2 = "gnss_solver_sp3_test_v2.csv"
+    const val OUT_FILE_V3 = "gnss_solver_sp3_test_v3.csv"
+
+    /**
+     * Žemės sukimosi (Sagnac) pataisa: palydovo ECEF padėtis siuntimo momentu pasukama apie Z kampu −ω·τ.
+     * LEGACY – v1/v2 elgsena: −ω·τ vieną kartą, τ = pr/c + dt_sv (su imtuvo laikrodžio poslinkiu);
+     * MINUS – teisinga: −ω·τ, τ = geometrinis atstumas / c, perskaičiuojamas kiekvienoje iteracijoje;
+     * NONE – be pasukimo; PLUS – neteisingas ženklas (+ω·τ). NONE ir PLUS – tik diagnostikai.
+     */
+    enum class Rot(val sign: Double) { LEGACY(1.0), MINUS(1.0), NONE(0.0), PLUS(-1.0) }
     /** Planšetės fiksas palyginimui. */
     const val FIX_LAT = 54.73998
     const val FIX_LON = 25.25466
@@ -107,7 +116,8 @@ object Sp3Solver {
      * Vienos epochos sprendinys arba null (< 4 palydovai, nekonverguoja).
      * corrected = true – v2: 10° maska ir atmosferos pataisos; onDropped gauna atmestų palydovų skaičių.
      */
-    fun solve(ep: PositionSolver.Epoch, sp3: Sp3Reader, corrected: Boolean = false, onDropped: ((Int) -> Unit)? = null): PositionSolver.Solution? {
+    fun solve(ep: PositionSolver.Epoch, sp3: Sp3Reader, corrected: Boolean = false, rot: Rot = Rot.LEGACY,
+              onDropped: ((Int) -> Unit)? = null): PositionSolver.Solution? {
         val tRx = ep.week * W + ep.tRxTow
         val sats = ArrayList<DoubleArray>()   // x, y, z, pr pataisytas palydovo laikrodžiu
         for (o in ep.obs) {
@@ -116,10 +126,12 @@ object Sp3Solver {
             var st = satState(sp3, sat, tSv) ?: continue
             st = satState(sp3, sat, tSv - st.dts) ?: continue              // viena iteracija
             val tau = tRx - (tSv - st.dts)                                   // sklidimo laikas (su imtuvo laikrodžiu – mažas)
-            val th = PositionSolver.OMEGA_E * tau
+            // R3(ω·τ): x' = cos·x + sin·y, y' = −sin·x + cos·y  (pasukimas apie Z kampu −ω·τ)
+            val th = rot.sign * PositionSolver.OMEGA_E * tau
             val x = cos(th) * st.pos[0] + sin(th) * st.pos[1]
             val y = -sin(th) * st.pos[0] + cos(th) * st.pos[1]
-            sats.add(doubleArrayOf(x, y, st.pos[2], o.pr + C * st.dts))
+            // [0..3] – pasukta padėtis ir pataisytas pseudoatstumas; [4..6] – nepasukta X, Y ir pradinis τ
+            sats.add(doubleArrayOf(x, y, st.pos[2], o.pr + C * st.dts, st.pos[0], st.pos[1], tau))
         }
         if (sats.size < 4) return null
         val s = doubleArrayOf(0.0, 0.0, 6_378_137.0, 0.0)
@@ -141,6 +153,14 @@ object Sp3Solver {
             }
             val h = Array(active.size) { DoubleArray(4) }
             val r = DoubleArray(active.size)
+            if (rot != Rot.LEGACY && rot != Rot.NONE) for (q in active) {
+                // τ iš geometrinio atstumo (be imtuvo laikrodžio poslinkio), perskaičiuojamas kiekvienoje iteracijoje
+                val tg = range(q) / C
+                val tau = if (tg in 0.05..0.11) tg else q[6]
+                val th = rot.sign * PositionSolver.OMEGA_E * tau
+                q[0] = cos(th) * q[4] + sin(th) * q[5]
+                q[1] = -sin(th) * q[4] + cos(th) * q[5]
+            }
             for ((i, q) in active.withIndex()) {
                 val rho = range(q)
                 h[i][0] = (s[0] - q[0]) / rho; h[i][1] = (s[1] - q[1]) / rho; h[i][2] = (s[2] - q[2]) / rho; h[i][3] = 1.0
@@ -210,25 +230,61 @@ object Sp3Solver {
     }
 
     /** gnss_raw.csv + SP3 -> gnss_solver_sp3_test.csv; epochos už SP3 intervalo praleidžiamos ir skaičiuojamos. */
-    fun solveFile(raw: File, sp3: Sp3Reader, out: File, corrected: Boolean = false): Result {
+    fun solveFile(raw: File, sp3: Sp3Reader, out: File?, corrected: Boolean = false, rot: Rot = Rot.LEGACY): Result {
         var total = 0; var inR = 0; var skipped = 0
         val dropped = ArrayList<Int>()
         val sols = ArrayList<Pair<Long, PositionSolver.Solution>>()
-        out.bufferedWriter().use { w ->
-            w.write(PositionSolver.SOLVER_HEADER)
+        val w = out?.bufferedWriter()
+        try {
+            w?.write(PositionSolver.SOLVER_HEADER)
             PositionSolver.readEpochs(raw) { ep ->
                 total++
                 if (!inRange(sp3, ep.week * W + ep.tRxTow)) { skipped++; return@readEpochs }
                 inR++
                 var drop = 0
-                val s = solve(ep, sp3, corrected) { drop = it }
+                val s = solve(ep, sp3, corrected, rot) { drop = it }
                 if (corrected) dropped.add(drop)
                 if (s == null) return@readEpochs
                 sols.add(ep.timeMs to s)
-                w.write(String.format(Locale.US, "%d,%.8f,%.8f,%.2f,%d,%.2f\n", ep.timeMs, s.lat, s.lon, s.h, s.sats, s.hacc))
+                w?.write(String.format(Locale.US, "%d,%.8f,%.8f,%.2f,%d,%.2f\n", ep.timeMs, s.lat, s.lon, s.h, s.sats, s.hacc))
             }
-        }
+        } finally { w?.close() }
         return Result(total, inR, skipped, sols, dropped)
+    }
+
+    /** Poslinkiai nuo atskaitos taško: [vid. rytai, vid. šiaurė, atstumo mediana, sklaida aplink savo medianą (RMS)], m. */
+    fun offsets(sols: List<Pair<Long, PositionSolver.Solution>>, ref: Pair<Double, Double>): DoubleArray? {
+        if (sols.isEmpty()) return null
+        val mPerDeg = Math.toRadians(1.0) * 6_371_000.0
+        val cl = cos(Math.toRadians(ref.first))
+        val e = sols.map { (it.second.lon - ref.second) * mPerDeg * cl }
+        val n = sols.map { (it.second.lat - ref.first) * mPerDeg }
+        val me = PositionSolver.percentile(e.sorted(), 0.5); val mn = PositionSolver.percentile(n.sorted(), 0.5)
+        val d = e.indices.map { sqrt(e[it] * e[it] + n[it] * n[it]) }.sorted()
+        val sc = sqrt(e.indices.sumOf { (e[it] - me) * (e[it] - me) + (n[it] - mn) * (n[it] - mn) } / e.size)
+        return doubleArrayOf(e.average(), n.average(), PositionSolver.percentile(d, 0.5), sc)
+    }
+
+    /** „vid. rytai … m, vid. šiaurė … m, sklaida … m“ arba „nėra“. */
+    fun offsetText(r: Result?, ref: Pair<Double, Double>?): String {
+        val o = if (r == null || ref == null) null else offsets(r.sols, ref)
+        return o?.let { "vid. rytai %+.2f m, vid. šiaurė %+.2f m, atstumo mediana %.2f m, sklaida aplink savo medianą %.2f m; sprendinių %d".format(
+            Locale.US, it[0], it[1], it[2], it[3], r!!.sols.size) } ?: "nėra"
+    }
+
+    /** „SP3 SAGNAC TESTAS“: tas pats įrašas be pasukimo, su −ω·τ ir su +ω·τ (v2 pataisos); v3 failas – −ω·τ. */
+    fun sagnacBlock(raw: File, sp3: Sp3Reader, outV3: File, ref: Pair<Double, Double>?): String = buildString {
+        appendLine()
+        appendLine("--- SP3 SAGNAC TESTAS ---")
+        appendLine("ω = 7.2921151467e-5 rad/s; τ = geometrinis atstumas / c, perskaičiuojamas kiekvienoje iteracijoje")
+        appendLine("Atskaitos taškas: " + (ref?.let { "%.7f, %.7f (gnss_fix.csv mediana)".format(Locale.US, it.first, it.second) } ?: "nėra"))
+        val none = try { solveFile(raw, sp3, null, corrected = true, rot = Rot.NONE) } catch (e: Exception) { null }
+        val minus = try { solveFile(raw, sp3, outV3, corrected = true, rot = Rot.MINUS) } catch (e: Exception) { null }
+        val plus = try { solveFile(raw, sp3, null, corrected = true, rot = Rot.PLUS) } catch (e: Exception) { null }
+        appendLine("Be pasukimo: " + offsetText(none, ref))
+        appendLine("−ω·τ (teisinga, numatytoji, $OUT_FILE_V3): " + offsetText(minus, ref))
+        appendLine("+ω·τ (neteisingas ženklas): " + offsetText(plus, ref))
+        appendLine("Išvada: v1/v2 jau naudojo −ω·τ (τ = pr/c + dt_sv); v3 skiriasi tik τ skaičiavimu.")
     }
 
     /** „SP3 TESTAS v2“: atstumai iki planšetės fikso ir aukščiai, v2 ir v1 palyginimui. */
@@ -253,6 +309,8 @@ object Sp3Solver {
         }
         line("v2", v2)
         line("v1", v1)
+        appendLine("v2 poslinkiai: " + offsetText(v2, ref))
+        appendLine("v1 poslinkiai: " + offsetText(v1, ref))
         val dropped = v2?.dropped ?: emptyList()
         appendLine("Atmesta palydovų (< 10°): iš viso ${dropped.sum()}; per epochą: " +
             if (dropped.isEmpty()) "nėra" else dropped.joinToString(" "))
@@ -269,6 +327,7 @@ object Sp3Solver {
         if (ref == null) appendLine("Atskaitos taškas: nėra (gnss_fix.csv tuščias) – atstumai neskaičiuojami")
         else appendLine("Horizontalaus skirtumo iki atskaitos taško (%.7f, %.7f – gnss_fix.csv mediana) mediana: ".format(Locale.US, ref.first, ref.second) +
             (r.medianHoriz(ref)?.let { "%.2f m".format(Locale.US, it) } ?: "nėra"))
+        appendLine("Poslinkiai nuo atskaitos taško: " + offsetText(r, ref))
         appendLine("Pirmieji 3 sprendiniai:")
         if (r.sols.isEmpty()) appendLine("  (nėra)")
         r.sols.take(3).forEach { (t, s) ->

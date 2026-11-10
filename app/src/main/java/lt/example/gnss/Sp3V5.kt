@@ -271,7 +271,7 @@ object Sp3V5 {
      * Matavimai – glodinti pseudoatstumai (ρ + b_s + T + I) ir Doppler (u·(v_sat − v) + d − ċ_sat).
      * Beveik nejudantis imtuvas: maža greičio proceso triukšmo spektrinė galia. Didelės inovacijos – paleidimas iš naujo.
      */
-    class Kalman(val systems: List<Char>, val qVel: Double = 1e-4, val qDrift: Double = 0.1, val qClock: Double = 0.1,
+    class Kalman(val systems: List<Char>, val qVel: Double = 1e-4, val qDrift: Double = 0.01, val qClock: Double = 0.01,
                  val codeBase: Double = 7.0, val elevWeight: Boolean = true) {
         val n = 7 + systems.size
         var x = DoubleArray(n); var p = Array(n) { DoubleArray(n) }

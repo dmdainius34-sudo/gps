@@ -79,13 +79,11 @@ class Sp3V5Test {
         assertTrue(err(fit.sol) < 1.0)
     }
 
-    @Test
-    fun kalmanStaticConverges() {
-        val rnd = java.util.Random(11)
+    /** Statinis imtuvas, 60 epochų, 10 m kodo triukšmas; grąžina [pirmo MKM 3D, galutinė 3D, galutinė horizontali]. */
+    private fun kalmanRun(seed: Long, kf: Sp3V5.Kalman): DoubleArray {
+        val rnd = java.util.Random(seed)
         val t0 = Sp3Reader.gpsSeconds(2026, 11, 4, 9, 0, 0.0)
-        val kf = Sp3V5.Kalman(listOf('C', 'E', 'G'))
-        var last = Double.NaN; var lastH = Double.NaN
-        var firstLsq = Double.NaN
+        var last = Double.NaN; var lastH = Double.NaN; var firstLsq = Double.NaN
         for (k in 0 until 60) {
             val t = t0 + k
             val week = (t / Sp3Reader.WEEK).toInt(); val tow = t - week * Sp3Reader.WEEK
@@ -104,7 +102,18 @@ class Sp3V5Test {
             val l = PositionSolver.ecefToLlh(sol.ecef[0], sol.ecef[1], sol.ecef[2])
             lastH = PositionSolver.horizDist(Math.toDegrees(l[0]), Math.toDegrees(l[1]), 54.74, 25.2545)
         }
-        println("Kalman: 1 epochos MKM paklaida %.2f m; po 60 epochų 3D %.2f m, horizontaliai %.2f m".format(Locale.US, firstLsq, last, lastH))
-        assertTrue("3D $last m", last < 2.0)
+        return doubleArrayOf(firstLsq, last, lastH)
+    }
+
+    @Test
+    fun kalmanStaticConverges() {
+        val sys = listOf('C', 'E', 'G')
+        val def = (11L..15L).map { kalmanRun(it, Sp3V5.Kalman(sys)) }
+        val flat = (11L..15L).map { kalmanRun(it, Sp3V5.Kalman(sys, codeBase = 10.0, elevWeight = false)) }
+        println("Kalman (numatytas R): " + def.joinToString("; ") { "MKM %.1f → 3D %.2f, H %.2f".format(Locale.US, it[0], it[1], it[2]) })
+        println("Kalman (R = 10 m vienodas): " + flat.joinToString("; ") { "3D %.2f, H %.2f".format(Locale.US, it[1], it[2]) })
+        val med = def.map { it[1] }.sorted()[2]
+        println("Kalman: 5 sėklų galutinės 3D paklaidos mediana %.2f m".format(Locale.US, med))
+        assertTrue("3D mediana $med m", med < 2.0)
     }
 }

@@ -271,7 +271,8 @@ object Sp3V5 {
      * Matavimai – glodinti pseudoatstumai (ρ + b_s + T + I) ir Doppler (u·(v_sat − v) + d − ċ_sat).
      * Beveik nejudantis imtuvas: maža greičio proceso triukšmo spektrinė galia. Didelės inovacijos – paleidimas iš naujo.
      */
-    class Kalman(val systems: List<Char>, val qVel: Double = 1e-4, val qDrift: Double = 0.1, val qClock: Double = 0.1) {
+    class Kalman(val systems: List<Char>, val qVel: Double = 1e-4, val qDrift: Double = 0.1, val qClock: Double = 0.1,
+                 val codeBase: Double = 6.0, val elevWeight: Boolean = true) {
         val n = 7 + systems.size
         var x = DoubleArray(n); var p = Array(n) { DoubleArray(n) }
         var t = Double.NaN
@@ -329,10 +330,10 @@ object Sp3V5 {
                 val rho = sqrt(dx * dx + dy * dy + dz * dz)
                 val l = Sp3Solver.look(x, s.rp, rho)
                 if (l[4] < MASK) continue
-                val w = weight(l[4], s.cn0)
+                val w = if (elevWeight) weight(l[4], s.cn0) else 1.0
                 val corr = Sp3Solver.saastamoinen(l[0], l[2], l[4]) + Sp3Solver.klobuchar(l[0], l[1], l[3], l[4], tow)
                 val h = DoubleArray(n); h[0] = dx / rho; h[1] = dy / rho; h[2] = dz / rho; h[7 + si] = 1.0
-                val sig = (6.0 / sqrt(w)).coerceIn(3.0, 60.0)
+                val sig = (codeBase / sqrt(w)).coerceIn(minOf(3.0, codeBase), 60.0)
                 val z = update(h, s.prc - (rho + x[7 + si] + corr), sig * sig, 6.0)
                 total++; if (abs(z) > 6.0) big++
                 if (s.prr != null) {

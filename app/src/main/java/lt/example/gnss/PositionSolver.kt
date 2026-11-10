@@ -919,7 +919,9 @@ object PositionSolver {
                         Sp3Solver.sagnacBlock(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE_V3), ref) +
                         (try {
                             val fixH = medianFixHeight(fixFile)
-                            Sp3V4.atmosphereBlock(raw, r, ref, fixH) + Sp3V4.v4Block(raw, r, File(out.parentFile, Sp3V4.OUT_FILE_V4), ref, fixH)
+                            Sp3V4.atmosphereBlock(raw, r, ref, fixH) + Sp3V4.v4Block(raw, r, File(out.parentFile, Sp3V4.OUT_FILE_V4), ref, fixH) +
+                                (try { Sp3V5.v5Block(raw, r, File(out.parentFile, Sp3V5.OUT_FILE_V5), ref, fixH) }
+                                 catch (e: Exception) { "\n--- SP3 TESTAS v5 ---\nNeatlikta: ${e.message}\n" })
                         } catch (e: Exception) { "\n--- SP3 TESTAS v4 ---\nNeatlikta: ${e.message}\n" })
                 } catch (e: Exception) { Sp3Solver.diagBlock(null, e.message) }
                 Sp3Reader.diagBlock(location, r, searched = searched) + sp3Sol

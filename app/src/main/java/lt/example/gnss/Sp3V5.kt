@@ -218,7 +218,8 @@ object Sp3V5 {
                     var q = 0.0; for (a in 0 until np) for (b in 0 until np) q += h[a] * ninv[a][b] * h[b]
                     val rii = (1.0 - wi * q).coerceAtLeast(1e-6)
                     val ssi = ss - wi * post[i] * post[i] / rii
-                    val si = sqrt(ssi.coerceAtLeast(1e-12) / (rows.size - np - 1))
+                    // apatinė riba 1 m: be triukšmo likusios liekanos ~0 ir būtų atmetami geri palydovai
+                    val si = sqrt(ssi.coerceAtLeast(0.0) / (rows.size - np - 1)).coerceAtLeast(1.0)
                     val nr = abs(post[i]) * sqrt(wi) / (si * sqrt(rii))
                     if (nr > nrMax) { nrMax = nr; worst = rows[i].first }
                 }
@@ -270,7 +271,7 @@ object Sp3V5 {
      * Matavimai – glodinti pseudoatstumai (ρ + b_s + T + I) ir Doppler (u·(v_sat − v) + d − ċ_sat).
      * Beveik nejudantis imtuvas: maža greičio proceso triukšmo spektrinė galia. Didelės inovacijos – paleidimas iš naujo.
      */
-    class Kalman(val systems: List<Char>, val qVel: Double = 0.01, val qDrift: Double = 0.1, val qClock: Double = 0.1) {
+    class Kalman(val systems: List<Char>, val qVel: Double = 1e-4, val qDrift: Double = 0.1, val qClock: Double = 0.1) {
         val n = 7 + systems.size
         var x = DoubleArray(n); var p = Array(n) { DoubleArray(n) }
         var t = Double.NaN

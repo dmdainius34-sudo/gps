@@ -2500,6 +2500,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         } catch (e: Exception) {
             android.util.Log.w("GnssApp", "moon.jpg nerastas: app/src/main/assets/moon.jpg (rodomas pilkas Mėnulis)")
         }
+        buildMoonRelief()
         val stacks = 48; val slices = 96; val r = 0.25
         val pos = ArrayList<Float>(); val uv = ArrayList<Float>()
         fun vertex(st: Int, sl: Int) {
@@ -2519,6 +2520,77 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         earthPos = floatBuf(pos.toFloatArray())
         earthUv = floatBuf(uv.toFloatArray())
         earthCount = pos.size / 3
+    }
+
+    // ---------------- MĖNULIS SU REALJEFU (NASA SVS CGI Moon Kit: LROC spalvos, LOLA aukščiai) ----------------
+    private var moonProg = 0
+    private var moonVbo: FloatBuffer? = null           // x, y, z, u, v, nx, ny, nz
+    private var moonIdx: java.nio.ShortBuffer? = null
+    private var moonIdxCount = 0
+    /** Reljefo išryškinimas: tikras ±10 km prie 1737 km spindulio (0,6 %) būtų nematomas. */
+    private val MOON_RELIEF_X = 10.0
+
+    /**
+     * assets/moon_height.bin – 720×360 int16 LE, aukštis metrais nuo 1737,4 km (eilutės nuo šiaurės, stulpeliai nuo −180°).
+     * Tinklelis 240×120 su indeksais; normalės iš pakelto paviršiaus (kraterių ir baseinų šešėliai).
+     */
+    private fun buildMoonRelief() {
+        moonProg = program(MOON_VS, MOON_FS)
+        val w = 720; val hgt = 360
+        val hm = try {
+            appCtx.assets.open("moon_height.bin").use { ins ->
+                val b = ins.readBytes()
+                val sb = java.nio.ByteBuffer.wrap(b).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                ShortArray(w * hgt).also { sb.get(it) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("GnssApp", "moon_height.bin nerastas – Mėnulis be reljefo"); moonVbo = null; return
+        }
+        fun height(latDeg: Double, lonDeg: Double): Double {
+            val fx = ((lonDeg + 180.0) * 2.0 - 0.5).let { ((it % w) + w) % w }
+            val fy = ((90.0 - latDeg) * 2.0 - 0.5).coerceIn(0.0, hgt - 1.0)
+            val x0 = fx.toInt(); val y0 = fy.toInt(); val x1 = (x0 + 1) % w; val y1 = (y0 + 1).coerceAtMost(hgt - 1)
+            val ax = fx - x0; val ay = fy - y0
+            fun v(x: Int, y: Int) = hm[y * w + x].toDouble()
+            return (v(x0, y0) * (1 - ax) + v(x1, y0) * ax) * (1 - ay) + (v(x0, y1) * (1 - ax) + v(x1, y1) * ax) * ay
+        }
+        val slices = 240; val stacks = 120; val r0 = 0.25
+        val nv = (slices + 1) * (stacks + 1)
+        val p = Array(nv) { DoubleArray(3) }
+        val data = FloatArray(nv * 8)
+        for (st in 0..stacks) for (sl in 0..slices) {
+            val latD = -90.0 + 180.0 * st / stacks; val lonD = -180.0 + 360.0 * sl / slices
+            val la = Math.toRadians(latD); val lo = Math.toRadians(lonD)
+            val r = r0 * (1.0 + MOON_RELIEF_X * height(latD, lonD) / 1_737_400.0)
+            val i = st * (slices + 1) + sl
+            p[i][0] = r * cos(la) * cos(lo); p[i][1] = r * cos(la) * sin(lo); p[i][2] = r * sin(la)
+            data[i * 8 + 3] = sl.toFloat() / slices; data[i * 8 + 4] = (stacks - st).toFloat() / stacks
+        }
+        for (st in 0..stacks) for (sl in 0..slices) {
+            val i = st * (slices + 1) + sl
+            val e = p[st * (slices + 1) + (if (sl == slices) 1 else sl + 1)]
+            val wv = p[st * (slices + 1) + (if (sl == 0) slices - 1 else sl - 1)]
+            val n = p[(st + 1).coerceAtMost(stacks) * (slices + 1) + sl]
+            val sv = p[(st - 1).coerceAtLeast(0) * (slices + 1) + sl]
+            val tx = DoubleArray(3) { e[it] - wv[it] }; val ty = DoubleArray(3) { n[it] - sv[it] }
+            var nx = tx[1] * ty[2] - tx[2] * ty[1]; var ny = tx[2] * ty[0] - tx[0] * ty[2]; var nz = tx[0] * ty[1] - tx[1] * ty[0]
+            var nl = kotlin.math.sqrt(nx * nx + ny * ny + nz * nz)
+            if (st == 0 || st == stacks || nl < 1e-12) { nx = p[i][0]; ny = p[i][1]; nz = p[i][2]; nl = kotlin.math.sqrt(nx * nx + ny * ny + nz * nz) }
+            if (nx * p[i][0] + ny * p[i][1] + nz * p[i][2] < 0) { nx = -nx; ny = -ny; nz = -nz }
+            for (k in 0..2) data[i * 8 + k] = p[i][k].toFloat()
+            data[i * 8 + 5] = (nx / nl).toFloat(); data[i * 8 + 6] = (ny / nl).toFloat(); data[i * 8 + 7] = (nz / nl).toFloat()
+        }
+        val idx = ShortArray(stacks * slices * 6)
+        var k = 0
+        for (st in 0 until stacks) for (sl in 0 until slices) {
+            val a = st * (slices + 1) + sl; val b = a + slices + 1
+            idx[k++] = a.toShort(); idx[k++] = b.toShort(); idx[k++] = (b + 1).toShort()
+            idx[k++] = a.toShort(); idx[k++] = (b + 1).toShort(); idx[k++] = (a + 1).toShort()
+        }
+        moonVbo = floatBuf(data)
+        moonIdx = java.nio.ByteBuffer.allocateDirect(idx.size * 2).order(java.nio.ByteOrder.nativeOrder()).asShortBuffer().apply { put(idx); position(0) }
+        moonIdxCount = idx.size
+        android.util.Log.i("GnssApp", "Mėnulio reljefas: $nv viršūnių, išryškinimas ×${MOON_RELIEF_X.toInt()}")
     }
 
     /** Žemės sukimasis: GMST + stebėtojo ilguma; ašis rodo į Polaris (pasvirimas = 90° − platuma). */
@@ -2744,6 +2816,31 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         Matrix.multiplyMM(moonMvp, 0, mvpI, 0, moonMat, 0)
 
         val sun = sunDir()
+        if (moonTex != 0 && moonProg != 0 && moonVbo != null && moonIdx != null) {
+            GLES20.glUseProgram(moonProg)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(moonProg, "uMVP"), 1, false, moonMvp, 0)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(moonProg, "uModel"), 1, false, moonMat, 0)
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(moonProg, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
+            resetAttribs()
+            val lp = GLES20.glGetAttribLocation(moonProg, "aPos")
+            val lu = GLES20.glGetAttribLocation(moonProg, "aUV")
+            val ln = GLES20.glGetAttribLocation(moonProg, "aNormal")
+            GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lu); GLES20.glEnableVertexAttribArray(ln)
+            val vb = moonVbo!!
+            vb.position(0); GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 32, vb)
+            vb.position(3); GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 32, vb)
+            vb.position(5); GLES20.glVertexAttribPointer(ln, 3, GLES20.GL_FLOAT, false, 32, vb)
+            vb.position(0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, moonTex)
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(moonProg, "uTex"), 0)
+            GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+            moonIdx!!.position(0)
+            GLES20.glDrawElements(GLES20.GL_TRIANGLES, moonIdxCount, GLES20.GL_UNSIGNED_SHORT, moonIdx)
+            GLES20.glDisableVertexAttribArray(ln)
+            GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+            return
+        }
         if (moonTex == 0) {
             GLES20.glUseProgram(colorProg)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, moonMvp, 0)
@@ -3341,6 +3438,34 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vec3 n = normalize(vN);
                 float fres = pow(1.0 - max(dot(n, normalize(uEye)), 0.0), 3.5);
                 gl_FragColor = vec4(vec3(0.3, 0.55, 1.0) * fres, fres * 0.9);
+            }
+        """
+        private const val MOON_VS = """
+            attribute vec3 aPos;
+            attribute vec2 aUV;
+            attribute vec3 aNormal;
+            uniform mat4 uMVP;
+            uniform mat4 uModel;
+            varying vec2 vUV;
+            varying vec3 vN;
+            void main() {
+                vUV = aUV;
+                vN = mat3(uModel) * aNormal;
+                gl_Position = uMVP * vec4(aPos, 1.0);
+            }
+        """
+        private const val MOON_FS = """
+            precision mediump float;
+            uniform sampler2D uTex;
+            uniform vec3 uLight;
+            varying vec2 vUV;
+            varying vec3 vN;
+            void main() {
+                vec3 n = normalize(vN);
+                float d = max(dot(n, normalize(uLight)), 0.0);
+                vec3 t = texture2D(uTex, vUV).rgb;
+                // be atmosferos: ryškus terminatorius, silpna Žemės šviesa nakties pusėje
+                gl_FragColor = vec4(t * (0.03 + 1.15 * d), 1.0);
             }
         """
         private const val EARTH_FS = """
@@ -4564,7 +4689,7 @@ class MainActivity : AppCompatActivity() {
         }
         left.addView(cbCmb, LinearLayout.LayoutParams(mw, ww))
         left.addView(TextView(this).apply {
-            text = "CMB map: ESA Planck Collaboration"
+            text = "CMB map: ESA Planck Collaboration · Moon: NASA SVS CGI Moon Kit (LRO LROC, LOLA)"
             textSize = 11f
             alpha = 0.7f
         }, LinearLayout.LayoutParams(mw, ww))

@@ -36,6 +36,18 @@ class Sp3AiubTest {
     }
 
     @Test
+    fun s3XmlListingAndUrls() {
+        val xml = """<?xml version="1.0"?><ListBucketResult><Name>aiub</Name><Prefix>CODE/COD0OPSULT</Prefix>
+            <Contents><Key>CODE/COD0OPSULT_20263120000_02D_05M_ORB.SP3.gz</Key><Size>1</Size></Contents>
+            <Contents><Key>CODE/COD0OPSULT_20263130000_02D_05M_ORB.SP3.gz</Key><Size>1</Size></Contents>
+            <Contents><Key>CODE/COD0OPSULT.ERP</Key></Contents></ListBucketResult>"""
+        assertEquals("COD0OPSULT_20263130000_02D_05M_ORB.SP3.gz", Sp3Aiub.pickFromListing(xml))
+        assertEquals(listOf(Sp3Aiub.BASE, "https://zhw-b.s3.cloud.switch.ch/aiub/?prefix=CODE/COD0OPSULT&max-keys=1000"),
+            Sp3Aiub.listingUrls("https://zhw-b.s3.cloud.switch.ch/aiub/CODE/"))
+        assertEquals(listOf(Sp3Aiub.BASE), Sp3Aiub.listingUrls(Sp3Aiub.BASE))
+    }
+
+    @Test
     fun plainAndGzipLoadTheSame() {
         val gz = sample.readBytes()
         val plain = GZIPInputStream(ByteArrayInputStream(gz)).readBytes()

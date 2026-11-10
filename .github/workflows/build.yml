@@ -32,7 +32,12 @@ jobs:
           echo "--- sąrašo pradžia (60 eil.) ---"; head -60 listing.html; echo "--- SP3 nuorodos ---"
           grep -oE 'href="[^"]*(SP3|sp3)[^"]*"' listing.html | head -40
           grep -oE 'href="[^"]*/"' listing.html | head -40
-          L=$(cat listing.html)
+          echo "--- S3 sąrašas su prefiksu ---"
+          curl -sS -L -m 60 -o s3.xml -w "HTTP %{http_code}\n" "https://zhw-b.s3.cloud.switch.ch/aiub/?prefix=CODE/COD0OPSULT&max-keys=1000" || true
+          head -c 3000 s3.xml; echo
+          echo "--- tiesioginiai failai ---"
+          for f in COD0OPSULT.SP3 COD0OPSULT.SP3.gz; do curl -sS -L -I -m 60 "https://www.aiub.unibe.ch/download/CODE/$f" | grep -iE "^HTTP|content-length|location" | tr -d '\r'; echo "== $f"; done
+          L="$(cat listing.html) $(cat s3.xml)"
           N=$(echo "$L" | grep -oE 'COD0OPSULT\.SP3(\.gz)?' | grep -v '\.gz$' | head -1)
           [ -n "$N" ] || N=$(echo "$L" | grep -oE 'COD0OPSULT_[0-9]{11}_[0-9]{2}[A-Z]_[0-9]{2}[A-Z]_ORB\.SP3(\.gz)?' | sort -u | tail -1)
           echo "AIUB failas: ${N:-nerastas}"

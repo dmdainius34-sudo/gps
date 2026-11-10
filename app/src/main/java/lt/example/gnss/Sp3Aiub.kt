@@ -21,7 +21,7 @@ object Sp3Aiub {
     /** Programos privatus aplankas atsisiųstam failui (be leidimų). */
     fun dir(ctx: Context): File = File(ctx.filesDir, SUBDIR)
 
-    /** Failo vardas iš katalogo sąrašo HTML: pirmenybė COD0OPSULT.SP3, kitaip naujausias datuotas; null – nerasta. */
+    /** Failo vardas iš katalogo sąrašo (HTML arba S3 XML „<Key>CODE/…</Key>“): pirmenybė COD0OPSULT.SP3, kitaip naujausias datuotas. */
     fun pickFromListing(html: String): String? {
         val names = Regex("[A-Za-z0-9_.]+").findAll(html).map { it.value }.toSet()
         val undated = names.filter { UNDATED.matches(it) }
@@ -42,19 +42,64 @@ object Sp3Aiub {
         instanceFollowRedirects = true
     }
 
+    /** Sąrašo adresai: AIUB katalogas (HTML) ir, jei jis peradresuoja į S3 saugyklą, jos XML sąrašas su prefiksu. */
+    fun listingUrls(finalUrl: String?): List<String> {
+        val out = arrayListOf(BASE)
+        if (finalUrl != null && finalUrl != BASE) {
+            // pvz. https://host/aiub/CODE/ -> https://host/aiub/?prefix=CODE/COD0OPSULT (S3 ListObjects)
+            val m = Regex("^(https?://[^/]+/[^/]+/)(.*/)$").find(finalUrl)
+            if (m != null) out.add("${m.groupValues[1]}?prefix=${m.groupValues[2]}COD0OPSULT&max-keys=1000")
+        }
+        return out
+    }
+
+    private class Fetched(val code: Int, val finalUrl: String, val body: String)
+
+    /** GET su peradresavimų sekimu (ir į kitą pagrindinį vardą); grąžina kodą, galutinį URL ir tekstą. */
+    private fun fetchText(url: String): Fetched {
+        var u = url
+        repeat(5) {
+            val c = open(u)
+            c.instanceFollowRedirects = false
+            val code = c.responseCode
+            if (code in 300..399) {
+                val loc = c.getHeaderField("Location") ?: return Fetched(code, u, "")
+                u = URL(URL(u), loc).toString()
+            } else {
+                val body = (if (code == 200) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+                return Fetched(code, u, body)
+            }
+        }
+        return Fetched(310, u, "")
+    }
+
     /** Atsisiunčia (kviesti ne UI gijoje): laikinas failas pervadinamas tik visiškai parsiuntus ir perskaičius antraštę. */
     fun download(target: File): Result {
-        val listing = try {
-            val c = open(BASE)
-            if (c.responseCode != 200) return Result.Fail("sąrašas nepasiekiamas (HTTP ${c.responseCode})")
-            c.inputStream.bufferedReader().use { it.readText() }
+        var name: String? = null
+        var fileBase = BASE
+        try {
+            val first = fetchText(BASE)
+            val urls = listingUrls(first.finalUrl)
+            val bodies = ArrayList<String>()
+            if (first.code == 200) bodies.add(first.body)
+            for (u in urls.drop(1)) { val f = fetchText(u); if (f.code == 200) bodies.add(f.body) }
+            name = bodies.firstNotNullOfOrNull { pickFromListing(it) }
+            if (name == null) {
+                // Sąrašo nėra – bandomas tiesioginis nedatuotas failas
+                for (cand in listOf("COD0OPSULT.SP3", "COD0OPSULT.SP3.gz")) {
+                    val c = open(BASE + cand); c.requestMethod = "HEAD"
+                    if (c.responseCode == 200) { name = cand; break }
+                }
+            }
+            if (first.finalUrl != BASE && first.finalUrl.endsWith("/")) fileBase = first.finalUrl
         } catch (e: UnknownHostException) { return Result.Fail("nėra interneto") }
         catch (e: IOException) { return Result.Fail("nėra interneto (${e.javaClass.simpleName})") }
-        val name = pickFromListing(listing) ?: return Result.Fail("failas nerastas AIUB sąraše")
+        if (name == null) return Result.Fail("failas nerastas AIUB sąraše")
         target.mkdirs()
         val tmp = File(target, "$name.part")
         try {
-            val c = open(BASE + name)
+            var c = open(BASE + name)
+            if (c.responseCode != 200 && fileBase != BASE) c = open(fileBase + name)
             if (c.responseCode != 200) return Result.Fail("failas nerastas (HTTP ${c.responseCode})")
             c.inputStream.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
         } catch (e: IOException) {

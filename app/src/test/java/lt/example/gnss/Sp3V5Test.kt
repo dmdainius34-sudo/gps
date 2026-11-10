@@ -109,9 +109,9 @@ class Sp3V5Test {
     fun kalmanStaticConverges() {
         val sys = listOf('C', 'E', 'G')
         val def = (11L..15L).map { kalmanRun(it, Sp3V5.Kalman(sys)) }
-        val flat = (11L..15L).map { kalmanRun(it, Sp3V5.Kalman(sys, codeBase = 10.0, elevWeight = false)) }
-        println("Kalman (numatytas R): " + def.joinToString("; ") { "MKM %.1f → 3D %.2f, H %.2f".format(Locale.US, it[0], it[1], it[2]) })
-        println("Kalman (R = 10 m vienodas): " + flat.joinToString("; ") { "3D %.2f, H %.2f".format(Locale.US, it[1], it[2]) })
+        val flat = (11L..15L).map { kalmanRun(it, Sp3V5.Kalman(sys, codeBase = 7.0, elevWeight = true)) }
+        println("Kalman (numatytas R, pagal C/N0): " + def.joinToString("; ") { "MKM %.1f → 3D %.2f, H %.2f".format(Locale.US, it[0], it[1], it[2]) })
+        println("Kalman (R su aukščio kampu): " + flat.joinToString("; ") { "3D %.2f, H %.2f".format(Locale.US, it[1], it[2]) })
         val med = def.map { it[1] }.sorted()[2]
         println("Kalman: 5 sėklų galutinės 3D paklaidos mediana %.2f m".format(Locale.US, med))
         assertTrue("3D mediana $med m", med < 2.0)

@@ -2464,6 +2464,81 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     private var earthTex = 0
     private var earthNightTex = 0
+    private var earthMaskTex = 0
+
+    // ---------------- ŽEMĖ SU REALJEFU (GEBCO 2008: sausuma 0–6400 m, vandenynas iki −8000 m) ----------------
+    private var earthReliefProg = 0
+    /** Juostos po ≤ 65535 viršūnių: (x, y, z, u, v, nx, ny, nz) ir short indeksai. */
+    private class ReliefBand(val vbo: FloatBuffer, val idx: java.nio.ShortBuffer, val count: Int)
+    private val earthBands = ArrayList<ReliefBand>()
+    /** Reljefo išryškinimas: Everestas ×30 ≈ 3,8 % spindulio – kalnai matomi, Žemė lieka apvali. */
+    private val EARTH_RELIEF_X = 30.0
+
+    /** assets/earth_relief.bin – 1440×720 int16 LE (m), eilutės nuo šiaurės, stulpeliai nuo −180°. Tinklelis 720×360. */
+    private fun buildEarthRelief() {
+        earthReliefProg = program(EARTH_RELIEF_VS, EARTH_FS)
+        earthBands.clear()
+        val w = 1440; val hgt = 720
+        val hm = try {
+            appCtx.assets.open("earth_relief.bin").use { ins ->
+                val sb = java.nio.ByteBuffer.wrap(ins.readBytes()).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                ShortArray(w * hgt).also { sb.get(it) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("GnssApp", "earth_relief.bin nerastas – Žemė be reljefo"); return
+        }
+        fun height(latDeg: Double, lonDeg: Double): Double {
+            val fx = ((lonDeg + 180.0) * 4.0 - 0.5).let { ((it % w) + w) % w }
+            val fy = ((90.0 - latDeg) * 4.0 - 0.5).coerceIn(0.0, hgt - 1.0)
+            val x0 = fx.toInt(); val y0 = fy.toInt(); val x1 = (x0 + 1) % w; val y1 = (y0 + 1).coerceAtMost(hgt - 1)
+            val ax = fx - x0; val ay = fy - y0
+            fun v(x: Int, y: Int) = hm[y * w + x].toDouble()
+            return (v(x0, y0) * (1 - ax) + v(x1, y0) * ax) * (1 - ay) + (v(x0, y1) * (1 - ax) + v(x1, y1) * ax) * ay
+        }
+        val slices = 720; val stacks = 360; val r0 = 0.25
+        val cols = slices + 1
+        val p = Array((stacks + 1) * cols) { DoubleArray(3) }
+        for (st in 0..stacks) for (sl in 0..slices) {
+            val latD = -90.0 + 180.0 * st / stacks; val lonD = -180.0 + 360.0 * sl / slices
+            val la = Math.toRadians(latD); val lo = Math.toRadians(lonD)
+            val r = r0 * (1.0 + EARTH_RELIEF_X * height(latD, lonD) / 6_371_000.0)
+            val q = p[st * cols + sl]
+            q[0] = r * cos(la) * cos(lo); q[1] = r * cos(la) * sin(lo); q[2] = r * sin(la)
+        }
+        fun vertex(out: FloatArray, o: Int, st: Int, sl: Int) {
+            val i = st * cols + sl
+            val e = p[st * cols + (if (sl == slices) 1 else sl + 1)]; val wv = p[st * cols + (if (sl == 0) slices - 1 else sl - 1)]
+            val n = p[(st + 1).coerceAtMost(stacks) * cols + sl]; val sv = p[(st - 1).coerceAtLeast(0) * cols + sl]
+            val tx = DoubleArray(3) { e[it] - wv[it] }; val ty = DoubleArray(3) { n[it] - sv[it] }
+            var nx = tx[1] * ty[2] - tx[2] * ty[1]; var ny = tx[2] * ty[0] - tx[0] * ty[2]; var nz = tx[0] * ty[1] - tx[1] * ty[0]
+            var nl = kotlin.math.sqrt(nx * nx + ny * ny + nz * nz)
+            if (st == 0 || st == stacks || nl < 1e-12) { nx = p[i][0]; ny = p[i][1]; nz = p[i][2]; nl = kotlin.math.sqrt(nx * nx + ny * ny + nz * nz) }
+            if (nx * p[i][0] + ny * p[i][1] + nz * p[i][2] < 0) { nx = -nx; ny = -ny; nz = -nz }
+            out[o] = p[i][0].toFloat(); out[o + 1] = p[i][1].toFloat(); out[o + 2] = p[i][2].toFloat()
+            out[o + 3] = sl.toFloat() / slices; out[o + 4] = (stacks - st).toFloat() / stacks
+            out[o + 5] = (nx / nl).toFloat(); out[o + 6] = (ny / nl).toFloat(); out[o + 7] = (nz / nl).toFloat()
+        }
+        val rowsPerBand = 60                                     // (60 + 1) × 721 = 43 981 viršūnių < 65 535
+        var st0 = 0
+        while (st0 < stacks) {
+            val st1 = minOf(st0 + rowsPerBand, stacks)
+            val nRows = st1 - st0 + 1
+            val data = FloatArray(nRows * cols * 8)
+            for (a in 0 until nRows) for (sl in 0..slices) vertex(data, (a * cols + sl) * 8, st0 + a, sl)
+            val idx = ShortArray((nRows - 1) * slices * 6)
+            var k = 0
+            for (a in 0 until nRows - 1) for (sl in 0 until slices) {
+                val i0 = a * cols + sl; val i1 = i0 + cols
+                idx[k++] = i0.toShort(); idx[k++] = i1.toShort(); idx[k++] = (i1 + 1).toShort()
+                idx[k++] = i0.toShort(); idx[k++] = (i1 + 1).toShort(); idx[k++] = (i0 + 1).toShort()
+            }
+            val ib = java.nio.ByteBuffer.allocateDirect(idx.size * 2).order(java.nio.ByteOrder.nativeOrder()).asShortBuffer()
+            ib.put(idx); ib.position(0)
+            earthBands.add(ReliefBand(floatBuf(data), ib, idx.size))
+            st0 = st1
+        }
+        android.util.Log.i("GnssApp", "Žemės reljefas: ${earthBands.size} juostos, ${(stacks + 1) * cols} viršūnių, išryškinimas ×${EARTH_RELIEF_X.toInt()}")
+    }
     private var earthProg = 0
     private val earthAxis by lazy { floatBuf(floatArrayOf(0f, 0f, -0.5f, 0f, 0f, 0.5f)) }
     private var earthPos: FloatBuffer? = null
@@ -2478,7 +2553,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val main = Handler(Looper.getMainLooper())
         try {
             appCtx.assets.open("earth.jpg").use { ins ->
-                val bmp = android.graphics.BitmapFactory.decodeStream(ins)
+                var bmp = android.graphics.BitmapFactory.decodeStream(ins)
+                // Didžiausia tekstūra pagal įrenginį (Blue Marble 5400×2700; jei netelpa – sumažinama)
+                val maxTex = IntArray(1).also { GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_SIZE, it, 0) }[0]
+                if (bmp != null && maxTex in 1 until bmp.width) {
+                    val sc = Bitmap.createScaledBitmap(bmp, maxTex, maxTex / 2, true); bmp.recycle(); bmp = sc
+                }
                 if (bmp != null) {
                     earthTex = uploadTexture(bmp)
                     val info = "Žemės tekstūra įkelta: ${bmp.width}x${bmp.height}"
@@ -2492,6 +2572,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             earthTex = 0
             main.post { Toast.makeText(appCtx, "earth.jpg nerastas: app/src/main/assets/earth.jpg", Toast.LENGTH_LONG).show() }
         }
+        earthMaskTex = 0
+        try {
+            appCtx.assets.open("earth_ocean.png").use { ins ->
+                val bmp = android.graphics.BitmapFactory.decodeStream(ins)
+                if (bmp != null) earthMaskTex = uploadTexture(bmp)
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("GnssApp", "earth_ocean.png nerastas – vandenynas pagal spalvą")
+        }
+        buildEarthRelief()
         earthNightTex = 0
         try {
             appCtx.assets.open("earth_night.jpg").use { ins ->
@@ -2641,6 +2731,44 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 0.18f, 0.45f, 0.85f, 1f)
             bindPos(colorProg, earthPos!!)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+        } else if (earthBands.isNotEmpty() && earthReliefProg != 0) {
+            val prog = earthReliefProg
+            GLES20.glUseProgram(prog)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uMVP"), 1, false, earthMvp, 0)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uModel"), 1, false, earthMat, 0)
+            val sun = sunDir()
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uEye"), eyeI[0], eyeI[1], eyeI[2])
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, earthTex)
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(prog, "uTex"), 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (earthNightTex != 0) earthNightTex else earthTex)
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(prog, "uNight"), 1)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (earthMaskTex != 0) earthMaskTex else earthTex)
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(prog, "uMask"), 2)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uHasNight"), if (earthNightTex != 0) 1f else 0f)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uHasMask"), if (earthMaskTex != 0) 1f else 0f)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uWater"), 1f)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            resetAttribs()
+            val lp = GLES20.glGetAttribLocation(prog, "aPos")
+            val lu = GLES20.glGetAttribLocation(prog, "aUV")
+            val ln = GLES20.glGetAttribLocation(prog, "aNormal")
+            GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lu); GLES20.glEnableVertexAttribArray(ln)
+            // Reljefas nėra iškilas – reikia gylio testo (būsena atstatoma)
+            val depthWas = GLES20.glIsEnabled(GLES20.GL_DEPTH_TEST)
+            GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+            for (b in earthBands) {
+                b.vbo.position(0); GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 32, b.vbo)
+                b.vbo.position(3); GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 32, b.vbo)
+                b.vbo.position(5); GLES20.glVertexAttribPointer(ln, 3, GLES20.GL_FLOAT, false, 32, b.vbo)
+                b.vbo.position(0); b.idx.position(0)
+                GLES20.glDrawElements(GLES20.GL_TRIANGLES, b.count, GLES20.GL_UNSIGNED_SHORT, b.idx)
+            }
+            GLES20.glDisableVertexAttribArray(ln)
+            if (!depthWas) GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         } else {
             // 3D apšvietimas: saulės šviesa iš viršaus-dešinės, žemynai matomi tekstūroje
             GLES20.glUseProgram(earthProg)
@@ -3333,9 +3461,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform mat4 uModel;
             varying vec2 vUV;
             varying vec3 vN;
+            varying vec3 vS;
             void main() {
                 vUV = aUV;
                 vN = mat3(uModel) * aPos;
+                vS = vN;
                 gl_Position = uMVP * vec4(aPos, 1.0);
             }
         """
@@ -3486,48 +3616,76 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 gl_FragColor = vec4(t * (0.03 + 1.15 * d), 1.0);
             }
         """
+        private const val EARTH_RELIEF_VS = """
+            attribute vec3 aPos;
+            attribute vec2 aUV;
+            attribute vec3 aNormal;
+            uniform mat4 uMVP;
+            uniform mat4 uModel;
+            varying vec2 vUV;
+            varying vec3 vN;
+            varying vec3 vS;
+            void main() {
+                vUV = aUV;
+                vN = mat3(uModel) * aNormal;      // reljefo normalė – šlaitų šešėliai
+                vS = mat3(uModel) * aPos;         // rutulio normalė – diena/naktis, atmosfera, vandens blizgesys
+                gl_Position = uMVP * vec4(aPos, 1.0);
+            }
+        """
         private const val EARTH_FS = """
             precision mediump float;
             uniform sampler2D uTex;
             uniform sampler2D uNight;
+            uniform sampler2D uMask;
             uniform float uHasNight;
+            uniform float uHasMask;
             uniform float uWater;
             uniform vec3 uLight;
             uniform vec3 uEye;
             varying vec2 vUV;
             varying vec3 vN;
-            float oceanAt(vec2 uv) { return 1.0 - smoothstep(0.08, 0.22, texture2D(uTex, uv).r); }
+            varying vec3 vS;
+            float oceanAt(vec2 uv) {
+                if (uHasMask > 0.5) return step(0.004, texture2D(uMask, uv).r);
+                return 1.0 - smoothstep(0.08, 0.22, texture2D(uTex, uv).r);
+            }
             void main() {
                 vec3 n = normalize(vN);
+                vec3 sN = normalize(vS);
                 vec3 l = normalize(uLight);
                 vec3 v = normalize(uEye);
-                float nl = dot(n, l);
-                float d = max(nl, 0.0);
+                float nl = dot(sN, l);                             // terminatorius – pagal rutulį
+                float d = max(dot(n, l), 0.0);                     // šešėliai – pagal reljefą
                 float soft = smoothstep(-0.12, 0.25, nl);          // švelnus terminatorius
                 vec4 t = texture2D(uTex, vUV);
                 float ocean = oceanAt(vUV) * uWater;
-                // Gylis: kuo toliau nuo kranto (daugiau vandens aplink), tuo giliau
-                float r = 0.012;
-                float deep = 0.0;
-                deep += oceanAt(vUV + vec2( r, 0.0)) + oceanAt(vUV + vec2(-r, 0.0));
-                deep += oceanAt(vUV + vec2(0.0,  r)) + oceanAt(vUV + vec2(0.0, -r));
-                deep += oceanAt(vUV + vec2( r,  r) * 2.0) + oceanAt(vUV + vec2(-r, -r) * 2.0);
-                deep += oceanAt(vUV + vec2( r, -r) * 2.0) + oceanAt(vUV + vec2(-r,  r) * 2.0);
-                deep = smoothstep(0.3, 1.0, deep / 8.0) * ocean;
-                float nv = max(dot(n, v), 0.0);
+                float nv = max(dot(sN, v), 0.0);
                 float fres = pow(1.0 - nv, 3.0);
                 vec3 atm = vec3(0.35, 0.6, 1.0) * fres * 1.1;      // atmosferos kraštas
-                // Permatomas vanduo: sekluma turkio, gelmė beveik juoda mėlyna
-                vec3 shallow = mix(t.rgb, vec3(0.05, 0.32, 0.42), 0.45);
-                vec3 abyss = vec3(0.004, 0.02, 0.07);
-                vec3 water = mix(shallow, abyss, deep);
-                // Šviesa skverbiasi į vandenį ir silpsta su gyliu (įstrižai – ilgesnis kelias)
-                float path = deep * (1.0 + 1.5 * (1.0 - nv));
-                water *= exp(-1.2 * path) * 0.7 + 0.3;
-                vec3 base = mix(t.rgb, water, ocean);
-                // Blizgesys: ryškus Saulės atspindys ir dangaus atspindys pakraščiuose
+                vec3 base;
+                if (uHasMask > 0.5) {
+                    // Blue Marble jau nuspalvina vandenyną pagal gylį; dugno reljefas – iš geometrijos
+                    base = t.rgb;
+                } else {
+                    // Gylis: kuo toliau nuo kranto (daugiau vandens aplink), tuo giliau
+                    float r = 0.012;
+                    float deep = 0.0;
+                    deep += oceanAt(vUV + vec2( r, 0.0)) + oceanAt(vUV + vec2(-r, 0.0));
+                    deep += oceanAt(vUV + vec2(0.0,  r)) + oceanAt(vUV + vec2(0.0, -r));
+                    deep += oceanAt(vUV + vec2( r,  r) * 2.0) + oceanAt(vUV + vec2(-r, -r) * 2.0);
+                    deep += oceanAt(vUV + vec2( r, -r) * 2.0) + oceanAt(vUV + vec2(-r,  r) * 2.0);
+                    deep = smoothstep(0.3, 1.0, deep / 8.0) * ocean;
+                    // Permatomas vanduo: sekluma turkio, gelmė beveik juoda mėlyna
+                    vec3 shallow = mix(t.rgb, vec3(0.05, 0.32, 0.42), 0.45);
+                    vec3 abyss = vec3(0.004, 0.02, 0.07);
+                    vec3 water = mix(shallow, abyss, deep);
+                    float path = deep * (1.0 + 1.5 * (1.0 - nv));
+                    water *= exp(-1.2 * path) * 0.7 + 0.3;
+                    base = mix(t.rgb, water, ocean);
+                }
+                // Blizgesys: ryškus Saulės atspindys ir dangaus atspindys pakraščiuose (lygus vandens paviršius)
                 vec3 h = normalize(l + v);
-                float nh = max(dot(n, h), 0.0);
+                float nh = max(dot(sN, h), 0.0);
                 float spec = (pow(nh, 160.0) * 1.6 + pow(nh, 24.0) * 0.18) * ocean;
                 float wFres = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
                 vec3 sky = vec3(0.35, 0.55, 0.85) * wFres * ocean * soft;
@@ -4736,7 +4894,7 @@ class MainActivity : AppCompatActivity() {
         }
         left.addView(cbCmb, LinearLayout.LayoutParams(mw, ww))
         left.addView(TextView(this).apply {
-            text = "CMB map: ESA Planck Collaboration · Moon: NASA SVS CGI Moon Kit (LRO LROC, LOLA)"
+            text = "CMB map: ESA Planck Collaboration · Moon: NASA SVS CGI Moon Kit (LRO LROC, LOLA) · Earth: NASA Blue Marble, GEBCO"
             textSize = 11f
             alpha = 0.7f
         }, LinearLayout.LayoutParams(mw, ww))

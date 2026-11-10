@@ -1161,7 +1161,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         setEGLContextClientVersion(2)
         setEGLConfigChooser(MsaaConfigChooser())
         preserveEGLContextOnPause = true
-        renderer.cmbOn = calPrefs.getBoolean("cmb_bg", true)
+        renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
     }
@@ -1605,6 +1605,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
         GLES20.glViewport(0, 0, w, h)
         val aspect = if (h == 0) 1f else w.toFloat() / h
+        aspectNow = aspect
         Matrix.perspectiveM(proj, 0, 40f, aspect, 0.1f, 20f)
         // Vaizdo centras pastumtas žemyn, kad viršutinė kupolo dalis tilptų į ekraną
         proj[9] = 0.3f
@@ -1621,7 +1622,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
         val t = (System.nanoTime() - t0) / 1e9f
 
-        // Zoom: kameros atstumas kiekvieną kadrą
+        // Zoom: kameros atstumas kiekvieną kadrą; artima riba mažėja priartinus (kad Žemė nebūtų nukirpta)
+        val near = ((zoom - EARTH_R) * 0.3f).coerceIn(0.003f, 0.1f)
+        Matrix.perspectiveM(proj, 0, 40f, aspectNow, near, 20f)
+        proj[9] = 0.3f
         Matrix.setIdentityM(view, 0)
         Matrix.translateM(view, 0, 0f, 0f, -zoom)
         Matrix.multiplyMM(pv, 0, proj, 0, view, 0)
@@ -1667,7 +1671,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val tint = signalTint(if (used.isNotEmpty()) avgCn0 else null, if (used.isNotEmpty()) peakCn0 else null)
         lastTint = tint
 
-        // CMB fonas (Planck) – didelė sfera pusiaujo (RA/Dec) sistemoje, sukasi kartu su žvaigždėmis
+        // Žvaigždžių fonas – didelė sfera pusiaujo (RA/Dec) sistemoje, sukasi kartu su žvaigždėmis
         drawCmb()
 
         // Dangaus skliauto kupolas (viršutinis ir apatinis) nebepiešiamas
@@ -1736,28 +1740,28 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 
-    // ---------------- CMB FONAS (ESA Planck Collaboration) ----------------
+    // ---------------- ŽVAIGŽDŽIŲ FONAS (vietoj CMB) ----------------
     @Volatile var cmbOn = true
-    @Volatile var cmbAlpha = 0.25f
+    @Volatile var cmbAlpha = 1f
     private var cmbTex = 0
     private var cmbProg = 0
     private val cmbModel = FloatArray(16)
     private val cmbMvp = FloatArray(16)
 
-    /** assets/cmb.jpg – lygiakampė projekcija RA/Dec (u: RA −180°..180°, v: Dec +90°..−90°). */
+    /** assets/stars_bg.jpg – lygiakampė projekcija RA/Dec (u: RA −180°..180°, v: Dec +90°..−90°), perskaičiuota iš galaktinių koordinačių. */
     private fun loadCmb() {
         cmbTex = 0
         cmbProg = program(CMB_VS, CMB_FS)
         try {
-            appCtx.assets.open("cmb.jpg").use { ins ->
+            appCtx.assets.open("stars_bg.jpg").use { ins ->
                 val bmp = android.graphics.BitmapFactory.decodeStream(ins)
                 if (bmp != null) {
                     cmbTex = uploadTexture(bmp)
-                    android.util.Log.i("GnssApp", "CMB tekstūra įkelta: ${bmp.width}x${bmp.height}")
-                } else android.util.Log.w("GnssApp", "cmb.jpg neskaitomas – naudojamas paprastas fonas")
+                    android.util.Log.i("GnssApp", "Žvaigždžių fonas įkeltas: ${bmp.width}x${bmp.height}")
+                } else android.util.Log.w("GnssApp", "stars_bg.jpg neskaitomas – naudojamas paprastas fonas")
             }
         } catch (e: Exception) {
-            android.util.Log.w("GnssApp", "cmb.jpg nerastas (app/src/main/assets/cmb.jpg) – naudojamas paprastas fonas")
+            android.util.Log.w("GnssApp", "stars_bg.jpg nerastas – naudojamas paprastas fonas")
         }
     }
 
@@ -2399,7 +2403,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var bgNow = BG_NEUTRAL
 
     @Volatile var zoom = 3f
-    fun zoomBy(factor: Float) { zoom = (zoom / factor).coerceIn(1.07f, 6f) }
+    /** Priartinimas pagal aukštį virš paviršiaus: arčiausiai ~0,05 vnt. (≈ 1 300 km) – Kreta ~2 cm ekrane. */
+    fun zoomBy(factor: Float) { zoom = EARTH_R + ((zoom - EARTH_R) / factor).coerceIn(0.05f, 5.75f) }
+    private var aspectNow = 1f
 
     @Volatile private var userR = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
     @Volatile private var dragging = false
@@ -3664,8 +3670,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vec3 atm = vec3(0.35, 0.6, 1.0) * fres * 1.1;      // atmosferos kraštas
                 vec3 base;
                 if (uHasMask > 0.5) {
-                    // Blue Marble jau nuspalvina vandenyną pagal gylį; dugno reljefas – iš geometrijos
-                    base = t.rgb;
+                    // Blue Marble jau nuspalvina vandenyną pagal gylį; dugno reljefas – iš geometrijos.
+                    // Gelmės +30 %, seklumos ir povandeniniai kalnagūbriai – dar šviesiau; sausuma +15 %
+                    float m = texture2D(uMask, vUV).r;
+                    float gain = mix(1.75, 1.3, smoothstep(0.05, 0.45, m));
+                    base = t.rgb * mix(1.15, gain, ocean);
                 } else {
                     // Gylis: kuo toliau nuo kranto (daugiau vandens aplink), tuo giliau
                     float r = 0.012;
@@ -3689,7 +3698,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 float spec = (pow(nh, 160.0) * 1.6 + pow(nh, 24.0) * 0.18) * ocean;
                 float wFres = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
                 vec3 sky = vec3(0.35, 0.55, 0.85) * wFres * ocean * soft;
-                vec3 day = base * (0.12 + 0.95 * d * soft) + vec3(1.0, 0.95, 0.85) * spec * soft + sky + atm;
+                // Apšviesta pusė šviesesnė: daugiau išsklaidytos šviesos, šlaitų šešėliai švelnesni
+                float lit = mix(d, max(dot(sN, l), 0.0), 0.35);
+                vec3 day = base * (0.2 + 1.1 * lit * soft) + vec3(1.0, 0.95, 0.85) * spec * soft + sky + atm;
                 // Naktinė pusė: miestų šviesų nuotrauka vietoj šešėlio
                 vec3 night = texture2D(uNight, vUV).rgb * 1.6 + atm * 0.35;
                 float dayW = mix(1.0, smoothstep(-0.18, 0.12, nl), uHasNight);
@@ -4884,17 +4895,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbStableN, LinearLayout.LayoutParams(mw, ww))
-        val cbCmb = CheckBox(this).apply {
-            text = "Fonas: CMB"
-            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("cmb_bg", true)
-            setOnCheckedChangeListener { _, on ->
-                if (::skyDome.isInitialized) skyDome.setCmb(on)
-                else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("cmb_bg", on).apply()
-            }
-        }
-        left.addView(cbCmb, LinearLayout.LayoutParams(mw, ww))
         left.addView(TextView(this).apply {
-            text = "CMB map: ESA Planck Collaboration · Moon: NASA SVS CGI Moon Kit (LRO LROC, LOLA) · Earth: NASA Blue Marble, GEBCO"
+            text = "Moon: NASA SVS CGI Moon Kit (LRO LROC, LOLA) · Earth: NASA Blue Marble, GEBCO"
             textSize = 11f
             alpha = 0.7f
         }, LinearLayout.LayoutParams(mw, ww))

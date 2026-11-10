@@ -209,9 +209,17 @@ object Sp3V5 {
                 }
                 val dof = (rows.size - np).coerceAtLeast(1)
                 val s0 = sqrt(ss / dof)
+                // Normuota liekana: |v|·√w / (σ̂ · √r_ii), r_ii = 1 − w·hᵀ(HᵀWH)⁻¹h (perteklius);
+                // σ̂ – be tikrinamo palydovo (kad klaida nepadidintų savo pačios slenksčio)
                 var worst: SatEp? = null; var nrMax = 0.0
-                if (rows.size > np && s0 > 0) rows.indices.forEach { i ->
-                    val nr = abs(post[i]) * sqrt(rows[i].third) / s0
+                val ninv = if (rows.size >= np + 2) invertNormal(rows.map { it.second }, rows.map { it.third }) else null
+                if (ninv != null) rows.indices.forEach { i ->
+                    val h = rows[i].second; val wi = rows[i].third
+                    var q = 0.0; for (a in 0 until np) for (b in 0 until np) q += h[a] * ninv[a][b] * h[b]
+                    val rii = (1.0 - wi * q).coerceAtLeast(1e-6)
+                    val ssi = ss - wi * post[i] * post[i] / rii
+                    val si = sqrt(ssi.coerceAtLeast(1e-12) / (rows.size - np - 1))
+                    val nr = abs(post[i]) * sqrt(wi) / (si * sqrt(rii))
                     if (nr > nrMax) { nrMax = nr; worst = rows[i].first }
                 }
                 val llh = PositionSolver.ecefToLlh(x[0], x[1], x[2])
@@ -222,6 +230,22 @@ object Sp3V5 {
             lastStep = step
         }
         return null
+    }
+
+    private fun invertNormal(h: List<DoubleArray>, w: List<Double>): Array<DoubleArray>? {
+        val n = h[0].size
+        val a = Array(n) { DoubleArray(2 * n) }
+        for (i in h.indices) for (j in 0 until n) for (k in 0 until n) a[j][k] += w[i] * h[i][j] * h[i][k]
+        for (j in 0 until n) a[j][n + j] = 1.0
+        for (c in 0 until n) {
+            var p = c
+            for (k in c + 1 until n) if (abs(a[k][c]) > abs(a[p][c])) p = k
+            if (abs(a[p][c]) < 1e-18) return null
+            val t = a[c]; a[c] = a[p]; a[p] = t
+            val d = a[c][c]; for (j in 0 until 2 * n) a[c][j] /= d
+            for (k in 0 until n) if (k != c) { val f = a[k][c]; if (f != 0.0) for (j in 0 until 2 * n) a[k][j] -= f * a[c][j] }
+        }
+        return Array(n) { i -> DoubleArray(n) { j -> a[i][n + j] } }
     }
 
     private fun solveNormal(h: List<DoubleArray>, r: List<Double>, w: List<Double>): DoubleArray? {
@@ -246,7 +270,7 @@ object Sp3V5 {
      * Matavimai – glodinti pseudoatstumai (ρ + b_s + T + I) ir Doppler (u·(v_sat − v) + d − ċ_sat).
      * Beveik nejudantis imtuvas: maža greičio proceso triukšmo spektrinė galia. Didelės inovacijos – paleidimas iš naujo.
      */
-    class Kalman(val systems: List<Char>, val qVel: Double = 0.01, val qDrift: Double = 1.0, val qClock: Double = 4.0) {
+    class Kalman(val systems: List<Char>, val qVel: Double = 0.01, val qDrift: Double = 0.1, val qClock: Double = 0.1) {
         val n = 7 + systems.size
         var x = DoubleArray(n); var p = Array(n) { DoubleArray(n) }
         var t = Double.NaN
@@ -307,7 +331,7 @@ object Sp3V5 {
                 val w = weight(l[4], s.cn0)
                 val corr = Sp3Solver.saastamoinen(l[0], l[2], l[4]) + Sp3Solver.klobuchar(l[0], l[1], l[3], l[4], tow)
                 val h = DoubleArray(n); h[0] = dx / rho; h[1] = dy / rho; h[2] = dz / rho; h[7 + si] = 1.0
-                val sig = (3.0 / sqrt(w)).coerceIn(2.0, 60.0)
+                val sig = (6.0 / sqrt(w)).coerceIn(3.0, 60.0)
                 val z = update(h, s.prc - (rho + x[7 + si] + corr), sig * sig, 6.0)
                 total++; if (abs(z) > 6.0) big++
                 if (s.prr != null) {

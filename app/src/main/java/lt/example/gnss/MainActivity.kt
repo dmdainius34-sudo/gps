@@ -1725,7 +1725,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             // Švytėjimas: 0 ties 20 dB-Hz, didžiausias ties 45 dB-Hz
             val glow = ((sat.cn0 - 20f) / 25f).coerceIn(0f, 1f)
             drawLaser(p, pin, sat.cn0, sat.svid, t)
-            drawSatModel(p, col, glow, usedK)
+            drawSatModel(p, col, glow, usedK, sat.const)
             if (sat.cn0 >= 30f) {
                 val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
                 billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
@@ -1981,63 +1981,194 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
     }
 
-    // ---------------- PALYDOVŲ 3D MODELIAI (cilindras + 2 saulės baterijos) ----------------
-    private val satSize = 0.10f            // palydovo dydis (didžiausias matmuo), scenos vnt.
+    // ---------------- PALYDOVŲ 3D MODELIAI (korpusas, sekančios Saulę baterijos, antenos, variklis) ----------------
+    private val satSize = 0.12f            // palydovo dydis (baterijų mojis), scenos vnt.
     private var satProg = 0
     private var satPos: FloatBuffer? = null
     private var satNrm: FloatBuffer? = null
-    private var satBodyN = 0
-    private var satPanelN = 0
     private val satModel = FloatArray(16)
+    private val satWing = FloatArray(16)
     private val satMvp = FloatArray(16)
 
-    /** Modelio koordinatės: korpusas – cilindras išilgai Z, baterijos – plokštės išilgai X (bendras plotis 2,5). */
+    /** Tinklo dalis: pradžia, viršūnių skaičius, medžiaga (MAT_*), ar sukasi su baterijomis. */
+    private class SatPart(val start: Int, val count: Int, val mat: Int, val wing: Boolean)
+    /** Variantai pagal konsteliaciją: 0 GPS, 1 GLONASS, 2 Galileo, 3 BeiDou. */
+    private val satVariants = ArrayList<List<SatPart>>()
+
+    /**
+     * Modelio ašys: X – baterijų ašis, +Y – nuo Žemės, −Y – į Žemę (antenos), Z – skersai.
+     * Baterijų mojis 2,5 vnt. Kiekvienas variantas turi savo korpusą, baterijų sekcijas ir antenų rinkinį.
+     */
     private fun buildSatMesh() {
+        satVariants.clear()
         val pos = ArrayList<Float>(); val nrm = ArrayList<Float>()
+        var parts = ArrayList<SatPart>()
+        var partStart = 0
         fun v(x: Float, y: Float, z: Float, nx: Float, ny: Float, nz: Float) {
             pos.add(x); pos.add(y); pos.add(z); nrm.add(nx); nrm.add(ny); nrm.add(nz)
         }
-        val seg = 16; val r = 0.25f; val hz = 0.4f
-        for (i in 0 until seg) {
-            val a0 = 2.0 * Math.PI * i / seg; val a1 = 2.0 * Math.PI * (i + 1) / seg
-            val c0 = cos(a0).toFloat(); val s0 = sin(a0).toFloat(); val c1 = cos(a1).toFloat(); val s1 = sin(a1).toFloat()
-            // šonas
-            v(r * c0, r * s0, -hz, c0, s0, 0f); v(r * c1, r * s1, -hz, c1, s1, 0f); v(r * c1, r * s1, hz, c1, s1, 0f)
-            v(r * c0, r * s0, -hz, c0, s0, 0f); v(r * c1, r * s1, hz, c1, s1, 0f); v(r * c0, r * s0, hz, c0, s0, 0f)
-            // dangteliai
-            v(0f, 0f, hz, 0f, 0f, 1f); v(r * c0, r * s0, hz, 0f, 0f, 1f); v(r * c1, r * s1, hz, 0f, 0f, 1f)
-            v(0f, 0f, -hz, 0f, 0f, -1f); v(r * c1, r * s1, -hz, 0f, 0f, -1f); v(r * c0, r * s0, -hz, 0f, 0f, -1f)
+        fun end(mat: Int, wing: Boolean = false) {
+            val n = pos.size / 3
+            if (n > partStart) parts.add(SatPart(partStart, n - partStart, mat, wing))
+            partStart = n
         }
-        satBodyN = pos.size / 3
         fun box(x0: Float, y0: Float, z0: Float, x1: Float, y1: Float, z1: Float) {
-            val faces = arrayOf(
-                floatArrayOf(1f, 0f, 0f), floatArrayOf(-1f, 0f, 0f), floatArrayOf(0f, 1f, 0f),
-                floatArrayOf(0f, -1f, 0f), floatArrayOf(0f, 0f, 1f), floatArrayOf(0f, 0f, -1f))
             val lo = floatArrayOf(x0, y0, z0); val hi = floatArrayOf(x1, y1, z1)
-            for (n in faces) {
-                val ax = if (n[0] != 0f) 0 else if (n[1] != 0f) 1 else 2
+            for (ax in 0..2) for (sgn in intArrayOf(1, -1)) {
                 val ua = (ax + 1) % 3; val wa = (ax + 2) % 3
-                val fixed = if (n[ax] > 0) hi[ax] else lo[ax]
+                val n = FloatArray(3); n[ax] = sgn.toFloat()
                 fun corner(uHi: Boolean, wHi: Boolean): FloatArray {
                     val c = FloatArray(3)
-                    c[ax] = fixed; c[ua] = if (uHi) hi[ua] else lo[ua]; c[wa] = if (wHi) hi[wa] else lo[wa]
+                    c[ax] = if (sgn > 0) hi[ax] else lo[ax]; c[ua] = if (uHi) hi[ua] else lo[ua]; c[wa] = if (wHi) hi[wa] else lo[wa]
                     return c
                 }
                 val q = arrayOf(corner(false, false), corner(true, false), corner(true, true), corner(false, true))
                 for (idx in intArrayOf(0, 1, 2, 0, 2, 3)) v(q[idx][0], q[idx][1], q[idx][2], n[0], n[1], n[2])
             }
         }
-        box(-1.25f, -0.02f, -0.2f, -0.3f, 0.02f, 0.2f)    // kairė baterija
-        box(0.3f, -0.02f, -0.2f, 1.25f, 0.02f, 0.2f)      // dešinė baterija
-        box(-0.3f, -0.012f, -0.03f, 0.3f, 0.012f, 0.03f)  // laikiklis per korpusą
-        satPanelN = pos.size / 3 - satBodyN
+        /** Nupjautas kūgis išilgai ašies ax nuo a0 (spindulys r0) iki a1 (r1), centras (cu, cw) kitose ašyse. */
+        fun frustum(ax: Int, cu: Float, cw: Float, a0: Float, r0: Float, a1: Float, r1: Float, seg: Int, cap0: Boolean, cap1: Boolean) {
+            val ua = (ax + 1) % 3; val wa = (ax + 2) % 3
+            fun pt(a: Float, r: Float, c: Float, sn: Float): FloatArray {
+                val o = FloatArray(3); o[ax] = a; o[ua] = cu + r * c; o[wa] = cw + r * sn; return o
+            }
+            val slope = (r0 - r1) / (a1 - a0)
+            val nl = kotlin.math.sqrt(1f + slope * slope)
+            fun nr(c: Float, sn: Float): FloatArray {
+                val o = FloatArray(3); o[ax] = slope / nl; o[ua] = c / nl; o[wa] = sn / nl; return o
+            }
+            for (k in 0 until seg) {
+                val t0 = 2.0 * Math.PI * k / seg; val t1 = 2.0 * Math.PI * (k + 1) / seg
+                val c0 = cos(t0).toFloat(); val s0 = sin(t0).toFloat(); val c1 = cos(t1).toFloat(); val s1 = sin(t1).toFloat()
+                val p00 = pt(a0, r0, c0, s0); val p01 = pt(a0, r0, c1, s1); val p10 = pt(a1, r1, c0, s0); val p11 = pt(a1, r1, c1, s1)
+                val n0 = nr(c0, s0); val n1 = nr(c1, s1)
+                v(p00[0], p00[1], p00[2], n0[0], n0[1], n0[2]); v(p01[0], p01[1], p01[2], n1[0], n1[1], n1[2]); v(p11[0], p11[1], p11[2], n1[0], n1[1], n1[2])
+                v(p00[0], p00[1], p00[2], n0[0], n0[1], n0[2]); v(p11[0], p11[1], p11[2], n1[0], n1[1], n1[2]); v(p10[0], p10[1], p10[2], n0[0], n0[1], n0[2])
+                for ((on, a, r, sg) in listOf(Quad(cap0, a0, r0, -1f), Quad(cap1, a1, r1, 1f))) {
+                    if (!on || r <= 0f) continue
+                    val cn = FloatArray(3); cn[ax] = sg
+                    val cc = pt(a, 0f, 0f, 0f); val e0 = pt(a, r, c0, s0); val e1 = pt(a, r, c1, s1)
+                    v(cc[0], cc[1], cc[2], cn[0], cn[1], cn[2]); v(e0[0], e0[1], e0[2], cn[0], cn[1], cn[2]); v(e1[0], e1[1], e1[2], cn[0], cn[1], cn[2])
+                }
+            }
+        }
+
+        /** Baterijų sparnai: n sekcijų kiekvienoje pusėje nuo x0 iki 1,25; pusplotis hz. Sukasi apie X ašį. */
+        fun wings(x0: Float, n: Int, hz: Float) {
+            val gap = 0.025f
+            val len = (1.25f - x0 - gap * (n - 1)) / n
+            for (side in intArrayOf(-1, 1)) for (k in 0 until n) {
+                val a = x0 + k * (len + gap); val b = a + len
+                if (side > 0) box(a, -0.012f, -hz, b, 0.012f, hz) else box(-b, -0.012f, -hz, -a, 0.012f, hz)
+            }
+            end(MAT_PANEL, wing = true)
+            // rėmeliai, jungtys ir laikiklis (metalas)
+            for (side in intArrayOf(-1, 1)) {
+                for (k in 0 until n) {
+                    val a = x0 + k * (len + gap); val b = a + len
+                    for (zz in floatArrayOf(-hz, hz)) {
+                        if (side > 0) box(a, -0.018f, zz - 0.012f, b, 0.018f, zz + 0.012f) else box(-b, -0.018f, zz - 0.012f, -a, 0.018f, zz + 0.012f)
+                    }
+                    if (k < n - 1) {
+                        if (side > 0) box(b, -0.01f, -hz * 0.6f, b + gap, 0.01f, hz * 0.6f) else box(-b - gap, -0.01f, -hz * 0.6f, -b, 0.01f, hz * 0.6f)
+                    }
+                }
+                // „V“ formos laikiklis nuo korpuso iki pirmos sekcijos
+                val sx = side.toFloat()
+                frustum(0, 0f, 0f, sx * 0.2f, 0.022f, sx * x0, 0.022f, 6, false, false)
+                box(minOf(sx * (x0 - 0.03f), sx * x0), -0.014f, -hz * 0.7f, maxOf(sx * (x0 - 0.03f), sx * x0), 0.014f, hz * 0.7f)
+            }
+            end(MAT_METAL, wing = true)
+        }
+        /** Žemės pusės antenų laukas: centrinis elementas ir žiedas spiralinių antenų (kūgeliai) ant −Y sienos. */
+        fun helixArray(yBase: Float, ringR: Float, count: Int, h: Float) {
+            frustum(1, 0f, 0f, yBase, 0.05f, yBase - h * 1.25f, 0.018f, 8, true, true)
+            for (k in 0 until count) {
+                val t = 2.0 * Math.PI * k / count
+                val cx = (ringR * cos(t)).toFloat(); val cz = (ringR * sin(t)).toFloat()
+                frustum(1, cz, cx, yBase, 0.04f, yBase - h, 0.014f, 6, true, true)
+            }
+            end(MAT_METAL)
+        }
+        /** Parabolinė lėkštė į Žemę: stiebas, lėkštė (atvira į −Y) ir spinduolis. */
+        fun dish(cx: Float, cz: Float, yBase: Float, r: Float) {
+            frustum(1, cz, cx, yBase, 0.02f, yBase - 0.1f, 0.02f, 6, false, false)
+            end(MAT_METAL)
+            frustum(1, cz, cx, yBase - 0.1f, 0.03f, yBase - 0.1f - r * 0.45f, r, 14, true, false)
+            end(MAT_DISH)
+            frustum(1, cz, cx, yBase - 0.1f, 0.012f, yBase - 0.1f - r * 0.6f, 0.012f, 5, false, false)
+            frustum(1, cz, cx, yBase - 0.1f - r * 0.6f, 0.03f, yBase - 0.1f - r * 0.68f, 0.02f, 6, true, true)
+            end(MAT_METAL)
+        }
+        /** Variklio tūta +Y pusėje. */
+        fun nozzle(yBase: Float, r: Float) {
+            frustum(1, 0f, 0f, yBase, r * 0.45f, yBase + r * 1.3f, r, 10, false, false)
+            end(MAT_DARK)
+        }
+        /** Plonos strypinės antenos (TT&C) ant +Y sienos. */
+        fun whips(yBase: Float, d: Float, h: Float) {
+            for (sx in floatArrayOf(-d, d)) for (sz in floatArrayOf(-d, d)) {
+                frustum(1, sz, sx, yBase, 0.012f, yBase + h, 0.006f, 4, false, true)
+            }
+            end(MAT_METAL)
+        }
+        fun finish() { satVariants.add(parts); parts = ArrayList() }
+
+        // 0 – GPS: dėžės formos korpusas, 3 sekcijų baterijos, 12 spiralinių antenų laukas, strypinės antenos, variklis
+        box(-0.2f, -0.3f, -0.2f, 0.2f, 0.3f, 0.2f); end(MAT_BODY)
+        box(-0.215f, -0.31f, -0.215f, 0.215f, -0.27f, 0.215f); box(-0.215f, 0.27f, -0.215f, 0.215f, 0.31f, 0.215f); end(MAT_METAL)
+        wings(0.34f, 3, 0.2f)
+        helixArray(-0.31f, 0.13f, 8, 0.13f)
+        whips(0.31f, 0.15f, 0.22f)
+        nozzle(0.31f, 0.07f)
+        finish()
+
+        // 1 – GLONASS: ilgas cilindrinis korpusas, 2 platesnės sekcijos, tankus antenų laukas, žiediniai apvadai
+        frustum(1, 0f, 0f, -0.36f, 0.19f, 0.36f, 0.19f, 14, true, true); end(MAT_BODY)
+        frustum(1, 0f, 0f, -0.38f, 0.21f, -0.33f, 0.21f, 14, true, true)
+        frustum(1, 0f, 0f, 0.1f, 0.2f, 0.14f, 0.2f, 14, false, false)
+        frustum(1, 0f, 0f, 0.36f, 0.19f, 0.46f, 0.1f, 14, false, true); end(MAT_METAL)
+        wings(0.33f, 2, 0.26f)
+        helixArray(-0.38f, 0.12f, 10, 0.11f)
+        whips(0.4f, 0.07f, 0.2f)
+        finish()
+
+        // 2 – Galileo: kompaktiškas korpusas, 2 ilgos siauros sekcijos, plokščias navigacijos antenos diskas ir SAR lėkštė
+        box(-0.19f, -0.24f, -0.24f, 0.19f, 0.24f, 0.24f); end(MAT_BODY)
+        box(-0.2f, -0.25f, -0.25f, 0.2f, -0.22f, 0.25f); end(MAT_METAL)
+        wings(0.36f, 2, 0.17f)
+        frustum(1, -0.06f, 0f, -0.25f, 0.15f, -0.29f, 0.15f, 16, true, true); end(MAT_DISH)
+        helixArray(-0.29f, 0.09f, 6, 0.07f)
+        // helixArray centruotas (0,0) – diskas pastumtas per Z, kad matytųsi abu
+        dish(0f, 0.15f, -0.25f, 0.1f)
+        whips(0.24f, 0.13f, 0.16f)
+        nozzle(0.24f, 0.055f)
+        finish()
+
+        // 3 – BeiDou: aukštesnis korpusas, 3 sekcijų baterijos, didelė lėkštė ir antenų laukas
+        box(-0.21f, -0.32f, -0.19f, 0.21f, 0.32f, 0.19f); end(MAT_BODY)
+        box(-0.225f, -0.05f, -0.205f, 0.225f, 0.0f, 0.205f); end(MAT_METAL)
+        wings(0.35f, 3, 0.19f)
+        dish(0.0f, 0.0f, -0.32f, 0.17f)
+        frustum(1, 0.13f, 0.12f, -0.32f, 0.035f, -0.42f, 0.012f, 6, true, true)
+        frustum(1, -0.13f, 0.12f, -0.32f, 0.035f, -0.42f, 0.012f, 6, true, true)
+        frustum(1, 0.13f, -0.12f, -0.32f, 0.035f, -0.42f, 0.012f, 6, true, true)
+        frustum(1, -0.13f, -0.12f, -0.32f, 0.035f, -0.42f, 0.012f, 6, true, true); end(MAT_METAL)
+        whips(0.32f, 0.14f, 0.18f)
+        nozzle(0.32f, 0.065f)
+        finish()
+
         satPos = floatBuf(pos.toFloatArray())
         satNrm = floatBuf(nrm.toFloatArray())
     }
 
-    /** Palydovas p (sideralinė erdvė): korpusas – konsteliacijos spalva, švytėjimas pagal C/N0. */
-    private fun drawSatModel(p: FloatArray, col: FloatArray, glow: Float, usedK: Float) {
-        if (satProg == 0 || satPos == null) return
+    private data class Quad(val on: Boolean, val a: Float, val r: Float, val sg: Float)
+
+    private fun satVariant(const: String) = when (const) { "GLO" -> 1; "GAL" -> 2; "BDS" -> 3; else -> 0 }
+
+    /** Palydovas p (sideralinė erdvė): korpusas – konsteliacijos spalvos folija, švytėjimas pagal C/N0, baterijos atsuktos į Saulę. */
+    private fun drawSatModel(p: FloatArray, col: FloatArray, glow: Float, usedK: Float, const: String = "GPS") {
+        if (satProg == 0 || satPos == null || satVariants.isEmpty()) return
         // Orientacija: Y – nuo Žemės centro, X (baterijos) – statmenai poliui
         val pl = kotlin.math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).coerceAtLeast(1e-6f)
         val y = floatArrayOf(p[0] / pl, p[1] / pl, p[2] / pl)
@@ -2050,14 +2181,18 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         java.util.Arrays.fill(satModel, 0f)
         for (i in 0..2) { satModel[i] = x[i] * k; satModel[4 + i] = y[i] * k; satModel[8 + i] = z[i] * k }
         satModel[12] = p[0]; satModel[13] = p[1]; satModel[14] = p[2]; satModel[15] = 1f
-        Matrix.multiplyMM(satMvp, 0, mvpI, 0, satModel, 0)
         val sun = sunDir()
+        val sx = sun[0].toFloat(); val sy = sun[1].toFloat(); val sz = sun[2].toFloat()
+        // Baterijos sukasi apie X ašį, kad plokštumos normalė žiūrėtų į Saulę
+        val sunY = sx * y[0] + sy * y[1] + sz * y[2]; val sunZ = sx * z[0] + sy * z[1] + sz * z[2]
+        val wingDeg = Math.toDegrees(kotlin.math.atan2(sunZ.toDouble(), sunY.toDouble())).toFloat()
+        System.arraycopy(satModel, 0, satWing, 0, 16)
+        Matrix.rotateM(satWing, 0, wingDeg, 1f, 0f, 0f)
 
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
         GLES20.glUseProgram(satProg)
-        setMat(satProg, "uMVP", satMvp)
-        setMat(satProg, "uModel", satModel)
-        setVec3(satProg, "uLight", sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
+        setVec3(satProg, "uLight", sx, sy, sz)
+        setVec3(satProg, "uEye", eyeI[0], eyeI[1], eyeI[2])
         resetAttribs()
         val lp = GLES20.glGetAttribLocation(satProg, "aPos")
         val ln = GLES20.glGetAttribLocation(satProg, "aNormal")
@@ -2065,15 +2200,47 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         satPos!!.position(0); satNrm!!.position(0)
         GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, satPos)
         GLES20.glVertexAttribPointer(ln, 3, GLES20.GL_FLOAT, false, 0, satNrm)
-        val a = 0.5f + 0.5f * usedK
-        // korpusas
-        setVec4(satProg, "uColor", col[0], col[1], col[2], a)
-        setVec3(satProg, "uGlow", col[0] * glow, col[1] * glow, col[2] * glow)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, satBodyN)
-        // saulės baterijos – tamsiai mėlynos, silpnesnis švytėjimas
-        setVec4(satProg, "uColor", 0.12f, 0.2f, 0.45f, a)
-        setVec3(satProg, "uGlow", col[0] * glow * 0.45f, col[1] * glow * 0.45f, col[2] * glow * 0.45f)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, satBodyN, satPanelN)
+        val a = 0.55f + 0.45f * usedK
+        var wingBound = -1
+        for (part in satVariants[satVariant(const)]) {
+            val w = if (part.wing) 1 else 0
+            if (w != wingBound) {
+                val m = if (part.wing) satWing else satModel
+                Matrix.multiplyMM(satMvp, 0, mvpI, 0, m, 0)
+                setMat(satProg, "uMVP", satMvp)
+                setMat(satProg, "uModel", m)
+                wingBound = w
+            }
+            when (part.mat) {
+                MAT_BODY -> {   // auksinė folija su konsteliacijos atspalviu
+                    setVec4(satProg, "uColor", 0.45f * col[0] + 0.5f, 0.45f * col[1] + 0.36f, 0.45f * col[2] + 0.1f, a)
+                    setVec3(satProg, "uGlow", col[0] * glow * 0.55f, col[1] * glow * 0.55f, col[2] * glow * 0.55f)
+                    setVec3(satProg, "uSpec", 1f, 0.85f, 0.5f); setFloat(satProg, "uShine", 18f)
+                }
+                MAT_PANEL -> {  // saulės elementai: tamsiai mėlyni, stiprus atspindys, tinklelis
+                    setVec4(satProg, "uColor", 0.05f, 0.1f, 0.34f, a)
+                    setVec3(satProg, "uGlow", col[0] * glow * 0.22f, col[1] * glow * 0.22f, col[2] * glow * 0.22f)
+                    setVec3(satProg, "uSpec", 0.75f, 0.85f, 1f); setFloat(satProg, "uShine", 60f)
+                }
+                MAT_DISH -> {   // balta antenos lėkštė
+                    setVec4(satProg, "uColor", 0.92f, 0.93f, 0.95f, a)
+                    setVec3(satProg, "uGlow", col[0] * glow * 0.3f, col[1] * glow * 0.3f, col[2] * glow * 0.3f)
+                    setVec3(satProg, "uSpec", 0.4f, 0.4f, 0.4f); setFloat(satProg, "uShine", 12f)
+                }
+                MAT_DARK -> {   // variklio tūta
+                    setVec4(satProg, "uColor", 0.16f, 0.15f, 0.17f, a)
+                    setVec3(satProg, "uGlow", 0f, 0f, 0f)
+                    setVec3(satProg, "uSpec", 0.5f, 0.45f, 0.4f); setFloat(satProg, "uShine", 30f)
+                }
+                else -> {       // metalas: rėmai, laikikliai, antenų elementai (antgaliai švyti pagal signalą)
+                    setVec4(satProg, "uColor", 0.72f, 0.74f, 0.78f, a)
+                    setVec3(satProg, "uGlow", col[0] * glow * 0.4f, col[1] * glow * 0.4f, col[2] * glow * 0.4f)
+                    setVec3(satProg, "uSpec", 1f, 1f, 1f); setFloat(satProg, "uShine", 40f)
+                }
+            }
+            setFloat(satProg, "uPanel", if (part.mat == MAT_PANEL) 1f else 0f)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, part.start, part.count)
+        }
         GLES20.glDisableVertexAttribArray(ln)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
     }
@@ -2950,14 +3117,21 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform float uPoint;
             void main() { gl_Position = uMVP * vec4(aPos, 1.0); gl_PointSize = uPoint; }
         """
+        private const val MAT_BODY = 0
+        private const val MAT_PANEL = 1
+        private const val MAT_METAL = 2
+        private const val MAT_DISH = 3
+        private const val MAT_DARK = 4
         private const val SAT_VS = """
             attribute vec3 aPos;
             attribute vec3 aNormal;
             uniform mat4 uMVP;
             uniform mat4 uModel;
             varying vec3 vN;
+            varying vec3 vP;
             void main() {
                 vN = mat3(uModel) * aNormal;
+                vP = aPos;
                 gl_Position = uMVP * vec4(aPos, 1.0);
             }
         """
@@ -2966,11 +3140,30 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform vec4 uColor;
             uniform vec3 uGlow;
             uniform vec3 uLight;
+            uniform vec3 uEye;
+            uniform vec3 uSpec;
+            uniform float uShine;
+            uniform float uPanel;
             varying vec3 vN;
+            varying vec3 vP;
             void main() {
                 vec3 n = normalize(vN);
-                float d = max(dot(n, normalize(uLight)), 0.0);
-                vec3 c = uColor.rgb * (0.3 + 0.7 * d) + uGlow;
+                vec3 e = normalize(uEye);
+                vec3 l = normalize(uLight);
+                if (dot(n, e) < 0.0) n = -n;                       // dvipusės plokštumos (lėkštė, tūta)
+                float d = max(dot(n, l), 0.0);
+                vec3 base = uColor.rgb;
+                if (uPanel > 0.5) {
+                    // saulės elementų tinklelis: tamsios siūlės ir šviesesnės šynos
+                    vec2 g = abs(fract(vec2(vP.x * 14.0, vP.z * 10.0)) - 0.5);
+                    float seam = smoothstep(0.40, 0.47, max(g.x, g.y));
+                    float bus = smoothstep(0.035, 0.0, abs(fract(vP.z * 5.0) - 0.5));
+                    base = mix(base, vec3(0.01, 0.015, 0.05), seam) + vec3(0.10, 0.12, 0.16) * bus * (1.0 - seam);
+                }
+                vec3 h = normalize(l + e);
+                float sp = pow(max(dot(n, h), 0.0), uShine) * step(0.0, dot(n, l));
+                float rim = pow(1.0 - max(dot(n, e), 0.0), 3.0);
+                vec3 c = base * (0.22 + 0.78 * d) + uSpec * sp * 0.8 + base * rim * 0.35 + uGlow * (0.6 + 0.6 * rim);
                 gl_FragColor = vec4(min(c, vec3(1.0)), uColor.a);
             }
         """

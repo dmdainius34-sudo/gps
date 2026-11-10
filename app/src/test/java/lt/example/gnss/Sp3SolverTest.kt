@@ -187,7 +187,7 @@ class Sp3SolverTest {
         assertTrue(text, text.contains("gnss_fix.csv mediana: 54.7399800, 25.2546600"))
         assertTrue(text, text.contains("v2: mediana 5.00 m, 90 % 9.00 m, maks. 10.00 m; aukščio mediana 110.00 m, skirtumas nuo fikso 10.00 m; sprendinių 10"))
         assertTrue(text, text.contains("v1: mediana 5.00 m"))
-        assertTrue(text, text.contains("iš viso 5; per epochą: 0 1 0 1 0 1 0 1 0 1"))
+        assertTrue(text, text.contains("iš viso 5; epochų su atmestais: 5 iš 10; pasiskirstymas (atmesta→epochų): 0→5, 1→5"))
         assertEquals("nėra", PositionSolver.medianFixHeight(File(dir, "nera.csv"))?.toString() ?: "nėra")
         dir.deleteRecursively()
     }

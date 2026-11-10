@@ -96,7 +96,7 @@ object Sp3Solver {
     }
 
     /** Palydovo q matymo kampai iš imtuvo s (ECEF): platuma, ilguma, aukštis, azimutas, aukščio kampas. */
-    private fun look(s: DoubleArray, q: DoubleArray, rho: Double): DoubleArray {
+    internal fun look(s: DoubleArray, q: DoubleArray, rho: Double): DoubleArray {
         val llh = PositionSolver.ecefToLlh(s[0], s[1], s[2])
         val sLa = sin(llh[0]); val cLa = cos(llh[0]); val sLo = sin(llh[1]); val cLo = cos(llh[1])
         val dx = (q[0] - s[0]) / rho; val dy = (q[1] - s[1]) / rho; val dz = (q[2] - s[2]) / rho
@@ -312,8 +312,15 @@ object Sp3Solver {
         appendLine("v2 poslinkiai: " + offsetText(v2, ref))
         appendLine("v1 poslinkiai: " + offsetText(v1, ref))
         val dropped = v2?.dropped ?: emptyList()
-        appendLine("Atmesta palydovų (< 10°): iš viso ${dropped.sum()}; per epochą: " +
-            if (dropped.isEmpty()) "nėra" else dropped.joinToString(" "))
+        appendLine(maskSummary(dropped))
+    }
+
+    /** Kaukės santrauka: iš viso, epochų su atmestais ir pasiskirstymas „atmesta→epochų“ (vietoj ilgos eilutės). */
+    fun maskSummary(dropped: List<Int>): String {
+        if (dropped.isEmpty()) return "Atmesta palydovų (< 10°): nėra duomenų"
+        val hist = dropped.groupingBy { it }.eachCount().toSortedMap()
+        return "Atmesta palydovų (< 10°): iš viso ${dropped.sum()}; epochų su atmestais: ${dropped.count { it > 0 }} iš ${dropped.size}; " +
+            "pasiskirstymas (atmesta→epochų): " + hist.entries.joinToString(", ") { "${it.key}→${it.value}" }
     }
 
     /** ref – šio įrašo gnss_fix.csv mediana (null – nėra); note – „SP3 failas netinka: …“. */

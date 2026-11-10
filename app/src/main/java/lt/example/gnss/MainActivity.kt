@@ -4658,8 +4658,9 @@ class MainActivity : AppCompatActivity() {
                         val s = sp3TestCsvUri(Sp3Solver.OUT_FILE)
                         val s2 = sp3TestCsvUri(Sp3Solver.OUT_FILE_V2)
                         val s3 = sp3TestCsvUri(Sp3Solver.OUT_FILE_V3)
+                        val s4 = sp3TestCsvUri(Sp3V4.OUT_FILE_V4)
                         val d = solverDiagUri()
-                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; s2?.let { uris.add(it) }; s3?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
+                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; s2?.let { uris.add(it) }; s3?.let { uris.add(it) }; s4?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
                     }.start() }
                 } else send()
             }
@@ -5091,6 +5092,7 @@ class MainActivity : AppCompatActivity() {
         File(cacheDir, Sp3Solver.OUT_FILE).delete()
         File(cacheDir, Sp3Solver.OUT_FILE_V2).delete()
         File(cacheDir, Sp3Solver.OUT_FILE_V3).delete()
+        File(cacheDir, Sp3V4.OUT_FILE_V4).delete()
         // „SP3 TESTAS“ / „SP3 INTERPOLIACIJA“ diagnostikai (skaičiuoklė SP3 nenaudoja)
         val sols = PositionSolver.solveFiles(File(cacheDir, "gnss_raw.csv"), File(cacheDir, "gnss_nav.csv"), out) {
             Sp3Storage.search(this)

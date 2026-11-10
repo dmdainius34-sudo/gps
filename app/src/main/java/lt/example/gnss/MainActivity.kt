@@ -1626,6 +1626,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     fun setSouthUpMode(on: Boolean) { southUp = on }
 
     private var earthTex = 0
+    private var earthNightTex = 0
     private var earthProg = 0
     private val earthAxis by lazy { floatBuf(floatArrayOf(0f, 0f, -0.5f, 0f, 0f, 0.5f)) }
     private var earthPos: FloatBuffer? = null
@@ -1653,6 +1654,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             android.util.Log.e("GnssApp", "earth.jpg nerastas assets aplanke: app/src/main/assets/earth.jpg", e)
             earthTex = 0
             main.post { Toast.makeText(appCtx, "earth.jpg nerastas: app/src/main/assets/earth.jpg", Toast.LENGTH_LONG).show() }
+        }
+        earthNightTex = 0
+        try {
+            appCtx.assets.open("earth_night.jpg").use { ins ->
+                val bmp = android.graphics.BitmapFactory.decodeStream(ins)
+                if (bmp != null) earthNightTex = uploadTexture(bmp)
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("GnssApp", "earth_night.jpg nerastas: naktinė pusė rodoma šešėliu", e)
         }
         moonTex = 0
         try {
@@ -1741,6 +1751,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, earthTex)
             GLES20.glUniform1i(GLES20.glGetUniformLocation(earthProg, "uTex"), 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (earthNightTex != 0) earthNightTex else earthTex)
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(earthProg, "uNight"), 1)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(earthProg, "uHasNight"), if (earthNightTex != 0) 1f else 0f)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
         }
 
@@ -2459,6 +2474,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         private const val EARTH_FS = """
             precision mediump float;
             uniform sampler2D uTex;
+            uniform sampler2D uNight;
+            uniform float uHasNight;
             uniform vec3 uLight;
             uniform vec3 uEye;
             varying vec2 vUV;
@@ -2475,8 +2492,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 float spec = pow(max(dot(n, h), 0.0), 90.0) * ocean * 0.8;
                 float fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
                 vec3 atm = vec3(0.35, 0.6, 1.0) * fres * 1.1;      // atmosferos kraštas
-                vec3 col = t.rgb * (0.12 + 0.95 * d * soft) + vec3(spec) + atm;
-                gl_FragColor = vec4(col, 1.0);
+                vec3 day = t.rgb * (0.12 + 0.95 * d * soft) + vec3(spec) + atm;
+                // Naktinė pusė: vietoj šešėlio – miestų šviesų nuotrauka, sklandžiai susiliejanti ties terminatoriumi
+                vec3 nt = texture2D(uNight, vUV).rgb;
+                vec3 night = nt * 1.6 + atm * 0.35;
+                float dayW = mix(1.0, smoothstep(-0.18, 0.12, dot(n, l)), uHasNight);
+                gl_FragColor = vec4(mix(night, day, dayW), 1.0);
             }
         """
         private const val TEX_VS = """

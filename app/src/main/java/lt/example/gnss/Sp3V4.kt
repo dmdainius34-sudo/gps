@@ -81,10 +81,11 @@ object Sp3V4 {
     /**
      * Hatch filtras: P̄_k = P_k / n + (n−1)/n · (P̄_{k−1} + Φ_k − Φ_{k−1}), n ≤ window.
      * Iš naujo palydovui: nėra fazės / ADR ne VALID / RESET / CYCLE_SLIP, laiko tarpas > maxGap,
-     * arba |(P−Φ) − vid(P−Φ)| > jump.
+     * arba |(P−Φ) − vid(P−Φ)| > riba. Riba – ne mažesnė kaip jump (10 m); kad kodo triukšmas (σ ~ 10 m) nepaleistų
+     * glodinimo iš naujo, ji lygi max(jump, 4σ), kur σ – P−Φ sklaida (pirmose 10 epochų – 3·jump).
      */
     class Hatch(val window: Int = 100, val jump: Double = 10.0, val maxGap: Double = 1.5) {
-        private class St(var n: Int, var sm: Double, var phase: Double, var cmpMean: Double, var t: Double)
+        private class St(var n: Int, var sm: Double, var phase: Double, var cmpMean: Double, var t: Double, var k: Int = 1, var m2: Double = 0.0)
         private val st = HashMap<Int, St>()
         var restarts = 0
             private set
@@ -96,14 +97,20 @@ object Sp3V4 {
             if (!ok) { st.remove(key); return code }
             val s = st[key]
             val cmp = code - phase!!
-            if (s == null || t - s.t > maxGap || abs(cmp - s.cmpMean) > jump) {
+            val sd = if (s != null && s.k > 1) sqrt(s.m2 / (s.k - 1)) else 0.0
+            val limit = if (s == null || s.k < 10) 3 * jump else maxOf(jump, 4 * sd)
+            if (s == null || t - s.t > maxGap || abs(cmp - s.cmpMean) > limit) {
                 if (s != null) restarts++
                 st[key] = St(1, code, phase, cmp, t)
                 return code
             }
             val n = minOf(s.n + 1, window)
             s.sm = code / n + (n - 1.0) / n * (s.sm + (phase - s.phase))
-            s.cmpMean += (cmp - s.cmpMean) / n
+            // P−Φ vidurkis ir sklaida (Welford, visos epochos nuo paleidimo)
+            s.k++
+            val dm = cmp - s.cmpMean
+            s.cmpMean += dm / s.k
+            s.m2 += dm * (cmp - s.cmpMean)
             s.n = n; s.phase = phase; s.t = t
             return s.sm
         }
@@ -286,6 +293,6 @@ object Sp3V4 {
         steps.forEach { appendLine(stats(it, ref, fixH)) }
         appendLine("Filtro atmetimai: TOW neiššifruotas ${rej.noTow}, daugiaspindis ${rej.multipath}, C/N0 < 20 dB-Hz ${rej.lowCn0}; " +
             "be laiko sinchronizacijos (neįtraukta į epochas) – žr. matavimų skyrių")
-        appendLine("Hatch: langas 100 epochų, glodinimo paleidimų iš naujo (šuolis > 10 m / tarpas): ${hatch.restarts}; failas $OUT_FILE_V4")
+        appendLine("Hatch: langas 100 epochų, glodinimo paleidimų iš naujo (šuolis > max(10 m, 4σ) / tarpas > 1,5 s): ${hatch.restarts}; failas $OUT_FILE_V4")
     }
 }

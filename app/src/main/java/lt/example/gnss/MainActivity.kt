@@ -52,6 +52,7 @@ import android.hardware.SensorManager
 import android.location.GnssMeasurement
 import android.location.GnssMeasurementRequest
 import android.location.GnssMeasurementsEvent
+import android.location.GnssNavigationMessage
 import android.location.GnssStatus
 import android.location.Location
 import android.location.LocationListener
@@ -131,24 +132,81 @@ class GeoidGrid(
     @Volatile private var grid: FloatArray? = null
     val isLoaded: Boolean get() = grid != null
 
+    @Synchronized
     fun load(context: Context) {
         if (grid != null) return
+        val t0 = android.os.SystemClock.elapsedRealtime()
         val data = FloatArray(nLat * nLon) { Float.NaN }
-        context.assets.open(assetName).bufferedReader().useLines { lines ->
-            for (line in lines) {
-                val p = line.trim().split(Regex("\\s+"))
-                if (p.size < 3) continue
-                val lat = p[0].toDoubleOrNull() ?: continue
-                val lon = p[1].toDoubleOrNull() ?: continue
-                val n = p[2].toDoubleOrNull() ?: continue
-                val i = ((lat - latMin) / latStep).roundToInt()
-                val j = ((lon - lonMin) / lonStep).roundToInt()
+        // Visas failas nuskaitomas į baitų buferį ir skaičiai išskiriami rankiniu būdu
+        // (be eilučių objektų ir Regex – daug mažiau atminties šiukšlių).
+        val buf = context.assets.open(assetName).use { it.readBytes() }
+        val vals = DoubleArray(3)
+        var points = 0
+        var pos = 0
+        val end = buf.size
+        while (pos < end) {
+            // Vienos eilutės ribos
+            var eol = pos
+            while (eol < end && buf[eol] != '\n'.code.toByte()) eol++
+            var cnt = 0
+            var p = pos
+            while (cnt < 3) {
+                while (p < eol && (buf[p] == ' '.code.toByte() || buf[p] == '\t'.code.toByte() || buf[p] == '\r'.code.toByte())) p++
+                if (p >= eol) break
+                val s = p
+                while (p < eol && buf[p] != ' '.code.toByte() && buf[p] != '\t'.code.toByte() && buf[p] != '\r'.code.toByte()) p++
+                val v = parseNumber(buf, s, p)
+                if (v.isNaN()) break
+                vals[cnt++] = v
+            }
+            if (cnt == 3) {
+                val i = ((vals[0] - latMin) / latStep).roundToInt()
+                val j = ((vals[1] - lonMin) / lonStep).roundToInt()
                 if (i in 0 until nLat && j in 0 until nLon) {
-                    data[i * nLon + j] = n.toFloat()
+                    data[i * nLon + j] = vals[2].toFloat()
+                    points++
                 }
             }
+            pos = eol + 1
         }
         grid = data
+        android.util.Log.i(
+            "Geoid",
+            "$assetName įkeltas per ${android.os.SystemClock.elapsedRealtime() - t0} ms " +
+                "(${buf.size} B, taškų: $points)"
+        )
+    }
+
+    /** Skaičius iš buf[s, e): ženklas, sveikoji ir trupmeninė dalys, nebūtinas eksponentas. NaN – jei ne skaičius. */
+    private fun parseNumber(buf: ByteArray, s: Int, e: Int): Double {
+        var p = s
+        var neg = false
+        if (p < e && (buf[p] == '-'.code.toByte() || buf[p] == '+'.code.toByte())) {
+            neg = buf[p] == '-'.code.toByte(); p++
+        }
+        var mant = 0L
+        var scale = 0
+        var digits = 0
+        while (p < e && buf[p] in '0'.code.toByte()..'9'.code.toByte()) {
+            mant = mant * 10 + (buf[p] - '0'.code.toByte()); p++; digits++
+        }
+        if (p < e && buf[p] == '.'.code.toByte()) {
+            p++
+            while (p < e && buf[p] in '0'.code.toByte()..'9'.code.toByte()) {
+                mant = mant * 10 + (buf[p] - '0'.code.toByte()); p++; digits++; scale++
+            }
+        }
+        if (digits == 0 || digits > 18) return String(buf, s, e - s, Charsets.US_ASCII).toDoubleOrNull() ?: Double.NaN
+        if (p < e && (buf[p] == 'e'.code.toByte() || buf[p] == 'E'.code.toByte())) {
+            return String(buf, s, e - s, Charsets.US_ASCII).toDoubleOrNull() ?: Double.NaN
+        }
+        if (p != e) return Double.NaN
+        val v = mant.toDouble() / POW10[scale]
+        return if (neg) -v else v
+    }
+
+    private companion object {
+        val POW10 = DoubleArray(19).also { a -> a[0] = 1.0; for (k in 1 until a.size) a[k] = a[k - 1] * 10.0 }
     }
 
     fun undulation(lat: Double, lon: Double): Double? {
@@ -196,6 +254,7 @@ object Geoid {
                 gridOf(m).load(context.applicationContext)
                 lastError = null
             } catch (e: Exception) {
+                android.util.Log.e("Geoid", "Nepavyko įkelti ${m.assetFile}", e)
                 lastError = "nepavyko įkelti ${m.assetFile} (turi būti app/src/main/assets/${m.assetFile}). Klaida: ${e.message}"
             }
             onReady()
@@ -1052,12 +1111,39 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     private val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val rotSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+    private val gyroSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+    private val gravSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_GRAVITY)
+        ?: sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
     private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val renderer = GlobeRenderer(context.applicationContext, resources.displayMetrics.density)
     private val handler = Handler(Looper.getMainLooper())
     private val calPrefs = context.getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
     private var offsetDeg = calPrefs.getFloat("offset", 0f)
-    private var declDeg = 0f
+    private var declDeg = calPrefs.getFloat("decl0", 0f)
+
+    // ---- Orientacijos sintezė: giroskopas + gravitacija (komplementarus filtras), magnetometras – tik pradžiai ----
+    /** Stabili šiaurė: po pradinio nustatymo posūkis (yaw) imamas tik iš giroskopo. */
+    var stableNorth = calPrefs.getBoolean("stable_north", true)
+        private set
+    private val fR = DoubleArray(9)          // įrenginys -> pasaulis (ENU), eilutėmis, kaip getRotationMatrixFromVector
+    private var fInit = false
+    private var lastGyroNs = 0L
+    private var gyroSteps = 0
+    private val gUp = DoubleArray(3)         // gravitacijos kryptis įrenginio koordinatėmis (normuota)
+    private var gValid = false
+    private var spikeSinceNs = 0L            // magnetinio šuolio pradžia (ne stabiliame režime)
+    private val tiltK = 0.02                 // 98 % giroskopas, 2 % akselerometras/gravitacija
+    private val yawK = 0.02                  // ne stabiliame režime – lėta yaw korekcija iš rotation vector
+
+    fun setCmb(on: Boolean) {
+        renderer.cmbOn = on
+        calPrefs.edit().putBoolean("cmb_bg", on).apply()
+    }
+
+    fun setStableNorth(on: Boolean) {
+        stableNorth = on
+        calPrefs.edit().putBoolean("stable_north", on).apply()
+    }
     private var running = false
     private var manual = false
     private var lastRaw = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
@@ -1075,6 +1161,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         setEGLContextClientVersion(2)
         setEGLConfigChooser(MsaaConfigChooser())
         preserveEGLContextOnPause = true
+        renderer.cmbOn = calPrefs.getBoolean("cmb_bg", true)
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
     }
@@ -1085,14 +1172,21 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     fun setLocation(lat: Double, lon: Double, alt: Double) {
         renderer.setLocation(lat, lon)
+        // Stabili šiaurė: deklinacija taikoma tik pirmą kartą, vėliau – įrašyta reikšmė
+        if (stableNorth && calPrefs.contains("decl0")) {
+            declDeg = calPrefs.getFloat("decl0", 0f)
+            return
+        }
         declDeg = try {
             GeomagneticField(lat.toFloat(), lon.toFloat(), alt.toFloat(), System.currentTimeMillis()).declination
         } catch (e: Exception) { 0f }
+        if (stableNorth) calPrefs.edit().putFloat("decl0", declDeg).apply()
     }
 
     fun saveNorth() {
         offsetDeg += Math.toDegrees(renderer.northDeltaRad()).toFloat()
-        calPrefs.edit().putFloat("offset", offsetDeg).apply()
+        // Įrašytas kampas ir deklinacija lieka – magnetometras jų nebeatnaujina
+        calPrefs.edit().putFloat("offset", offsetDeg).putFloat("decl0", declDeg).putBoolean("north_saved", true).apply()
         renderer.resetUser()
         manual = false
         handler.removeCallbacks(resumeSensors)
@@ -1100,7 +1194,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     fun resetNorth() {
         offsetDeg = 0f
-        calPrefs.edit().putFloat("offset", 0f).apply()
+        calPrefs.edit().putFloat("offset", 0f).remove("decl0").remove("north_saved").apply()
+        fInit = false          // pradinė kryptis bus vėl paimta iš rotation vector
         renderer.resetUser()
         manual = false
     }
@@ -1109,7 +1204,10 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         if (running) return
         running = true
         onResume()
+        fInit = false; lastGyroNs = 0L; gValid = false
         rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        gyroSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        gravSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
     }
 
     fun stop() {
@@ -1121,8 +1219,137 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-        val raw = FloatArray(9)
-        SensorManager.getRotationMatrixFromVector(raw, event.values)
+        when (event.sensor.type) {
+            Sensor.TYPE_ROTATION_VECTOR -> onRotationVector(event)
+            Sensor.TYPE_GYROSCOPE -> onGyro(event)
+            Sensor.TYPE_GRAVITY, Sensor.TYPE_ACCELEROMETER -> onGravity(event)
+        }
+    }
+
+    private fun onRotationVector(event: SensorEvent) {
+        val rv = FloatArray(9)
+        SensorManager.getRotationMatrixFromVector(rv, event.values)
+        if (gyroSensor == null) {                      // be giroskopo – kaip anksčiau, tiesiai iš rotation vector
+            for (i in 0..8) fR[i] = rv[i].toDouble()
+            fInit = true
+            publish()
+            return
+        }
+        if (!fInit) {                                  // pradinė orientacija (vienintelis kartas, kai naudojamas magnetometras)
+            for (i in 0..8) fR[i] = rv[i].toDouble()
+            fInit = true
+            publish()
+            return
+        }
+        if (stableNorth) return                        // stabili šiaurė: magnetometro nebeklausome
+        // Lėta yaw korekcija; trumpi magnetiniai šuoliai (>20°, trumpiau nei 2 s) ignoruojami
+        // Δ = RV · Rᵀ – pasaulio posūkis nuo filtro iki rotation vector; imame jo dalį apie vertikalę
+        val d = DoubleArray(9)
+        for (i in 0..2) for (j in 0..2) {
+            var sum = 0.0
+            for (k in 0..2) sum += rv[i * 3 + k] * fR[j * 3 + k]
+            d[i * 3 + j] = sum
+        }
+        val yawErr = kotlin.math.atan2(d[3] - d[1], d[0] + d[4])
+        if (kotlin.math.abs(yawErr) > Math.toRadians(20.0)) {
+            if (spikeSinceNs == 0L) spikeSinceNs = event.timestamp
+            if (event.timestamp - spikeSinceNs < 2_000_000_000L) return
+        } else spikeSinceNs = 0L
+        rotWorldZ(yawK * yawErr)
+    }
+
+    private fun onGyro(event: SensorEvent) {
+        val ts = event.timestamp
+        val prev = lastGyroNs
+        lastGyroNs = ts
+        if (!fInit || prev == 0L) return
+        val dt = (ts - prev) / 1e9
+        if (dt <= 0.0 || dt > 0.2) return
+        val wx = event.values[0].toDouble(); val wy = event.values[1].toDouble(); val wz = event.values[2].toDouble()
+        val w = kotlin.math.sqrt(wx * wx + wy * wy + wz * wz)
+        if (w * dt > 1e-9) {
+            // R ← R · exp([ω]·dt) (posūkis įrenginio koordinatėmis)
+            val m = axisAngle(wx / w, wy / w, wz / w, w * dt)
+            val o = DoubleArray(9)
+            for (i in 0..2) for (j in 0..2) {
+                var sum = 0.0
+                for (k in 0..2) sum += fR[i * 3 + k] * m[k * 3 + j]
+                o[i * 3 + j] = sum
+            }
+            o.copyInto(fR)
+        }
+        if (++gyroSteps % 50 == 0) orthonormalize()
+        publish()
+    }
+
+    private fun onGravity(event: SensorEvent) {
+        val x = event.values[0].toDouble(); val y = event.values[1].toDouble(); val z = event.values[2].toDouble()
+        val n = kotlin.math.sqrt(x * x + y * y + z * z)
+        if (n < 1e-3) return
+        if (event.sensor.type == Sensor.TYPE_ACCELEROMETER && gValid) {
+            // akselerometras – žemo dažnio filtras
+            gUp[0] = 0.8 * gUp[0] + 0.2 * x / n; gUp[1] = 0.8 * gUp[1] + 0.2 * y / n; gUp[2] = 0.8 * gUp[2] + 0.2 * z / n
+        } else {
+            gUp[0] = x / n; gUp[1] = y / n; gUp[2] = z / n
+        }
+        gValid = true
+        if (!fInit || gyroSensor == null) return
+        // Pitch/roll korekcija: R·g turi rodyti į pasaulio viršų (0,0,1); posūkis tik apie horizontalią ašį
+        val ux = fR[0] * gUp[0] + fR[1] * gUp[1] + fR[2] * gUp[2]
+        val uy = fR[3] * gUp[0] + fR[4] * gUp[1] + fR[5] * gUp[2]
+        val uz = fR[6] * gUp[0] + fR[7] * gUp[1] + fR[8] * gUp[2]
+        val ax = uy; val ay = -ux                      // u × z
+        val s = kotlin.math.sqrt(ax * ax + ay * ay)
+        if (s < 1e-9) return
+        val ang = kotlin.math.atan2(s, uz)
+        val c = axisAngle(ax / s, ay / s, 0.0, tiltK * ang)
+        val o = DoubleArray(9)
+        for (i in 0..2) for (j in 0..2) {
+            var sum = 0.0
+            for (k in 0..2) sum += c[i * 3 + k] * fR[k * 3 + j]
+            o[i * 3 + j] = sum
+        }
+        o.copyInto(fR)
+    }
+
+    /** Posūkis apie pasaulio vertikalę (tik yaw). */
+    private fun rotWorldZ(a: Double) {
+        val m = axisAngle(0.0, 0.0, 1.0, a)
+        val o = DoubleArray(9)
+        for (i in 0..2) for (j in 0..2) {
+            var sum = 0.0
+            for (k in 0..2) sum += m[i * 3 + k] * fR[k * 3 + j]
+            o[i * 3 + j] = sum
+        }
+        o.copyInto(fR)
+    }
+
+    private fun axisAngle(x: Double, y: Double, z: Double, th: Double): DoubleArray {
+        val c = cos(th); val s = sin(th); val t = 1 - c
+        return doubleArrayOf(
+            t * x * x + c, t * x * y - s * z, t * x * z + s * y,
+            t * x * y + s * z, t * y * y + c, t * y * z - s * x,
+            t * x * z - s * y, t * y * z + s * x, t * z * z + c)
+    }
+
+    /** Gram–Schmidt eilutėms, kad skaitinės paklaidos nesikauptų. */
+    private fun orthonormalize() {
+        fun norm(i: Int) {
+            val l = kotlin.math.sqrt(fR[i] * fR[i] + fR[i + 1] * fR[i + 1] + fR[i + 2] * fR[i + 2]).coerceAtLeast(1e-12)
+            fR[i] /= l; fR[i + 1] /= l; fR[i + 2] /= l
+        }
+        norm(0)
+        val d = fR[0] * fR[3] + fR[1] * fR[4] + fR[2] * fR[5]
+        fR[3] -= d * fR[0]; fR[4] -= d * fR[1]; fR[5] -= d * fR[2]
+        norm(3)
+        fR[6] = fR[1] * fR[5] - fR[2] * fR[4]
+        fR[7] = fR[2] * fR[3] - fR[0] * fR[5]
+        fR[8] = fR[0] * fR[4] - fR[1] * fR[3]
+    }
+
+    /** Filtro orientacija -> ekrano pasukimas -> šiaurės korekcija -> modelis (kaip anksčiau). */
+    private fun publish() {
+        val raw = FloatArray(9) { fR[it].toFloat() }
         val out = FloatArray(9)
         when (wm.defaultDisplay.rotation) {
             Surface.ROTATION_90 -> SensorManager.remapCoordinateSystem(raw, SensorManager.AXIS_Y, SensorManager.AXIS_MINUS_X, out)
@@ -1307,6 +1534,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 (fP[2] + dist * (dx * fE[2] + dy * fN[2] + dz * fU[2])).toFloat())))
         }
         satsI = out
+        recordTrails(out)
     }
 
     private val proj = FloatArray(16)
@@ -1336,6 +1564,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         domeProg = program(DOME_VS, DOME_FS)
         lowProg = program(DOME_VS, LOW_FS)
         colorProg = program(COLOR_VS, COLOR_FS)
+        satProg = program(SAT_VS, SAT_FS)
+        buildSatMesh()
         dotProg = program(COLOR_VS, DOT_FS)
         texProg = program(TEX_VS, TEX_FS)
 
@@ -1350,11 +1580,14 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // GL kontekstas atkuriamas po išėjimo/įėjimo – senos tekstūrų ID nebegalioja, todėl viską perkuriame
         prnTex.clear()
+        monthTex.clear()
         labelTex.clear()
+        wideLabels.clear()
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
         glowProg = 0
         buildEarth()
+        loadCmb()
         starTex = makeStarTexture()
         sunTex = makeSunTexture()
         sunImgTex = 0
@@ -1434,49 +1667,18 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val tint = signalTint(if (used.isNotEmpty()) avgCn0 else null, if (used.isNotEmpty()) peakCn0 else null)
         lastTint = tint
 
-        // 1) Virš horizonto – pulsuojantis GPS kupolas (neįrašo gylio, kad Žemė būtų matoma)
-        GLES20.glDepthMask(false)
-        GLES20.glUseProgram(domeProg)
-        setMat(domeProg, "uMVP", mvp)
-        setVec3(domeProg, "uLight", 0.4f, 0.5f, 0.8f)
-        setVec3(domeProg, "uEye", eye[0], eye[1], eye[2])
-        setFloat(domeProg, "uTime", t)
-        setFloat(domeProg, "uBeat", beat)
-        setVec3(domeProg, "uTint", Color.red(tint) / 255f, Color.green(tint) / 255f, Color.blue(tint) / 255f)
-        bindPos(domeProg, upperBuf!!)
-        GLES20.glEnable(GLES20.GL_CULL_FACE)
-        GLES20.glCullFace(GLES20.GL_FRONT)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, upperN)
-        GLES20.glCullFace(GLES20.GL_BACK)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, upperN)
-        GLES20.glDisable(GLES20.GL_CULL_FACE)
+        // CMB fonas (Planck) – didelė sfera pusiaujo (RA/Dec) sistemoje, sukasi kartu su žvaigždėmis
+        drawCmb()
 
-        // 2) Žemiau horizonto – permatoma struktūra
-        GLES20.glDepthMask(false)
-        GLES20.glUseProgram(lowProg)
-        setMat(lowProg, "uMVP", mvp)
-        setVec3(lowProg, "uEye", eye[0], eye[1], eye[2])
-        setVec4(lowProg, "uColor", 0.35f, 0.4f, 0.5f, 0.14f)
-        bindPos(lowProg, lowerBuf!!)
-        GLES20.glEnable(GLES20.GL_CULL_FACE)
-        GLES20.glCullFace(GLES20.GL_FRONT)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, lowerN)
-        GLES20.glCullFace(GLES20.GL_BACK)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, lowerN)
-        GLES20.glDisable(GLES20.GL_CULL_FACE)
+        // Dangaus skliauto kupolas (viršutinis ir apatinis) nebepiešiamas
         GLES20.glDepthMask(true)
 
         // 2b) Žemė gaublio viduryje (pasvirusi į Polaris, sukasi realiu laiku)
         drawEarth()
         drawEquatorRing(t)
         drawMoon()
+        drawTrails()
 
-
-        // 4) Horizontas – pulsuojantis auksinis žiedas
-        val hzAlpha = 0.7f
-        setVec4(colorProg, "uColor", 0.95f, 0.72f, 0.3f, hzAlpha)
-        bindPos(colorProg, horizonBuf!!)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, horizonN)
 
         // Žymos ir palydovai piešiami be gylio testo (visada matomi priekyje)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
@@ -1495,6 +1697,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // 6) Palydovai: geras signalas žybsi kaip žvaigždės
         System.arraycopy(mvpI, 0, mvp, 0, 16)
 
+        // Žvaigždės, Oriono linijos, dangaus pusiaujas ir ekliptika (I erdvė, tik virš horizonto)
+        drawSky()
+
         // Saulė tikroje dangaus kryptyje nuo stebėtojo (švytintis diskas)
         run {
             val sd = sunDir()
@@ -1508,6 +1713,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 drawSun3D(sp, t)
             }
         }
+        val pin = pinWorld()
         for (si in satsI) {
             val sat = si.sat
             val p = si.pos
@@ -1517,40 +1723,671 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             if (dd < 0f && kotlin.math.sqrt(px2 * px2 + py2 * py2 + pz2 * pz2) < EARTH_R) continue
             val col = constRgb(sat.const)
             val usedK = if (sat.used) 1f else 0.4f
-            val phase = sat.svid * 0.7f
-            when {
-                sat.cn0 >= 45f -> {
-                    // Labai stiprus signalas: greitas žybčiojimas (3× greičiau), ryškesnė žvaigždė
-                    val tw = kotlin.math.sin(t * 3.6f + phase)
-                    val flick = if (kotlin.math.sin(t * 7.2f + phase * 1.7f) > 0.6f) 1.35f else 1f
-                    val size = 0.085f * (1f + 0.3f * tw) * flick
-                    val alpha = ((0.85f + 0.15f * tw) * usedK).coerceAtMost(1f)
-                    billboard(p, eyeI, size * 1.5f, size * 1.5f, starTex, col[0], col[1], col[2], alpha * 0.45f)
-                    billboard(p, eyeI, size, size, starTex, col[0], col[1], col[2], alpha)
-                    billboard(p, eyeI, size * 0.5f, size * 0.5f, starTex, 1f, 1f, 1f, alpha)
-                    val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
-                    billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.95f * usedK)
-                }
-                sat.cn0 >= 30f -> {
-                    // Lėtas pulsavimas, alfa niekada nenukrenta iki nulio – dingsta tik palydovui išeinant
-                    val tw = kotlin.math.sin(t * 1.2f + phase)
-                    val size = 0.075f * (1f + 0.2f * tw)
-                    val alpha = (0.8f + 0.2f * tw) * usedK
-                    billboard(p, eyeI, size, size, starTex, col[0], col[1], col[2], alpha)
-                    billboard(p, eyeI, size * 0.45f, size * 0.45f, starTex, 1f, 1f, 1f, alpha)
-                    val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
-                    billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
-                }
-                sat.cn0 >= 20f -> {
-                    billboard(p, eyeI, 0.05f, 0.05f, starTex, col[0], col[1], col[2], 0.6f * usedK)
-                }
-                else -> {
-                    drawPoint(p, col, 0.3f * usedK, 6f * density)
-                }
+            // Švytėjimas: 0 ties 20 dB-Hz, didžiausias ties 45 dB-Hz
+            val glow = ((sat.cn0 - 20f) / 25f).coerceIn(0f, 1f)
+            drawLaser(p, pin, sat.cn0, sat.svid, t)
+            drawSatModel(p, col, glow, usedK, sat.const)
+            if (sat.cn0 >= 30f) {
+                val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
+                billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
             }
         }
 
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    // ---------------- CMB FONAS (ESA Planck Collaboration) ----------------
+    @Volatile var cmbOn = true
+    @Volatile var cmbAlpha = 0.25f
+    private var cmbTex = 0
+    private var cmbProg = 0
+    private val cmbModel = FloatArray(16)
+    private val cmbMvp = FloatArray(16)
+
+    /** assets/cmb.jpg – lygiakampė projekcija RA/Dec (u: RA −180°..180°, v: Dec +90°..−90°). */
+    private fun loadCmb() {
+        cmbTex = 0
+        cmbProg = program(CMB_VS, CMB_FS)
+        try {
+            appCtx.assets.open("cmb.jpg").use { ins ->
+                val bmp = android.graphics.BitmapFactory.decodeStream(ins)
+                if (bmp != null) {
+                    cmbTex = uploadTexture(bmp)
+                    android.util.Log.i("GnssApp", "CMB tekstūra įkelta: ${bmp.width}x${bmp.height}")
+                } else android.util.Log.w("GnssApp", "cmb.jpg neskaitomas – naudojamas paprastas fonas")
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("GnssApp", "cmb.jpg nerastas (app/src/main/assets/cmb.jpg) – naudojamas paprastas fonas")
+        }
+    }
+
+    /** Sfera R = 50 aplink stebėtoją (fP), ta pati transformacija kaip žvaigždžių (mvpI); atskira projekcija su tolima riba. */
+    private fun drawCmb() {
+        if (!cmbOn || cmbTex == 0 || earthPos == null || earthUv == null) return
+        val inv = FloatArray(16)
+        if (!Matrix.invertM(inv, 0, proj, 0)) return
+        val vm = FloatArray(16)
+        Matrix.multiplyMM(vm, 0, inv, 0, mvpI, 0)                 // vaizdas × sideralinė erdvė
+        val pFar = proj.copyOf()
+        val n = 0.1f; val f = 200f
+        pFar[10] = -(f + n) / (f - n); pFar[14] = -2f * f * n / (f - n)
+        val k = 50f / EARTH_R                                     // Žemės rutulio tinklelis (0,25) -> 50
+        java.util.Arrays.fill(cmbModel, 0f)
+        cmbModel[0] = k; cmbModel[5] = k; cmbModel[10] = k
+        cmbModel[12] = fP[0]; cmbModel[13] = fP[1]; cmbModel[14] = fP[2]; cmbModel[15] = 1f
+        val tmp = FloatArray(16)
+        Matrix.multiplyMM(tmp, 0, vm, 0, cmbModel, 0)
+        Matrix.multiplyMM(cmbMvp, 0, pFar, 0, tmp, 0)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        GLES20.glDepthMask(false)
+        GLES20.glDisable(GLES20.GL_CULL_FACE)
+        GLES20.glUseProgram(cmbProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(cmbProg, "uMVP"), 1, false, cmbMvp, 0)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(cmbProg, "uAlpha"), cmbAlpha)
+        resetAttribs()
+        val lp = GLES20.glGetAttribLocation(cmbProg, "aPos")
+        val lu = GLES20.glGetAttribLocation(cmbProg, "aUV")
+        GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lu)
+        earthPos!!.position(0); earthUv!!.position(0)
+        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, earthPos)
+        GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, earthUv)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cmbTex)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(cmbProg, "uTex"), 0)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+        GLES20.glDisableVertexAttribArray(lu)
+        GLES20.glDepthMask(true)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    // ---------------- ŽVAIGŽDŽIŲ KATALOGAS, PUSIAUJAS, EKLIPTIKA ----------------
+    /** RA (val.), Dec (laipsn.), regimasis ryškis, spalva. J2000. */
+    private class StarCat(val name: String, val raH: Double, val decDeg: Double, val mag: Float, val rgb: FloatArray) {
+        val dir: FloatArray = run {
+            val ra = Math.toRadians(raH * 15.0)
+            val dec = Math.toRadians(decDeg)
+            floatArrayOf((cos(dec) * cos(ra)).toFloat(), (cos(dec) * sin(ra)).toFloat(), sin(dec).toFloat())
+        }
+    }
+
+    // Vienas RA/Dec -> I konvertavimas ir mvpI visiems dangaus objektams.
+    private val starR = 3.0                 // žvaigždės – tolimas fonas
+    private val ringR get() = SUN_DIST      // pusiaujas ir ekliptika – Saulės atstumu, kad Saulė gulėtų ant ekliptikos
+    private var eclCheckMs = 0L
+    private val starCatalog = listOf(
+        StarCat("Polaris", hms(2, 31, 49.0), dms(89, 15, 51.0), 1.98f, floatArrayOf(1f, 0.97f, 0.85f)),
+        StarCat("Betelgeuse", hms(5, 55, 10.3), dms(7, 24, 25.0), 0.50f, floatArrayOf(1f, 0.6f, 0.35f)),
+        StarCat("Bellatrix", hms(5, 25, 7.9), dms(6, 20, 59.0), 1.64f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Mintaka", hms(5, 32, 0.4), -dms(0, 17, 57.0), 2.23f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Alnilam", hms(5, 36, 12.8), -dms(1, 12, 7.0), 1.69f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Alnitak", hms(5, 40, 45.5), -dms(1, 56, 34.0), 1.77f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Saiph", hms(5, 47, 45.4), -dms(9, 40, 11.0), 2.06f, floatArrayOf(0.8f, 0.88f, 1f)),
+        StarCat("Rigel", hms(5, 14, 32.3), -dms(8, 12, 6.0), 0.13f, floatArrayOf(0.75f, 0.85f, 1f)),
+    )
+    private val orionLines = listOf(
+        "Betelgeuse" to "Bellatrix", "Bellatrix" to "Mintaka", "Mintaka" to "Alnilam", "Alnilam" to "Alnitak",
+        "Alnitak" to "Saiph", "Saiph" to "Rigel", "Rigel" to "Mintaka", "Betelgeuse" to "Alnitak")
+
+    private fun hms(h: Int, m: Int, s: Double) = h + m / 60.0 + s / 3600.0
+    private fun dms(d: Int, m: Int, s: Double) = d + m / 60.0 + s / 3600.0
+
+    /** Taškas I erdvėje: fP + dir × r. */
+    private fun skyPt(d: FloatArray, r: Double) = floatArrayOf(
+        (fP[0] + d[0] * r).toFloat(), (fP[1] + d[1] * r).toFloat(), (fP[2] + d[2] * r).toFloat())
+
+    /** Ekliptinė platuma (laipsniais) krypčiai I erdvėje; ekliptikos polius = eclToEq(0, π/2). */
+    private fun eclLatDeg(d: DoubleArray): Double {
+        val pole = eclToEq(0.0, Math.PI / 2)
+        val dot = (d[0] * pole[0] + d[1] * pole[1] + d[2] * pole[2]) /
+            kotlin.math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).coerceAtLeast(1e-12)
+        return Math.toDegrees(kotlin.math.asin(dot.coerceIn(-1.0, 1.0)))
+    }
+
+    /** Kiekvieną kadrą: Saulė turi gulėti ant ekliptikos, Mėnulis – ±5° (5,3° su paklaida). */
+    private fun checkEcliptic() {
+        val sunB = eclLatDeg(sunDir())
+        val moonB = eclLatDeg(moonDir())
+        val ok = kotlin.math.abs(sunB) < 0.05 && kotlin.math.abs(moonB) <= 5.3
+        val now = System.currentTimeMillis()
+        if (!ok && now - eclCheckMs > 10_000L) {
+            eclCheckMs = now
+            android.util.Log.w("GnssApp", "Ekliptikos patikra: Saulė β=%.3f°, Mėnulis β=%.2f°".format(sunB, moonB))
+        }
+    }
+
+    /** Aukštis > 0: taško kryptis nuo stebėtojo (fP) turi teigiamą projekciją į zenitą fU. */
+    private fun aboveHorizon(p: FloatArray): Boolean =
+        (p[0] - fP[0]) * fU[0] + (p[1] - fP[1]) * fU[1] + (p[2] - fP[2]) * fU[2] > 0.0
+
+    /** Segmentai tarp gretimų taškų, abu virš horizonto. */
+    private fun visibleSegments(pts: List<FloatArray>, closed: Boolean): FloatArray {
+        val out = ArrayList<Float>()
+        val n = if (closed) pts.size else pts.size - 1
+        for (i in 0 until n) {
+            val a = pts[i]; val b = pts[(i + 1) % pts.size]
+            if (!aboveHorizon(a) || !aboveHorizon(b)) continue
+            out.add(a[0]); out.add(a[1]); out.add(a[2]); out.add(b[0]); out.add(b[1]); out.add(b[2])
+        }
+        return out.toFloatArray()
+    }
+
+    private fun drawLines(seg: FloatArray, r: Float, g: Float, b: Float, a: Float) {
+        if (seg.isEmpty()) return
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), r, g, b, a)
+        bindPos(colorProg, floatBuf(seg))
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, seg.size / 3)
+    }
+
+    private val wideLabels = HashMap<String, Pair<Int, Float>>()
+
+    /** Teksto tekstūra pagal teksto plotį: (tekstūra, plotis/aukštis). */
+    private fun wideLabel(text: String): Pair<Int, Float> = wideLabels.getOrPut(text) {
+        val h = 64
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); textSize = h * 0.7f; textAlign = Paint.Align.CENTER }
+        val w = (p.measureText(text) + h * 0.4f).toInt().coerceAtLeast(h)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        Canvas(bmp).drawText(text, w / 2f, h * 0.75f, p)
+        uploadTexture(bmp) to (w.toFloat() / h)
+    }
+
+    /** Žiedo pavadinimas – ties labiausiai į kamerą atsuktu matomu žiedo tašku. */
+    private fun ringLabel(pts: List<FloatArray>, text: String, r: Float, g: Float, b: Float) {
+        var best: FloatArray? = null
+        var bestDot = -1e9f
+        for (q in pts) {
+            if (!aboveHorizon(q)) continue
+            val d = q[0] * eyeI[0] + q[1] * eyeI[1] + q[2] * eyeI[2]
+            if (d > bestDot) { bestDot = d; best = q }
+        }
+        val q = best ?: return
+        val (tex, aspect) = wideLabel(text)
+        val h = 0.07f
+        billboard(floatArrayOf(q[0] * 1.04f, q[1] * 1.04f, q[2] * 1.04f), eyeI, h * aspect, h, tex, r, g, b, 0.95f)
+    }
+
+    /** Saulės ekliptinė ilguma (rad) – ta pati formulė kaip sunDir(). */
+    private val monthTex = HashMap<Int, Int>()
+    private val MONTHS_LT = arrayOf("Sau", "Vas", "Kov", "Bal", "Geg", "Bir", "Lie", "Rgp", "Rgs", "Spa", "Lap", "Gru")
+
+    private fun sunEclLon(): Double = sunEclLonAt(jdDays())
+
+    /** Saulės ekliptinė ilguma (rad) dienai d nuo J2000. */
+    private fun sunEclLonAt(d: Double): Double {
+        val m = Math.toRadians(357.5291 + 0.98560028 * d)
+        val c = Math.toRadians(1.9148 * sin(m) + 0.02 * sin(2 * m) + 0.0003 * sin(3 * m))
+        return m + c + Math.toRadians(102.9372) + Math.PI
+    }
+
+    /**
+     * Žemės metinė orbita aplink Saulę geocentriniame vaizde: elipsė ekliptikos plokštumoje (eclToEq, 23,4397°),
+     * centre – Saulė, e = 0,0167, perihelio ilguma 102,9372°. Mastelis parinktas taip, kad Žemė (scenos centras)
+     * šiuo metu gulėtų ant orbitos, o Saulė būtų SUN_DIST atstumu. Piešiama per mvpI.
+     */
+    private fun drawEarthOrbit() {
+        val ecc = 0.0167
+        val peri = Math.toRadians(102.9372)
+        val lEarth = sunEclLon() + Math.PI                  // Žemės heliocentrinė ilguma
+        val rNowUnit = (1 - ecc * ecc) / (1 + ecc * cos(lEarth - peri))
+        val a = SUN_DIST / rNowUnit
+        val sd = sunDir()
+        val sx = fP[0] + sd[0] * SUN_DIST; val sy = fP[1] + sd[1] * SUN_DIST; val sz = fP[2] + sd[2] * SUN_DIST
+        val n = 360
+        val pts = ArrayList<FloatArray>(n)
+        for (i in 0 until n) {
+            val nu = 2.0 * Math.PI * i / n                  // tikroji anomalija
+            val r = a * (1 - ecc * ecc) / (1 + ecc * cos(nu))
+            val d = eclToEq(nu + peri, 0.0)
+            pts.add(floatArrayOf((sx + d[0] * r).toFloat(), (sy + d[1] * r).toFloat(), (sz + d[2] * r).toFloat()))
+        }
+        val seg = FloatArray(n * 6)
+        var k = 0
+        for (i in 0 until n) {
+            val p0 = pts[i]; val p1 = pts[(i + 1) % n]
+            seg[k++] = p0[0]; seg[k++] = p0[1]; seg[k++] = p0[2]; seg[k++] = p1[0]; seg[k++] = p1[1]; seg[k++] = p1[2]
+        }
+        // Mėnesių žymės: Žemės vieta orbitoje kiekvieno mėnesio 1 d. (brūkšnelis skersai orbitos ir pavadinimas)
+        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+        val year = cal.get(java.util.Calendar.YEAR); val monthNow = cal.get(java.util.Calendar.MONTH)
+        val ticks = FloatArray(12 * 6)
+        val labels = ArrayList<Pair<FloatArray, Int>>(12)
+        for (mo in 0 until 12) {
+            cal.clear(); cal.set(year, mo, 1, 0, 0, 0)
+            val dJ = cal.timeInMillis / 86400000.0 + 2440587.5 - 2451545.0
+            val lon = sunEclLonAt(dJ) + Math.PI                 // Žemės heliocentrinė ilguma mėnesio 1 d.
+            val r = a * (1 - ecc * ecc) / (1 + ecc * cos(lon - peri))
+            val d = eclToEq(lon, 0.0)
+            fun at(k: Double) = floatArrayOf((sx + d[0] * r * k).toFloat(), (sy + d[1] * r * k).toFloat(), (sz + d[2] * r * k).toFloat())
+            val p0 = at(0.975); val p1 = at(1.025)
+            System.arraycopy(p0, 0, ticks, mo * 6, 3); System.arraycopy(p1, 0, ticks, mo * 6 + 3, 3)
+            labels.add(at(1.07) to mo)
+        }
+        // Su gylio testu: Žemės rutulys uždengia orbitos dalį, einančią per jį ir už jo
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        drawLines(seg, 1f, 0.82f, 0.3f, 0.75f)
+        drawLines(ticks, 1f, 0.9f, 0.5f, 0.95f)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        for ((p, mo) in labels) {
+            val tex = monthTex.getOrPut(mo) { makeTexture(MONTHS_LT[mo], 0xFFFFFFFF.toInt(), 64) }
+            // einamasis mėnuo (Žemė dabar tarp šios ir kitos žymės) – ryškesnis
+            val cur = mo == monthNow
+            billboard(p, eyeI, if (cur) 0.2f else 0.16f, if (cur) 0.1f else 0.08f, tex, 1f, if (cur) 1f else 0.85f, if (cur) 1f else 0.45f, if (cur) 1f else 0.8f)
+        }
+    }
+
+    private fun drawSky() {
+        checkEcliptic()
+        // Žemės orbita aplink Saulę (dangaus pusiaujo žiedas pašalintas)
+        GLES20.glLineWidth(1.5f * density)
+        drawEarthOrbit()
+
+        // Oriono linijos
+        val pos = HashMap<String, FloatArray>()
+        for (st in starCatalog) pos[st.name] = skyPt(st.dir, starR)
+        // Po horizontu – blankiai (orientacijai), virš – ryškiai
+        val seg = ArrayList<Float>()
+        val segDim = ArrayList<Float>()
+        for ((a, b) in orionLines) {
+            val pa = pos[a] ?: continue; val pb = pos[b] ?: continue
+            val dst = if (aboveHorizon(pa) && aboveHorizon(pb)) seg else segDim
+            dst.add(pa[0]); dst.add(pa[1]); dst.add(pa[2]); dst.add(pb[0]); dst.add(pb[1]); dst.add(pb[2])
+        }
+        drawLines(segDim.toFloatArray(), 0.7f, 0.8f, 1f, 0.15f)
+        drawLines(seg.toFloatArray(), 0.7f, 0.8f, 1f, 0.5f)
+        GLES20.glLineWidth(1f)
+
+        // Žvaigždės: dydis ir ryškumas pagal regimąjį ryškį (mažesnis – ryškesnė)
+        if (starTex == 0) return
+        for (st in starCatalog) {
+            val p = pos[st.name]!!
+            val above = aboveHorizon(p)
+            val k = ((2.5f - st.mag) / 2.4f).coerceIn(0f, 1f)          // 0..1
+            val size = (0.035f + 0.05f * k) * (if (above) 1f else 0.7f) * (starR / 1.5).toFloat()   // toliau – didesnės, kad regimas dydis nesikeistų
+            val alpha = (0.55f + 0.45f * k) * (if (above) 1f else 0.3f)   // po horizontu – blanki
+            billboard(p, eyeI, size, size, starTex, st.rgb[0], st.rgb[1], st.rgb[2], alpha)
+            billboard(p, eyeI, size * 0.45f, size * 0.45f, starTex, 1f, 1f, 1f, alpha)
+        }
+    }
+
+    // ---------------- PALYDOVŲ 3D MODELIAI (korpusas, sekančios Saulę baterijos, antenos, variklis) ----------------
+    private val satSize = 0.12f            // palydovo dydis (baterijų mojis), scenos vnt.
+    private var satProg = 0
+    private var satPos: FloatBuffer? = null
+    private var satNrm: FloatBuffer? = null
+    private val satModel = FloatArray(16)
+    private val satWing = FloatArray(16)
+    private val satMvp = FloatArray(16)
+
+    /** Tinklo dalis: pradžia, viršūnių skaičius, medžiaga (MAT_*), ar sukasi su baterijomis. */
+    private class SatPart(val start: Int, val count: Int, val mat: Int, val wing: Boolean)
+    /** Variantai pagal konsteliaciją: 0 GPS, 1 GLONASS, 2 Galileo, 3 BeiDou. */
+    private val satVariants = ArrayList<List<SatPart>>()
+
+    /**
+     * Modelio ašys: X – baterijų ašis, +Y – nuo Žemės, −Y – į Žemę (antenos), Z – skersai.
+     * Baterijų mojis 2,5 vnt. Kiekvienas variantas turi savo korpusą, baterijų sekcijas ir antenų rinkinį.
+     */
+    private fun buildSatMesh() {
+        satVariants.clear()
+        val pos = ArrayList<Float>(); val nrm = ArrayList<Float>()
+        var parts = ArrayList<SatPart>()
+        var partStart = 0
+        fun v(x: Float, y: Float, z: Float, nx: Float, ny: Float, nz: Float) {
+            pos.add(x); pos.add(y); pos.add(z); nrm.add(nx); nrm.add(ny); nrm.add(nz)
+        }
+        fun end(mat: Int, wing: Boolean = false) {
+            val n = pos.size / 3
+            if (n > partStart) parts.add(SatPart(partStart, n - partStart, mat, wing))
+            partStart = n
+        }
+        fun box(x0: Float, y0: Float, z0: Float, x1: Float, y1: Float, z1: Float) {
+            val lo = floatArrayOf(x0, y0, z0); val hi = floatArrayOf(x1, y1, z1)
+            for (ax in 0..2) for (sgn in intArrayOf(1, -1)) {
+                val ua = (ax + 1) % 3; val wa = (ax + 2) % 3
+                val n = FloatArray(3); n[ax] = sgn.toFloat()
+                fun corner(uHi: Boolean, wHi: Boolean): FloatArray {
+                    val c = FloatArray(3)
+                    c[ax] = if (sgn > 0) hi[ax] else lo[ax]; c[ua] = if (uHi) hi[ua] else lo[ua]; c[wa] = if (wHi) hi[wa] else lo[wa]
+                    return c
+                }
+                val q = arrayOf(corner(false, false), corner(true, false), corner(true, true), corner(false, true))
+                for (idx in intArrayOf(0, 1, 2, 0, 2, 3)) v(q[idx][0], q[idx][1], q[idx][2], n[0], n[1], n[2])
+            }
+        }
+        /** Nupjautas kūgis išilgai ašies ax nuo a0 (spindulys r0) iki a1 (r1), centras (cu, cw) kitose ašyse. */
+        fun frustum(ax: Int, cu: Float, cw: Float, a0: Float, r0: Float, a1: Float, r1: Float, seg: Int, cap0: Boolean, cap1: Boolean) {
+            val ua = (ax + 1) % 3; val wa = (ax + 2) % 3
+            fun pt(a: Float, r: Float, c: Float, sn: Float): FloatArray {
+                val o = FloatArray(3); o[ax] = a; o[ua] = cu + r * c; o[wa] = cw + r * sn; return o
+            }
+            val slope = (r0 - r1) / (a1 - a0)
+            val nl = kotlin.math.sqrt(1f + slope * slope)
+            fun nr(c: Float, sn: Float): FloatArray {
+                val o = FloatArray(3); o[ax] = slope / nl; o[ua] = c / nl; o[wa] = sn / nl; return o
+            }
+            for (k in 0 until seg) {
+                val t0 = 2.0 * Math.PI * k / seg; val t1 = 2.0 * Math.PI * (k + 1) / seg
+                val c0 = cos(t0).toFloat(); val s0 = sin(t0).toFloat(); val c1 = cos(t1).toFloat(); val s1 = sin(t1).toFloat()
+                val p00 = pt(a0, r0, c0, s0); val p01 = pt(a0, r0, c1, s1); val p10 = pt(a1, r1, c0, s0); val p11 = pt(a1, r1, c1, s1)
+                val n0 = nr(c0, s0); val n1 = nr(c1, s1)
+                v(p00[0], p00[1], p00[2], n0[0], n0[1], n0[2]); v(p01[0], p01[1], p01[2], n1[0], n1[1], n1[2]); v(p11[0], p11[1], p11[2], n1[0], n1[1], n1[2])
+                v(p00[0], p00[1], p00[2], n0[0], n0[1], n0[2]); v(p11[0], p11[1], p11[2], n1[0], n1[1], n1[2]); v(p10[0], p10[1], p10[2], n0[0], n0[1], n0[2])
+                for ((on, a, r, sg) in listOf(Quad(cap0, a0, r0, -1f), Quad(cap1, a1, r1, 1f))) {
+                    if (!on || r <= 0f) continue
+                    val cn = FloatArray(3); cn[ax] = sg
+                    val cc = pt(a, 0f, 0f, 0f); val e0 = pt(a, r, c0, s0); val e1 = pt(a, r, c1, s1)
+                    v(cc[0], cc[1], cc[2], cn[0], cn[1], cn[2]); v(e0[0], e0[1], e0[2], cn[0], cn[1], cn[2]); v(e1[0], e1[1], e1[2], cn[0], cn[1], cn[2])
+                }
+            }
+        }
+
+        /** Baterijų sparnai: n sekcijų kiekvienoje pusėje nuo x0 iki 1,25; pusplotis hz. Sukasi apie X ašį. */
+        fun wings(x0: Float, n: Int, hz: Float) {
+            val gap = 0.025f
+            val len = (1.25f - x0 - gap * (n - 1)) / n
+            for (side in intArrayOf(-1, 1)) for (k in 0 until n) {
+                val a = x0 + k * (len + gap); val b = a + len
+                if (side > 0) box(a, -0.012f, -hz, b, 0.012f, hz) else box(-b, -0.012f, -hz, -a, 0.012f, hz)
+            }
+            end(MAT_PANEL, wing = true)
+            // rėmeliai, jungtys ir laikiklis (metalas)
+            for (side in intArrayOf(-1, 1)) {
+                for (k in 0 until n) {
+                    val a = x0 + k * (len + gap); val b = a + len
+                    for (zz in floatArrayOf(-hz, hz)) {
+                        if (side > 0) box(a, -0.018f, zz - 0.012f, b, 0.018f, zz + 0.012f) else box(-b, -0.018f, zz - 0.012f, -a, 0.018f, zz + 0.012f)
+                    }
+                    if (k < n - 1) {
+                        if (side > 0) box(b, -0.01f, -hz * 0.6f, b + gap, 0.01f, hz * 0.6f) else box(-b - gap, -0.01f, -hz * 0.6f, -b, 0.01f, hz * 0.6f)
+                    }
+                }
+                // „V“ formos laikiklis nuo korpuso iki pirmos sekcijos
+                val sx = side.toFloat()
+                frustum(0, 0f, 0f, sx * 0.2f, 0.022f, sx * x0, 0.022f, 6, false, false)
+                box(minOf(sx * (x0 - 0.03f), sx * x0), -0.014f, -hz * 0.7f, maxOf(sx * (x0 - 0.03f), sx * x0), 0.014f, hz * 0.7f)
+            }
+            end(MAT_METAL, wing = true)
+        }
+        /** Žemės pusės antenų laukas: centrinis elementas ir žiedas spiralinių antenų (kūgeliai) ant −Y sienos. */
+        fun helixArray(yBase: Float, ringR: Float, count: Int, h: Float) {
+            frustum(1, 0f, 0f, yBase, 0.05f, yBase - h * 1.25f, 0.018f, 8, true, true)
+            for (k in 0 until count) {
+                val t = 2.0 * Math.PI * k / count
+                val cx = (ringR * cos(t)).toFloat(); val cz = (ringR * sin(t)).toFloat()
+                frustum(1, cz, cx, yBase, 0.04f, yBase - h, 0.014f, 6, true, true)
+            }
+            end(MAT_METAL)
+        }
+        /** Parabolinė lėkštė į Žemę: stiebas, lėkštė (atvira į −Y) ir spinduolis. */
+        fun dish(cx: Float, cz: Float, yBase: Float, r: Float) {
+            frustum(1, cz, cx, yBase, 0.02f, yBase - 0.1f, 0.02f, 6, false, false)
+            end(MAT_METAL)
+            frustum(1, cz, cx, yBase - 0.1f, 0.03f, yBase - 0.1f - r * 0.45f, r, 14, true, false)
+            end(MAT_DISH)
+            frustum(1, cz, cx, yBase - 0.1f, 0.012f, yBase - 0.1f - r * 0.6f, 0.012f, 5, false, false)
+            frustum(1, cz, cx, yBase - 0.1f - r * 0.6f, 0.03f, yBase - 0.1f - r * 0.68f, 0.02f, 6, true, true)
+            end(MAT_METAL)
+        }
+        /** Variklio tūta +Y pusėje. */
+        fun nozzle(yBase: Float, r: Float) {
+            frustum(1, 0f, 0f, yBase, r * 0.45f, yBase + r * 1.3f, r, 10, false, false)
+            end(MAT_DARK)
+        }
+        /** Plonos strypinės antenos (TT&C) ant +Y sienos. */
+        fun whips(yBase: Float, d: Float, h: Float) {
+            for (sx in floatArrayOf(-d, d)) for (sz in floatArrayOf(-d, d)) {
+                frustum(1, sz, sx, yBase, 0.012f, yBase + h, 0.006f, 4, false, true)
+            }
+            end(MAT_METAL)
+        }
+        fun finish() { satVariants.add(parts); parts = ArrayList() }
+
+        // 0 – GPS: dėžės formos korpusas, 3 sekcijų baterijos, 12 spiralinių antenų laukas, strypinės antenos, variklis
+        box(-0.2f, -0.3f, -0.2f, 0.2f, 0.3f, 0.2f); end(MAT_BODY)
+        box(-0.215f, -0.31f, -0.215f, 0.215f, -0.27f, 0.215f); box(-0.215f, 0.27f, -0.215f, 0.215f, 0.31f, 0.215f); end(MAT_METAL)
+        wings(0.34f, 3, 0.2f)
+        helixArray(-0.31f, 0.13f, 8, 0.13f)
+        whips(0.31f, 0.15f, 0.22f)
+        nozzle(0.31f, 0.07f)
+        finish()
+
+        // 1 – GLONASS: ilgas cilindrinis korpusas, 2 platesnės sekcijos, tankus antenų laukas, žiediniai apvadai
+        frustum(1, 0f, 0f, -0.36f, 0.19f, 0.36f, 0.19f, 14, true, true); end(MAT_BODY)
+        frustum(1, 0f, 0f, -0.38f, 0.21f, -0.33f, 0.21f, 14, true, true)
+        frustum(1, 0f, 0f, 0.1f, 0.2f, 0.14f, 0.2f, 14, false, false)
+        frustum(1, 0f, 0f, 0.36f, 0.19f, 0.46f, 0.1f, 14, false, true); end(MAT_METAL)
+        wings(0.33f, 2, 0.26f)
+        helixArray(-0.38f, 0.12f, 10, 0.11f)
+        whips(0.4f, 0.07f, 0.2f)
+        finish()
+
+        // 2 – Galileo: kompaktiškas korpusas, 2 ilgos siauros sekcijos, plokščias navigacijos antenos diskas ir SAR lėkštė
+        box(-0.19f, -0.24f, -0.24f, 0.19f, 0.24f, 0.24f); end(MAT_BODY)
+        box(-0.2f, -0.25f, -0.25f, 0.2f, -0.22f, 0.25f); end(MAT_METAL)
+        wings(0.36f, 2, 0.17f)
+        frustum(1, -0.06f, 0f, -0.25f, 0.15f, -0.29f, 0.15f, 16, true, true); end(MAT_DISH)
+        helixArray(-0.29f, 0.09f, 6, 0.07f)
+        // helixArray centruotas (0,0) – diskas pastumtas per Z, kad matytųsi abu
+        dish(0f, 0.15f, -0.25f, 0.1f)
+        whips(0.24f, 0.13f, 0.16f)
+        nozzle(0.24f, 0.055f)
+        finish()
+
+        // 3 – BeiDou: aukštesnis korpusas, 3 sekcijų baterijos, didelė lėkštė ir antenų laukas
+        box(-0.21f, -0.32f, -0.19f, 0.21f, 0.32f, 0.19f); end(MAT_BODY)
+        box(-0.225f, -0.05f, -0.205f, 0.225f, 0.0f, 0.205f); end(MAT_METAL)
+        wings(0.35f, 3, 0.19f)
+        dish(0.0f, 0.0f, -0.32f, 0.17f)
+        frustum(1, 0.13f, 0.12f, -0.32f, 0.035f, -0.42f, 0.012f, 6, true, true)
+        frustum(1, -0.13f, 0.12f, -0.32f, 0.035f, -0.42f, 0.012f, 6, true, true)
+        frustum(1, 0.13f, -0.12f, -0.32f, 0.035f, -0.42f, 0.012f, 6, true, true)
+        frustum(1, -0.13f, -0.12f, -0.32f, 0.035f, -0.42f, 0.012f, 6, true, true); end(MAT_METAL)
+        whips(0.32f, 0.14f, 0.18f)
+        nozzle(0.32f, 0.065f)
+        finish()
+
+        satPos = floatBuf(pos.toFloatArray())
+        satNrm = floatBuf(nrm.toFloatArray())
+    }
+
+    private data class Quad(val on: Boolean, val a: Float, val r: Float, val sg: Float)
+
+    private fun satVariant(const: String) = when (const) { "GLO" -> 1; "GAL" -> 2; "BDS" -> 3; else -> 0 }
+
+    /** Palydovas p (sideralinė erdvė): korpusas – konsteliacijos spalvos folija, švytėjimas pagal C/N0, baterijos atsuktos į Saulę. */
+    private fun drawSatModel(p: FloatArray, col: FloatArray, glow: Float, usedK: Float, const: String = "GPS") {
+        if (satProg == 0 || satPos == null || satVariants.isEmpty()) return
+        // Orientacija: Y – nuo Žemės centro, X (baterijos) – statmenai poliui
+        val pl = kotlin.math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).coerceAtLeast(1e-6f)
+        val y = floatArrayOf(p[0] / pl, p[1] / pl, p[2] / pl)
+        var x = floatArrayOf(-y[1], y[0], 0f)
+        var xl = kotlin.math.sqrt(x[0] * x[0] + x[1] * x[1])
+        if (xl < 1e-4f) { x = floatArrayOf(1f, 0f, 0f); xl = 1f }
+        x = floatArrayOf(x[0] / xl, x[1] / xl, 0f)
+        val z = floatArrayOf(x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0])
+        val k = satSize / 2.5f
+        java.util.Arrays.fill(satModel, 0f)
+        for (i in 0..2) { satModel[i] = x[i] * k; satModel[4 + i] = y[i] * k; satModel[8 + i] = z[i] * k }
+        satModel[12] = p[0]; satModel[13] = p[1]; satModel[14] = p[2]; satModel[15] = 1f
+        val sun = sunDir()
+        val sx = sun[0].toFloat(); val sy = sun[1].toFloat(); val sz = sun[2].toFloat()
+        // Baterijos sukasi apie X ašį, kad plokštumos normalė žiūrėtų į Saulę
+        val sunY = sx * y[0] + sy * y[1] + sz * y[2]; val sunZ = sx * z[0] + sy * z[1] + sz * z[2]
+        val wingDeg = Math.toDegrees(kotlin.math.atan2(sunZ.toDouble(), sunY.toDouble())).toFloat()
+        System.arraycopy(satModel, 0, satWing, 0, 16)
+        Matrix.rotateM(satWing, 0, wingDeg, 1f, 0f, 0f)
+
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        GLES20.glUseProgram(satProg)
+        setVec3(satProg, "uLight", sx, sy, sz)
+        setVec3(satProg, "uEye", eyeI[0], eyeI[1], eyeI[2])
+        resetAttribs()
+        val lp = GLES20.glGetAttribLocation(satProg, "aPos")
+        val ln = GLES20.glGetAttribLocation(satProg, "aNormal")
+        GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(ln)
+        satPos!!.position(0); satNrm!!.position(0)
+        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, satPos)
+        GLES20.glVertexAttribPointer(ln, 3, GLES20.GL_FLOAT, false, 0, satNrm)
+        val a = 0.55f + 0.45f * usedK
+        var wingBound = -1
+        for (part in satVariants[satVariant(const)]) {
+            val w = if (part.wing) 1 else 0
+            if (w != wingBound) {
+                val m = if (part.wing) satWing else satModel
+                Matrix.multiplyMM(satMvp, 0, mvpI, 0, m, 0)
+                setMat(satProg, "uMVP", satMvp)
+                setMat(satProg, "uModel", m)
+                wingBound = w
+            }
+            when (part.mat) {
+                MAT_BODY -> {   // auksinė folija su konsteliacijos atspalviu
+                    setVec4(satProg, "uColor", 0.45f * col[0] + 0.5f, 0.45f * col[1] + 0.36f, 0.45f * col[2] + 0.1f, a)
+                    setVec3(satProg, "uGlow", col[0] * glow * 0.55f, col[1] * glow * 0.55f, col[2] * glow * 0.55f)
+                    setVec3(satProg, "uSpec", 1f, 0.85f, 0.5f); setFloat(satProg, "uShine", 18f)
+                }
+                MAT_PANEL -> {  // saulės elementai: tamsiai mėlyni, stiprus atspindys, tinklelis
+                    setVec4(satProg, "uColor", 0.05f, 0.1f, 0.34f, a)
+                    setVec3(satProg, "uGlow", col[0] * glow * 0.22f, col[1] * glow * 0.22f, col[2] * glow * 0.22f)
+                    setVec3(satProg, "uSpec", 0.75f, 0.85f, 1f); setFloat(satProg, "uShine", 60f)
+                }
+                MAT_DISH -> {   // balta antenos lėkštė
+                    setVec4(satProg, "uColor", 0.92f, 0.93f, 0.95f, a)
+                    setVec3(satProg, "uGlow", col[0] * glow * 0.3f, col[1] * glow * 0.3f, col[2] * glow * 0.3f)
+                    setVec3(satProg, "uSpec", 0.4f, 0.4f, 0.4f); setFloat(satProg, "uShine", 12f)
+                }
+                MAT_DARK -> {   // variklio tūta
+                    setVec4(satProg, "uColor", 0.16f, 0.15f, 0.17f, a)
+                    setVec3(satProg, "uGlow", 0f, 0f, 0f)
+                    setVec3(satProg, "uSpec", 0.5f, 0.45f, 0.4f); setFloat(satProg, "uShine", 30f)
+                }
+                else -> {       // metalas: rėmai, laikikliai, antenų elementai (antgaliai švyti pagal signalą)
+                    setVec4(satProg, "uColor", 0.72f, 0.74f, 0.78f, a)
+                    setVec3(satProg, "uGlow", col[0] * glow * 0.4f, col[1] * glow * 0.4f, col[2] * glow * 0.4f)
+                    setVec3(satProg, "uSpec", 1f, 1f, 1f); setFloat(satProg, "uShine", 40f)
+                }
+            }
+            setFloat(satProg, "uPanel", if (part.mat == MAT_PANEL) 1f else 0f)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, part.start, part.count)
+        }
+        GLES20.glDisableVertexAttribArray(ln)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+    }
+
+    // ---------------- LAZERIAI: palydovas -> smeigtukas ----------------
+    /** Smeigtuko galvutė (stebėtojo vieta) sideralinėje erdvėje – ta pati, kurią piešia drawEarth(). */
+    private fun pinWorld(): FloatArray {
+        val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon)
+        val k = 0.25 * 1.35
+        val x = (k * cos(la) * cos(lo)).toFloat(); val y = (k * cos(la) * sin(lo)).toFloat(); val z = (k * sin(la)).toFloat()
+        val m = earthMat
+        return floatArrayOf(
+            m[0] * x + m[4] * y + m[8] * z + m[12],
+            m[1] * x + m[5] * y + m[9] * z + m[13],
+            m[2] * x + m[6] * y + m[10] * z + m[14])
+    }
+
+    /**
+     * Šviesos impulsai nuo palydovo į smeigtuką pagal C/N0:
+     * ≥45 – greiti elektriniai geltoni neoniniai su baltu centru; >20 – lėti tamsiai mėlyni;
+     * >10 – lėti pilki; ≤10 – nėra.
+     */
+    private fun drawLaser(sp: FloatArray, pin: FloatArray, cn0: Float, svid: Int, t: Float) {
+        if (cn0 <= 10f) return
+        val fast = cn0 >= 45f
+        val col = when {
+            fast -> floatArrayOf(1f, 0.95f, 0.15f)
+            cn0 > 20f -> floatArrayOf(0.1f, 0.2f, 0.75f)
+            else -> floatArrayOf(0.6f, 0.6f, 0.62f)
+        }
+        val speed = if (fast) 1.6f else 0.3f            // impulsų greitis (kelio dalis per sekundę)
+        val pulses = if (fast) 5 else 3
+        val len = if (fast) 0.07f else 0.10f
+        val dx = pin[0] - sp[0]; val dy = pin[1] - sp[1]; val dz = pin[2] - sp[2]
+        fun at(s: Float) = floatArrayOf(sp[0] + dx * s, sp[1] + dy * s, sp[2] + dz * s)
+
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)       // šviesa sumuojasi (neoninis efektas)
+        // silpnas spindulys
+        GLES20.glLineWidth(1f * density)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], if (fast) 0.25f else 0.15f)
+        bindPos(colorProg, floatBuf(floatArrayOf(sp[0], sp[1], sp[2], pin[0], pin[1], pin[2])))
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
+        // judantys impulsai
+        val seg = ArrayList<Float>()
+        val phase = (svid * 0.137f) % 1f
+        for (j in 0 until pulses) {
+            var s0 = (t * speed + phase + j.toFloat() / pulses) % 1f
+            if (s0 < 0f) s0 += 1f
+            val s1 = (s0 + len).coerceAtMost(1f)
+            val a = at(s0); val b = at(s1)
+            seg.add(a[0]); seg.add(a[1]); seg.add(a[2]); seg.add(b[0]); seg.add(b[1]); seg.add(b[2])
+        }
+        val buf = floatBuf(seg.toFloatArray())
+        GLES20.glLineWidth((if (fast) 5f else 3f) * density)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], if (fast) 0.9f else 0.75f)
+        bindPos(colorProg, buf)
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, seg.size / 3)
+        if (fast) {
+            // baltas centras – „elektrinis“ neonas, šiek tiek mirga
+            val flick = 0.75f + 0.25f * sin(t * 40f + svid).toFloat()
+            GLES20.glLineWidth(1.6f * density)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 1f, 1f, flick)
+            bindPos(colorProg, buf)
+            GLES20.glDrawArrays(GLES20.GL_LINES, 0, seg.size / 3)
+        }
+        GLES20.glLineWidth(1f)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+    }
+
+    // ---------------- PALYDOVŲ TRAJEKTORIJOS (paskutinės 2 min, taškas kas sekundę) ----------------
+    private val trailWindowMs = 120_000L
+    private class TrailPt(val t: Long, val p: FloatArray)
+    private val trails = HashMap<String, ArrayDeque<TrailPt>>()
+    private val trailConst = HashMap<String, String>()
+
+    private fun recordTrails(list: List<SatI>) {
+        val now = System.currentTimeMillis()
+        synchronized(trails) {
+            for (si in list) {
+                val key = si.sat.const + si.sat.svid
+                val q = trails.getOrPut(key) { ArrayDeque() }
+                trailConst[key] = si.sat.const
+                if (q.isEmpty() || now - q.last().t >= 1000L) q.addLast(TrailPt(now, si.pos.copyOf()))
+            }
+            val it = trails.entries.iterator()
+            while (it.hasNext()) {
+                val e = it.next()
+                while (e.value.isNotEmpty() && now - e.value.first().t > trailWindowMs) e.value.removeFirst()
+                if (e.value.isEmpty()) { it.remove(); trailConst.remove(e.key) }
+            }
+        }
+    }
+
+    /** Kiekvieno palydovo kreivė per paskutines 2 min (segmentas kas sekundę), spalva – pagal konsteliaciją. */
+    private fun drawTrails() {
+        val snap: List<Pair<String, FloatArray>> = synchronized(trails) {
+            trails.mapNotNull { (k, q) ->
+                if (q.size < 2) null else {
+                    val a = FloatArray(q.size * 3)
+                    var i = 0
+                    for (tp in q) { a[i++] = tp.p[0]; a[i++] = tp.p[1]; a[i++] = tp.p[2] }
+                    (trailConst[k] ?: "GPS") to a
+                }
+            }
+        }
+        if (snap.isEmpty()) return
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glLineWidth(2f * density)
+        for ((c, a) in snap) {
+            val col = constRgb(c)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.85f)
+            bindPos(colorProg, floatBuf(a))
+            GLES20.glDrawArrays(GLES20.GL_LINE_STRIP, 0, a.size / 3)
+        }
+        GLES20.glLineWidth(1f)
     }
 
     // ---------------- ŽEMĖ GAUBLIO VIDUJE ----------------
@@ -1626,6 +2463,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     fun setSouthUpMode(on: Boolean) { southUp = on }
 
     private var earthTex = 0
+    private var earthNightTex = 0
     private var earthProg = 0
     private val earthAxis by lazy { floatBuf(floatArrayOf(0f, 0f, -0.5f, 0f, 0f, 0.5f)) }
     private var earthPos: FloatBuffer? = null
@@ -1653,6 +2491,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             android.util.Log.e("GnssApp", "earth.jpg nerastas assets aplanke: app/src/main/assets/earth.jpg", e)
             earthTex = 0
             main.post { Toast.makeText(appCtx, "earth.jpg nerastas: app/src/main/assets/earth.jpg", Toast.LENGTH_LONG).show() }
+        }
+        earthNightTex = 0
+        try {
+            appCtx.assets.open("earth_night.jpg").use { ins ->
+                val bmp = android.graphics.BitmapFactory.decodeStream(ins)
+                if (bmp != null) earthNightTex = uploadTexture(bmp)
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("GnssApp", "earth_night.jpg nerastas: naktinė pusė rodoma šešėliu", e)
         }
         moonTex = 0
         try {
@@ -1741,6 +2588,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, earthTex)
             GLES20.glUniform1i(GLES20.glGetUniformLocation(earthProg, "uTex"), 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (earthNightTex != 0) earthNightTex else earthTex)
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(earthProg, "uNight"), 1)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(earthProg, "uHasNight"), if (earthNightTex != 0) 1f else 0f)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(earthProg, "uWater"), 1f)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
         }
 
@@ -1931,6 +2784,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, moonTex)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(earthProg, "uTex"), 0)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(earthProg, "uHasNight"), 0f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(earthProg, "uWater"), 0f)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
     }
 
@@ -2309,6 +3164,56 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform float uPoint;
             void main() { gl_Position = uMVP * vec4(aPos, 1.0); gl_PointSize = uPoint; }
         """
+        private const val MAT_BODY = 0
+        private const val MAT_PANEL = 1
+        private const val MAT_METAL = 2
+        private const val MAT_DISH = 3
+        private const val MAT_DARK = 4
+        private const val SAT_VS = """
+            attribute vec3 aPos;
+            attribute vec3 aNormal;
+            uniform mat4 uMVP;
+            uniform mat4 uModel;
+            varying vec3 vN;
+            varying vec3 vP;
+            void main() {
+                vN = mat3(uModel) * aNormal;
+                vP = aPos;
+                gl_Position = uMVP * vec4(aPos, 1.0);
+            }
+        """
+        private const val SAT_FS = """
+            precision mediump float;
+            uniform vec4 uColor;
+            uniform vec3 uGlow;
+            uniform vec3 uLight;
+            uniform vec3 uEye;
+            uniform vec3 uSpec;
+            uniform float uShine;
+            uniform float uPanel;
+            varying vec3 vN;
+            varying vec3 vP;
+            void main() {
+                vec3 n = normalize(vN);
+                vec3 e = normalize(uEye);
+                vec3 l = normalize(uLight);
+                if (dot(n, e) < 0.0) n = -n;                       // dvipusės plokštumos (lėkštė, tūta)
+                float d = max(dot(n, l), 0.0);
+                vec3 base = uColor.rgb;
+                if (uPanel > 0.5) {
+                    // saulės elementų tinklelis: tamsios siūlės ir šviesesnės šynos
+                    vec2 g = abs(fract(vec2(vP.x * 14.0, vP.z * 10.0)) - 0.5);
+                    float seam = smoothstep(0.40, 0.47, max(g.x, g.y));
+                    float bus = smoothstep(0.035, 0.0, abs(fract(vP.z * 5.0) - 0.5));
+                    base = mix(base, vec3(0.01, 0.015, 0.05), seam) + vec3(0.10, 0.12, 0.16) * bus * (1.0 - seam);
+                }
+                vec3 h = normalize(l + e);
+                float sp = pow(max(dot(n, h), 0.0), uShine) * step(0.0, dot(n, l));
+                float rim = pow(1.0 - max(dot(n, e), 0.0), 3.0);
+                vec3 c = base * (0.22 + 0.78 * d) + uSpec * sp * 0.8 + base * rim * 0.35 + uGlow * (0.6 + 0.6 * rim);
+                gl_FragColor = vec4(min(c, vec3(1.0)), uColor.a);
+            }
+        """
         private const val COLOR_FS = """
             precision mediump float;
             uniform vec4 uColor;
@@ -2459,25 +3364,68 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         private const val EARTH_FS = """
             precision mediump float;
             uniform sampler2D uTex;
+            uniform sampler2D uNight;
+            uniform float uHasNight;
+            uniform float uWater;
             uniform vec3 uLight;
             uniform vec3 uEye;
             varying vec2 vUV;
             varying vec3 vN;
+            float oceanAt(vec2 uv) { return 1.0 - smoothstep(0.08, 0.22, texture2D(uTex, uv).r); }
             void main() {
                 vec3 n = normalize(vN);
                 vec3 l = normalize(uLight);
                 vec3 v = normalize(uEye);
-                float d = max(dot(n, l), 0.0);
-                float soft = smoothstep(-0.12, 0.25, dot(n, l));   // švelnus terminatorius
+                float nl = dot(n, l);
+                float d = max(nl, 0.0);
+                float soft = smoothstep(-0.12, 0.25, nl);          // švelnus terminatorius
                 vec4 t = texture2D(uTex, vUV);
-                float ocean = 1.0 - smoothstep(0.08, 0.22, t.r);   // vandenys tamsiai mėlyni
-                vec3 h = normalize(l + v);
-                float spec = pow(max(dot(n, h), 0.0), 90.0) * ocean * 0.8;
-                float fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+                float ocean = oceanAt(vUV) * uWater;
+                // Gylis: kuo toliau nuo kranto (daugiau vandens aplink), tuo giliau
+                float r = 0.012;
+                float deep = 0.0;
+                deep += oceanAt(vUV + vec2( r, 0.0)) + oceanAt(vUV + vec2(-r, 0.0));
+                deep += oceanAt(vUV + vec2(0.0,  r)) + oceanAt(vUV + vec2(0.0, -r));
+                deep += oceanAt(vUV + vec2( r,  r) * 2.0) + oceanAt(vUV + vec2(-r, -r) * 2.0);
+                deep += oceanAt(vUV + vec2( r, -r) * 2.0) + oceanAt(vUV + vec2(-r,  r) * 2.0);
+                deep = smoothstep(0.3, 1.0, deep / 8.0) * ocean;
+                float nv = max(dot(n, v), 0.0);
+                float fres = pow(1.0 - nv, 3.0);
                 vec3 atm = vec3(0.35, 0.6, 1.0) * fres * 1.1;      // atmosferos kraštas
-                vec3 col = t.rgb * (0.12 + 0.95 * d * soft) + vec3(spec) + atm;
-                gl_FragColor = vec4(col, 1.0);
+                // Permatomas vanduo: sekluma turkio, gelmė beveik juoda mėlyna
+                vec3 shallow = mix(t.rgb, vec3(0.05, 0.32, 0.42), 0.45);
+                vec3 abyss = vec3(0.004, 0.02, 0.07);
+                vec3 water = mix(shallow, abyss, deep);
+                // Šviesa skverbiasi į vandenį ir silpsta su gyliu (įstrižai – ilgesnis kelias)
+                float path = deep * (1.0 + 1.5 * (1.0 - nv));
+                water *= exp(-1.2 * path) * 0.7 + 0.3;
+                vec3 base = mix(t.rgb, water, ocean);
+                // Blizgesys: ryškus Saulės atspindys ir dangaus atspindys pakraščiuose
+                vec3 h = normalize(l + v);
+                float nh = max(dot(n, h), 0.0);
+                float spec = (pow(nh, 160.0) * 1.6 + pow(nh, 24.0) * 0.18) * ocean;
+                float wFres = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
+                vec3 sky = vec3(0.35, 0.55, 0.85) * wFres * ocean * soft;
+                vec3 day = base * (0.12 + 0.95 * d * soft) + vec3(1.0, 0.95, 0.85) * spec * soft + sky + atm;
+                // Naktinė pusė: miestų šviesų nuotrauka vietoj šešėlio
+                vec3 night = texture2D(uNight, vUV).rgb * 1.6 + atm * 0.35;
+                float dayW = mix(1.0, smoothstep(-0.18, 0.12, nl), uHasNight);
+                gl_FragColor = vec4(mix(night, day, dayW), 1.0);
             }
+        """
+        private const val CMB_VS = """
+            attribute vec3 aPos;
+            attribute vec2 aUV;
+            uniform mat4 uMVP;
+            varying vec2 vUV;
+            void main() { vUV = aUV; gl_Position = uMVP * vec4(aPos, 1.0); }
+        """
+        private const val CMB_FS = """
+            precision mediump float;
+            uniform sampler2D uTex;
+            uniform float uAlpha;
+            varying vec2 vUV;
+            void main() { gl_FragColor = vec4(texture2D(uTex, vUV).rgb, uAlpha); }
         """
         private const val TEX_VS = """
             attribute vec3 aPos;
@@ -2803,6 +3751,51 @@ class DraggablePanel(
     private val dragSlop = 10f * resources.displayMetrics.density
     private val cancelBtn = smallButton("\u2715", 44)     // ✕ (ir atšaukti, ir sumažinti)
 
+    /** „Baigti įrašą“ / „Tęsti įrašą“ – kviečiama veiklos. */
+    var onEndRecord: (() -> Unit)? = null
+    private val endRecBtn = Button(context).apply {
+        text = "Baigti įrašą"
+        textSize = 12f
+        isAllCaps = false
+        minWidth = 0; minimumWidth = 0
+        setPadding((8 * resources.displayMetrics.density).toInt(), 0, (8 * resources.displayMetrics.density).toInt(), 0)
+    }
+    fun setRecording(on: Boolean) { endRecBtn.text = if (on) "Baigti įrašą" else "Tęsti įrašą" }
+
+    /** „Šaltas startas“ – ištrinti GNSS pagalbos duomenis. */
+    var onColdStart: (() -> Unit)? = null
+    private val coldBtn = Button(context).apply {
+        text = "Šaltas startas"
+        textSize = 12f
+        isAllCaps = false
+        minWidth = 0; minimumWidth = 0
+        setPadding((8 * resources.displayMetrics.density).toInt(), 0, (8 * resources.displayMetrics.density).toInt(), 0)
+    }
+
+    /** „Atnaujinti SP3“ – atsisiųsti naujausią CODE ultra-greitų orbitų failą iš AIUB. */
+    var onUpdateSp3: (() -> Unit)? = null
+    private val sp3UpdateBtn = Button(context).apply {
+        text = "Atnaujinti SP3"
+        textSize = 12f
+        isAllCaps = false
+        minWidth = 0; minimumWidth = 0
+        setPadding((8 * resources.displayMetrics.density).toInt(), 0, (8 * resources.displayMetrics.density).toInt(), 0)
+    }
+    private val sp3Status = TextView(context).apply {
+        text = "SP3: nėra"
+        textSize = 12f
+        setTextColor(Color.DKGRAY)
+    }
+    fun setSp3Status(line: String) { sp3Status.text = line }
+    fun setSp3Busy(busy: Boolean) { sp3UpdateBtn.isEnabled = !busy; if (busy) sp3Status.text = "SP3: atsisiunčiama…" }
+
+    var onPickSp3: (() -> Unit)? = null
+    private val sp3Btn = Button(context).apply {
+        text = "Pasirinkti SP3 aplanką"
+        textSize = 12f
+        isAllCaps = false
+    }
+
     private val shareBtn = FrameLayout(context).apply {
         isClickable = true
         layoutParams = LinearLayout.LayoutParams((52 * density).toInt(), (52 * density).toInt())
@@ -2819,6 +3812,11 @@ class DraggablePanel(
     }
 
     private val inputRow = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+    }
+
+    private val recRow = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
     }
@@ -2859,10 +3857,17 @@ class DraggablePanel(
         header.addView(cancelBtn)
 
         inputRow.addView(questionInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        inputRow.addView(sp3UpdateBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         inputRow.addView(shareBtn)
+        recRow.addView(coldBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
+        recRow.addView(endRecBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
 
+        // Veiksmų eilutės neslenka, todėl dalinimosi mygtukas visada matomas
         panel.addView(header)
         panel.addView(body, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        panel.addView(recRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        panel.addView(inputRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        panel.addView(sp3Status, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(optionsLayout)
         bodyInner.addView(rawRow)
         bodyInner.addView(alphaLabel)
@@ -2876,13 +3881,17 @@ class DraggablePanel(
         bodyInner.addView(aglInput)
         bodyInner.addView(mslInput)
         bodyInner.addView(coordInput)
-        bodyInner.addView(inputRow)
+        bodyInner.addView(sp3Btn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
 
         addView(panel)
         addView(bubble)
 
         cancelBtn.setOnClickListener { minimize() }
         shareBtn.setOnClickListener { runShare() }
+        endRecBtn.setOnClickListener { onEndRecord?.invoke() }
+        coldBtn.setOnClickListener { onColdStart?.invoke() }
+        sp3Btn.setOnClickListener { onPickSp3?.invoke() }
+        sp3UpdateBtn.setOnClickListener { onUpdateSp3?.invoke() }
 
         bubble.setOnTouchListener { _, ev -> bubbleGd.onTouchEvent(ev); false }
     }
@@ -3105,7 +4114,13 @@ class DraggablePanel(
         val w = body.width.takeIf { it > 0 } ?: (width - panel.paddingLeft - panel.paddingRight)
         bodyInner.measure(MeasureSpec.makeMeasureSpec(w.coerceAtLeast(1), MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
-        val maxBody = (parentH * 0.88f).toInt() - header.height - panel.paddingTop - panel.paddingBottom
+        val rowW = MeasureSpec.makeMeasureSpec(w.coerceAtLeast(1), MeasureSpec.EXACTLY)
+        val rowH = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
+        recRow.measure(rowW, rowH)
+        inputRow.measure(rowW, rowH)
+        sp3Status.measure(rowW, rowH)
+        val maxBody = (parentH * 0.88f).toInt() - header.height - recRow.measuredHeight - inputRow.measuredHeight - sp3Status.measuredHeight -
+            panel.paddingTop - panel.paddingBottom
         val lp = body.layoutParams
         lp.height = if (bodyInner.measuredHeight > maxBody && maxBody > 0) maxBody else LinearLayout.LayoutParams.WRAP_CONTENT
         body.layoutParams = lp
@@ -3115,16 +4130,15 @@ class DraggablePanel(
         val parentW = (parent as? View)?.width?.toFloat() ?: return
         val parentH = (parent as? View)?.height?.toFloat() ?: return
 
-        val minTx = -width * 0.1f
-        val maxTx = parentW - width * 0.9f
-        val minTy = -height * 0.1f
-        val maxTy = parentH - height * 0.9f
+        // Visa panelė ekrane: dalinimosi mygtukas apačioje neturi likti už krašto
+        translationX = translationX.coerceIn(0f, (parentW - width).coerceAtLeast(0f))
+        translationY = translationY.coerceIn(0f, (parentH - height).coerceAtLeast(0f))
+    }
 
-        translationX = translationX.coerceIn(minTx, maxTx)
-        translationY = translationY.coerceIn(minTy, maxTy)
-
-        if (width > parentW) translationX = 0f
-        if (height > parentH) translationY = 0f
+    /** Pasukus ekraną: panelė perskaičiuojama, burbulas grąžinamas į ekraną. */
+    fun onParentResized() {
+        kbShift = 0f
+        if (panel.visibility == VISIBLE) maximize() else adjustPositionOnExpand()
     }
 
     // Burbulas/panelė gali išeiti už ekrano, bet bent 10 % lieka matoma
@@ -3260,6 +4274,8 @@ class GradientBackground(context: Context) : View(context) {
 //  PAGRINDINIS EKRANAS
 // ============================================================
 
+private const val REPORT_FILE = "ataskaita.txt"
+
 class MainActivity : AppCompatActivity() {
     private lateinit var lm: LocationManager
     private lateinit var info: TextView
@@ -3282,6 +4298,8 @@ class MainActivity : AppCompatActivity() {
     private var fullscreen = false
 
     private var leftCol: View? = null
+    private var rightCol: View? = null
+    private var contentCol: LinearLayout? = null
     private var rootScroll: ScrollView? = null
 
     /**
@@ -3411,7 +4429,7 @@ class MainActivity : AppCompatActivity() {
     private val measCallback = object : GnssMeasurementsEvent.Callback() {
         override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
             measText = "Neapdoroti matavimai: ${event.measurements.size}"
-            for (m in event.measurements) appendRaw(m, event.clock)
+            RawRecorder.envTag = envTag()
             render()
         }
     }
@@ -3426,8 +4444,77 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private var afterSp3Pick: (() -> Unit)? = null
+
+    private val sp3PickLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            if (Sp3Storage.savePick(this, uri)) Toast.makeText(this, "SP3 aplankas pasirinktas", Toast.LENGTH_SHORT).show()
+            else logError("SP3 aplanko leidimas nesuteiktas")
+        }
+        afterSp3Pick?.invoke()
+        afterSp3Pick = null
+    }
+
+    private fun launchSp3Picker(next: (() -> Unit)? = null) {
+        afterSp3Pick = next
+        // Android 11+ neleidžia pasirinkti paties Download, tik jo poaplankį
+        Toast.makeText(this, "Pasirinkite arba sukurkite Download poaplankį (pvz. SP3) ir laikykite SP3 failus jame", Toast.LENGTH_LONG).show()
+        try {
+            sp3PickLauncher.launch(Sp3Storage.initialUri())
+        } catch (e: android.content.ActivityNotFoundException) {
+            afterSp3Pick = null
+            logError("Aplanko pasirinkimas nepasiekiamas: ${e.message}")
+            next?.invoke()
+        }
+    }
+
+    /** Būsenos eilutė po „Atnaujinti SP3“: atsisiųsto failo intervalas (UTC) arba „SP3: nėra“. */
+    private fun refreshSp3Status() {
+        Thread {
+            val line = try { Sp3Aiub.status(this) } catch (e: Exception) { "SP3: nėra" }
+            runOnUiThread { sharePanel?.setSp3Status(line) }
+        }.start()
+    }
+
+    /** „Atnaujinti SP3“: AIUB CODE ultra-greitos orbitos fone į programos privatų aplanką. */
+    private fun updateSp3() {
+        sharePanel?.setSp3Busy(true)
+        Thread {
+            val r = try { Sp3Aiub.download(Sp3Aiub.dir(this)) } catch (e: Exception) { Sp3Aiub.Result.Fail("klaida: ${e.message}") }
+            val status = try { Sp3Aiub.status(this) } catch (e: Exception) { "SP3: nėra" }
+            runOnUiThread {
+                sharePanel?.setSp3Busy(false)
+                sharePanel?.setSp3Status(status)
+                val msg = when (r) {
+                    is Sp3Aiub.Result.Ok -> "SP3 atnaujintas: ${r.name}"
+                    is Sp3Aiub.Result.Fail -> "SP3 neatnaujintas: ${r.message}"
+                }
+                if (r is Sp3Aiub.Result.Fail) logError(msg)
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            }
+        }.start()
+    }
+
+    /** Vieną kartą pasiūlo pasirinkti SP3 aplanką, jei failo nerasta; po to tęsia eksportą. */
+    private fun offerSp3PickerOnce(next: () -> Unit) {
+        if (Sp3Storage.pickerOffered(this)) { next(); return }
+        Thread {
+            val missing = try { Sp3Storage.search(this).used == null } catch (e: Exception) { false }
+            runOnUiThread {
+                // Iš fono veiklos paleisti nepavyktų ir eksportas liktų laukti rezultato
+                val visible = lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+                if (!missing || !visible) { next(); return@runOnUiThread }
+                Sp3Storage.markPickerOffered(this)
+                launchSp3Picker(next)
+            }
+        }.start()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Geoidas pradedamas krauti iš karto (fone), kol kuriamas vaizdas ir laukiama fikso.
+        // render() įvykdomas per runOnUiThread, t. y. tik pasibaigus onCreate.
+        Geoid.select(applicationContext, GeoidMode.LIT20G) { runOnUiThread { render() } }
         // Klaviatūra nekeičia ekrano išdėstymo (dalinimosi lapas nesusitraukia ir nejuda)
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
         supportActionBar?.hide()
@@ -3473,8 +4560,6 @@ class MainActivity : AppCompatActivity() {
         }
         val btnReset = Button(this).apply { text = "Atstatyti kalibravimą"; setOnClickListener { baro.reset(); render() } }
 
-        Geoid.select(applicationContext, GeoidMode.LIT20G) { runOnUiThread { render() } }
-
         val dm = resources.displayMetrics
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val colW = if (landscape) dm.widthPixels / 2 else dm.widthPixels
@@ -3507,6 +4592,29 @@ class MainActivity : AppCompatActivity() {
         }
         left.addView(btnSaveN, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnResetN, LinearLayout.LayoutParams(mw, ww))
+        val cbStableN = CheckBox(this).apply {
+            text = "Stabili šiaurė (ignoruoti magnetometrą)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("stable_north", true)
+            setOnCheckedChangeListener { _, on ->
+                if (::skyDome.isInitialized) skyDome.setStableNorth(on)
+                else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("stable_north", on).apply()
+            }
+        }
+        left.addView(cbStableN, LinearLayout.LayoutParams(mw, ww))
+        val cbCmb = CheckBox(this).apply {
+            text = "Fonas: CMB"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("cmb_bg", true)
+            setOnCheckedChangeListener { _, on ->
+                if (::skyDome.isInitialized) skyDome.setCmb(on)
+                else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("cmb_bg", on).apply()
+            }
+        }
+        left.addView(cbCmb, LinearLayout.LayoutParams(mw, ww))
+        left.addView(TextView(this).apply {
+            text = "CMB map: ESA Planck Collaboration"
+            textSize = 11f
+            alpha = 0.7f
+        }, LinearLayout.LayoutParams(mw, ww))
         left.addView(info, LinearLayout.LayoutParams(mw, ww))
 
         val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -3543,6 +4651,8 @@ class MainActivity : AppCompatActivity() {
         right.addView(cnoView, LinearLayout.LayoutParams(mw, cnoH))
 
         val content = LinearLayout(this).apply { orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL }
+        contentCol = content
+        rightCol = right
         if (landscape) {
             content.addView(left, LinearLayout.LayoutParams(0, ww, 1f))
             content.addView(right, LinearLayout.LayoutParams(0, ww, 1f))
@@ -3567,17 +4677,40 @@ class MainActivity : AppCompatActivity() {
     private fun setupShareBubble() {
         if (sharePanel != null) return
         val panel = DraggablePanel(this) { sections, question, wantScreenshot ->
-            val report = buildReport(sections - "screenshot" - "raw", question)
+            var report = buildReport(sections - "screenshot" - "raw", question) +
+                "\n=== ĮRAŠYMO PERTRAUKOS ===\n" + GapLog.report(this)
             val finish: (Uri?) -> Unit = { shot ->
                 val uris = ArrayList<Uri>()
                 shot?.let { uris.add(it) }
+                val send = {
+                    report += "Eksportuota: " + (listOf(REPORT_FILE) + uris.mapNotNull { it.lastPathSegment }).joinToString(", ") + "\n"
+                    // Ataskaita (su klausimu) visada kaip tekstinis failas
+                    reportFileUri(report)?.let { uris.add(0, it) }
+                    shareContent(report, uris)
+                }
                 if ("raw" in sections) {
                     rawCsvUri()?.let { uris.add(it) }
                     fixCsvUri()?.let { uris.add(it) }
-                }
-                // Ataskaita (su klausimu) visada kaip tekstinis failas
-                reportFileUri(report)?.let { uris.add(0, it) }
-                shareContent(report, uris)
+                    navCsvUri()?.let { uris.add(it) }
+                    gapLogUri()?.let { uris.add(it) }
+                    // GPS pozicijos skaičiuoklė (1 žingsnis) – fone, rezultatas gnss_solver.csv
+                    offerSp3PickerOnce { Thread {
+                        val (bad, total) = SessionFiles.badLines(File(cacheDir, SessionFiles.RAW))
+                        val (badF, totalF) = SessionFiles.badLines(File(cacheDir, SessionFiles.FIX))
+                        val (badN, totalN) = SessionFiles.badLines(File(cacheDir, NavRecorder.FILE))
+                        report += "CSV savitikra (laukų skaičius = antraštės): gnss_raw.csv netinkamų $bad iš $total; " +
+                            "gnss_fix.csv $badF iš $totalF; gnss_nav.csv $badN iš $totalN\n"
+                        val u = solverCsvUri()
+                        PositionSolver.lastSp3Note?.let { report += it + "\n" }
+                        val s = sp3TestCsvUri(Sp3Solver.OUT_FILE)
+                        val s2 = sp3TestCsvUri(Sp3Solver.OUT_FILE_V2)
+                        val s3 = sp3TestCsvUri(Sp3Solver.OUT_FILE_V3)
+                        val s4 = sp3TestCsvUri(Sp3V4.OUT_FILE_V4)
+                        val s5 = sp3TestCsvUri(Sp3V5.OUT_FILE_V5)
+                        val d = solverDiagUri()
+                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; s2?.let { uris.add(it) }; s3?.let { uris.add(it) }; s4?.let { uris.add(it) }; s5?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
+                    }.start() }
+                } else send()
             }
             if (wantScreenshot) {
                 // Burbulas ir panelė NEPATENKA į ekrano kopiją; 3D modeliai – patenka
@@ -3590,10 +4723,9 @@ class MainActivity : AppCompatActivity() {
         }
         panel.onCountdownStart = {
             // Atgalinio skaičiavimo pradžioje CSV buferis pradedamas iš naujo
-            resetRawFile()
+            SessionFiles.resetRawFix(this)
+            // gnss_nav.csv neištrinamas: efemeridėms reikia ir senesnių subkadrų; laikomas iki dalinimosi
             resetRefStats()
-            fixLog.setLength(0)
-            fixLog.append(fixHeader)
         }
         val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         
@@ -3602,6 +4734,12 @@ class MainActivity : AppCompatActivity() {
         
         container.addView(panel, params)
         panel.onPin = { pinBubble() }
+        panel.onEndRecord = { toggleRecording() }
+        panel.onColdStart = { askColdStart() }
+        panel.onPickSp3 = { launchSp3Picker() }
+        panel.onUpdateSp3 = { updateSp3() }
+        refreshSp3Status()
+        panel.setRecording(NavRecordService.running || !recordEnded)
         sharePanel = panel
         
         // Nustatome pradinę poziciją viršutiniame dešiniajame kampe
@@ -3613,8 +4751,36 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Pasukus ekraną veikla neperkuriama (manifestas: configChanges), todėl įrašo laikmatis,
+     * 3D režimas ir GL vaizdas išlieka; čia pritaikomas tik išdėstymas.
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val content = contentCol ?: return
+        val right = rightCol ?: return
+        val dm = resources.displayMetrics
+        val landscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val colW = if (landscape) dm.widthPixels / 2 else dm.widthPixels
+        val skySide = if (landscape) min(colW, dm.heightPixels) else colW
+        val mw = LinearLayout.LayoutParams.MATCH_PARENT
+        val ww = LinearLayout.LayoutParams.WRAP_CONTENT
+        content.orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        leftCol?.layoutParams = if (landscape) LinearLayout.LayoutParams(0, ww, 1f) else LinearLayout.LayoutParams(mw, ww)
+        right.layoutParams = if (landscape) LinearLayout.LayoutParams(0, ww, 1f) else LinearLayout.LayoutParams(mw, ww)
+        skyView.layoutParams = LinearLayout.LayoutParams(skySide, skySide)
+        val holderLp = LinearLayout.LayoutParams(skySide, skySide)
+        skyHolderLp = holderLp
+        if (!fullscreen) skyHolder.layoutParams = holderLp
+        container.post {
+            if (fullscreen) skyHolder.layoutParams = LinearLayout.LayoutParams(container.width, container.height)
+            sharePanel?.onParentResized()
+        }
+    }
+
     override fun onStart() {
         super.onStart()
+        activityStarted = true
         baro.start()
         startDeviceSensors()
         if (use3d && ::skyDome.isInitialized) skyDome.start()
@@ -3630,9 +4796,86 @@ class MainActivity : AppCompatActivity() {
         baro.stop()
         stopDeviceSensors()
         if (::skyDome.isInitialized) skyDome.stop()
-        lm.unregisterGnssStatusCallback(statusCallback)
-        lm.unregisterGnssMeasurementsCallback(measCallback)
-        lm.removeUpdates(locationListener)
+        activityStarted = false
+        // Fone matavimus ir fiksus rašo NavRecordService; veiklos klausytojai – tik ekranui
+        if (NavRecordService.running) GapLog.event(this, "veikla onStop – įrašymas tęsiamas paslaugoje")
+        unregisterGnss()
+    }
+
+    private var gnssRegistered = false
+    private var activityStarted = false
+    private var recordEnded = false
+
+    private fun unregisterGnss() {
+        if (!gnssRegistered) return
+        try {
+            lm.unregisterGnssStatusCallback(statusCallback)
+            lm.unregisterGnssMeasurementsCallback(measCallback)
+            lm.removeUpdates(locationListener)
+        } catch (_: Exception) {}
+        SessionFiles.activityWritesFixes = false
+        gnssRegistered = false
+    }
+
+    /** „Baigti įrašą“ / „Tęsti įrašą“ mygtukas. */
+    private fun toggleRecording() {
+        if (NavRecordService.running) {
+            recordEnded = true
+            startService(Intent(this, NavRecordService::class.java).setAction(NavRecordService.ACTION_END))
+            sharePanel?.setRecording(false)
+        } else {
+            recordEnded = false
+            SessionFiles.startNew(this)
+            try { ContextCompat.startForegroundService(this, Intent(this, NavRecordService::class.java)) } catch (e: Exception) { logError("Įrašymo paslauga: ${e.message}") }
+            sharePanel?.setRecording(true)
+        }
+    }
+
+    /** Šaltas startas: patvirtinimas, tada GNSS atjungiamas, pagalbos duomenys ištrinami ir GNSS paleidžiamas iš naujo. */
+    private fun askColdStart() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Šaltas startas")
+            .setMessage("Bus ištrinti GNSS pagalbos duomenys (efemeridės, almanachas, padėtis, laikas). " +
+                "Prieš tai išjunkite mobiliuosius duomenis ir Wi-Fi, kad planšetė jų iškart negautų iš interneto. " +
+                "Pirmas fiksas gali užtrukti kelias minutes.")
+            .setPositiveButton("Ištrinti") { _, _ -> coldStart() }
+            .setNegativeButton("Atšaukti", null)
+            .show()
+    }
+
+    private fun coldStart() {
+        unregisterGnss()
+        if (NavRecordService.running) {
+            startService(Intent(this, NavRecordService::class.java).setAction(NavRecordService.ACTION_COLD_START))
+        } else {
+            val ok = deleteAidingData(lm)
+            GapLog.event(this, "ŠALTAS STARTAS: pagalbos duomenų trynimas ${if (ok) "priimtas" else "nepriimtas"} (paslauga neveikė)")
+        }
+        posText = "Šaltas startas: laukiama fikso..."
+        render()
+        mainHandler.postDelayed({ if (activityStarted) startGnss() }, 3500)
+    }
+
+    /** Vieną kartą paprašoma baterijos optimizavimo išimties (įrašymas išjungus ekraną). */
+    @SuppressLint("BatteryLife")
+    private fun askBatteryExemptionOnce() {
+        val prefs = getSharedPreferences("gap_log", MODE_PRIVATE)
+        if (prefs.getBoolean("battery_asked", false)) return
+        prefs.edit().putBoolean("battery_asked", true).apply()
+        if (GapLog.batteryExempt(this)) { GapLog.event(this, "baterijos išimtis jau suteikta"); return }
+        try {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Įrašymas išjungus ekraną")
+                .setMessage("Kad GNSS matavimai būtų įrašomi be pertraukų, kai ekranas išjungtas ar atidaryta kita programa, leiskite programai veikti be baterijos optimizavimo.")
+                .setPositiveButton("Leisti") { _, _ ->
+                    GapLog.event(this, "baterijos išimties prašymas: atidarytas sistemos langas")
+                    try {
+                        startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+                    } catch (e: Exception) { logError("Baterijos išimtis: ${e.message}") }
+                }
+                .setNegativeButton("Ne dabar") { _, _ -> GapLog.event(this, "baterijos išimties prašymas: atmesta") }
+                .show()
+        } catch (_: Exception) {}
     }
 
     @SuppressLint("MissingPermission")
@@ -3642,9 +4885,24 @@ class MainActivity : AppCompatActivity() {
             logError("GPS išjungtas")
             render()
         }
-        lm.registerGnssStatusCallback(statusCallback, mainHandler)
-        if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
-        lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
+        NavRecordService.onEnded = { sharePanel?.setRecording(false) }
+        if (!gnssRegistered) {
+            lm.registerGnssStatusCallback(statusCallback, mainHandler)
+            if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
+            SessionFiles.activityWritesFixes = true
+            gnssRegistered = true
+        }
+        if (recordEnded) return
+        sharePanel?.setRecording(true)
+        // Navigacijos pranešimai – priekinio plano paslaugoje (veikia ir išjungus ekraną)
+        try {
+            if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, "android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 77)
+            }
+            ContextCompat.startForegroundService(this, Intent(this, NavRecordService::class.java))
+        } catch (e: Exception) { logError("Navigacijos paslauga: ${e.message}") }
+        askBatteryExemptionOnce()
     }
 
     @RequiresApi(31)
@@ -3712,94 +4970,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------- NEAPDOROTI MATAVIMAI (CSV) – išplėstiniai AI analizei ----------------
-    private val rawHeader = "laikas_ms,konstelacija,svid,signalas,dazniu_hz,cn0_dbhz,baseband_cn0_dbhz," +
-        "kampas_deg,azimutas_deg,fiksui," +
-        "time_nanos,full_bias_nanos,bias_nanos,bias_unc_nanos,drift_nsps,time_offset_ns," +
-        "state,recv_sv_time_ns,recv_sv_time_unc_ns,doplerio_mps,doplerio_unc_mps," +
-        "adr_m,adr_state,adr_unc_m,multipath,agc_db,aplinka\n"
-    private val rawLog = StringBuilder(rawHeader)       // tik dabartinės partijos buferis
-    private var rawWriter: java.io.BufferedWriter? = null
-    private var rawRows = 0L
+    // gnss_raw.csv rašo NavRecordService per RawRecorder / SessionFiles (vienas rašytojas)
     private val satMap = HashMap<String, Sat>()
-    private val bandsSeen = java.util.TreeSet<String>()
-
-    private fun bandName(c: String, hz: Double): String {
-        val mhz = hz / 1e6
-        return when {
-            kotlin.math.abs(mhz - 1575.42) < 2 -> when (c) { "GAL" -> "E1"; "BDS" -> "B1C"; else -> "L1" }
-            kotlin.math.abs(mhz - 1176.45) < 2 -> when (c) { "GAL" -> "E5a"; "BDS" -> "B2a"; else -> "L5" }
-            kotlin.math.abs(mhz - 1207.14) < 2 -> if (c == "GAL") "E5b" else "B2b"
-            kotlin.math.abs(mhz - 1227.60) < 2 -> "L2"
-            kotlin.math.abs(mhz - 1561.098) < 2 -> "B1I"
-            kotlin.math.abs(mhz - 1268.52) < 2 -> "B3I"
-            mhz in 1598.0..1607.0 -> "G1"
-            mhz in 1242.0..1249.0 -> "G2"
-            else -> fx(mhz, 2) + "MHz"
-        }
-    }
+    private val bandsSeen get() = synchronized(RawRecorder.bandsSeen) { RawRecorder.bandsSeen.toSortedSet() }
 
     // Kableliai pakeičiami kabliataškiais, kad CSV stulpeliai nesusimaišytų
-    private fun envTag(): String = (sharePanel?.envTag ?: "").replace(',', ';')
-
-    /** Pradeda naują matavimų failą (kviečiama atgalinio skaičiavimo pradžioje ir paleidus). */
-    private fun resetRawFile() {
-        try { rawWriter?.close() } catch (_: Exception) {}
-        rawRows = 0
-        rawWriter = try {
-            java.io.BufferedWriter(java.io.FileWriter(File(cacheDir, "gnss_raw.csv"), false), 1 shl 16).also { it.write(rawHeader) }
-        } catch (e: Exception) { logError("Matavimų failas nepavyko: ${e.message}"); null }
-    }
-
-    private fun appendRaw(m: GnssMeasurement, clk: android.location.GnssClock) {
-        if (rawWriter == null) resetRawFile()
-        // Apsauga: ~200 MB – daugiau nei 2 val. įrašo
-        if (rawRows > 800_000) resetRawFile()
-        rawLog.setLength(0)
-        val c = constName(m.constellationType)
-        val hz = if (m.hasCarrierFrequencyHz()) m.carrierFrequencyHz.toDouble() else 1575.42e6
-        val band = bandName(c, hz)
-        bandsSeen.add("$c $band")
-        val sat = satMap["$c${m.svid}"]
-        val bb = if (Build.VERSION.SDK_INT >= 30 && m.hasBasebandCn0DbHz()) m.basebandCn0DbHz.toString() else ""
-        @Suppress("DEPRECATION")
-        val agc = if (m.hasAutomaticGainControlLevelDb()) m.automaticGainControlLevelDb.toString() else ""
-        val sb = rawLog
-        sb.append(System.currentTimeMillis()).append(',')
-            .append(c).append(',').append(m.svid).append(',').append(band).append(',')
-            .append(if (m.hasCarrierFrequencyHz()) m.carrierFrequencyHz.toString() else "").append(',')
-            .append(m.cn0DbHz).append(',').append(bb).append(',')
-            .append(sat?.elev?.let { fx(it.toDouble(), 1) } ?: "").append(',')
-            .append(sat?.az?.let { fx(it.toDouble(), 1) } ?: "").append(',')
-            .append(if (sat?.used == true) 1 else 0).append(',')
-            .append(clk.timeNanos).append(',')
-            .append(if (clk.hasFullBiasNanos()) clk.fullBiasNanos.toString() else "").append(',')
-            .append(if (clk.hasBiasNanos()) clk.biasNanos.toString() else "").append(',')
-            .append(if (clk.hasBiasUncertaintyNanos()) clk.biasUncertaintyNanos.toString() else "").append(',')
-            .append(if (clk.hasDriftNanosPerSecond()) clk.driftNanosPerSecond.toString() else "").append(',')
-            .append(m.timeOffsetNanos).append(',')
-            .append(m.state).append(',')
-            .append(m.receivedSvTimeNanos).append(',')
-            .append(m.receivedSvTimeUncertaintyNanos).append(',')
-            .append(m.pseudorangeRateMetersPerSecond).append(',')
-            .append(m.pseudorangeRateUncertaintyMetersPerSecond).append(',')
-            .append(m.accumulatedDeltaRangeMeters).append(',')
-            .append(m.accumulatedDeltaRangeState).append(',')
-            .append(m.accumulatedDeltaRangeUncertaintyMeters).append(',')
-            .append(m.multipathIndicator).append(',')
-            .append(agc).append(',')
-            .append(envTag()).append('\n')
-        try { rawWriter?.write(sb.toString()); rawRows++ } catch (_: Exception) {}
-    }
+    private fun envTag(): String = SessionFiles.clean(sharePanel?.envTag ?: "")
 
     // ---------------- FIKSAI KAS SEKUNDĘ (CSV) ----------------
-    private val fixHeader = "laikas_ms,platuma,ilguma,aukstis_elips_m,geoido_N_m,aukstis_jura_m," +
-        "h_tikslumas_m,v_tikslumas_m,greitis_mps,kryptis_deg,palydovu_naudojama,palydovu_matoma," +
-        "vid_cn0_naudojami,top4_cn0,pitch_deg,roll_deg,azimutas_ekrano_deg,judejimas_mps2,aplinka," +
-        "zinomas_agl_m,zinomas_msl_m,zinoma_platuma,zinoma_ilguma,klaida_aukscio_m,klaida_horiz_m,klaida_rytai_m,klaida_siaure_m\n"
-    private val fixLog = StringBuilder(fixHeader)
 
     private fun appendFix(loc: Location) {
-        if (fixLog.length > 4_000_000) { fixLog.setLength(0); fixLog.append(fixHeader) }
+        val fixLog = StringBuilder(256)
         val n = Geoid.undulation(loc.latitude, loc.longitude)
         val used = lastSats.filter { it.used }
         val avg = if (used.isNotEmpty()) used.map { it.cn0 }.average() else Double.NaN
@@ -3833,6 +5014,7 @@ class MainActivity : AppCompatActivity() {
             .append(if (eE != null && eN != null) fx(kotlin.math.sqrt(eE * eE + eN * eN), 2) else "").append(',')
             .append(eE?.let { fx(it, 2) } ?: "").append(',')
             .append(eN?.let { fx(it, 2) } ?: "").append('\n')
+        if (NavRecordService.running) SessionFiles.writeFix(this, fixLog.toString())
         refStats(hNow, kMsl, eE, eN)
     }
 
@@ -3849,8 +5031,7 @@ class MainActivity : AppCompatActivity() {
     private fun resetRefStats() { refN = 0; refHSum = 0.0; refHAbs = 0.0; refPN = 0; refDSum = 0.0; refDMax = 0.0 }
 
     private fun fixCsvUri(): Uri? = try {
-        val file = File(cacheDir, "gnss_fix.csv")
-        file.writeText(fixLog.toString())
+        val file = SessionFiles.file(this, SessionFiles.FIX)
         FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
     } catch (e: Exception) {
         logError("Fiksų CSV nepavyko: ${e.message}")
@@ -3934,7 +5115,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun reportFileUri(text: String): Uri? = try {
-        val file = File(cacheDir, "ataskaita.txt")
+        val file = File(cacheDir, REPORT_FILE)
         file.writeText(text)
         FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
     } catch (e: Exception) {
@@ -3943,12 +5124,58 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun rawCsvUri(): Uri? = try {
-        rawWriter?.flush()
-        val file = File(cacheDir, "gnss_raw.csv")
-        if (!file.exists()) file.writeText(rawHeader)
+        val file = SessionFiles.file(this, SessionFiles.RAW)
         FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
     } catch (e: Exception) {
         logError("CSV nepavyko: ${e.message}")
+        null
+    }
+
+    // ---------------- NAVIGACIJOS PRANEŠIMAI (CSV) – NavRecorder / NavRecordService ----------------
+
+    /** GPS-only sprendinys iš gnss_raw.csv + gnss_nav.csv -> gnss_solver.csv (kviečiama ne UI gijoje). */
+    private fun solverCsvUri(): Uri? = try {
+        val out = File(cacheDir, "gnss_solver.csv")
+        // Ankstesnio eksporto rezultatas neturi būti išsiųstas, jei šįkart SP3 sprendimas nevyks
+        File(cacheDir, Sp3Solver.OUT_FILE).delete()
+        File(cacheDir, Sp3Solver.OUT_FILE_V2).delete()
+        File(cacheDir, Sp3Solver.OUT_FILE_V3).delete()
+        File(cacheDir, Sp3V4.OUT_FILE_V4).delete()
+        File(cacheDir, Sp3V5.OUT_FILE_V5).delete()
+        // „SP3 TESTAS“ / „SP3 INTERPOLIACIJA“ diagnostikai (skaičiuoklė SP3 nenaudoja)
+        val sols = PositionSolver.solveFiles(File(cacheDir, "gnss_raw.csv"), File(cacheDir, "gnss_nav.csv"), out) {
+            Sp3Storage.search(this)
+        }
+        android.util.Log.i("GnssApp", "gnss_solver.csv: sprendinių ${sols.size}")
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", out)
+    } catch (e: Exception) {
+        runOnUiThread { logError("Skaičiuoklė nepavyko: ${e.message}") }
+        null
+    }
+
+    /** SP3 sprendinio testas; failo nėra, jei SP3 sprendimas nevyko – tada praleidžiama. */
+    private fun sp3TestCsvUri(name: String): Uri? = try {
+        val f = File(cacheDir, name)
+        if (f.exists()) FileProvider.getUriForFile(this, "$packageName.fileprovider", f) else null
+    } catch (e: Exception) { null }
+
+    /** Skaičiuoklės diagnostika (gnss_solver_diag.txt), sukurta kartu su gnss_solver.csv. */
+    private fun solverDiagUri(): Uri? = try {
+        val f = File(cacheDir, PositionSolver.DIAG_FILE)
+        if (f.exists()) FileProvider.getUriForFile(this, "$packageName.fileprovider", f) else null
+    } catch (e: Exception) { null }
+
+    private fun gapLogUri(): Uri? = try {
+        val f = GapLog.file(this)
+        if (!f.exists()) f.writeText("")
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", f)
+    } catch (e: Exception) { null }
+
+    private fun navCsvUri(): Uri? = try {
+        val file = NavRecorder.file(cacheDir)
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+    } catch (e: Exception) {
+        logError("Navigacijos CSV nepavyko: ${e.message}")
         null
     }
 
@@ -4054,6 +5281,10 @@ class MainActivity : AppCompatActivity() {
             appendLine("=== PALYDOVAI ===")
             appendLine(satText)
             appendLine(measText)
+            appendLine("Navigacinių žinučių gauta: ${NavRecorder.received}, įrašyta į gnss_nav.csv: ${NavRecorder.written}")
+            appendLine("Navigacijos klausytojas: ${if (NavRecordService.listenerRegistered) "užregistruotas" else "neužregistruotas"}")
+            appendLine("Navigacijos žinučių statusas: ${NavRecordService.navStatusText()}")
+            appendLine("Navigacijos paslauga (priekinis planas): ${if (NavRecordService.running) "veikia" else "neveikia"}")
             appendLine("Palydovų sąrašas:")
             lastSats.sortedWith(compareBy({ it.const }, { it.svid })).forEach { s ->
                 appendLine("${s.const} ${s.svid}: C/N0 ${fx(s.cn0.toDouble())}, kampas ${fx(s.elev.toDouble(), 0)}°, az ${fx(s.az.toDouble(), 0)}°, fiksui: ${if (s.used) "taip" else "ne"}")

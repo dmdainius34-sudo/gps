@@ -16,7 +16,8 @@ object Sp3Locator {
     /** name – failo vardas; location – pilnas kelias arba URI. */
     class Found(val name: String, val location: String, val open: () -> InputStream)
 
-    class Search(val used: Found?, val checks: List<Check>) {
+    /** used – pirmas rastas paieškos tvarka; all – po vieną naujausią iš kiekvienos vietos (parinkimui pagal laiką). */
+    class Search(val used: Found?, val checks: List<Check>, val all: List<Found> = listOfNotNull(used)) {
         fun lines(): List<String> = checks.map { c ->
             "${c.location} – ${c.status}" + (c.file?.let { ": $it" } ?: "")
         }
@@ -24,7 +25,7 @@ object Sp3Locator {
 
     private val DATE = Regex("_(\\d{11})_")
 
-    fun matches(name: String) = name.endsWith(".sp3.gz", ignoreCase = true)
+    fun matches(name: String) = name.endsWith(".sp3.gz", ignoreCase = true) || name.endsWith(".sp3", ignoreCase = true)
 
     /** Metai + diena + laikas iš vardo (_20263120000_ -> 20263120000); be datos – -1. */
     fun dateKey(name: String): Long = DATE.find(name)?.groupValues?.get(1)?.toLong() ?: -1L
@@ -57,16 +58,29 @@ object Sp3Locator {
     /** Patikrina visas vietas; naudojama pirma vieta, kurioje failas rastas. */
     fun search(dirs: List<File>, picked: () -> Pair<Check, Found?>): Search {
         val checks = ArrayList<Check>()
-        var used: Found? = null
+        val all = ArrayList<Found>()
         for (dir in dirs) {
             val (file, status) = inspect(dir)
             checks.add(Check(dir.path, status, file?.name))
-            if (used == null && file != null) {
-                used = Found(file.name, file.absolutePath) { file.inputStream() }
-            }
+            if (file != null) all.add(Found(file.name, file.absolutePath) { file.inputStream() })
         }
         val (check, found) = picked()
         checks.add(check)
-        return Search(used ?: found, checks)
+        found?.let { all.add(it) }
+        return Search(all.firstOrNull(), checks, all)
+    }
+
+    /**
+     * Parinkimas pagal įrašo laiką: iš failų, kurių intervalas apima visą įrašą, imamas naujausias (vėliausia pradžia);
+     * jei tokių nėra – pirmas paieškos tvarka. range – failo intervalas iš antraštės (null – neperskaitytas).
+     */
+    fun chooseByRange(all: List<Found>, rec: Pair<Double, Double>?, range: (Found) -> Pair<Double, Double>?): Pair<Found?, Pair<Double, Double>?> {
+        if (all.isEmpty()) return null to null
+        val ranges = all.map { it to try { range(it) } catch (e: Exception) { null } }
+        if (rec != null) {
+            val cover = ranges.filter { (_, r) -> r != null && Sp3Reader.coverage(r.first, r.second, rec.first, rec.second) == Sp3Reader.COVERS }
+            cover.maxByOrNull { it.second!!.first }?.let { return it }
+        }
+        return ranges.first()
     }
 }

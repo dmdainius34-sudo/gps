@@ -151,9 +151,53 @@ class Sp3Reader private constructor(
             return days * 86400.0 + h * 3600.0 + mi * 60.0 + s
         }
 
-        /** Skaito SP3 (gzip arba paprastą) srautą. */
-        fun read(input: InputStream, gzip: Boolean = true): Sp3Reader {
-            val stream = if (gzip) GZIPInputStream(input) else input
+        /** Gzip atpažįstamas pagal pirmus du baitus (1F 8B), ne pagal failo vardą. */
+        fun unpacked(input: InputStream): InputStream {
+            val b = java.io.BufferedInputStream(input)
+            b.mark(2)
+            val m0 = b.read(); val m1 = b.read()
+            b.reset()
+            return if (m0 == 0x1F && m1 == 0x8B) GZIPInputStream(b) else b
+        }
+
+        /** Laiko intervalas (GPS s) iš antraštės: #d pradžia, epochų skaičius ir ## intervalas; null – neatpažinta. */
+        fun headerRange(input: InputStream): Pair<Double, Double>? {
+            var start: Double? = null; var n = 0; var step = 0.0
+            unpacked(input).bufferedReader().use { br ->
+                for (k in 0 until 4) {
+                    val line = br.readLine() ?: break
+                    if (line.startsWith("#") && !line.startsWith("##") && line.length >= 40) {
+                        val p = line.substring(3, 31).trim().split(Regex("\\s+"))
+                        start = try { gpsSeconds(p[0].toInt(), p[1].toInt(), p[2].toInt(), p[3].toInt(), p[4].toInt(), p[5].toDouble()) } catch (e: Exception) { null }
+                        n = line.substring(32, 39).trim().toIntOrNull() ?: 0
+                    } else if (line.startsWith("##")) {
+                        step = line.substring(2).trim().split(Regex("\\s+")).getOrNull(2)?.toDoubleOrNull() ?: 0.0
+                    }
+                }
+            }
+            val s = start ?: return null
+            if (n <= 0 || step <= 0.0) return null
+            return s to s + (n - 1) * step
+        }
+
+        /** GPS laikas (s nuo 1980-01-06) -> UTC tekstas „yyyy-MM-dd HH:mm“ (šuoliai 18 s). */
+        fun utc(gps: Double): String =
+            java.time.LocalDateTime.of(1980, 1, 6, 0, 0).plusSeconds((gps - 18.0).toLong())
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.US))
+
+        /** Įrašo [rStart, rEnd] padėtis SP3 [sStart, sEnd] atžvilgiu: COVERS, PARTIAL arba OUTSIDE. */
+        fun coverage(sStart: Double, sEnd: Double, rStart: Double, rEnd: Double): String = when {
+            rStart >= sStart && rEnd <= sEnd -> COVERS
+            rEnd < sStart || rStart > sEnd -> OUTSIDE
+            else -> PARTIAL
+        }
+        const val COVERS = "covers"
+        const val PARTIAL = "partial"
+        const val OUTSIDE = "outside"
+
+        /** Skaito SP3 (gzip arba paprastą) srautą; gzip nustatomas pagal turinį, parametras paliktas suderinamumui. */
+        fun read(input: InputStream, @Suppress("UNUSED_PARAMETER") gzip: Boolean? = null): Sp3Reader {
+            val stream = unpacked(input)
             var week = 0; var sow = 0.0; var interval = 300.0; var nEp = 0
             val times = ArrayList<Double>()
             val rows = HashMap<String, ArrayList<Pair<Int, DoubleArray>>>()

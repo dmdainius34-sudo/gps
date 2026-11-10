@@ -187,11 +187,26 @@ object Sp3Solver {
     class Result(val epochsTotal: Int, val inRange: Int, val skipped: Int, val sols: List<Pair<Long, PositionSolver.Solution>>,
         /** Atmestų palydovų skaičius kiekvienoje SP3 intervalo epochoje (tik v2). */
         val dropped: List<Int> = emptyList()) {
-        fun medianHoriz(): Double? {
+        fun medianHoriz(ref: Pair<Double, Double> = REF_LAT to REF_LON): Double? {
             if (sols.isEmpty()) return null
-            val d = sols.map { PositionSolver.horizDist(it.second.lat, it.second.lon, REF_LAT, REF_LON) }.sorted()
+            val d = sols.map { PositionSolver.horizDist(it.second.lat, it.second.lon, ref.first, ref.second) }.sorted()
             return if (d.size % 2 == 1) d[d.size / 2] else (d[d.size / 2 - 1] + d[d.size / 2]) / 2
         }
+    }
+
+    /** Įrašo laiko intervalas (GPS s) iš gnss_raw.csv epochų; null – epochų nėra. */
+    fun recordingRange(raw: File): Pair<Double, Double>? {
+        var a = Double.MAX_VALUE; var b = -Double.MAX_VALUE
+        PositionSolver.readEpochs(raw) { ep -> val t = ep.week * W + ep.tRxTow; if (t < a) a = t; if (t > b) b = t }
+        return if (a <= b) a to b else null
+    }
+
+    /** „SP3 failas netinka: …“, kai įrašas nėra visas SP3 intervale; null – tinka arba nežinoma. */
+    fun staleNote(sp3: Sp3Reader, rec: Pair<Double, Double>?): String? {
+        if (rec == null || sp3.epochCount == 0) return null
+        val s0 = sp3.epochs.first(); val s1 = sp3.epochs.last()
+        if (Sp3Reader.coverage(s0, s1, rec.first, rec.second) == Sp3Reader.COVERS) return null
+        return "SP3 failas netinka: apima ${Sp3Reader.utc(s0)}–${Sp3Reader.utc(s1)} UTC, įrašas ${Sp3Reader.utc(rec.first)}–${Sp3Reader.utc(rec.second)} UTC"
     }
 
     /** gnss_raw.csv + SP3 -> gnss_solver_sp3_test.csv; epochos už SP3 intervalo praleidžiamos ir skaičiuojamos. */
@@ -222,12 +237,15 @@ object Sp3Solver {
         appendLine("--- SP3 TESTAS v2 ---")
         appendLine("Pataisos: Saastamoinen, Klobuchar (numatytieji koeficientai), maska 10°; failas $OUT_FILE_V2")
         val fixH = PositionSolver.medianFixHeight(fix)
-        appendLine("Planšetės fiksas: $FIX_LAT, $FIX_LON; elipsoidinio aukščio mediana: " +
-            (fixH?.let { "%.2f m".format(Locale.US, it) } ?: "nėra"))
+        val ref = PositionSolver.medianFix(fix)
+        appendLine("Atskaitos taškas – šio įrašo gnss_fix.csv mediana: " +
+            (ref?.let { "%.7f, %.7f".format(Locale.US, it.first, it.second) } ?: "nėra (gnss_fix.csv tuščias)") +
+            "; elipsoidinio aukščio mediana: " + (fixH?.let { "%.2f m".format(Locale.US, it) } ?: "nėra"))
         fun line(name: String, r: Result?) {
             val sols = r?.sols ?: emptyList()
             if (sols.isEmpty()) { appendLine("$name: nėra sprendinių"); return }
-            val d = sols.map { PositionSolver.horizDist(it.second.lat, it.second.lon, FIX_LAT, FIX_LON) }.sorted()
+            if (ref == null) { appendLine("$name: sprendinių ${sols.size}; atstumų nėra (nėra atskaitos taško)"); return }
+            val d = sols.map { PositionSolver.horizDist(it.second.lat, it.second.lon, ref.first, ref.second) }.sorted()
             val h = PositionSolver.percentile(sols.map { it.second.h }.sorted(), 0.5)
             appendLine("$name: mediana %.2f m, 90 %% %.2f m, maks. %.2f m; aukščio mediana %.2f m, skirtumas nuo fikso %s; sprendinių %d".format(Locale.US,
                 PositionSolver.percentile(d, 0.5), PositionSolver.percentile(d, 0.9), d.last(), h,
@@ -240,14 +258,17 @@ object Sp3Solver {
             if (dropped.isEmpty()) "nėra" else dropped.joinToString(" "))
     }
 
-    fun diagBlock(r: Result?, error: String? = null): String = buildString {
+    /** ref – šio įrašo gnss_fix.csv mediana (null – nėra); note – „SP3 failas netinka: …“. */
+    fun diagBlock(r: Result?, error: String? = null, ref: Pair<Double, Double>? = REF_LAT to REF_LON, note: String? = null): String = buildString {
         appendLine()
         appendLine("--- SP3 SOLVER TESTAS ---")
         if (r == null) { appendLine("Neatlikta: ${error ?: "nėra SP3"}"); return@buildString }
+        note?.let { appendLine(it) }
         appendLine("Epochų gnss_raw.csv: ${r.epochsTotal}; SP3 intervale: ${r.inRange}; praleista (už intervalo): ${r.skipped}")
         appendLine("Sprendinių įrašyta ($OUT_FILE): ${r.sols.size}")
-        appendLine("Horizontalaus skirtumo iki atskaitos taško ($REF_LAT, $REF_LON) mediana: " +
-            (r.medianHoriz()?.let { "%.2f m".format(Locale.US, it) } ?: "nėra"))
+        if (ref == null) appendLine("Atskaitos taškas: nėra (gnss_fix.csv tuščias) – atstumai neskaičiuojami")
+        else appendLine("Horizontalaus skirtumo iki atskaitos taško (%.7f, %.7f – gnss_fix.csv mediana) mediana: ".format(Locale.US, ref.first, ref.second) +
+            (r.medianHoriz(ref)?.let { "%.2f m".format(Locale.US, it) } ?: "nėra"))
         appendLine("Pirmieji 3 sprendiniai:")
         if (r.sols.isEmpty()) appendLine("  (nėra)")
         r.sols.take(3).forEach { (t, s) ->

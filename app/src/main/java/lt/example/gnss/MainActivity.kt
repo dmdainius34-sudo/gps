@@ -3696,6 +3696,23 @@ class DraggablePanel(
         setPadding((8 * resources.displayMetrics.density).toInt(), 0, (8 * resources.displayMetrics.density).toInt(), 0)
     }
 
+    /** „Atnaujinti SP3“ – atsisiųsti naujausią CODE ultra-greitų orbitų failą iš AIUB. */
+    var onUpdateSp3: (() -> Unit)? = null
+    private val sp3UpdateBtn = Button(context).apply {
+        text = "Atnaujinti SP3"
+        textSize = 12f
+        isAllCaps = false
+        minWidth = 0; minimumWidth = 0
+        setPadding((8 * resources.displayMetrics.density).toInt(), 0, (8 * resources.displayMetrics.density).toInt(), 0)
+    }
+    private val sp3Status = TextView(context).apply {
+        text = "SP3: nėra"
+        textSize = 12f
+        setTextColor(Color.DKGRAY)
+    }
+    fun setSp3Status(line: String) { sp3Status.text = line }
+    fun setSp3Busy(busy: Boolean) { sp3UpdateBtn.isEnabled = !busy; if (busy) sp3Status.text = "SP3: atsisiunčiama…" }
+
     var onPickSp3: (() -> Unit)? = null
     private val sp3Btn = Button(context).apply {
         text = "Pasirinkti SP3 aplanką"
@@ -3764,6 +3781,7 @@ class DraggablePanel(
         header.addView(cancelBtn)
 
         inputRow.addView(questionInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        inputRow.addView(sp3UpdateBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         inputRow.addView(shareBtn)
         recRow.addView(coldBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
         recRow.addView(endRecBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
@@ -3773,6 +3791,7 @@ class DraggablePanel(
         panel.addView(body, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         panel.addView(recRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         panel.addView(inputRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        panel.addView(sp3Status, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(optionsLayout)
         bodyInner.addView(rawRow)
         bodyInner.addView(alphaLabel)
@@ -3796,6 +3815,7 @@ class DraggablePanel(
         endRecBtn.setOnClickListener { onEndRecord?.invoke() }
         coldBtn.setOnClickListener { onColdStart?.invoke() }
         sp3Btn.setOnClickListener { onPickSp3?.invoke() }
+        sp3UpdateBtn.setOnClickListener { onUpdateSp3?.invoke() }
 
         bubble.setOnTouchListener { _, ev -> bubbleGd.onTouchEvent(ev); false }
     }
@@ -4022,7 +4042,8 @@ class DraggablePanel(
         val rowH = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
         recRow.measure(rowW, rowH)
         inputRow.measure(rowW, rowH)
-        val maxBody = (parentH * 0.88f).toInt() - header.height - recRow.measuredHeight - inputRow.measuredHeight -
+        sp3Status.measure(rowW, rowH)
+        val maxBody = (parentH * 0.88f).toInt() - header.height - recRow.measuredHeight - inputRow.measuredHeight - sp3Status.measuredHeight -
             panel.paddingTop - panel.paddingBottom
         val lp = body.layoutParams
         lp.height = if (bodyInner.measuredHeight > maxBody && maxBody > 0) maxBody else LinearLayout.LayoutParams.WRAP_CONTENT
@@ -4371,6 +4392,33 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Būsenos eilutė po „Atnaujinti SP3“: atsisiųsto failo intervalas (UTC) arba „SP3: nėra“. */
+    private fun refreshSp3Status() {
+        Thread {
+            val line = try { Sp3Aiub.status(this) } catch (e: Exception) { "SP3: nėra" }
+            runOnUiThread { sharePanel?.setSp3Status(line) }
+        }.start()
+    }
+
+    /** „Atnaujinti SP3“: AIUB CODE ultra-greitos orbitos fone į programos privatų aplanką. */
+    private fun updateSp3() {
+        sharePanel?.setSp3Busy(true)
+        Thread {
+            val r = try { Sp3Aiub.download(Sp3Aiub.dir(this)) } catch (e: Exception) { Sp3Aiub.Result.Fail("klaida: ${e.message}") }
+            val status = try { Sp3Aiub.status(this) } catch (e: Exception) { "SP3: nėra" }
+            runOnUiThread {
+                sharePanel?.setSp3Busy(false)
+                sharePanel?.setSp3Status(status)
+                val msg = when (r) {
+                    is Sp3Aiub.Result.Ok -> "SP3 atnaujintas: ${r.name}"
+                    is Sp3Aiub.Result.Fail -> "SP3 neatnaujintas: ${r.message}"
+                }
+                if (r is Sp3Aiub.Result.Fail) logError(msg)
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            }
+        }.start()
+    }
+
     /** Vieną kartą pasiūlo pasirinkti SP3 aplanką, jei failo nerasta; po to tęsia eksportą. */
     private fun offerSp3PickerOnce(next: () -> Unit) {
         if (Sp3Storage.pickerOffered(this)) { next(); return }
@@ -4577,6 +4625,7 @@ class MainActivity : AppCompatActivity() {
                         report += "CSV savitikra (laukų skaičius = antraštės): gnss_raw.csv netinkamų $bad iš $total; " +
                             "gnss_fix.csv $badF iš $totalF; gnss_nav.csv $badN iš $totalN\n"
                         val u = solverCsvUri()
+                        PositionSolver.lastSp3Note?.let { report += it + "\n" }
                         val s = sp3TestCsvUri(Sp3Solver.OUT_FILE)
                         val s2 = sp3TestCsvUri(Sp3Solver.OUT_FILE_V2)
                         val d = solverDiagUri()
@@ -4609,6 +4658,8 @@ class MainActivity : AppCompatActivity() {
         panel.onEndRecord = { toggleRecording() }
         panel.onColdStart = { askColdStart() }
         panel.onPickSp3 = { launchSp3Picker() }
+        panel.onUpdateSp3 = { updateSp3() }
+        refreshSp3Status()
         panel.setRecording(NavRecordService.running || !recordEnded)
         sharePanel = panel
         

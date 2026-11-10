@@ -893,20 +893,29 @@ object PositionSolver {
                 w.write(String.format(Locale.US, "%d,%.8f,%.8f,%.2f,%d,%.2f\n", ep.timeMs, s.lat, s.lon, s.h, s.sats, s.hacc))
             }
         }
+        lastSp3Note = null
         lastDiagText = diag.text(sols.size) + (sp3?.let { locate ->
             var location = "nėra"
             var searched = emptyList<String>()
             try {
                 val search = locate()
-                searched = search.lines()
-                val used = search.used ?: throw java.io.FileNotFoundException(Sp3Locator.NOT_FOUND)
+                val rec = try { Sp3Solver.recordingRange(raw) } catch (e: Exception) { null }
+                // Parinkimas pagal laiką: failas, kurio intervalas apima įrašą (keli – naujausias)
+                val (used, _) = Sp3Locator.chooseByRange(search.all, rec) { f -> f.open().use { Sp3Reader.headerRange(it) } }
+                searched = search.lines() + listOf("Įrašas: " + (rec?.let { "${Sp3Reader.utc(it.first)}–${Sp3Reader.utc(it.second)} UTC" } ?: "nėra epochų") +
+                    "; parinkta pagal laiko intervalą: " + (used?.name ?: "nėra"))
+                if (used == null) throw java.io.FileNotFoundException(Sp3Locator.NOT_FOUND)
                 location = used.location
-                val r = used.open().use { Sp3Reader.read(it, gzip = used.name.endsWith(".gz", true)) }
+                val r = used.open().use { Sp3Reader.read(it) }
+                val note = Sp3Solver.staleNote(r, rec)
+                lastSp3Note = note
+                val fixFile = File(raw.parentFile, SessionFiles.FIX)
+                val ref = try { medianFix(fixFile) } catch (e: Exception) { null }
                 // SP3 sprendinys – tik testui, atskiras failas (pagrindinė išvestis nekeičiama)
                 val sp3Sol = try {
                     val v1 = Sp3Solver.solveFile(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE))
                     val v2 = try { Sp3Solver.solveFile(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE_V2), corrected = true) } catch (e: Exception) { null }
-                    Sp3Solver.diagBlock(v1) + Sp3Solver.v2Block(v1, v2, File(raw.parentFile, SessionFiles.FIX))
+                    Sp3Solver.diagBlock(v1, ref = ref, note = note) + Sp3Solver.v2Block(v1, v2, fixFile)
                 } catch (e: Exception) { Sp3Solver.diagBlock(null, e.message) }
                 Sp3Reader.diagBlock(location, r, searched = searched) + sp3Sol
             }
@@ -946,6 +955,28 @@ object PositionSolver {
     /** Procentilis p (0..1) didėjančiai surūšiuotame sąraše (artimiausio rango metodas). */
     fun percentile(sorted: List<Double>, p: Double): Double =
         sorted[(kotlin.math.ceil(p * sorted.size).toInt() - 1).coerceIn(0, sorted.size - 1)]
+
+    /** Fiksų platumos ir ilgumos (gnss_fix.csv) medianos – SP3 testų atskaitos taškas; null – fiksų nėra. */
+    fun medianFix(fix: File): Pair<Double, Double>? {
+        if (!fix.exists()) return null
+        val la = ArrayList<Double>(); val lo = ArrayList<Double>()
+        fix.bufferedReader().use { br ->
+            val head = br.readLine()?.split(',') ?: return null
+            val iLa = head.indexOf("platuma"); val iLo = head.indexOf("ilguma")
+            if (iLa < 0 || iLo < 0) return null
+            br.forEachLine { l ->
+                val p = l.split(',')
+                val a = p.getOrNull(iLa)?.toDoubleOrNull(); val b = p.getOrNull(iLo)?.toDoubleOrNull()
+                if (a != null && b != null && !(a == 0.0 && b == 0.0)) { la.add(a); lo.add(b) }
+            }
+        }
+        if (la.isEmpty()) return null
+        la.sort(); lo.sort()
+        return percentile(la, 0.5) to percentile(lo, 0.5)
+    }
+
+    /** Paskutinio solveFiles() SP3 tinkamumo pastaba ataskaitai („SP3 failas netinka: …“) arba null. */
+    @Volatile var lastSp3Note: String? = null
 
     /** Fiksų elipsoidinio aukščio (gnss_fix.csv, aukstis_elips_m) mediana. */
     fun medianFixHeight(fix: File): Double? {

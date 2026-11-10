@@ -120,7 +120,7 @@ class Sp3SolverTest {
     fun v2BlockReportsDistancesAndHeights() {
         val dir = createTempDir("sp3cmp")
         val fix = File(dir, "gnss_fix.csv")
-        fix.writeText("laikas_ms,platuma,ilguma,aukstis_elips_m\n1000,54.0,25.0,100.0\n2000,54.0,25.0,102.0\n3000,54.0,25.0,\n")
+        fix.writeText("laikas_ms,platuma,ilguma,aukstis_elips_m\n1000,54.73998,25.25466,100.0\n2000,54.73998,25.25466,102.0\n3000,54.73998,25.25466,\n")
         // 1 m, 2 m ... 10 m į šiaurę nuo fikso taško, aukštis 110 m
         val perM = 1.0 / Math.toRadians(1.0) / 6_371_000.0
         val sols = (1..10).map { k ->
@@ -129,6 +129,7 @@ class Sp3SolverTest {
         val text = Sp3Solver.v2Block(Sp3Solver.Result(10, 10, 0, sols), Sp3Solver.Result(10, 10, 0, sols, List(10) { it % 2 }), fix)
         assertTrue(text, text.contains("--- SP3 TESTAS v2 ---"))
         assertTrue(text, text.contains("elipsoidinio aukščio mediana: 100.00 m"))
+        assertTrue(text, text.contains("gnss_fix.csv mediana: 54.7399800, 25.2546600"))
         assertTrue(text, text.contains("v2: mediana 5.00 m, 90 % 9.00 m, maks. 10.00 m; aukščio mediana 110.00 m, skirtumas nuo fikso 10.00 m; sprendinių 10"))
         assertTrue(text, text.contains("v1: mediana 5.00 m"))
         assertTrue(text, text.contains("iš viso 5; per epochą: 0 1 0 1 0 1 0 1 0 1"))

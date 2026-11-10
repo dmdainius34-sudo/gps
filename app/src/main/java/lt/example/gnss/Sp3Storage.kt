@@ -21,7 +21,8 @@ object Sp3Storage {
         val download = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         val own = ctx.getExternalFilesDir(null)
             ?: File(Environment.getExternalStorageDirectory(), "Android/data/${ctx.packageName}/files")
-        return Sp3Locator.search(listOf(download, own)) { pickedFolder(ctx) }
+        // 1) „Atnaujinti SP3“ atsisiųstas failas, 2) Download, 3) programos aplankas, 4) pasirinktas SAF aplankas
+        return Sp3Locator.search(listOf(Sp3Aiub.dir(ctx), download, own)) { pickedFolder(ctx) }
     }
 
     private fun pickedFolder(ctx: Context): Pair<Sp3Locator.Check, Sp3Locator.Found?> {

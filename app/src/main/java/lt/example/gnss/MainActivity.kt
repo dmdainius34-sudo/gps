@@ -2463,6 +2463,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     fun setSouthUpMode(on: Boolean) { southUp = on }
 
     private var earthTex = 0
+    private var earthNightTex = 0
     private var earthProg = 0
     private val earthAxis by lazy { floatBuf(floatArrayOf(0f, 0f, -0.5f, 0f, 0f, 0.5f)) }
     private var earthPos: FloatBuffer? = null
@@ -2490,6 +2491,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             android.util.Log.e("GnssApp", "earth.jpg nerastas assets aplanke: app/src/main/assets/earth.jpg", e)
             earthTex = 0
             main.post { Toast.makeText(appCtx, "earth.jpg nerastas: app/src/main/assets/earth.jpg", Toast.LENGTH_LONG).show() }
+        }
+        earthNightTex = 0
+        try {
+            appCtx.assets.open("earth_night.jpg").use { ins ->
+                val bmp = android.graphics.BitmapFactory.decodeStream(ins)
+                if (bmp != null) earthNightTex = uploadTexture(bmp)
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("GnssApp", "earth_night.jpg nerastas: naktinė pusė rodoma šešėliu", e)
         }
         moonTex = 0
         try {
@@ -2650,6 +2660,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, earthTex)
             GLES20.glUniform1i(GLES20.glGetUniformLocation(earthProg, "uTex"), 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (earthNightTex != 0) earthNightTex else earthTex)
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(earthProg, "uNight"), 1)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(earthProg, "uHasNight"), if (earthNightTex != 0) 1f else 0f)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(earthProg, "uWater"), 1f)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
         }
 
@@ -2865,6 +2881,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, moonTex)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(earthProg, "uTex"), 0)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(earthProg, "uHasNight"), 0f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(earthProg, "uWater"), 0f)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
     }
 
@@ -3471,24 +3489,53 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         private const val EARTH_FS = """
             precision mediump float;
             uniform sampler2D uTex;
+            uniform sampler2D uNight;
+            uniform float uHasNight;
+            uniform float uWater;
             uniform vec3 uLight;
             uniform vec3 uEye;
             varying vec2 vUV;
             varying vec3 vN;
+            float oceanAt(vec2 uv) { return 1.0 - smoothstep(0.08, 0.22, texture2D(uTex, uv).r); }
             void main() {
                 vec3 n = normalize(vN);
                 vec3 l = normalize(uLight);
                 vec3 v = normalize(uEye);
-                float d = max(dot(n, l), 0.0);
-                float soft = smoothstep(-0.12, 0.25, dot(n, l));   // švelnus terminatorius
+                float nl = dot(n, l);
+                float d = max(nl, 0.0);
+                float soft = smoothstep(-0.12, 0.25, nl);          // švelnus terminatorius
                 vec4 t = texture2D(uTex, vUV);
-                float ocean = 1.0 - smoothstep(0.08, 0.22, t.r);   // vandenys tamsiai mėlyni
-                vec3 h = normalize(l + v);
-                float spec = pow(max(dot(n, h), 0.0), 90.0) * ocean * 0.8;
-                float fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+                float ocean = oceanAt(vUV) * uWater;
+                // Gylis: kuo toliau nuo kranto (daugiau vandens aplink), tuo giliau
+                float r = 0.012;
+                float deep = 0.0;
+                deep += oceanAt(vUV + vec2( r, 0.0)) + oceanAt(vUV + vec2(-r, 0.0));
+                deep += oceanAt(vUV + vec2(0.0,  r)) + oceanAt(vUV + vec2(0.0, -r));
+                deep += oceanAt(vUV + vec2( r,  r) * 2.0) + oceanAt(vUV + vec2(-r, -r) * 2.0);
+                deep += oceanAt(vUV + vec2( r, -r) * 2.0) + oceanAt(vUV + vec2(-r,  r) * 2.0);
+                deep = smoothstep(0.3, 1.0, deep / 8.0) * ocean;
+                float nv = max(dot(n, v), 0.0);
+                float fres = pow(1.0 - nv, 3.0);
                 vec3 atm = vec3(0.35, 0.6, 1.0) * fres * 1.1;      // atmosferos kraštas
-                vec3 col = t.rgb * (0.12 + 0.95 * d * soft) + vec3(spec) + atm;
-                gl_FragColor = vec4(col, 1.0);
+                // Permatomas vanduo: sekluma turkio, gelmė beveik juoda mėlyna
+                vec3 shallow = mix(t.rgb, vec3(0.05, 0.32, 0.42), 0.45);
+                vec3 abyss = vec3(0.004, 0.02, 0.07);
+                vec3 water = mix(shallow, abyss, deep);
+                // Šviesa skverbiasi į vandenį ir silpsta su gyliu (įstrižai – ilgesnis kelias)
+                float path = deep * (1.0 + 1.5 * (1.0 - nv));
+                water *= exp(-1.2 * path) * 0.7 + 0.3;
+                vec3 base = mix(t.rgb, water, ocean);
+                // Blizgesys: ryškus Saulės atspindys ir dangaus atspindys pakraščiuose
+                vec3 h = normalize(l + v);
+                float nh = max(dot(n, h), 0.0);
+                float spec = (pow(nh, 160.0) * 1.6 + pow(nh, 24.0) * 0.18) * ocean;
+                float wFres = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
+                vec3 sky = vec3(0.35, 0.55, 0.85) * wFres * ocean * soft;
+                vec3 day = base * (0.12 + 0.95 * d * soft) + vec3(1.0, 0.95, 0.85) * spec * soft + sky + atm;
+                // Naktinė pusė: miestų šviesų nuotrauka vietoj šešėlio
+                vec3 night = texture2D(uNight, vUV).rgb * 1.6 + atm * 0.35;
+                float dayW = mix(1.0, smoothstep(-0.18, 0.12, nl), uHasNight);
+                gl_FragColor = vec4(mix(night, day, dayW), 1.0);
             }
         """
         private const val CMB_VS = """

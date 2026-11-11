@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Žvaigždžių fono konvertavimas: galaktinės koordinatės (centras l=0, b=0; l didėja į kairę) ->
+"""Žvaigždžių fono konvertavimas: galaktinės koordinatės (centras l=0, b=0; l didėja į kairę; b=+90 apačioje) ->
 lygiakampė RA/Dec (u: RA −180..180, v: Dec +90..−90), IAU J2000 matrica. Naudojimas: stars_to_eq.py įvestis išvestis.jpg"""
 import sys, numpy as np
 from PIL import Image
@@ -11,7 +11,7 @@ ra = np.radians(-180 + 360 * (np.arange(OW) + 0.5) / OW); de = np.radians(90 - 1
 RA, DE = np.meshgrid(ra, de)
 g = np.stack([np.cos(DE) * np.cos(RA), np.cos(DE) * np.sin(RA), np.sin(DE)], -1) @ M.T
 l = np.degrees(np.arctan2(g[..., 1], g[..., 0])); b = np.degrees(np.arcsin(np.clip(g[..., 2], -1, 1)))
-xi = (W / 2 - l / 360 * W - 0.5) % W; yi = np.clip(H / 2 - b / 180 * H - 0.5, 0, H - 1)
+xi = (W / 2 - l / 360 * W - 0.5) % W; yi = np.clip(H / 2 + b / 180 * H - 0.5, 0, H - 1)   # šaltinyje galaktikos šiaurė apačioje
 x0 = np.floor(xi).astype(int); y0 = np.floor(yi).astype(int); x1 = (x0 + 1) % W; y1 = np.minimum(y0 + 1, H - 1)
 ax = (xi - x0)[..., None]; ay = (yi - y0)[..., None]
 out = (s[y0, x0] * (1 - ax) + s[y0, x1] * ax) * (1 - ay) + (s[y1, x0] * (1 - ax) + s[y1, x1] * ax) * ay

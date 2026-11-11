@@ -117,16 +117,7 @@ class NavRecordService : Service() {
     private val callback = object : GnssNavigationMessage.Callback() {
         override fun onGnssNavigationMessageReceived(event: GnssNavigationMessage) {
             NavRecorder.append(cacheDir, event)
-            try { NavBits.put(event.type, event.svid, event.data) } catch (_: Exception) {}
-            if (event.type == GnssNavigationMessage.TYPE_GPS_L1CA) try {
-                BroadcastEph.add(event.svid, event.data, Math.floorDiv(Sp3Live.gpsNow().toLong(), 604_800L).toInt())
-            } catch (e: Exception) { Log.w("GnssApp", "BroadcastEph: ${e.message}") }
-            try {
-                when (event.type) {
-                    GalileoNav.TYPE -> BroadcastEph.addGal(event.svid, event.data, Sp3Live.gpsNow())
-                    GloNav.TYPE -> BroadcastEph.addGlo(event.svid, event.data, System.currentTimeMillis())
-                }
-            } catch (e: Exception) { Log.w("GnssApp", "BroadcastEph GAL/GLO: ${e.message}") }
+            try { NavFeed.onMessage(event.type, event.svid, event.data) } catch (e: Exception) { Log.w("GnssApp", "NavFeed: ${e.message}") }
             try { BroadcastEph.save(filesDir) } catch (e: Exception) { Log.w("GnssApp", "BroadcastEph.save: ${e.message}") }
             // pranešimo tekstą atnaujiname retai
             val n = NavRecorder.written

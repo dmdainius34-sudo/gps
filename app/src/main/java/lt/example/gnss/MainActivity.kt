@@ -1619,15 +1619,26 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val el = Math.toRadians(s.elev.toDouble().coerceIn(0.0, 90.0))
             val az = Math.toRadians(s.az.toDouble())
             val re = 6371.0
-            val rs = re + altKm(s.const)
+            val rs = re + altKm(s.const, s.svid)
             val se = sin(el)
             val rho = -re * se + kotlin.math.sqrt(re * re * se * se + rs * rs - re * re)
-            val dist = rho * EARTH_R / re
             val dx = cos(el) * sin(az); val dy = cos(el) * cos(az); val dz = sin(el)
+            if (earthMatLast[10] != 0f) {
+                // Tas pats mastelis ir ta pati Žemės matrica kaip SP3 palydovams: nuo stebėtojo vietos paviršiuje (ECEF, km)
+                val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon)
+                val o = doubleArrayOf(re * cos(la) * cos(lo), re * cos(la) * sin(lo), re * sin(la))
+                val e = doubleArrayOf(-sin(lo), cos(lo), 0.0)
+                val n = doubleArrayOf(-sin(la) * cos(lo), -sin(la) * sin(lo), cos(la))
+                val u = doubleArrayOf(cos(la) * cos(lo), cos(la) * sin(lo), sin(la))
+                out.add(SatI(s, ecefToScene(DoubleArray(3) { o[it] + rho * (dx * e[it] + dy * n[it] + dz * u[it]) })))
+                continue
+            }
+            val dist = rho * EARTH_R / re
+            val ob = DoubleArray(3) { fU[it] * EARTH_R }
             out.add(SatI(s, floatArrayOf(
-                (fP[0] + dist * (dx * fE[0] + dy * fN[0] + dz * fU[0])).toFloat(),
-                (fP[1] + dist * (dx * fE[1] + dy * fN[1] + dz * fU[1])).toFloat(),
-                (fP[2] + dist * (dx * fE[2] + dy * fN[2] + dz * fU[2])).toFloat())))
+                (ob[0] + dist * (dx * fE[0] + dy * fN[0] + dz * fU[0])).toFloat(),
+                (ob[1] + dist * (dx * fE[1] + dy * fN[1] + dz * fU[1])).toFloat(),
+                (ob[2] + dist * (dx * fE[2] + dy * fN[2] + dz * fU[2])).toFloat())))
         }
         satsI = out
         approxSats = approx
@@ -1760,7 +1771,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // Zoom: kameros atstumas kiekvieną kadrą; artima riba mažėja priartinus (kad Žemė nebūtų nukirpta)
         val near = ((zoom - EARTH_R) * 0.3f).coerceIn(0.003f, 0.1f)
-        Matrix.perspectiveM(proj, 0, 40f, aspectNow, near, 20f)
+        Matrix.perspectiveM(proj, 0, 40f, aspectNow, near, 60f)
         proj[9] = if (observerView()) 0f else 0.3f                 // stebėtojo režime horizontas – ekrano viduryje
         Matrix.setIdentityM(view, 0)
         Matrix.translateM(view, 0, 0f, 0f, -zoom)
@@ -1826,6 +1837,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawEarth()
         drawEquatorRing(t)
         drawMoon()
+        drawMoonOrbit()
         drawTrails()
 
 
@@ -2557,17 +2569,26 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile var showNavBits = true
     private class BitTex(val tMs: Long, val tex: Int, val n: Int)
     private val bitTex = HashMap<String, BitTex>()
-    private val BIT_WINDOW = 32
+    private val BIT_WINDOW = 24
+    private var maxTex = 0
 
     private fun bitTexture(key: String, m: NavBits.Msg): BitTex {
         bitTex[key]?.let { if (it.tMs == m.tMs) return it; GLES20.glDeleteTextures(1, intArrayOf(it.tex), 0) }
-        val cw = 12; val h = 24
+        // Nepermatomi langeliai: 1 – šviesus langelis su tamsiu „1“, 0 – tamsus langelis su šviesiu „0“
         val n = m.bits.length
+        if (maxTex == 0) { val a = IntArray(1); GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_SIZE, a, 0); maxTex = a[0].coerceAtLeast(2048) }
+        val cw = (maxTex / n).coerceIn(8, 32); val h = 32
         val bmp = Bitmap.createBitmap(cw * n, h, Bitmap.Config.ARGB_8888)
         val cv = Canvas(bmp)
-        val p1 = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); textSize = h * 0.95f; typeface = Typeface.MONOSPACE; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
-        val p0 = Paint(p1).apply { color = 0x88FFFFFF.toInt(); isFakeBoldText = false }
-        for (i in 0 until n) cv.drawText(m.bits[i].toString(), cw * i + cw / 2f, h * 0.85f, if (m.bits[i] == '1') p1 else p0)
+        val fill1 = Paint().apply { color = 0xFFFFFFFF.toInt() }
+        val fill0 = Paint().apply { color = 0xFF202838.toInt() }
+        val t1 = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF000000.toInt(); textSize = minOf(h * 0.8f, cw * 1.3f); typeface = Typeface.MONOSPACE; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
+        val t0 = Paint(t1).apply { color = 0xFFC8D0E0.toInt() }
+        for (i in 0 until n) {
+            val one = m.bits[i] == '1'
+            cv.drawRect(cw * i + 1f, 2f, cw * (i + 1) - 1f, h - 2f, if (one) fill1 else fill0)
+            cv.drawText(m.bits[i].toString(), cw * i + cw / 2f, h * 0.76f, if (one) t1 else t0)
+        }
         val bt = BitTex(m.tMs, uploadTexture(bmp), n)
         bitTex[key] = bt
         return bt
@@ -2586,7 +2607,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val dx = pin[0] - sp[0]; val dy = pin[1] - sp[1]; val dz = pin[2] - sp[2]
         var sx = dy * eyeI[2] - dz * eyeI[1]; var sy = dz * eyeI[0] - dx * eyeI[2]; var sz = dx * eyeI[1] - dy * eyeI[0]
         val sl = sqrt(sx * sx + sy * sy + sz * sz); if (sl < 1e-6f) return
-        val w = 0.011f
+        val w = 0.022f
         sx = sx / sl * w; sy = sy / sl * w; sz = sz / sl * w
         val span = bt.n - BIT_WINDOW
         val k = BIT_WINDOW + (((System.currentTimeMillis() - m.tMs) / 1000.0 * m.rate) % span).toFloat()
@@ -2598,7 +2619,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUseProgram(texProg)
         setMat(texProg, "uMVP", mvp)
         val lift = 0.35f
-        setVec4(texProg, "uColor", col[0] + (1 - col[0]) * lift, col[1] + (1 - col[1]) * lift, col[2] + (1 - col[2]) * lift, if (m.eph) 1f else 0.7f)
+        setVec4(texProg, "uColor", col[0] + (1 - col[0]) * lift, col[1] + (1 - col[1]) * lift, col[2] + (1 - col[2]) * lift, 1f)
         resetAttribs()
         val lp = GLES20.glGetAttribLocation(texProg, "aPos"); val lu = GLES20.glGetAttribLocation(texProg, "aUV")
         GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lu)
@@ -2674,6 +2695,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 val key = si.sat.const + si.sat.svid
                 val q = trails.getOrPut(key) { ArrayDeque() }
                 trailConst[key] = si.sat.const
+                if (q.isNotEmpty()) {
+                    val l = q.last().p
+                    val dx = si.pos[0] - l[0]; val dy = si.pos[1] - l[1]; val dz = si.pos[2] - l[2]
+                    // padėties šaltinis pasikeitė (Android az/el -> SP3/efemeridės) – sena kreivė nebetinka
+                    if (dx * dx + dy * dy + dz * dz > 0.15f * 0.15f) q.clear()
+                }
                 if (q.isEmpty() || now - q.last().t >= 1000L) q.addLast(TrailPt(now, si.pos.copyOf()))
             }
             val it = trails.entries.iterator()
@@ -3235,11 +3262,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private val EARTH_R = 0.25f
 
     /** Palydovo aukštis virš Žemės (km) pagal konstelaciją. */
-    private fun altKm(c: String): Double = when (c) {
+    private fun altKm(c: String, svid: Int = 0): Double = when (c) {
         "GPS" -> 20200.0
         "GAL" -> 23222.0
         "GLO" -> 19100.0
-        "BDS" -> 21528.0
+        // BeiDou: GEO (C01–C05, C59–C63) ir IGSO (C06–C10, C13, C16, C31, C38–C40, C56) – 35 786 km, kiti MEO
+        "BDS" -> if (svid in 1..10 || svid == 13 || svid == 16 || svid == 31 || svid in 38..40 || svid == 56 || svid in 59..63) 35786.0 else 21528.0
         "SBS" -> 35786.0
         else -> 20200.0
     }
@@ -3332,6 +3360,41 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Saulės kryptis – Astro.sunEq (ta pati funkcija naudojama ataskaitos Saulės patikrai). */
     private fun sunDir(): DoubleArray = Astro.sunEq(System.currentTimeMillis())
 
+    /** Mėnulio atstumas nuo Žemės centro (km), pagrindiniai Meeus nariai (~±500 km). */
+    private fun moonDistKm(): Double {
+        val d = jdDays()
+        val M = Math.toRadians(134.963 + 13.064993 * d)
+        val D = Math.toRadians(297.850 + 12.190749 * d)
+        return 385000.56 - 20905.355 * cos(M) - 3699.111 * cos(2 * D - M) - 2955.968 * cos(2 * D) - 569.925 * cos(2 * M)
+    }
+    @Volatile private var moonPosLast: DoubleArray? = null
+
+    /** Mėnulio orbita (silpna linija) ir užrašas su atstumu – Mėnulis tikru masteliu mažas. */
+    private fun drawMoonOrbit() {
+        val d = jdDays()
+        val node = Math.toRadians(125.04 - 0.0529539 * d)
+        val inc = Math.toRadians(5.145)
+        val r = moonDistKm() / 6371.0 * EARTH_R
+        val pts = ArrayList<Float>()
+        val n = 180
+        var prev: DoubleArray? = null
+        for (i in 0..n) {
+            val u = 2 * Math.PI * i / n
+            val lat = kotlin.math.asin(sin(inc) * sin(u - node))
+            val v = eclToEq(u, lat)
+            val p = DoubleArray(3) { fP[it] + v[it] * r }
+            prev?.let { q -> pts.add(q[0].toFloat()); pts.add(q[1].toFloat()); pts.add(q[2].toFloat()); pts.add(p[0].toFloat()); pts.add(p[1].toFloat()); pts.add(p[2].toFloat()) }
+            prev = p
+        }
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        drawLines(pts.toFloatArray(), 0.8f, 0.8f, 0.85f, 0.35f)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        moonPosLast?.let { m ->
+            val (tex, asp) = wideLabel("Mėnulis %.0f km".format(java.util.Locale.US, moonDistKm()))
+            billboard(floatArrayOf(m[0].toFloat(), m[1].toFloat(), (m[2] + 0.2).toFloat()), eyeI, 0.12f * asp, 0.12f, tex, 0.9f, 0.9f, 0.95f, 0.9f)
+        }
+    }
+
     /** Mėnulio kryptis (apytikslė, ~1°). */
     private fun moonDir(): DoubleArray {
         val d = jdDays()
@@ -3347,8 +3410,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawMoon() {
         if (earthPos == null) return
         val dir = moonDir()
-        val k = 0.40f                                   // Mėnulio spindulys = 0,10 scenos vnt.
-        val dist = 1.9                                  // už GEO palydovų (~1,6), arčiau nei Saulė (2,3)
+        // Tikras mastelis: Mėnulio spindulys 1737,4 km, atstumas realiu laiku (Žemės spindulys 6371 km = EARTH_R)
+        val k = (1737.4 / 6371.0 * EARTH_R / 0.25).toFloat()   // tinklelio spindulys 0,25
+        val dist = moonDistKm() / 6371.0 * EARTH_R
+        moonPosLast = doubleArrayOf(fP[0] + dir[0] * dist, fP[1] + dir[1] * dist, fP[2] + dir[2] * dist)
         val px = fP[0] + dir[0] * dist; val py = fP[1] + dir[1] * dist; val pz = fP[2] + dir[2] * dist
         // Artimoji pusė atsukta į Žemę
         val x = doubleArrayOf(-dir[0], -dir[1], -dir[2])
@@ -5639,8 +5704,16 @@ class MainActivity : AppCompatActivity() {
     private var activityStarted = false
     private var recordEnded = false
 
+    /** Navigacijos pranešimai 3D vaizdui ir efemeridėms – ir tada, kai įrašymas neįjungtas. */
+    private val navUiCallback = object : GnssNavigationMessage.Callback() {
+        override fun onGnssNavigationMessageReceived(event: GnssNavigationMessage) {
+            try { NavFeed.onMessage(event.type, event.svid, event.data) } catch (_: Exception) {}
+        }
+    }
+
     private fun unregisterGnss() {
         if (!gnssRegistered) return
+        try { lm.unregisterGnssNavigationMessageCallback(navUiCallback) } catch (_: Exception) {}
         try {
             lm.unregisterGnssStatusCallback(statusCallback)
             lm.unregisterGnssMeasurementsCallback(measCallback)
@@ -5721,6 +5794,7 @@ class MainActivity : AppCompatActivity() {
         NavRecordService.onEnded = { sharePanel?.setRecording(false) }
         if (!gnssRegistered) {
             lm.registerGnssStatusCallback(statusCallback, mainHandler)
+            try { lm.registerGnssNavigationMessageCallback(navUiCallback, mainHandler) } catch (e: Exception) { Log.w("GnssApp", "nav UI: ${e.message}") }
             if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
             SessionFiles.activityWritesFixes = true

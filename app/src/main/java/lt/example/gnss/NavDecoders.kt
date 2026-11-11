@@ -277,3 +277,22 @@ object NavBits {
         else -> null
     }
 }
+
+/** Bendras navigacijos pranešimų priėmimas (įrašymo paslauga ir 3D vaizdas be įrašymo); pasikartojimai per 1,5 s praleidžiami. */
+object NavFeed {
+    private val seen = HashMap<String, Pair<Int, Long>>()
+
+    @Synchronized
+    fun onMessage(type: Int, svid: Int, data: ByteArray, tMs: Long = System.currentTimeMillis()) {
+        val k = "$type:$svid"; val h = data.contentHashCode()
+        seen[k]?.let { if (it.first == h && tMs - it.second in 0..1500) return }
+        seen[k] = h to tMs
+        NavBits.put(type, svid, data, tMs)
+        val tGps = tMs / 1000.0 - 315_964_800.0 + 18.0
+        when (type) {
+            PositionSolver.NAV_TYPE_GPS_L1CA -> BroadcastEph.add(svid, data, Math.floorDiv(tGps.toLong(), 604_800L).toInt(), tMs)
+            GalileoNav.TYPE -> BroadcastEph.addGal(svid, data, tGps, tMs)
+            GloNav.TYPE -> BroadcastEph.addGlo(svid, data, tMs)
+        }
+    }
+}

@@ -67,23 +67,43 @@ object Sp3Live {
         return az to Math.toDegrees(asin(u / sqrt(e * e + n * n + u * u)))
     }
 
-    // Android az/el palyginimas (didžiausi skirtumai nuo programos paleidimo)
-    @Volatile var maxDaz = 0.0; @Volatile var maxDazId = ""
-    @Volatile var maxDel = 0.0; @Volatile var maxDelId = ""
-    @Volatile var compared = 0
-
-    fun compare(id: String, azSp3: Double, elSp3: Double, azAnd: Double, elAnd: Double) {
-        if (elAnd <= 0.0 || (azAnd == 0.0 && elAnd == 0.0)) return
-        compared++
-        val de = abs(elSp3 - elAnd)
-        if (de > maxDel) { maxDel = de; maxDelId = id }
-        if (elAnd in 5.0..80.0) {
-            val da = abs(((azSp3 - azAnd + 540.0) % 360.0) - 180.0)
-            if (da > maxDaz) { maxDaz = da; maxDazId = id }
-        }
+    /** Kampinis atstumas (laipsniais) tarp dviejų krypčių (azimutas, aukštis). */
+    fun angSep(az1: Double, el1: Double, az2: Double, el2: Double): Double {
+        val a1 = Math.toRadians(az1); val e1 = Math.toRadians(el1); val a2 = Math.toRadians(az2); val e2 = Math.toRadians(el2)
+        val c = sin(e1) * sin(e2) + cos(e1) * cos(e2) * cos(a1 - a2)
+        return Math.toDegrees(kotlin.math.acos(c.coerceIn(-1.0, 1.0)))
     }
 
-    fun text(): String = if (compared == 0) "SP3 ir Android az/el palyginimas: nėra duomenų (SP3 neapima dabarties arba nėra palydovų)"
-        else "SP3 ir Android az/el palyginimas (%d matavimų, SP3 %s): didžiausias Δaz %.2f° (%s, aukštis 5–80°), didžiausias Δel %.2f° (%s); riba 1°: %s"
-            .format(Locale.US, compared, source, maxDaz, maxDazId, maxDel, maxDelId, if (maxDaz <= 1.0 && maxDel <= 1.0) "TAIP" else "NE")
+    // SP3 ir Android krypčių palyginimas pagal konsteliaciją (kampinis atstumas, aukštis ≥ 10°)
+    private class Acc { val v = ArrayList<Double>(); var maxV = 0.0; var worst = "" }
+    private val acc = java.util.TreeMap<Char, Acc>()
+    @Volatile var compared = 0
+        private set
+
+    @Synchronized
+    fun compare(id: String, azSp3: Double, elSp3: Double, azAnd: Double, elAnd: Double) {
+        if (elAnd < 10.0 || (azAnd == 0.0 && elAnd == 0.0)) return
+        val d = angSep(azSp3, elSp3, azAnd, elAnd)
+        val a = acc.getOrPut(id[0]) { Acc() }
+        if (a.v.size >= 5000) a.v.removeAt(0)
+        a.v.add(d)
+        if (d > a.maxV) { a.maxV = d; a.worst = id }
+        compared++
+    }
+
+    @Synchronized
+    fun text(): String {
+        if (compared == 0) return "SP3 ir Android krypčių palyginimas: nėra duomenų (SP3 neapima dabarties arba nėra palydovų ≥ 10°)"
+        val names = mapOf('G' to "GPS", 'E' to "Galileo", 'R' to "GLONASS", 'C' to "BeiDou")
+        return "SP3 ir Android krypčių palyginimas (kampinis atstumas, aukštis ≥ 10°, SP3 $source):\n" +
+            listOf('G', 'E', 'R', 'C').joinToString("\n") { k ->
+                val a = acc[k]
+                if (a == null || a.v.isEmpty()) "  ${names[k]}: nėra"
+                else {
+                    val so = a.v.sorted()
+                    "  %s: %d, mediana %.2f°, maks. %.2f° (%s); riba 1°: %s".format(Locale.US, names[k], so.size, so[so.size / 2], a.maxV, a.worst,
+                        if (a.maxV <= 1.0) "TAIP" else "NE")
+                }
+            } + "\n  GLONASS: svid 1–24 = orbitinė vieta (SP3 Rnn); svid 93–106 (dažnio kanalas) nesiejamas"
+    }
 }

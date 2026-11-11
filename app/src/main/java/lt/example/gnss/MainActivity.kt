@@ -5129,6 +5129,13 @@ class MainActivity : AppCompatActivity() {
                     report += sunReport() + Sp3Live.text() + "\n"
                     report += "Eksportuota: " + names.joinToString(", ") + "\n"
                     report += "ZIP: $zipName (Download/GNSS)\nZIP failai: " + names.joinToString(", ") + "\n"
+                    val shotName = shot?.lastPathSegment
+                    report += "Ekrano kopija ZIP: " + when {
+                        !wantScreenshot -> "ne – „Įtraukti ekrano kopiją“ nepažymėta"
+                        shotName == null -> "ne – ekrano kopijos sukurti nepavyko"
+                        (try { contentResolver.openInputStream(shot)?.use { true } ?: false } catch (e: Exception) { false }) -> "taip ($shotName)"
+                        else -> "ne – failas $shotName neperskaitomas"
+                    } + "\n"
                     // Ataskaita (su klausimu) visada kaip tekstinis failas; viskas – viename ZIP
                     reportFileUri(report)?.let { uris.add(0, it) }
                     Thread {

@@ -272,7 +272,11 @@ object Sp3V5 {
      * Beveik nejudantis imtuvas: maža greičio proceso triukšmo spektrinė galia. Didelės inovacijos – paleidimas iš naujo.
      */
     class Kalman(val systems: List<Char>, val qVel: Double = 1e-4, val qDrift: Double = 0.01, val qClock: Double = 0.01,
-                 val codeBase: Double = 7.0, val elevWeight: Boolean = false) {
+                 val codeBase: Double = 7.0, val elevWeight: Boolean = false,
+                 /** Kodo inovacijos riba (σ): v5 – 6, v6 – 4. */
+                 val codeGate: Double = 6.0,
+                 /** v6: bendras kodo laikrodžio šuolis (mediana > realignM) perkeliamas į laikrodžio būseną prieš atnaujinimą. */
+                 val realignM: Double = Double.NaN) {
         val n = 7 + systems.size
         var x = DoubleArray(n); var p = Array(n) { DoubleArray(n) }
         var t = Double.NaN
@@ -315,6 +319,28 @@ object Sp3V5 {
             return z
         }
 
+        /** Kodo inovacijų mediana kiekvienai sistemai; jei > realignM – laikrodžio būsena pastumiama (kodo ir Doppler laikrodžio nesutapimas). */
+        private fun realign(tow: Double, sats: List<SatEp>) {
+            for ((si, sys) in systems.withIndex()) {
+                val nu = ArrayList<Double>()
+                for (s in sats) {
+                    if (s.sys != sys) continue
+                    s.rotate(x)
+                    val dx = x[0] - s.rp[0]; val dy = x[1] - s.rp[1]; val dz = x[2] - s.rp[2]
+                    val rho = sqrt(dx * dx + dy * dy + dz * dz)
+                    val l = Sp3Solver.look(x, s.rp, rho)
+                    if (l[4] < MASK) continue
+                    val corr = Sp3Solver.saastamoinen(l[0], l[2], l[4]) + Sp3Solver.klobuchar(l[0], l[1], l[3], l[4], tow)
+                    nu.add(s.prc - (rho + x[7 + si] + corr))
+                }
+                if (nu.size < 3) continue
+                nu.sort()
+                val med = nu[nu.size / 2]
+                if (abs(med) > realignM) { x[7 + si] += med; realigned++ }
+            }
+        }
+        var realigned = 0
+
         /** Vienos epochos žingsnis; lsqFit – tos epochos MKM sprendinys (pradžiai / paleidimui iš naujo). */
         fun step(time: Double, tow: Double, sats: List<SatEp>, lsqFit: Fit?): PositionSolver.Solution? {
             if (!ready || time - t <= 0.0 || time - t > 30.0) {
@@ -322,6 +348,7 @@ object Sp3V5 {
                 init(lsqFit, time); return lsqFit.sol
             }
             predict(time - t); t = time
+            if (!realignM.isNaN()) realign(tow, sats)
             var big = 0; var total = 0
             for (s in sats) {
                 val si = systems.indexOf(s.sys); if (si < 0) continue
@@ -336,8 +363,8 @@ object Sp3V5 {
                 // Kodo σ pagal C/N0 (σ ∝ 10^(−C/N0/20)); elevWeight – papildomai σ² = a² + (b / sin el)²
                 val cnF = 10.0.pow((45.0 - s.cn0) / 20.0)
                 val sig = (if (!elevWeight) codeBase * cnF else codeBase * sqrt(1.0 + 1.0 / sin(l[4]).pow(2)) * cnF).coerceIn(3.0, 80.0)
-                val z = update(h, s.prc - (rho + x[7 + si] + corr), sig * sig, 6.0)
-                total++; if (abs(z) > 6.0) big++
+                val z = update(h, s.prc - (rho + x[7 + si] + corr), sig * sig, codeGate)
+                total++; if (abs(z) > codeGate) big++
                 if (s.prr != null) {
                     val ux = -dx / rho; val uy = -dy / rho; val uz = -dz / rho
                     val pred = ux * (s.vel[0] - x[3]) + uy * (s.vel[1] - x[4]) + uz * (s.vel[2] - x[5]) + x[6] - s.clkDrift

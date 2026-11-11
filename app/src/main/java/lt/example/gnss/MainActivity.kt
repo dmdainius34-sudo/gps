@@ -4992,8 +4992,9 @@ class MainActivity : AppCompatActivity() {
                         val s3 = sp3TestCsvUri(Sp3Solver.OUT_FILE_V3)
                         val s4 = sp3TestCsvUri(Sp3V4.OUT_FILE_V4)
                         val s5 = sp3TestCsvUri(Sp3V5.OUT_FILE_V5)
+                        val s6 = sp3TestCsvUri(Sp3V6.OUT_FILE_V6)
                         val d = solverDiagUri()
-                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; s2?.let { uris.add(it) }; s3?.let { uris.add(it) }; s4?.let { uris.add(it) }; s5?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
+                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; s2?.let { uris.add(it) }; s3?.let { uris.add(it) }; s4?.let { uris.add(it) }; s5?.let { uris.add(it) }; s6?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
                     }.start() }
                 } else send()
             }
@@ -5427,6 +5428,9 @@ class MainActivity : AppCompatActivity() {
         File(cacheDir, Sp3Solver.OUT_FILE_V3).delete()
         File(cacheDir, Sp3V4.OUT_FILE_V4).delete()
         File(cacheDir, Sp3V5.OUT_FILE_V5).delete()
+        File(cacheDir, Sp3V6.OUT_FILE_V6).delete()
+        // Atskaitos taškas SP3 testams: „Žinomos koordinatės“, jei įvestos
+        PositionSolver.knownRef = try { sharePanel?.knownLatLon } catch (e: Exception) { null }
         // „SP3 TESTAS“ / „SP3 INTERPOLIACIJA“ diagnostikai (skaičiuoklė SP3 nenaudoja)
         val sols = PositionSolver.solveFiles(File(cacheDir, "gnss_raw.csv"), File(cacheDir, "gnss_nav.csv"), out) {
             Sp3Storage.search(this)

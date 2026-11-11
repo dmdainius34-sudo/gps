@@ -288,13 +288,13 @@ object Sp3Solver {
     }
 
     /** „SP3 TESTAS v2“: atstumai iki planšetės fikso ir aukščiai, v2 ir v1 palyginimui. */
-    fun v2Block(v1: Result, v2: Result?, fix: File): String = buildString {
+    fun v2Block(v1: Result, v2: Result?, fix: File, refOverride: Pair<Double, Double>? = null): String = buildString {
         appendLine()
         appendLine("--- SP3 TESTAS v2 ---")
         appendLine("Pataisos: Saastamoinen, Klobuchar (numatytieji koeficientai), maska 10°; failas $OUT_FILE_V2")
         val fixH = PositionSolver.medianFixHeight(fix)
-        val ref = PositionSolver.medianFix(fix)
-        appendLine("Atskaitos taškas – šio įrašo gnss_fix.csv mediana: " +
+        val ref = refOverride ?: PositionSolver.medianFix(fix)
+        appendLine("Atskaitos taškas – " + (if (refOverride != null) PositionSolver.refLabel() else "šio įrašo gnss_fix.csv mediana") + ": " +
             (ref?.let { "%.7f, %.7f".format(Locale.US, it.first, it.second) } ?: "nėra (gnss_fix.csv tuščias)") +
             "; elipsoidinio aukščio mediana: " + (fixH?.let { "%.2f m".format(Locale.US, it) } ?: "nėra"))
         fun line(name: String, r: Result?) {

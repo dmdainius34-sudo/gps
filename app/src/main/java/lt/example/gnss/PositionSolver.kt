@@ -910,18 +910,26 @@ object PositionSolver {
                 val note = Sp3Solver.staleNote(r, rec)
                 lastSp3Note = note
                 val fixFile = File(raw.parentFile, SessionFiles.FIX)
-                val ref = try { medianFix(fixFile) } catch (e: Exception) { null }
+                val known = knownRef
+                refIsKnown = known != null
+                val ref = known ?: try { medianFix(fixFile) } catch (e: Exception) { null }
+                val refLine = "\n--- SP3 ATSKAITOS TAŠKAS ---\nNaudojamas: ${refLabel()}" +
+                    (ref?.let { " (%.7f, %.7f)".format(Locale.US, it.first, it.second) } ?: " – nėra") +
+                    "; fikso tikslumo (h_tikslumas_m) mediana: " +
+                    (try { medianFixAccuracy(fixFile) } catch (e: Exception) { null }?.let { "%.1f m".format(Locale.US, it) } ?: "nėra") + "\n"
                 // SP3 sprendinys – tik testui, atskiras failas (pagrindinė išvestis nekeičiama)
                 val sp3Sol = try {
                     val v1 = Sp3Solver.solveFile(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE))
                     val v2 = try { Sp3Solver.solveFile(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE_V2), corrected = true) } catch (e: Exception) { null }
-                    Sp3Solver.diagBlock(v1, ref = ref, note = note) + Sp3Solver.v2Block(v1, v2, fixFile) +
+                    refLine + Sp3Solver.diagBlock(v1, ref = ref, note = note) + Sp3Solver.v2Block(v1, v2, fixFile, ref) +
                         Sp3Solver.sagnacBlock(raw, r, File(out.parentFile, Sp3Solver.OUT_FILE_V3), ref) +
                         (try {
                             val fixH = medianFixHeight(fixFile)
                             Sp3V4.atmosphereBlock(raw, r, ref, fixH) + Sp3V4.v4Block(raw, r, File(out.parentFile, Sp3V4.OUT_FILE_V4), ref, fixH) +
                                 (try { Sp3V5.v5Block(raw, r, File(out.parentFile, Sp3V5.OUT_FILE_V5), ref, fixH) }
-                                 catch (e: Exception) { "\n--- SP3 TESTAS v5 ---\nNeatlikta: ${e.message}\n" })
+                                 catch (e: Exception) { "\n--- SP3 TESTAS v5 ---\nNeatlikta: ${e.message}\n" }) +
+                                (try { Sp3V6.v6Block(raw, r, File(out.parentFile, Sp3V6.OUT_FILE_V6), ref, fixH) }
+                                 catch (e: Exception) { "\n--- SP3 TESTAS v6 ---\nNeatlikta: ${e.message}\n" })
                         } catch (e: Exception) { "\n--- SP3 TESTAS v4 ---\nNeatlikta: ${e.message}\n" })
                 } catch (e: Exception) { Sp3Solver.diagBlock(null, e.message) }
                 Sp3Reader.diagBlock(location, r, searched = searched) + sp3Sol
@@ -980,6 +988,24 @@ object PositionSolver {
         if (la.isEmpty()) return null
         la.sort(); lo.sort()
         return percentile(la, 0.5) to percentile(lo, 0.5)
+    }
+
+    /** Vartotojo „Žinomos koordinatės“ (platuma, ilguma) – SP3 testų atskaitos taškas; null – gnss_fix.csv mediana. */
+    @Volatile var knownRef: Pair<Double, Double>? = null
+    @Volatile private var refIsKnown = false
+    fun refLabel() = if (refIsKnown) "žinomos koordinatės (vartotojo)" else "gnss_fix.csv mediana"
+
+    /** Fiksų horizontalaus tikslumo (h_tikslumas_m) mediana. */
+    fun medianFixAccuracy(fix: File): Double? {
+        if (!fix.exists()) return null
+        val a = ArrayList<Double>()
+        fix.bufferedReader().use { br ->
+            val i = br.readLine()?.split(',')?.indexOf("h_tikslumas_m") ?: return null
+            if (i < 0) return null
+            br.forEachLine { l -> l.split(',').getOrNull(i)?.toDoubleOrNull()?.let { a.add(it) } }
+        }
+        if (a.isEmpty()) return null
+        a.sort(); return percentile(a, 0.5)
     }
 
     /** Paskutinio solveFiles() SP3 tinkamumo pastaba ataskaitai („SP3 failas netinka: …“) arba null. */

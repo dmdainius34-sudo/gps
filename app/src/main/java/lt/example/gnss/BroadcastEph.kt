@@ -46,10 +46,34 @@ object BroadcastEph {
     }
 
     @Synchronized fun get(svid: Int): PositionSolver.Ephemeris? = ephs[svid]
-    @Synchronized fun count(): Int = ephs.size
+    @Synchronized fun count(): Int = ephs.size + gal.ephs.size + glo.ephs.size
 
-    /** Ar yra bent viena efemeridė, ne senesnė nei 4 val. laiku t (GPS s). */
-    @Synchronized fun any(t: Double): Boolean = ephs.values.any { abs(t - it.toeAbs) < 4 * 3600.0 }
+    private val gal = GalileoNav.Collector()
+    private val glo = GloNav.Collector()
+
+    /** Galileo I/NAV puslapis; tRx – gavimo laikas (GPS s). */
+    @Synchronized fun addGal(svid: Int, data: ByteArray, tRx: Double) = gal.add(svid, data, tRx)
+
+    /** GLONASS eilutė; svid – orbitinė vieta 1..24; tRxUtcMs – gavimo laikas (UTC ms). */
+    @Synchronized fun addGlo(svid: Int, data: ByteArray, tRxUtcMs: Long) { if (svid in 1..24) glo.add(svid, data, tRxUtcMs) }
+
+    /** Ar yra bent viena efemeridė, tinkanti laikui t (GPS s). */
+    @Synchronized fun any(t: Double): Boolean = ephs.values.any { abs(t - it.toeAbs) < 4 * 3600.0 } ||
+        gal.ephs.values.any { abs(t - it.toeAbs) < 4 * 3600.0 } || glo.ephs.values.any { abs(t - it.tbGps) < 2 * 3600.0 }
+
+    /** SP3 tipo ID (G01, E05, R12) -> ECEF (km) iš navigacinių efemeridžių arba null. */
+    fun ecefKm(id: String, t: Double): DoubleArray? {
+        val sv = id.substring(1).toIntOrNull() ?: return null
+        return when (id[0]) {
+            'G' -> ecefKm(sv, t)
+            'E' -> synchronized(this) { gal.ephs[sv] }?.let { e ->
+                if (abs(t - e.toeAbs) > 4 * 3600.0) null
+                else PositionSolver.satState(e, t - e.week * 604_800.0).let { p -> doubleArrayOf(p[0] / 1000.0, p[1] / 1000.0, p[2] / 1000.0) }
+            }
+            'R' -> synchronized(this) { glo.ephs[sv] }?.let { e -> GloNav.position(e, t)?.let { p -> doubleArrayOf(p[0] / 1000.0, p[1] / 1000.0, p[2] / 1000.0) } }
+            else -> null
+        }
+    }
 
     /** Palydovo ECEF (km) laiku t (GPS s) arba null (nėra efemeridės arba ji senesnė nei 4 val.). */
     fun ecefKm(svid: Int, t: Double): DoubleArray? {
@@ -63,7 +87,11 @@ object BroadcastEph {
     @Synchronized
     fun text(): String = "GPS navigacinės efemeridės (gyvi pranešimai): ${ephs.size} palydovų" +
         (if (ephs.isEmpty()) "" else " – " + ephs.keys.sorted().joinToString(" ") { "G%02d".format(Locale.US, it) }) +
-        "; subkadrų priimta $subframes, atmesta $rejected; išdėstymas ${align?.toString() ?: "nerastas"}"
+        "; subkadrų priimta $subframes, atmesta $rejected; išdėstymas ${align?.toString() ?: "nerastas"}" +
+        "\nGalileo navigacinės efemeridės: ${gal.ephs.size}" + (if (gal.ephs.isEmpty()) "" else " – " + gal.ephs.keys.sorted().joinToString(" ") { "E%02d".format(Locale.US, it) }) +
+        "; puslapių su teisingu CRC ${gal.pages}, atmesta ${gal.bad}" +
+        "\nGLONASS navigacinės efemeridės: ${glo.ephs.size}" + (if (glo.ephs.isEmpty()) "" else " – " + glo.ephs.keys.sorted().joinToString(" ") { "R%02d".format(Locale.US, it) }) +
+        "; eilučių ${glo.strings}, atmesta ${glo.bad}"
 }
 
 /**

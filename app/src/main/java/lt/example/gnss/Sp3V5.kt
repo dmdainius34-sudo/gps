@@ -399,7 +399,8 @@ object Sp3V5 {
                 val t = ep.t
                 val obs = ep.meas.filter { accept(it) }.map { m ->
                     // L1 vartotojui palydovo laikrodis = SP3 (L1/L2 kombinacija) − TGD: P − c·TGD = ρ + c·dtr − c·dts
-                    val tg = if (m.sys == 'G') tgd[m.svid] ?: 0.0 else 0.0
+                    // Galileo E1: BGD(E1,E5b) tuo pačiu ženklu (raktas 1000 + svid)
+                    val tg = when (m.sys) { 'G' -> tgd[m.svid] ?: 0.0; 'E' -> tgd[1000 + m.svid] ?: 0.0; else -> 0.0 }
                     Ob(m.sys, m.svid, smoother.apply(m, t) - C * tg, m.cn0, m.prr)
                 }.filter { isb || it.sys == 'G' }
                 if (!Sp3Solver.inRange(sp3, t)) return@readRaw
@@ -445,7 +446,7 @@ object Sp3V5 {
         val v4 = Sp3V4.run(raw, sp3, "v4 bazė", Sp3V4.Opts(true, true, true, true), true, true)
         val usage = HashMap<Char, Int>(); val clocks = HashMap<Char, ArrayList<Double>>()
         val isbRun = run(raw, sp3, "+ atskiri laikrodžiai (ISB)", true, false, false, false, usage = usage, clockSum = clocks)
-        val tgdRun = if (tgd.isEmpty()) null else run(raw, sp3, "+ TGD (iš navigacijos pranešimų)", true, false, false, false, tgd = tgd)
+        val tgdRun = if (tgd.isEmpty()) null else run(raw, sp3, "+ TGD/BGD (iš navigacijos pranešimų)", true, false, false, false, tgd = tgd)
         val dSm = Smoother(true)
         val dop = run(raw, sp3, "+ Doppler glodinimas", true, true, false, false, sm = dSm, tgd = tgd)
         val drops = HashMap<String, Int>()
@@ -465,7 +466,8 @@ object Sp3V5 {
         if (tgdRun == null) appendLine("+ TGD: nepritaikyta – navigacijos pranešimuose neiššifruota nė vienos GPS efemeridės; eilutė lygi ankstesnei")
         else {
             appendLine(line(tgdRun, ref, fixH))
-            appendLine("  TGD (ns): " + tgd.entries.sortedBy { it.key }.joinToString(", ") { "G%02d %+.1f".format(Locale.US, it.key, it.value * 1e9) })
+            appendLine("  TGD/BGD (ns): " + tgd.entries.sortedBy { it.key }.joinToString(", ") {
+                if (it.key >= 1000) "E%02d %+.2f".format(Locale.US, it.key - 1000, it.value * 1e9) else "G%02d %+.1f".format(Locale.US, it.key, it.value * 1e9) })
         }
         appendLine(line(dop, ref, fixH))
         appendLine(line(raimRun, ref, fixH))

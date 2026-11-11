@@ -900,7 +900,9 @@ object PositionSolver {
             }
         }
         lastSp3Note = null
-        lastDiagText = diag.text(sols.size) + (sp3?.let { locate ->
+        val navOther = try { NavFile.read(nav) } catch (e: Exception) { null }
+        val galBgd = navOther?.gal?.ephs?.entries?.associate { 1000 + it.key to it.value.tgd } ?: emptyMap()
+        lastDiagText = diag.text(sols.size) + (navOther?.let { "\n--- GALILEO IR GLONASS NAVIGACIJOS PRANEŠIMAI ---\n" + NavFile.text(it) + "\n" } ?: "") + (sp3?.let { locate ->
             var location = "nėra"
             var searched = emptyList<String>()
             try {
@@ -933,7 +935,7 @@ object PositionSolver {
                             val fixH = medianFixHeight(fixFile)
                             Sp3V4.atmosphereBlock(raw, r, ref, fixH) + Sp3V4.v4Block(raw, r, File(out.parentFile, Sp3V4.OUT_FILE_V4), ref, fixH) +
                                 (try { Sp3V5.v5Block(raw, r, File(out.parentFile, Sp3V5.OUT_FILE_V5), ref, fixH,
-                                    ephs.mapValues { e -> e.value.maxByOrNull { it.toeAbs }!!.tgd }) }
+                                    ephs.mapValues { e -> e.value.maxByOrNull { it.toeAbs }!!.tgd } + galBgd) }
                                  catch (e: Exception) { "\n--- SP3 TESTAS v5 ---\nNeatlikta: ${e.message}\n" }) +
                                 (try { Sp3V6.v6Block(raw, r, File(out.parentFile, Sp3V6.OUT_FILE_V6), ref, fixH) }
                                  catch (e: Exception) { "\n--- SP3 TESTAS v6 ---\nNeatlikta: ${e.message}\n" })

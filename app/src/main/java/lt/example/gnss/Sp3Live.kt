@@ -25,6 +25,7 @@ object Sp3Live {
 
     /** Kas 10 min. arba priverstinai (po „Atnaujinti SP3“) – fone parenka failą, kuris apima dabartį. */
     fun refresh(ctx: Context, force: Boolean = false) {
+        try { BroadcastEph.load(ctx.applicationContext.filesDir) } catch (e: Exception) { android.util.Log.w("GnssApp", "BroadcastEph.load: ${e.message}") }
         val now = System.currentTimeMillis()
         if (loading || (!force && now - loadedAt < 600_000L)) return
         loading = true; loadedAt = now

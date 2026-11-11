@@ -27,9 +27,83 @@ object BroadcastEph {
     @Volatile var rejected = 0
         private set
 
+    // ---- Išsaugojimas: paskutiniai efemeridėms reikalingi neapdoroti pranešimai (GPS 1–3 subkadrai, Galileo 1–5 žodžiai,
+    // GLONASS 1–4 eilutės) su gavimo laiku; po paleidimo iš naujo jie perskaitomi per tuos pačius iššifruotojus.
+    const val FILE = "broadcast_eph.csv"
+    private const val KEEP_MS = 4 * 3_600_000L
+    private class RawMsg(val tMs: Long, val kind: Char, val svid: Int, val data: ByteArray)
+    private val raw = HashMap<String, RawMsg>()
+    private var dirty = false
+    private var savedAt = 0L
+    private var loadedDir: java.io.File? = null
+    @Volatile var loadedCount = 0
+        private set
+
+    private fun keep(kind: Char, svid: Int, no: Int, tMs: Long, data: ByteArray) {
+        raw["$kind$svid:$no"] = RawMsg(tMs, kind, svid, data.copyOf()); dirty = true
+    }
+
+    private fun gpsWeekAt(ms: Long) = Math.floorDiv((ms / 1000.0 - 315_964_800.0 + 18.0).toLong(), 604_800L).toInt()
+
+    /** Įkelia išsaugotas efemerides (vieną kartą katalogui); senesni nei 4 val. pranešimai praleidžiami. */
+    @Synchronized
+    fun load(dir: java.io.File, nowMs: Long = System.currentTimeMillis()) {
+        if (loadedDir == dir) return
+        loadedDir = dir
+        val f = java.io.File(dir, FILE)
+        if (!f.exists()) return
+        val list = ArrayList<RawMsg>()
+        try {
+            f.forEachLine { l ->
+                val p = l.split(',')
+                if (p.size < 4) return@forEachLine
+                val t = p[0].toLongOrNull() ?: return@forEachLine
+                val sv = p[2].toIntOrNull() ?: return@forEachLine
+                if (nowMs - t > KEEP_MS || t - nowMs > 600_000L) return@forEachLine
+                val h = p[3].trim()
+                val d = ByteArray(h.length / 2) { ((Character.digit(h[2 * it], 16) shl 4) or Character.digit(h[2 * it + 1], 16)).toByte() }
+                list.add(RawMsg(t, p[1].firstOrNull() ?: return@forEachLine, sv, d))
+            }
+        } catch (e: Exception) { android.util.Log.w("GnssApp", "BroadcastEph.load: ${e.message}"); return }
+        val before = count()
+        list.sortBy { it.tMs }
+        // perskaityti pranešimai per keep() vėl patenka į išsaugojimo sąrašą su savo gavimo laiku
+        for (m in list) {
+            when (m.kind) {
+                'G' -> add(m.svid, m.data, gpsWeekAt(m.tMs), m.tMs)
+                'E' -> addGal(m.svid, m.data, m.tMs / 1000.0 - 315_964_800.0 + 18.0, m.tMs)
+                'R' -> addGlo(m.svid, m.data, m.tMs)
+            }
+        }
+        loadedCount = count() - before
+    }
+
+    /** Visos efemeridės ir pranešimai pamirštami (testams). */
+    @Synchronized
+    fun clear() {
+        slots.clear(); ephs.clear(); raw.clear(); gal.ephs.clear(); glo.ephs.clear()
+        dirty = false; savedAt = 0L; loadedDir = null; loadedCount = 0
+    }
+
+    /** Išsaugo, jei yra naujų pranešimų ir praėjo ≥ 60 s (force – iškart). */
+    @Synchronized
+    fun save(dir: java.io.File, force: Boolean = false, nowMs: Long = System.currentTimeMillis()) {
+        if (!dirty || (!force && nowMs - savedAt < 60_000L)) return
+        raw.values.removeAll { nowMs - it.tMs > KEEP_MS }
+        try {
+            val tmp = java.io.File(dir, "$FILE.tmp")
+            tmp.bufferedWriter().use { w ->
+                for (m in raw.values.sortedBy { it.tMs })
+                    w.write("${m.tMs},${m.kind},${m.svid},${m.data.joinToString("") { "%02x".format(it) }}\n")
+            }
+            if (!tmp.renameTo(java.io.File(dir, FILE))) { java.io.File(dir, FILE).delete(); tmp.renameTo(java.io.File(dir, FILE)) }
+            dirty = false; savedAt = nowMs
+        } catch (e: Exception) { android.util.Log.w("GnssApp", "BroadcastEph.save: ${e.message}") }
+    }
+
     /** Vienas pranešimas; gpsWeek – dabartinė pilna GPS savaitė (10 bitų WN išplėtimui). */
     @Synchronized
-    fun add(svid: Int, data: ByteArray, gpsWeek: Int) {
+    fun add(svid: Int, data: ByteArray, gpsWeek: Int, tMs: Long = System.currentTimeMillis()) {
         var sf: PositionSolver.Subframe? = null
         align?.let { sf = PositionSolver.subframeFromBytes(data, align = it) }
         if (sf == null) for (a in candidates) {
@@ -39,6 +113,7 @@ object BroadcastEph {
         val s = sf ?: run { rejected++; return }
         subframes++
         if (s.id > 3) return
+        keep('G', svid, s.id, tMs, data)
         val slot = slots.getOrPut(svid) { arrayOfNulls(3) }
         slot[s.id - 1] = s
         val s1 = slot[0] ?: return; val s2 = slot[1] ?: return; val s3 = slot[2] ?: return
@@ -52,10 +127,17 @@ object BroadcastEph {
     private val glo = GloNav.Collector()
 
     /** Galileo I/NAV puslapis; tRx – gavimo laikas (GPS s). */
-    @Synchronized fun addGal(svid: Int, data: ByteArray, tRx: Double) = gal.add(svid, data, tRx)
+    @Synchronized fun addGal(svid: Int, data: ByteArray, tRx: Double, tMs: Long = System.currentTimeMillis()) {
+        gal.add(svid, data, tRx)
+        GalileoNav.word(data)?.let { w -> val t = GalileoNav.type(w); if (t in 1..5) keep('E', svid, t, tMs, data) }
+    }
 
     /** GLONASS eilutė; svid – orbitinė vieta 1..24; tRxUtcMs – gavimo laikas (UTC ms). */
-    @Synchronized fun addGlo(svid: Int, data: ByteArray, tRxUtcMs: Long) { if (svid in 1..24) glo.add(svid, data, tRxUtcMs) }
+    @Synchronized fun addGlo(svid: Int, data: ByteArray, tRxUtcMs: Long) {
+        if (svid !in 1..24) return
+        glo.add(svid, data, tRxUtcMs)
+        GloNav.bits(data)?.let { b -> val m = GloNav.stringNo(b); if (b.bit(0) == 0 && m in 1..4) keep('R', svid, m, tRxUtcMs, data) }
+    }
 
     /** Ar yra bent viena efemeridė, tinkanti laikui t (GPS s). */
     @Synchronized fun any(t: Double): Boolean = ephs.values.any { abs(t - it.toeAbs) < 4 * 3600.0 } ||
@@ -85,7 +167,8 @@ object BroadcastEph {
     }
 
     @Synchronized
-    fun text(): String = "GPS navigacinės efemeridės (gyvi pranešimai): ${ephs.size} palydovų" +
+    fun text(): String = (if (loadedCount > 0) "Efemeridžių įkelta iš išsaugoto failo (po paleidimo iš naujo): $loadedCount\n" else "") +
+        "GPS navigacinės efemeridės (gyvi pranešimai): ${ephs.size} palydovų" +
         (if (ephs.isEmpty()) "" else " – " + ephs.keys.sorted().joinToString(" ") { "G%02d".format(Locale.US, it) }) +
         "; subkadrų priimta $subframes, atmesta $rejected; išdėstymas ${align?.toString() ?: "nerastas"}" +
         "\nGalileo navigacinės efemeridės: ${gal.ephs.size}" + (if (gal.ephs.isEmpty()) "" else " – " + gal.ephs.keys.sorted().joinToString(" ") { "E%02d".format(Locale.US, it) }) +

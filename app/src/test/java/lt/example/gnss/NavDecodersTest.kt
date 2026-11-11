@@ -63,3 +63,37 @@ class NavDecodersTest {
         assertTrue(BroadcastEph.any(gps(1794397600421L)))
     }
 }
+
+class BroadcastEphSaveTest {
+    private fun b(s: String) = ByteArray(s.length / 2) { ((Character.digit(s[2 * it], 16) shl 4) or Character.digit(s[2 * it + 1], 16)).toByte() }
+    private fun gps(ms: Long) = ms / 1000.0 - 315_964_800.0 + 18.0
+
+    @Test
+    fun saveAndReload() {
+        val dir = java.nio.file.Files.createTempDirectory("eph").toFile()
+        BroadcastEph.clear()
+        val g22 = listOf(
+            1794394399431L to "068b063000612427206310003e5f42b3011b9d343512db8a05d4d6e8320549d32800004a18104a66",
+            1794394405404L to "068b0630286124aa2305028b1d2f3b652f564e330e02660534ca3e38071400a1240db0000049d336",
+            1794394411420L to "068b06301861252f08003573195739d11f002e273a0028a31f1810d9237c33282cffad8e1405e296")
+        g22.forEach { BroadcastEph.add(22, b(it.second), 2444, it.first) }
+        val glo = listOf(
+            1794394903417L to "01074624e143023c47b2ec", 1794394905384L to "0217600bd6f70433943cd8",
+            1794394907399L to "038016a546209a28d3cf37", 1794394908421L to "0481d82e600002660b0dd2")
+        glo.forEach { BroadcastEph.addGlo(3, b(it.second), it.first) }
+        val now = 1794395000000L
+        BroadcastEph.save(dir, force = true, nowMs = now)
+        assertTrue(java.io.File(dir, BroadcastEph.FILE).readLines().size == 7)
+        BroadcastEph.clear()
+        assertEquals(null, BroadcastEph.ecefKm("G22", gps(now)))
+        BroadcastEph.load(dir, now)
+        assertEquals(2, BroadcastEph.loadedCount)
+        assertNotNull(BroadcastEph.ecefKm("G22", gps(now)))
+        assertNotNull(BroadcastEph.ecefKm("R03", gps(1794394908421L)))
+        // po 5 val. – per sena, neįkeliama
+        BroadcastEph.clear()
+        BroadcastEph.load(dir, now + 5 * 3_600_000L)
+        assertEquals(0, BroadcastEph.loadedCount)
+        dir.deleteRecursively()
+    }
+}

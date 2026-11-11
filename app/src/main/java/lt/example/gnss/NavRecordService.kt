@@ -102,6 +102,7 @@ class NavRecordService : Service() {
     override fun onCreate() {
         super.onCreate()
         GapLog.event(this, "paslauga onCreate")
+        try { BroadcastEph.load(filesDir) } catch (e: Exception) { Log.w("GnssApp", "BroadcastEph.load: ${e.message}") }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -125,6 +126,7 @@ class NavRecordService : Service() {
                     GloNav.TYPE -> BroadcastEph.addGlo(event.svid, event.data, System.currentTimeMillis())
                 }
             } catch (e: Exception) { Log.w("GnssApp", "BroadcastEph GAL/GLO: ${e.message}") }
+            try { BroadcastEph.save(filesDir) } catch (e: Exception) { Log.w("GnssApp", "BroadcastEph.save: ${e.message}") }
             // pranešimo tekstą atnaujiname retai
             val n = NavRecorder.written
             if (n - lastNotifCount >= 50) { lastNotifCount = n; notifyCount() }
@@ -227,6 +229,7 @@ class NavRecordService : Service() {
 
     override fun onDestroy() {
         GapLog.event(this, "paslauga onDestroy")
+        try { BroadcastEph.save(filesDir, force = true) } catch (_: Exception) {}
         unregisterAll()
         SessionFiles.flush()
         if (receiverOn) { try { unregisterReceiver(sysReceiver) } catch (_: Exception) {}; receiverOn = false }

@@ -49,6 +49,36 @@ jobs:
             echo "Paskutinė epocha: $(grep '^\* ' sp3.txt | tail -1)"
           fi
 
+      - name: AIUB BeiDou (C) produktų patikra (informacija, nenukrenta)
+        continue-on-error: true
+        run: |
+          B="https://zhw-b.s3.cloud.switch.ch/aiub"
+          sats() { grep -E '^\+ ' "$1" | head -12 | cut -c10-60 | tr -d '\n' | grep -oE '[A-Z][0-9]{2}' | cut -c1 | sort | uniq -c | tr '\n' ' '; }
+          [ -f sp3.txt ] && echo "COD0OPSULT sistemos: $(sats sp3.txt)"
+          echo "--- aiub/ katalogai ---"
+          curl -sS -m 60 "$B/?delimiter=/&prefix=" | grep -oE '<Prefix>[^<]*</Prefix>' | head -40
+          curl -sS -m 60 "$B/?delimiter=/&prefix=CODE_MGEX/" | grep -oE '<Prefix>[^<]*</Prefix>' | head -40
+          Y=$(date -u +%Y)
+          for P in "CODE_MGEX/CODE/$Y/" "CODE/$Y/" "CODE/"; do
+            curl -sS -m 60 "$B/?prefix=$P&max-keys=1000" -o l.xml
+            while grep -q '<IsTruncated>true' l.xml && [ "$(grep -o '<Key>' l.xml | wc -l)" -lt 20000 ]; do
+              K=$(grep -oE '<Key>[^<]*</Key>' l.xml | tail -1 | sed 's/<[^>]*>//g')
+              curl -sS -m 60 "$B/?prefix=$P&max-keys=1000&marker=$K" -o l2.xml; cat l2.xml >> l.xml
+              grep -q '<IsTruncated>true' l2.xml || break; cp l2.xml l.xml.tail; done
+            F=$(grep -oE '<Key>[^<]*(MGX|MGEX)[^<]*ORB\.SP3(\.gz)?</Key>' l.xml | sed 's/<[^>]*>//g' | sort | tail -3)
+            echo "== $P: MGEX SP3 (paskutiniai): ${F:-nėra}"
+            [ -n "$F" ] && break
+          done
+          L=$(echo "$F" | tail -1)
+          if [ -n "$L" ]; then
+            curl -sS -m 180 -o m.bin "$B/$L"
+            if [ "$(head -c2 m.bin | od -An -tx1 | tr -d ' ')" = "1f8b" ]; then zcat m.bin > m.txt; else cp m.bin m.txt; fi
+            echo "MGEX failas: $L"; echo "Antraštė: $(head -1 m.txt)"
+            echo "Sistemos: $(sats m.txt)"
+            echo "Pirma epocha: $(grep -m1 '^\* ' m.txt)"; echo "Paskutinė epocha: $(grep '^\* ' m.txt | tail -1)"
+            echo "Šiandien: $(date -u '+%Y %m %d %H:%M')"
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: app-debug

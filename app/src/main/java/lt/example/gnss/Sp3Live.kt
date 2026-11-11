@@ -91,9 +91,17 @@ object Sp3Live {
         compared++
     }
 
+    /** Palydovai, kuriems SP3 padėties nėra (padėti pagal Android az/el, brūkšninė kreivė). */
+    @Volatile var approx: List<String> = emptyList()
+        private set
+    fun setApprox(l: List<String>) { approx = l.sorted() }
+
+    private fun approxLine(): String = "Palydovai be SP3 (padėti pagal Android az/el, brūkšninė kreivė): ${approx.size}" +
+        (if (approx.isEmpty()) "" else " – " + approx.joinToString(", "))
+
     @Synchronized
     fun text(): String {
-        if (compared == 0) return "SP3 ir Android krypčių palyginimas: nėra duomenų (SP3 neapima dabarties arba nėra palydovų ≥ 10°)"
+        if (compared == 0) return "SP3 ir Android krypčių palyginimas: nėra duomenų (SP3 neapima dabarties arba nėra palydovų ≥ 10°)\n" + approxLine()
         val names = mapOf('G' to "GPS", 'E' to "Galileo", 'R' to "GLONASS", 'C' to "BeiDou")
         return "SP3 ir Android krypčių palyginimas (kampinis atstumas, aukštis ≥ 10°, SP3 $source):\n" +
             listOf('G', 'E', 'R', 'C').joinToString("\n") { k ->
@@ -101,9 +109,9 @@ object Sp3Live {
                 if (a == null || a.v.isEmpty()) "  ${names[k]}: nėra"
                 else {
                     val so = a.v.sorted()
-                    "  %s: %d, mediana %.2f°, maks. %.2f° (%s); riba 1°: %s".format(Locale.US, names[k], so.size, so[so.size / 2], a.maxV, a.worst,
-                        if (a.maxV <= 1.0) "TAIP" else "NE")
+                    "  %s: %d, mediana %.2f°, maks. %.2f° (%s); riba (mediana < 1°): %s".format(Locale.US, names[k], so.size, so[so.size / 2], a.maxV, a.worst,
+                        if (so[so.size / 2] < 1.0) "TAIP" else "NE")
                 }
-            } + "\n  GLONASS: svid 1–24 = orbitinė vieta (SP3 Rnn); svid 93–106 (dažnio kanalas) nesiejamas"
+            } + "\n  GLONASS: svid 1–24 = orbitinė vieta (SP3 Rnn); svid 93–106 (dažnio kanalas) nesiejamas\n" + approxLine()
     }
 }

@@ -1143,6 +1143,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setMarkers(on: Boolean) { renderer.showMarkers = on }
     fun setFollowDevice(on: Boolean) { renderer.followDevice = on; renderer.resetUser() }
     fun setFreeView(on: Boolean) { renderer.freeView = on; renderer.resetUser() }
+    fun setOcean(on: Boolean) { renderer.oceanOn = on; if (on) renderer.oceanLevel = 2 }
+    fun fpsText(): String = renderer.fpsText()
 
     fun setStableNorth(on: Boolean) {
         stableNorth = on
@@ -1169,6 +1171,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.showMarkers = calPrefs.getBoolean("markers", true)
         renderer.followDevice = calPrefs.getBoolean("follow_device", false)
         renderer.freeView = calPrefs.getBoolean("free_view", false)
+        renderer.oceanOn = calPrefs.getBoolean("ocean_anim", true)
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
     }
@@ -1538,7 +1541,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         return floatArrayOf((m[0] * x + m[4] * y + m[8] * z).toFloat(), (m[1] * x + m[5] * y + m[9] * z).toFloat(), (m[2] * x + m[6] * y + m[10] * z).toFloat())
     }
 
-    fun setSats(l: List<Sat>) {
+    fun setSats(l0: List<Sat>) {
+        // GnssStatus – signalai: vienas modelis kiekvienam (konsteliacija, svid), stipriausias signalas, naudojamas – jei bent vienas
+        val l = l0.groupBy { it.const to it.svid }.values.map { g ->
+            val best = g.maxByOrNull { it.cn0 }!!
+            if (g.any { it.used } && !best.used) best.copy(used = true) else best
+        }
         sats = l
         frameNow()
         Sp3Live.refresh(appCtx)
@@ -1549,6 +1557,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val nowMs = System.currentTimeMillis()
         val makeTracks = useSp3 && nowMs - tracksAt > 30_000L
         val tracks = if (makeTracks) ArrayList<Pair<FloatArray, FloatArray>>() else null
+        val approx = HashSet<String>()
         for (s in l) {
             val id = if (useSp3) Sp3Live.id(s.const, s.svid) else null
             val ecef = id?.let { Sp3Live.ecefKm(it, tNow) }
@@ -1567,6 +1576,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 }
                 continue
             }
+            if (useSp3) approx.add(s.const + s.svid)
             if (s.elev < 0f) continue
             val el = Math.toRadians(s.elev.toDouble().coerceIn(0.0, 90.0))
             val az = Math.toRadians(s.az.toDouble())
@@ -1582,6 +1592,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 (fP[2] + dist * (dx * fE[2] + dy * fN[2] + dz * fU[2])).toFloat())))
         }
         satsI = out
+        approxSats = approx
+        Sp3Live.setApprox(if (useSp3) approx.toList() else emptyList())
         if (tracks != null) { sp3Tracks = tracks; tracksAt = nowMs }
         if (!useSp3) sp3Tracks = emptyList()
         recordTrails(out)
@@ -1664,7 +1676,43 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         Matrix.multiplyMM(pv, 0, proj, 0, view, 0)
     }
 
+    @Volatile var oceanOn = true
+    /** 2 – pilnas efektas, 1 – sumažintas, 0 – išjungtas (automatiškai, jei < 30 kadrų/s). */
+    @Volatile var oceanLevel = 2
+    private var fpsFrames = 0
+    private var fpsT0 = 0L
+    private var lowFpsWindows = 0
+    @Volatile var fpsOceanOn = Double.NaN
+    @Volatile var fpsOceanOff = Double.NaN
+    @Volatile var oceanLog = ""
+
+    private fun measureFps() {
+        val now = System.nanoTime()
+        if (fpsT0 == 0L) { fpsT0 = now; fpsFrames = 0; return }
+        fpsFrames++
+        val dt = (now - fpsT0) / 1e9
+        if (dt < 2.0) return
+        val fps = fpsFrames / dt
+        fpsT0 = now; fpsFrames = 0
+        if (oceanOn && oceanLevel > 0) {
+            fpsOceanOn = if (fpsOceanOn.isNaN()) fps else 0.7 * fpsOceanOn + 0.3 * fps
+            if (fps < 30.0) {
+                if (++lowFpsWindows >= 3) {
+                    oceanLevel--; lowFpsWindows = 0
+                    oceanLog = "vandenyno efektas sumažintas iki lygio $oceanLevel (%.1f kadr./s)".format(java.util.Locale.US, fps)
+                    android.util.Log.w("GnssApp", "Animuotas vandenynas: $oceanLog")
+                }
+            } else lowFpsWindows = 0
+        } else fpsOceanOff = if (fpsOceanOff.isNaN()) fps else 0.7 * fpsOceanOff + 0.3 * fps
+    }
+
+    fun fpsText(): String = "3D kadrų dažnis: vandenynas įjungtas %s, išjungtas %s; efekto lygis %d%s".format(java.util.Locale.US,
+        if (fpsOceanOn.isNaN()) "nematuota" else "%.1f kadr./s".format(java.util.Locale.US, fpsOceanOn),
+        if (fpsOceanOff.isNaN()) "nematuota" else "%.1f kadr./s".format(java.util.Locale.US, fpsOceanOff),
+        if (oceanOn) oceanLevel else 0, if (oceanLog.isEmpty()) "" else "; $oceanLog")
+
     override fun onDrawFrame(gl: GL10?) {
+        measureFps()
         // Fonas – ta pati C/N0 spalva kaip ekrano fone ir burbule (švelniai pereinama)
         val bgTarget = ColorUtils.blendARGB(BG_NEUTRAL, lastTint, 0.45f)
         bgNow = ColorUtils.blendARGB(bgNow, bgTarget, 0.05f)
@@ -2446,6 +2494,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private class TrailPt(val t: Long, val p: FloatArray)
     private val trails = HashMap<String, ArrayDeque<TrailPt>>()
     private val trailConst = HashMap<String, String>()
+    /** Palydovai, padėti be SP3 (Android az/el), kai SP3 kitiems yra – jų kreivės brūkšninės. */
+    @Volatile private var approxSats: Set<String> = emptySet()
 
     private fun recordTrails(list: List<SatI>) {
         val now = System.currentTimeMillis()
@@ -2473,7 +2523,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     val a = FloatArray(q.size * 3)
                     var i = 0
                     for (tp in q) { a[i++] = tp.p[0]; a[i++] = tp.p[1]; a[i++] = tp.p[2] }
-                    (trailConst[k] ?: "GPS") to a
+                    ((trailConst[k] ?: "GPS") + if (k in approxSats) "|-" else "") to a
                 }
             }
         }
@@ -2481,11 +2531,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUseProgram(colorProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
         GLES20.glLineWidth(2f * density)
-        for ((c, a) in snap) {
-            val col = constRgb(c)
+        for ((c0, a) in snap) {
+            val dashed = c0.endsWith("|-")
+            val col = constRgb(c0.removeSuffix("|-"))
             GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.85f)
             bindPos(colorProg, floatBuf(a))
-            GLES20.glDrawArrays(GLES20.GL_LINE_STRIP, 0, a.size / 3)
+            // brūkšninė: GL_LINES per taškų poras (kas antras segmentas praleidžiamas)
+            GLES20.glDrawArrays(if (dashed) GLES20.GL_LINES else GLES20.GL_LINE_STRIP, 0, a.size / 3)
         }
         GLES20.glLineWidth(1f)
     }
@@ -2938,6 +2990,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uHasNight"), if (earthNightTex != 0) 1f else 0f)
             GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uHasMask"), if (earthMaskTex != 0) 1f else 0f)
             GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uWater"), 1f)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uAnim"), if (oceanOn) oceanLevel.toFloat() else 0f)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uTime"), ((System.nanoTime() - t0) / 1e9 % 10_000.0).toFloat())
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             resetAttribs()
             val lp = GLES20.glGetAttribLocation(prog, "aPos")
@@ -3837,6 +3891,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform float uHasNight;
             uniform float uHasMask;
             uniform float uWater;
+            uniform float uAnim;      // 0 – išjungta, 1 – sumažinta (tik puta), 2 – pilna (bangos, blizgesys, puta)
+            uniform float uTime;
             uniform vec3 uLight;
             uniform vec3 uEye;
             varying vec2 vUV;
@@ -3887,11 +3943,33 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vec3 h = normalize(l + v);
                 float nh = max(dot(sN, h), 0.0);
                 float spec = (pow(nh, 160.0) * 1.6 + pow(nh, 24.0) * 0.18) * ocean;
+                vec3 foamCol = vec3(0.0);
+                if (uAnim > 0.5 && uHasMask > 0.5 && ocean > 0.5) {
+                    vec4 mk = texture2D(uMask, vUV);
+                    if (uAnim > 1.5) {
+                        // lėtos bangos: normalės iškraipymas iš kelių sinusoidžių (tekstūros koordinatėse), juda blizgesys
+                        vec3 tE = normalize(cross(vec3(0.0, 0.0, 1.0), sN) + vec3(1e-4, 0.0, 0.0));
+                        vec3 tN = cross(sN, tE);
+                        float a1 = sin(vUV.x * 2300.0 + vUV.y * 900.0 + uTime * 0.9);
+                        float a2 = sin(vUV.x * -1100.0 + vUV.y * 2100.0 + uTime * 0.7);
+                        float a3 = sin(vUV.x * 3700.0 - vUV.y * 2600.0 + uTime * 1.3);
+                        vec3 nW = normalize(sN + (tE * (a1 + 0.5 * a3) + tN * (a2 - 0.5 * a3)) * 0.035);
+                        float nhW = max(dot(nW, h), 0.0);
+                        spec = (pow(nhW, 160.0) * 1.8 + pow(nhW, 24.0) * 0.2) * ocean;
+                    }
+                    // pakrantės puta: bangos bėga link kranto (atstumas iki kranto mk.g · 255 / 8 taškų)
+                    float dpx = mk.g * 31.875;
+                    if (dpx < 6.0) {
+                        float crest = fract(dpx * 0.45 + uTime * 0.35);
+                        float band = smoothstep(0.0, 0.12, crest) * (1.0 - smoothstep(0.12, 0.35, crest));
+                        foamCol = vec3(0.95) * band * (1.0 - dpx / 6.0) * 0.75;
+                    }
+                }
                 float wFres = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
                 vec3 sky = vec3(0.35, 0.55, 0.85) * wFres * ocean * soft;
                 // Apšviesta pusė šviesesnė: daugiau išsklaidytos šviesos, šlaitų šešėliai švelnesni
                 float lit = mix(d, max(dot(sN, l), 0.0), 0.35);
-                vec3 day = base * (0.2 + 1.1 * lit * soft) + vec3(1.0, 0.95, 0.85) * spec * soft + sky + atm;
+                vec3 day = base * (0.2 + 1.1 * lit * soft) + vec3(1.0, 0.95, 0.85) * spec * soft + sky + atm + foamCol * soft;
                 // Naktinė pusė: miestų šviesų nuotrauka vietoj šešėlio
                 vec3 night = texture2D(uNight, vUV).rgb * 1.6 + atm * 0.35;
                 float dayW = mix(1.0, smoothstep(-0.18, 0.12, nl), uHasNight);
@@ -4778,6 +4856,8 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var skyHolder: FrameLayout
     private lateinit var fsBtn: TextView
+    private lateinit var satCountView: TextView
+    private var lastSatCount: SatCount.Result? = null
     private var skyHolderParent: ViewGroup? = null
     private var skyHolderLp: ViewGroup.LayoutParams? = null
     private var fullscreen = false
@@ -4868,10 +4948,13 @@ class MainActivity : AppCompatActivity() {
             for (x in list) satMap[x.const + x.svid] = x
             skyView.sats = list
             if (::skyDome.isInitialized) skyDome.setSats(list)
+            if (::satCountView.isInitialized) satCountView.text = SatCount.count(list.map { SatCount.Sig(it.const, it.svid, it.used) })
+                .let { "Palydovų ${it.satVisible} (naud. ${it.satUsed})\nSignalų ${it.sigVisible}" }
             val used = list.filter { it.used }
             val avg = if (used.isNotEmpty()) used.map { it.cn0.toDouble() }.average() else 0.0
             val max = list.maxOfOrNull { it.cn0 } ?: 0f
-            val byConst = list.groupingBy { it.const }.eachCount().toSortedMap()
+            val cnt = SatCount.count(list.map { SatCount.Sig(it.const, it.svid, it.used) })
+            lastSatCount = cnt
 
             cnoView.addSample(list, if (used.isNotEmpty()) avg.toFloat() else null)
             bg.setSignal(if (used.isNotEmpty()) avg.toFloat() else null)
@@ -4883,8 +4966,8 @@ class MainActivity : AppCompatActivity() {
             )
 
             satText = SpannableStringBuilder().apply {
-                appendLine("Matomi palydovai: ${list.size}")
-                appendLine("Naudojami fiksui: ${used.size}")
+                appendLine("Signalų matoma ${cnt.sigVisible}, naudojama ${cnt.sigUsed}")
+                appendLine("Palydovų matoma ${cnt.satVisible}, naudojama ${cnt.satUsed}")
                 appendLine("Vidutinis C/N0 (naudojami): ${fx(avg)} dB-Hz")
                 appendLine("Maks. C/N0: ${fx(max.toDouble())} dB-Hz")
                 val sbsAll = list.count { it.const == "SBS" }
@@ -4898,9 +4981,9 @@ class MainActivity : AppCompatActivity() {
                     }
                 )
                 append("Pagal konstelaciją:\n")
-                for ((const, count) in byConst) {
+                for ((const, a) in cnt.perConst) {
                     val start = length
-                    append("$const=$count   ")
+                    append("$const=${a[0]} (${a[2]} sign.)   ")
                     val end = length
                     setSpan(ForegroundColorSpan(constColor(const)), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                     setSpan(StyleSpan(Typeface.BOLD), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -5113,6 +5196,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbFree, LinearLayout.LayoutParams(mw, ww))
+        val cbOcean = CheckBox(this).apply {
+            text = "Animuotas vandenynas"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("ocean_anim", true)
+            setOnCheckedChangeListener { _, on ->
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("ocean_anim", on).apply()
+                if (::skyDome.isInitialized) skyDome.setOcean(on)
+            }
+        }
+        left.addView(cbOcean, LinearLayout.LayoutParams(mw, ww))
         left.addView(TextView(this).apply {
             text = "Moon: NASA SVS CGI Moon Kit (LRO LROC, LOLA) · Earth: NASA Blue Marble, GEBCO"
             textSize = 11f
@@ -5125,6 +5217,13 @@ class MainActivity : AppCompatActivity() {
         skyDome = SkyDomeGL(this)
         skyHolder = FrameLayout(this).apply { visibility = View.GONE }
         skyHolder.addView(skyDome, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        satCountView = TextView(this).apply {
+            textSize = 13f
+            setTextColor(0xFFFFFFFF.toInt())
+            setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())
+            val pd = (8 * resources.displayMetrics.density).toInt(); setPadding(pd, pd, pd, pd)
+        }
+        skyHolder.addView(satCountView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START))
         val fsSize = (44 * resources.displayMetrics.density).toInt()
         fsBtn = TextView(this).apply {
             text = "\u26F6"
@@ -5188,7 +5287,8 @@ class MainActivity : AppCompatActivity() {
                 val send = {
                     val names = listOf(REPORT_FILE) + uris.mapNotNull { it.lastPathSegment }
                     val zipName = SessionZip.name(System.currentTimeMillis(), Build.MODEL)
-                    report += sunReport() + Sp3Live.text() + "\n"
+                    report += sunReport() + Sp3Live.text() + "\n" +
+                        (if (::skyDome.isInitialized) skyDome.fpsText() + "\n" else "")
                     report += "Eksportuota: " + names.joinToString(", ") + "\n"
                     report += "ZIP: $zipName (Download/GNSS)\nZIP failai: " + names.joinToString(", ") + "\n"
                     val shotName = shot?.lastPathSegment

@@ -1142,6 +1142,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     fun setMarkers(on: Boolean) { renderer.showMarkers = on }
     fun setFollowDevice(on: Boolean) { renderer.followDevice = on; renderer.resetUser() }
+    fun setFreeView(on: Boolean) { renderer.freeView = on; renderer.resetUser() }
 
     fun setStableNorth(on: Boolean) {
         stableNorth = on
@@ -1167,6 +1168,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
         renderer.showMarkers = calPrefs.getBoolean("markers", true)
         renderer.followDevice = calPrefs.getBoolean("follow_device", false)
+        renderer.freeView = calPrefs.getBoolean("free_view", false)
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
     }
@@ -1673,7 +1675,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Zoom: kameros atstumas kiekvieną kadrą; artima riba mažėja priartinus (kad Žemė nebūtų nukirpta)
         val near = ((zoom - EARTH_R) * 0.3f).coerceIn(0.003f, 0.1f)
         Matrix.perspectiveM(proj, 0, 40f, aspectNow, near, 20f)
-        proj[9] = 0.3f
+        proj[9] = if (observerView()) 0f else 0.3f                 // stebėtojo režime horizontas – ekrano viduryje
         Matrix.setIdentityM(view, 0)
         Matrix.translateM(view, 0, 0f, 0f, -zoom)
         Matrix.multiplyMM(pv, 0, proj, 0, view, 0)
@@ -1701,12 +1703,19 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val mvU = FloatArray(16)
         Matrix.multiplyMM(mvU, 0, u4, 0, mv, 0)
         Matrix.multiplyMM(mvpI, 0, pv, 0, mvU, 0)          // Žemė, palydovai (sideralinė erdvė)
+        if (observerView()) observerCamera()
         // Stebėtojo lokali sistema (dangaus kupolas, horizontas): ENU -> I + vieta
         java.util.Arrays.fill(lMat, 0f)
         for (c in 0..2) for (rr in 0..2) lMat[c * 4 + rr] = fQ[rr * 3 + c].toFloat()
         lMat[12] = fP[0]; lMat[13] = fP[1]; lMat[14] = fP[2]; lMat[15] = 1f
         Matrix.multiplyMM(mvp, 0, mvpI, 0, lMat, 0)        // kupolas, horizontas, žymos
-        eyeI = floatArrayOf(mvU[2], mvU[6], mvU[10])
+        if (observerView()) {
+            val l = kotlin.math.sqrt(camPos[0] * camPos[0] + camPos[1] * camPos[1] + camPos[2] * camPos[2]).coerceAtLeast(1e-6f)
+            eyeI = floatArrayOf(camPos[0] / l, camPos[1] / l, camPos[2] / l)
+        } else {
+            eyeI = floatArrayOf(mvU[2], mvU[6], mvU[10])
+            camPos = floatArrayOf(eyeI[0] * zoom, eyeI[1] * zoom, eyeI[2] * zoom)
+        }
         // Kameros kryptis pasaulio koordinatėse (planšetės +Z)
         val eye = floatArrayOf(
             (fE[0] * eyeI[0] + fE[1] * eyeI[1] + fE[2] * eyeI[2]).toFloat(),
@@ -2503,6 +2512,50 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** false (numatytasis) – visata nepriklauso nuo planšetės sukimo; true – senas režimas (vaizdas sukasi su planšete). */
     @Volatile var followDevice = false
+    /** true – laisvas vaizdas iš viršaus (vilkimu); false (numatytasis) – stebėtojo vaizdas. */
+    @Volatile var freeView = false
+    /** Kameros padėtis sideralinėje erdvėje (Saulės ir švytėjimo šešėliuoklėms). */
+    private var camPos = floatArrayOf(0f, 0f, 3f)
+    private var headingSm = Double.NaN
+
+    private fun observerView() = !followDevice && !freeView
+
+    /**
+     * Stebėtojo vaizdas: žmogus stovi ant Žemės (smeigtukas – vertikalus, galvutė – akys), planšetė – langas prieš veidą.
+     * Kamera už stebėtojo galvos aukštyje žiūri horizontaliai planšetės kryptimi (azimutas iš jutiklių);
+     * pakreipimas ir pasukimas apie žiūrėjimo ašį ignoruojami – horizontas visada ekrano viduryje ir lygiagretus rėmui.
+     * Atstumas už stebėtojo – priartinimas (zoom).
+     */
+    private fun observerCamera() {
+        val head = pinWorld()
+        val hl = kotlin.math.sqrt((head[0] * head[0] + head[1] * head[1] + head[2] * head[2]).toDouble())
+        if (hl < 1e-6) return                                           // Žemės matrica dar neparuošta
+        val up = DoubleArray(3) { head[it] / hl }                       // vietinis zenitas
+        var east = doubleArrayOf(-up[1], up[0], 0.0)                    // z × up
+        val el = kotlin.math.hypot(east[0], east[1]).let { if (it < 1e-6) 1.0 else it }
+        east = if (kotlin.math.hypot(east[0], east[1]) < 1e-6) doubleArrayOf(1.0, 0.0, 0.0) else doubleArrayOf(east[0] / el, east[1] / el, 0.0)
+        val north = doubleArrayOf(up[1] * east[2] - up[2] * east[1], up[2] * east[0] - up[0] * east[2], up[0] * east[1] - up[1] * east[0])
+        // Azimutas: planšetės nugarėlės kryptis (gulint – viršutinis kraštas), tolygiai
+        val r = rot
+        var e = -r[2].toDouble(); var n = -r[5].toDouble()
+        if (kotlin.math.hypot(e, n) < 0.3) { e = r[1].toDouble(); n = r[4].toDouble() }
+        val target = kotlin.math.atan2(e, n)
+        headingSm = if (headingSm.isNaN()) target else {
+            var d = target - headingSm
+            while (d > Math.PI) d -= 2 * Math.PI
+            while (d < -Math.PI) d += 2 * Math.PI
+            headingSm + 0.15 * d
+        }
+        val f = DoubleArray(3) { sin(headingSm) * east[it] + cos(headingSm) * north[it] }
+        val dist = (zoom - EARTH_R).toDouble().coerceAtLeast(0.03)
+        val eye = FloatArray(3) { (head[it] - f[it] * dist).toFloat() }
+        camPos = eye
+        val lookV = FloatArray(16)
+        Matrix.setLookAtM(lookV, 0, eye[0], eye[1], eye[2],
+            (eye[0] + f[0]).toFloat(), (eye[1] + f[1]).toFloat(), (eye[2] + f[2]).toFloat(),
+            up[0].toFloat(), up[1].toFloat(), up[2].toFloat())
+        Matrix.multiplyMM(mvpI, 0, proj, 0, lookV, 0)
+    }
     /** Kameros kryptis sideralinėje erdvėje: pradžioje – virš stebėtojo, toliau keičiama tik vilkimu (userR). */
     private var baseEye: DoubleArray? = null
 
@@ -3266,7 +3319,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(sunProg, "uMVP"), 1, false, sunMvp, 0)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(sunProg, "uModel"), 1, false, sunMat, 0)
         GLES20.glUniform3f(GLES20.glGetUniformLocation(sunProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
-        GLES20.glUniform3f(GLES20.glGetUniformLocation(sunProg, "uCam"), eyeI[0] * zoom, eyeI[1] * zoom, eyeI[2] * zoom)
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(sunProg, "uCam"), camPos[0], camPos[1], camPos[2])
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uTime"), t)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uHasTex"), if (sunImgTex != 0) 1f else 0f)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -3298,7 +3351,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUseProgram(glowProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(glowProg, "uMVP"), 1, false, gmvp, 0)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(glowProg, "uModel"), 1, false, gm, 0)
-        GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uCam"), eyeI[0] * zoom, eyeI[1] * zoom, eyeI[2] * zoom)
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uCam"), camPos[0], camPos[1], camPos[2])
         GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uCenter"), sp[0], sp[1], sp[2])
         GLES20.glUniform1f(GLES20.glGetUniformLocation(glowProg, "uTime"), t)
         resetAttribs()
@@ -5051,6 +5104,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbFollow, LinearLayout.LayoutParams(mw, ww))
+        val cbFree = CheckBox(this).apply {
+            text = "Laisvas vaizdas iš viršaus"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("free_view", false)
+            setOnCheckedChangeListener { _, on ->
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("free_view", on).apply()
+                if (::skyDome.isInitialized) skyDome.setFreeView(on)
+            }
+        }
+        left.addView(cbFree, LinearLayout.LayoutParams(mw, ww))
         left.addView(TextView(this).apply {
             text = "Moon: NASA SVS CGI Moon Kit (LRO LROC, LOLA) · Earth: NASA Blue Marble, GEBCO"
             textSize = 11f

@@ -1141,6 +1141,41 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     }
 
     fun setMarkers(on: Boolean) { renderer.showMarkers = on }
+    fun setOrient(on: Boolean) { renderer.showOrient = on }
+
+    /**
+     * Kalibravimas pagal Saulę: planšetė nukreipta į Saulę (žiūrėjimas pro ekraną, gulint – viršutinis kraštas).
+     * Pataisa = dabartinė vaizdo kryptis − Saulės azimutas; pridedama prie šiaurės poslinkio ir įrašoma.
+     * Grąžina (Saulės azimutas, aukštis, pataisa °) arba null, jei Saulė po horizontu.
+     */
+    fun calibrateSun(lat: Double, lon: Double): Triple<Double, Double, Double>? {
+        val now = System.currentTimeMillis()
+        val (az, alt) = Astro.altAz(Astro.sunEq(now), lat, lon, now)
+        if (alt < -0.5) return null
+        val r = lastRaw
+        var e = -r[2].toDouble(); var n = -r[5].toDouble()
+        if (kotlin.math.hypot(e, n) < 0.3) { e = r[1].toDouble(); n = r[4].toDouble() }
+        val heading = (Math.toDegrees(kotlin.math.atan2(e, n)) + 360.0) % 360.0
+        var d = heading - az
+        while (d > 180) d -= 360.0
+        while (d <= -180) d += 360.0
+        offsetDeg += d.toFloat()
+        calPrefs.edit().putFloat("offset", offsetDeg).putFloat("decl0", declDeg).putBoolean("north_saved", true)
+            .putFloat("sun_cal_deg", d.toFloat()).putLong("sun_cal_ms", now).putFloat("sun_cal_az", az.toFloat()).apply()
+        manual = false
+        handler.removeCallbacks(resumeSensors)
+        renderer.resetUser()
+        publish()
+        return Triple(az, alt, d)
+    }
+
+    fun sunCalText(): String {
+        val ms = calPrefs.getLong("sun_cal_ms", 0L)
+        if (ms == 0L) return "Kalibravimas pagal Saulę: neatliktas"
+        return "Kalibravimas pagal Saulę: %s, Saulės azimutas %.1f°, kompaso pataisa %+.1f°; bendras šiaurės poslinkis %.1f°".format(
+            java.util.Locale.US, java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(ms)),
+            calPrefs.getFloat("sun_cal_az", 0f), calPrefs.getFloat("sun_cal_deg", 0f), offsetDeg)
+    }
     fun setFollowDevice(on: Boolean) { renderer.followDevice = on; renderer.resetUser() }
     fun setFreeView(on: Boolean) { renderer.freeView = on; renderer.resetUser() }
     fun setOcean(on: Boolean) { renderer.oceanOn = on; if (on) renderer.oceanLevel = 2 }
@@ -1169,6 +1204,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         preserveEGLContextOnPause = true
         renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
         renderer.showMarkers = calPrefs.getBoolean("markers", true)
+        renderer.showOrient = calPrefs.getBoolean("orient", true)
         renderer.followDevice = calPrefs.getBoolean("follow_device", false)
         renderer.freeView = calPrefs.getBoolean("free_view", false)
         renderer.oceanOn = calPrefs.getBoolean("ocean_anim", true)
@@ -2121,11 +2157,79 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
     }
 
+    /** Erdvės orientacijos demonstracija: Žemės ašis ir Polaris, žvilgsnis į Polaris, stebėtojo horizontas, judėjimas orbitoje. */
+    @Volatile var showOrient = true
+
+    private fun labelAt(p: DoubleArray, text: String, r: Float, g: Float, b: Float, h: Float = 0.05f) {
+        val (tex, aspect) = wideLabel(text)
+        billboard(floatArrayOf(p[0].toFloat(), p[1].toFloat(), p[2].toFloat()), eyeI, h * aspect, h, tex, r, g, b, 0.95f)
+    }
+
+    private fun seg(a: DoubleArray, b: DoubleArray, out: ArrayList<Float>) {
+        out.add(a[0].toFloat()); out.add(a[1].toFloat()); out.add(a[2].toFloat()); out.add(b[0].toFloat()); out.add(b[1].toFloat()); out.add(b[2].toFloat())
+    }
+
+    private fun drawOrientation() {
+        val m = earthMat
+        // Žemės ašis scenoje: ECEF z ašis per Žemės matricą
+        var ax = doubleArrayOf(m[8].toDouble(), m[9].toDouble(), m[10].toDouble())
+        val al = kotlin.math.sqrt(ax[0] * ax[0] + ax[1] * ax[1] + ax[2] * ax[2]); if (al < 1e-6) return
+        ax = DoubleArray(3) { ax[it] / al }
+        val c = doubleArrayOf(m[12].toDouble(), m[13].toDouble(), m[14].toDouble())
+        val r = EARTH_R.toDouble()
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        // 1) Ašis per Žemės centrą: nuo pietų iki toli šiaurėje (link Polaris)
+        val axis = ArrayList<Float>()
+        seg(DoubleArray(3) { c[it] - ax[it] * r * 1.5 }, DoubleArray(3) { c[it] + ax[it] * starR * 0.92 }, axis)
+        drawLines(axis.toFloatArray(), 1f, 0.92f, 0.45f, 0.85f)
+        // 2) Stebėtojo žvilgsnis į Polaris – lygiagretus ašiai, brūkšninis
+        val pin = pinWorld()
+        val obs = DoubleArray(3) { c[it] + (pin[it] - c[it]) / 1.35 }
+        val pol = starCatalog.first { it.name == "Polaris" }.dir
+        val pd = doubleArrayOf(pol[0].toDouble(), pol[1].toDouble(), pol[2].toDouble())
+        val dash = ArrayList<Float>()
+        val n = 40; val len = starR * 0.9
+        for (i in 0 until n step 2) seg(DoubleArray(3) { obs[it] + pd[it] * len * i / n }, DoubleArray(3) { obs[it] + pd[it] * len * (i + 1) / n }, dash)
+        drawLines(dash.toFloatArray(), 1f, 0.97f, 0.75f, 0.7f)
+        // 3) Stebėtojo horizontas – plokštuma per stebėtoją, statmena vietiniam zenitui (žiedas ir kryžius Š–P, R–V)
+        val up = DoubleArray(3) { obs[it] - c[it] }.let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); DoubleArray(3) { v[it] / l } }
+        var e = doubleArrayOf(ax[1] * up[2] - ax[2] * up[1], ax[2] * up[0] - ax[0] * up[2], ax[0] * up[1] - ax[1] * up[0])
+        val el = kotlin.math.sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]); if (el < 1e-6) { GLES20.glDisable(GLES20.GL_DEPTH_TEST); return }
+        e = DoubleArray(3) { e[it] / el }
+        val nn = doubleArrayOf(up[1] * e[2] - up[2] * e[1], up[2] * e[0] - up[0] * e[2], up[0] * e[1] - up[1] * e[0])
+        val hr = r * 0.75
+        val ring = ArrayList<Float>()
+        val k = 96
+        for (i in 0 until k) {
+            val a0 = 2 * Math.PI * i / k; val a1 = 2 * Math.PI * (i + 1) / k
+            seg(DoubleArray(3) { obs[it] + (cos(a0) * nn[it] + sin(a0) * e[it]) * hr }, DoubleArray(3) { obs[it] + (cos(a1) * nn[it] + sin(a1) * e[it]) * hr }, ring)
+        }
+        seg(DoubleArray(3) { obs[it] - nn[it] * hr }, DoubleArray(3) { obs[it] + nn[it] * hr }, ring)
+        seg(DoubleArray(3) { obs[it] - e[it] * hr }, DoubleArray(3) { obs[it] + e[it] * hr }, ring)
+        drawLines(ring.toFloatArray(), 0.45f, 0.95f, 1f, 0.75f)
+        // 4) Žemės judėjimas orbitoje (ekliptikoje, 90° nuo Saulės): rodyklė iš Žemės
+        val mv = SpaceOrientation.motionEq(System.currentTimeMillis())
+        val side = doubleArrayOf(mv[1] * ax[2] - mv[2] * ax[1], mv[2] * ax[0] - mv[0] * ax[2], mv[0] * ax[1] - mv[1] * ax[0])
+        val p0 = DoubleArray(3) { c[it] + mv[it] * r * 1.5 }; val tip = DoubleArray(3) { c[it] + mv[it] * r * 2.8 }
+        val arrow = ArrayList<Float>()
+        seg(p0, tip, arrow)
+        seg(tip, DoubleArray(3) { tip[it] - mv[it] * r * 0.3 + side[it] * r * 0.15 }, arrow)
+        seg(tip, DoubleArray(3) { tip[it] - mv[it] * r * 0.3 - side[it] * r * 0.15 }, arrow)
+        drawLines(arrow.toFloatArray(), 0.5f, 1f, 0.55f, 0.95f)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        labelAt(DoubleArray(3) { c[it] + ax[it] * r * 2.0 }, "Žemės ašis → Polaris", 1f, 0.92f, 0.5f)
+        labelAt(DoubleArray(3) { obs[it] + pd[it] * len * 0.35 + up[it] * 0.04 }, "jūsų žvilgsnis į Polaris (lygiagretus ašiai)", 1f, 0.97f, 0.8f, 0.04f)
+        labelAt(DoubleArray(3) { obs[it] + nn[it] * hr * 1.08 }, "Š", 0.6f, 1f, 1f, 0.04f)
+        labelAt(DoubleArray(3) { obs[it] + up[it] * 0.02 + e[it] * hr * 1.1 }, "jūsų horizontas", 0.6f, 1f, 1f, 0.04f)
+        labelAt(DoubleArray(3) { tip[it] + mv[it] * r * 0.25 }, "Žemės kelias orbitoje 29,8 km/s", 0.6f, 1f, 0.65f)
+    }
+
     private fun drawSky() {
         checkEcliptic()
         // Žemės orbita aplink Saulę (dangaus pusiaujo žiedas pašalintas)
         GLES20.glLineWidth(1.5f * density)
         drawEarthOrbit()
+        if (showOrient) drawOrientation()
 
         // Oriono linijos (orientyrai – nustatymas „Rodyti orientyrus“)
         val pos = HashMap<String, FloatArray>()
@@ -4857,6 +4961,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var skyHolder: FrameLayout
     private lateinit var fsBtn: TextView
     private lateinit var satCountView: TextView
+    private lateinit var orientView: TextView
     private var lastSatCount: SatCount.Result? = null
     private var skyHolderParent: ViewGroup? = null
     private var skyHolderLp: ViewGroup.LayoutParams? = null
@@ -4950,6 +5055,8 @@ class MainActivity : AppCompatActivity() {
             if (::skyDome.isInitialized) skyDome.setSats(list)
             if (::satCountView.isInitialized) satCountView.text = SatCount.count(list.map { SatCount.Sig(it.const, it.svid, it.used) })
                 .let { "Palydovų ${it.satVisible} (naud. ${it.satUsed})\nSignalų ${it.sigVisible}" }
+            if (::orientView.isInitialized && orientView.visibility == View.VISIBLE && !(obsLatNow == 0.0 && obsLonNow == 0.0))
+                orientView.text = SpaceOrientation.shortText(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()))
             val used = list.filter { it.used }
             val avg = if (used.isNotEmpty()) used.map { it.cn0.toDouble() }.average() else 0.0
             val max = list.maxOfOrNull { it.cn0 } ?: 0f
@@ -5159,6 +5266,19 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { if (::skyDome.isInitialized) skyDome.resetNorth() }
         }
         left.addView(btnSaveN, LinearLayout.LayoutParams(mw, ww))
+        val btnSun = Button(this).apply {
+            text = "Kalibruoti pagal Saulę (nukreipkite planšetę į Saulę)"
+            setOnClickListener {
+                if (!::skyDome.isInitialized) return@setOnClickListener
+                if (obsLatNow == 0.0 && obsLonNow == 0.0) { Toast.makeText(this@MainActivity, "Nėra GNSS vietos", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+                val r = skyDome.calibrateSun(obsLatNow, obsLonNow)
+                Toast.makeText(this@MainActivity,
+                    if (r == null) "Saulė po horizontu – kalibruoti negalima"
+                    else "Saulė: az %.1f°, aukštis %.1f°; kompaso pataisa %+.1f°".format(java.util.Locale.US, r.first, r.second, r.third),
+                    Toast.LENGTH_LONG).show()
+            }
+        }
+        left.addView(btnSun, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnResetN, LinearLayout.LayoutParams(mw, ww))
         val cbStableN = CheckBox(this).apply {
             text = "Stabili šiaurė (ignoruoti magnetometrą)"
@@ -5178,6 +5298,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbMarkers, LinearLayout.LayoutParams(mw, ww))
+        val cbOrient = CheckBox(this).apply {
+            text = "Erdvės orientacija (ašis, horizontas, judėjimas)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("orient", true)
+            setOnCheckedChangeListener { _, on ->
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("orient", on).apply()
+                if (::skyDome.isInitialized) skyDome.setOrient(on)
+                if (::orientView.isInitialized) orientView.visibility = if (on) View.VISIBLE else View.GONE
+            }
+        }
+        left.addView(cbOrient, LinearLayout.LayoutParams(mw, ww))
         val cbFollow = CheckBox(this).apply {
             text = "Sukti visatą su planšete"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("follow_device", false)
@@ -5224,6 +5354,14 @@ class MainActivity : AppCompatActivity() {
             val pd = (8 * resources.displayMetrics.density).toInt(); setPadding(pd, pd, pd, pd)
         }
         skyHolder.addView(satCountView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START))
+        orientView = TextView(this).apply {
+            textSize = 12f
+            setTextColor(0xFFE8FFF0.toInt())
+            setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())
+            val pd = (8 * resources.displayMetrics.density).toInt(); setPadding(pd, pd, pd, pd)
+            visibility = if (getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("orient", true)) View.VISIBLE else View.GONE
+        }
+        skyHolder.addView(orientView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START))
         val fsSize = (44 * resources.displayMetrics.density).toInt()
         fsBtn = TextView(this).apply {
             text = "\u26F6"
@@ -5288,6 +5426,8 @@ class MainActivity : AppCompatActivity() {
                     val names = listOf(REPORT_FILE) + uris.mapNotNull { it.lastPathSegment }
                     val zipName = SessionZip.name(System.currentTimeMillis(), Build.MODEL)
                     report += sunReport() + Sp3Live.text() + "\n" +
+                        (if (obsLatNow == 0.0 && obsLonNow == 0.0) "" else SpaceOrientation.report(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()), obsLatNow)) +
+                        (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" else "") +
                         (if (::skyDome.isInitialized) skyDome.fpsText() + "\n" else "")
                     report += "Eksportuota: " + names.joinToString(", ") + "\n"
                     report += "ZIP: $zipName (Download/GNSS)\nZIP failai: " + names.joinToString(", ") + "\n"

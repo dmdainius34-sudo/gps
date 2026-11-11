@@ -1140,6 +1140,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         calPrefs.edit().putBoolean("cmb_bg", on).apply()
     }
 
+    fun setMarkers(on: Boolean) { renderer.showMarkers = on }
+
     fun setStableNorth(on: Boolean) {
         stableNorth = on
         calPrefs.edit().putBoolean("stable_north", on).apply()
@@ -1162,6 +1164,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         setEGLConfigChooser(MsaaConfigChooser())
         preserveEGLContextOnPause = true
         renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
+        renderer.showMarkers = calPrefs.getBoolean("markers", true)
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
     }
@@ -1514,11 +1517,52 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
     }
 
+    /** Paskutinė Žemės matrica (ECEF -> scena): SP3 palydovai dedami taip pat, kaip piešiama Žemė. */
+    @Volatile private var earthMatLast = FloatArray(16)
+    @Volatile var sp3Active = false
+        private set
+    /** SP3 trajektorijos ±30 min.: (segmentai, spalva). */
+    @Volatile private var sp3Tracks: List<Pair<FloatArray, FloatArray>> = emptyList()
+    private var tracksAt = 0L
+
+    /** ECEF (km) -> scena: mastelis kaip Žemės (EARTH_R = 6371 km), sukimas earthMat (+ papildomas Žemės pasisukimas). */
+    private fun ecefToScene(km: DoubleArray, extraRot: Double = 0.0): FloatArray {
+        val k = EARTH_R / 6371.0
+        val c = cos(extraRot); val sn = sin(extraRot)
+        val x = (c * km[0] - sn * km[1]) * k; val y = (sn * km[0] + c * km[1]) * k; val z = km[2] * k
+        val m = earthMatLast
+        return floatArrayOf((m[0] * x + m[4] * y + m[8] * z).toFloat(), (m[1] * x + m[5] * y + m[9] * z).toFloat(), (m[2] * x + m[6] * y + m[10] * z).toFloat())
+    }
+
     fun setSats(l: List<Sat>) {
         sats = l
         frameNow()
+        Sp3Live.refresh(appCtx)
+        val tNow = Sp3Live.gpsNow()
+        val useSp3 = Sp3Live.covers(tNow) && earthMatLast[10] != 0f
+        sp3Active = useSp3
         val out = ArrayList<SatI>()
+        val nowMs = System.currentTimeMillis()
+        val makeTracks = useSp3 && nowMs - tracksAt > 30_000L
+        val tracks = if (makeTracks) ArrayList<Pair<FloatArray, FloatArray>>() else null
         for (s in l) {
+            val id = if (useSp3) Sp3Live.id(s.const, s.svid) else null
+            val ecef = id?.let { Sp3Live.ecefKm(it, tNow) }
+            if (ecef != null) {
+                // Tikra padėtis iš SP3; patikra su Android az/el
+                val (az, el) = Sp3Live.azEl(ecef, obsLat, obsLon, 0.0)
+                Sp3Live.compare(id, az, el, s.az.toDouble(), s.elev.toDouble())
+                if (el < 0.0) continue
+                out.add(SatI(s, ecefToScene(ecef)))
+                if (tracks != null) {
+                    val pts = ArrayList<FloatArray>()
+                    for (m in -30..30) Sp3Live.ecefKm(id, tNow + m * 60.0)?.let { pts.add(ecefToScene(it, PositionSolver.OMEGA_E * m * 60.0)) }
+                    val seg = FloatArray(maxOf(0, pts.size - 1) * 6)
+                    for (i in 0 until pts.size - 1) { System.arraycopy(pts[i], 0, seg, i * 6, 3); System.arraycopy(pts[i + 1], 0, seg, i * 6 + 3, 3) }
+                    tracks.add(seg to constRgb(s.const))
+                }
+                continue
+            }
             if (s.elev < 0f) continue
             val el = Math.toRadians(s.elev.toDouble().coerceIn(0.0, 90.0))
             val az = Math.toRadians(s.az.toDouble())
@@ -1534,6 +1578,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 (fP[2] + dist * (dx * fE[2] + dy * fN[2] + dz * fU[2])).toFloat())))
         }
         satsI = out
+        if (tracks != null) { sp3Tracks = tracks; tracksAt = nowMs }
+        if (!useSp3) sp3Tracks = emptyList()
         recordTrails(out)
     }
 
@@ -1736,6 +1782,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
             }
         }
+        // SP3 trajektorijos ±30 min. arba užrašas apie apytikslę padėtį
+        if (sp3Active) {
+            GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+            for ((seg, c) in sp3Tracks) if (seg.isNotEmpty()) drawLines(seg, c[0], c[1], c[2], 0.35f)
+            GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        } else if (satsI.isNotEmpty()) {
+            if (noSp3Tex == 0) noSp3Tex = makeTextureW("SP3 nėra – apytikslė padėtis", 0xFFFFE08A.toInt(), 64, 8)
+            billboard(floatArrayOf(0f, 0f, 0.48f), eyeI, 0.48f, 0.06f, noSp3Tex, 1f, 1f, 1f, 0.85f)
+        }
 
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
@@ -1778,7 +1833,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val k = 50f / EARTH_R                                     // Žemės rutulio tinklelis (0,25) -> 50
         java.util.Arrays.fill(cmbModel, 0f)
         cmbModel[0] = k; cmbModel[5] = k; cmbModel[10] = k
-        cmbModel[12] = fP[0]; cmbModel[13] = fP[1]; cmbModel[14] = fP[2]; cmbModel[15] = 1f
+        // Sfera kameros centre – be paralakso (kamera sideralinėje erdvėje = vm⁻¹ · (0, 0, 0, 1))
+        val vmInv = FloatArray(16)
+        val cam = if (Matrix.invertM(vmInv, 0, vm, 0)) floatArrayOf(vmInv[12], vmInv[13], vmInv[14]) else floatArrayOf(fP[0], fP[1], fP[2])
+        cmbModel[12] = cam[0]; cmbModel[13] = cam[1]; cmbModel[14] = cam[2]; cmbModel[15] = 1f
         val tmp = FloatArray(16)
         Matrix.multiplyMM(tmp, 0, vm, 0, cmbModel, 0)
         Matrix.multiplyMM(cmbMvp, 0, pFar, 0, tmp, 0)
@@ -1845,6 +1903,26 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val dot = (d[0] * pole[0] + d[1] * pole[1] + d[2] * pole[2]) /
             kotlin.math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).coerceAtLeast(1e-12)
         return Math.toDegrees(kotlin.math.asin(dot.coerceIn(-1.0, 1.0)))
+    }
+
+    @Volatile var showMarkers = true
+    /** Sgr A* (RA 266,417°, Dec −29,008°) – fono žemėlapio centre (Galaktikos centras). */
+    private val sgrDir: FloatArray = run {
+        val ra = Math.toRadians(266.417); val dec = Math.toRadians(-29.008)
+        floatArrayOf((cos(dec) * cos(ra)).toFloat(), (cos(dec) * sin(ra)).toFloat(), sin(dec).toFloat())
+    }
+
+    /** Orientyrai: Sgr A*, Polaris ir Oriono juostos užrašai. */
+    private fun drawMarkers(pos: Map<String, FloatArray>) {
+        if (sgrTex == 0) sgrTex = makeTextureW("Sgr A* (Galaktikos centras)", 0xFFFF9A9A.toInt(), 64, 8)
+        if (polarisTex == 0) polarisTex = makeTextureW("Polaris", 0xFFFFF3C0.toInt(), 64, 4)
+        if (beltTex == 0) beltTex = makeTextureW("Oriono juosta", 0xFFC8DCFF.toInt(), 64, 6)
+        val sg = skyPt(sgrDir, starR)
+        val a = if (aboveHorizon(sg)) 1f else 0.4f
+        if (starTex != 0) billboard(sg, eyeI, 0.12f, 0.12f, starTex, 1f, 0.45f, 0.45f, a)
+        billboard(floatArrayOf(sg[0], sg[1], sg[2] - 0.12f), eyeI, 0.64f, 0.08f, sgrTex, 1f, 1f, 1f, a)
+        pos["Polaris"]?.let { p -> billboard(floatArrayOf(p[0], p[1], p[2] + 0.1f), eyeI, 0.32f, 0.08f, polarisTex, 1f, 1f, 1f, 0.9f) }
+        pos["Alnilam"]?.let { p -> billboard(floatArrayOf(p[0], p[1], p[2] - 0.12f), eyeI, 0.48f, 0.08f, beltTex, 1f, 1f, 1f, 0.8f) }
     }
 
     /** Kiekvieną kadrą: Saulė turi gulėti ant ekliptikos, Mėnulis – ±5° (5,3° su paklaida). */
@@ -1986,9 +2064,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glLineWidth(1.5f * density)
         drawEarthOrbit()
 
-        // Oriono linijos
+        // Oriono linijos (orientyrai – nustatymas „Rodyti orientyrus“)
         val pos = HashMap<String, FloatArray>()
         for (st in starCatalog) pos[st.name] = skyPt(st.dir, starR)
+        if (showMarkers) drawMarkers(pos)
+        if (showMarkers) {
         // Po horizontu – blankiai (orientacijai), virš – ryškiai
         val seg = ArrayList<Float>()
         val segDim = ArrayList<Float>()
@@ -1999,6 +2079,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         drawLines(segDim.toFloatArray(), 0.7f, 0.8f, 1f, 0.15f)
         drawLines(seg.toFloatArray(), 0.7f, 0.8f, 1f, 0.5f)
+        }
         GLES20.glLineWidth(1f)
 
         // Žvaigždės: dydis ir ryškumas pagal regimąjį ryškį (mažesnis – ryškesnė)
@@ -2730,6 +2811,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             earthMat[8] = out[2].toFloat(); earthMat[9] = out[5].toFloat(); earthMat[10] = out[8].toFloat()
         }
         Matrix.multiplyMM(earthMvp, 0, mvpI, 0, earthMat, 0)
+        earthMatLast = earthMat.copyOf()
 
         if (earthTex == 0) {
             GLES20.glUseProgram(colorProg)
@@ -2924,13 +3006,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     /** Saulės kryptis (apytikslė, ~0,01°). */
-    private fun sunDir(): DoubleArray {
-        val d = jdDays()
-        val m = Math.toRadians(357.5291 + 0.98560028 * d)
-        val c = Math.toRadians(1.9148 * sin(m) + 0.02 * sin(2 * m) + 0.0003 * sin(3 * m))
-        val l = m + c + Math.toRadians(102.9372) + Math.PI
-        return eclToEq(l, 0.0)
-    }
+    /** Saulės kryptis – Astro.sunEq (ta pati funkcija naudojama ataskaitos Saulės patikrai). */
+    private fun sunDir(): DoubleArray = Astro.sunEq(System.currentTimeMillis())
 
     /** Mėnulio kryptis (apytikslė, ~1°). */
     private fun moonDir(): DoubleArray {
@@ -3210,6 +3287,21 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         c.drawLine(size / 2f, 4f, size / 2f, size - 4f, ray)
         c.drawLine(4f, size / 2f, size - 4f, size / 2f, ray)
+        return uploadTexture(bmp)
+    }
+
+    private var noSp3Tex = 0
+    private var sgrTex = 0
+    private var polarisTex = 0
+    private var beltTex = 0
+
+    /** Platus užrašas: plotis = aukštis × wRatio. */
+    private fun makeTextureW(text: String, color: Int, sizePx: Int, wRatio: Int): Int {
+        val w = sizePx * wRatio; val h = sizePx
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color; textSize = h * 0.62f; textAlign = Paint.Align.CENTER }
+        c.drawText(text, w / 2f, h * 0.72f, p)
         return uploadTexture(bmp)
     }
 
@@ -4780,7 +4872,7 @@ class MainActivity : AppCompatActivity() {
                 sharePanel?.setSp3Busy(false)
                 sharePanel?.setSp3Status(status)
                 val msg = when (r) {
-                    is Sp3Aiub.Result.Ok -> "SP3 atnaujintas: ${r.name}"
+                    is Sp3Aiub.Result.Ok -> { Sp3Live.refresh(this, force = true); "SP3 atnaujintas: ${r.name}" }
                     is Sp3Aiub.Result.Fail -> "SP3 neatnaujintas: ${r.message}"
                 }
                 if (r is Sp3Aiub.Result.Fail) logError(msg)
@@ -4895,6 +4987,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbStableN, LinearLayout.LayoutParams(mw, ww))
+        val cbMarkers = CheckBox(this).apply {
+            text = "Rodyti orientyrus"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("markers", true)
+            setOnCheckedChangeListener { _, on ->
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("markers", on).apply()
+                if (::skyDome.isInitialized) skyDome.setMarkers(on)
+            }
+        }
+        left.addView(cbMarkers, LinearLayout.LayoutParams(mw, ww))
         left.addView(TextView(this).apply {
             text = "Moon: NASA SVS CGI Moon Kit (LRO LROC, LOLA) · Earth: NASA Blue Marble, GEBCO"
             textSize = 11f
@@ -4968,10 +5069,17 @@ class MainActivity : AppCompatActivity() {
                 val uris = ArrayList<Uri>()
                 shot?.let { uris.add(it) }
                 val send = {
-                    report += "Eksportuota: " + (listOf(REPORT_FILE) + uris.mapNotNull { it.lastPathSegment }).joinToString(", ") + "\n"
-                    // Ataskaita (su klausimu) visada kaip tekstinis failas
+                    val names = listOf(REPORT_FILE) + uris.mapNotNull { it.lastPathSegment }
+                    val zipName = SessionZip.name(System.currentTimeMillis(), Build.MODEL)
+                    report += sunReport() + Sp3Live.text() + "\n"
+                    report += "Eksportuota: " + names.joinToString(", ") + "\n"
+                    report += "ZIP: $zipName (Download/GNSS)\nZIP failai: " + names.joinToString(", ") + "\n"
+                    // Ataskaita (su klausimu) visada kaip tekstinis failas; viskas – viename ZIP
                     reportFileUri(report)?.let { uris.add(0, it) }
-                    shareContent(report, uris)
+                    Thread {
+                        val zip = makeSessionZip(zipName, uris)
+                        runOnUiThread { shareContent(report, if (zip != null) listOf(zip) else uris) }
+                    }.start()
                 }
                 if ("raw" in sections) {
                     rawCsvUri()?.let { uris.add(it) }
@@ -5198,7 +5306,47 @@ class MainActivity : AppCompatActivity() {
         lm.registerGnssMeasurementsCallback(request, mainExecutor, measCallback)
     }
 
+    private var obsLatNow = 54.74
+    private var obsLonNow = 25.25
+
+    /** Saulės judėjimo patikra: ta pati Astro.sunEq kaip 3D vaizde; per 60 min. valandinis kampas turi pasikeisti ~15°. */
+    private fun sunReport(): String {
+        val now = System.currentTimeMillis(); val later = now + 3_600_000L
+        val s0 = Astro.sunEq(now); val s1 = Astro.sunEq(later)
+        val (az0, el0) = Astro.altAz(s0, obsLatNow, obsLonNow, now)
+        val (az1, el1) = Astro.altAz(s1, obsLatNow, obsLonNow, later)
+        val h0 = Astro.hourAngleDeg(Astro.raDeg(s0), obsLonNow, now); val h1 = Astro.hourAngleDeg(Astro.raDeg(s1), obsLonNow, later)
+        val dh = ((h1 - h0 + 540.0) % 360.0) - 180.0
+        return "=== SAULĖ (judėjimo patikra) ===\n" +
+            "Dabar: azimutas %.2f°, aukštis %.2f°; po 60 min.: azimutas %.2f°, aukštis %.2f°\n".format(Locale.US, az0, el0, az1, el1) +
+            "Valandinio kampo pokytis per 60 min.: %.2f° (turi būti ~15°): %s\n".format(Locale.US, dh, if (kotlin.math.abs(dh - 15.0) < 0.2) "TAIP" else "NE")
+    }
+
+    /** Visi sesijos failai -> gnss_YYYYMMDD_HHMMSS_<modelis>.zip (cache ir Download/GNSS); grąžina dalinimosi URI. */
+    private fun makeSessionZip(name: String, uris: List<Uri>): Uri? = try {
+        val out = File(File(cacheDir, "export").also { d -> d.listFiles()?.forEach { it.delete() } }, name)
+        SessionZip.create(out, uris.map { u -> (u.lastPathSegment ?: "failas") to { contentResolver.openInputStream(u) ?: throw java.io.FileNotFoundException(u.toString()) } })
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val cv = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/zip")
+                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/GNSS")
+                }
+                contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)?.let { dst ->
+                    contentResolver.openOutputStream(dst)?.use { o -> out.inputStream().use { it.copyTo(o) } }
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), "GNSS")
+                dir.mkdirs(); out.copyTo(File(dir, name), overwrite = true)
+            }
+        } catch (e: Exception) { runOnUiThread { logError("ZIP į Download/GNSS neįrašytas: ${e.message}") } }
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", out)
+    } catch (e: Exception) { runOnUiThread { logError("ZIP nepavyko: ${e.message}") }; null }
+
     private fun onLocation(loc: Location) {
+        obsLatNow = loc.latitude; obsLonNow = loc.longitude
         posText = buildString {
             appendLine("Platuma: ${fx(loc.latitude, 7)}")
             appendLine("Ilguma: ${fx(loc.longitude, 7)}")
@@ -5436,6 +5584,7 @@ class MainActivity : AppCompatActivity() {
             Sp3Storage.search(this)
         }
         android.util.Log.i("GnssApp", "gnss_solver.csv: sprendinių ${sols.size}")
+        try { File(cacheDir, PositionSolver.DIAG_FILE).appendText("\n--- SP3 3D PALYDOVAI ---\n" + Sp3Live.text() + "\n") } catch (e: Exception) {}
         FileProvider.getUriForFile(this, "$packageName.fileprovider", out)
     } catch (e: Exception) {
         runOnUiThread { logError("Skaičiuoklė nepavyko: ${e.message}") }

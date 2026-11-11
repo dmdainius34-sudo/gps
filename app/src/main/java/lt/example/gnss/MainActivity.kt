@@ -1141,6 +1141,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     }
 
     fun setMarkers(on: Boolean) { renderer.showMarkers = on }
+    fun setFollowDevice(on: Boolean) { renderer.followDevice = on; renderer.resetUser() }
 
     fun setStableNorth(on: Boolean) {
         stableNorth = on
@@ -1165,6 +1166,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         preserveEGLContextOnPause = true
         renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
         renderer.showMarkers = calPrefs.getBoolean("markers", true)
+        renderer.followDevice = calPrefs.getBoolean("follow_device", false)
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
     }
@@ -1679,11 +1681,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         frameNow()
         val r = rot
         val aM = DoubleArray(9)
-        for (i in 0..2) for (j in 0..2) {
-            var sum = 0.0
-            for (k in 0..2) sum += fQ[i * 3 + k] * r[k * 3 + j]
-            aM[i * 3 + j] = sum
-        }
+        if (followDevice) {
+            for (i in 0..2) for (j in 0..2) {
+                var sum = 0.0
+                for (k in 0..2) sum += fQ[i * 3 + k] * r[k * 3 + j]
+                aM[i * 3 + j] = sum
+            }
+        } else inertialCamera(aM)
         java.util.Arrays.fill(mv, 0f)
         for (c in 0..2) for (rr in 0..2) mv[c * 4 + rr] = aM[c * 3 + rr].toFloat()
         mv[15] = 1f
@@ -1782,6 +1786,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
             }
         }
+        // Stebėtojas: sukasi tik apie save (rodyklė), visata nuo planšetės sukimo nepriklauso
+        drawObserverHeading()
         // SP3 trajektorijos ±30 min. arba užrašas apie apytikslę padėtį
         if (sp3Active) {
             GLES20.glEnable(GLES20.GL_DEPTH_TEST)
@@ -2493,7 +2499,47 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile private var spinAngle = 0.0
     @Volatile private var spinAxis = doubleArrayOf(0.0, 0.0, 1.0)
     fun setDragging(b: Boolean) { dragging = b }
-    fun resetUser() { userR = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0); spinAngle = 0.0 }
+    fun resetUser() { userR = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0); spinAngle = 0.0; baseEye = null }
+
+    /** false (numatytasis) – visata nepriklauso nuo planšetės sukimo; true – senas režimas (vaizdas sukasi su planšete). */
+    @Volatile var followDevice = false
+    /** Kameros kryptis sideralinėje erdvėje: pradžioje – virš stebėtojo, toliau keičiama tik vilkimu (userR). */
+    private var baseEye: DoubleArray? = null
+
+    /** Kamera -> I matrica (eilutėmis): Z – į kamerą (iš pradžių stebėtojo zenitas), Y – dangaus šiaurė. */
+    private fun inertialCamera(out: DoubleArray) {
+        val z = baseEye ?: doubleArrayOf(fU[0], fU[1], fU[2]).also { baseEye = it }
+        var x = doubleArrayOf(-z[1], z[0], 0.0)                      // (0,0,1) × z
+        var xl = kotlin.math.sqrt(x[0] * x[0] + x[1] * x[1])
+        if (xl < 1e-6) { x = doubleArrayOf(1.0, 0.0, 0.0); xl = 1.0 }
+        x = doubleArrayOf(x[0] / xl, x[1] / xl, 0.0)
+        val y = doubleArrayOf(z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0])
+        for (i in 0..2) { out[i * 3] = x[i]; out[i * 3 + 1] = y[i]; out[i * 3 + 2] = z[i] }
+    }
+
+    /** Stebėtojo kryptis (planšetės nugara, gulint – viršus) ENU sistemoje -> rodyklė ant gaublio. */
+    private fun drawObserverHeading() {
+        val r = rot
+        var e = -r[2].toDouble(); var n = -r[5].toDouble()
+        if (kotlin.math.hypot(e, n) < 0.3) { e = r[1].toDouble(); n = r[4].toDouble() }
+        val hl = kotlin.math.hypot(e, n); if (hl < 1e-6) return
+        e /= hl; n /= hl
+        val h = DoubleArray(3) { e * fE[it] + n * fN[it] }
+        val side = DoubleArray(3) { n * fE[it] - e * fN[it] }
+        val head = pinWorld()
+        val k = 1.12 / 1.35
+        val p0 = DoubleArray(3) { head[it] * k }
+        val len = 0.07
+        val tip = DoubleArray(3) { p0[it] + h[it] * len }
+        val a1 = DoubleArray(3) { tip[it] - h[it] * len * 0.35 + side[it] * len * 0.2 }
+        val a2 = DoubleArray(3) { tip[it] - h[it] * len * 0.35 - side[it] * len * 0.2 }
+        val seg = FloatArray(18)
+        fun put(i: Int, a: DoubleArray, b: DoubleArray) { for (c in 0..2) { seg[i * 6 + c] = a[c].toFloat(); seg[i * 6 + 3 + c] = b[c].toFloat() } }
+        put(0, p0, tip); put(1, tip, a1); put(2, tip, a2)
+        GLES20.glLineWidth(3f * density)
+        drawLines(seg, 0.3f, 1f, 0.45f, 1f)
+        GLES20.glLineWidth(1f)
+    }
 
     fun arcRotate(p0: DoubleArray, p1: DoubleArray) {
         val ax = p0[1] * p1[2] - p0[2] * p1[1]
@@ -4996,6 +5042,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbMarkers, LinearLayout.LayoutParams(mw, ww))
+        val cbFollow = CheckBox(this).apply {
+            text = "Sukti visatą su planšete"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("follow_device", false)
+            setOnCheckedChangeListener { _, on ->
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("follow_device", on).apply()
+                if (::skyDome.isInitialized) skyDome.setFollowDevice(on)
+            }
+        }
+        left.addView(cbFollow, LinearLayout.LayoutParams(mw, ww))
         left.addView(TextView(this).apply {
             text = "Moon: NASA SVS CGI Moon Kit (LRO LROC, LOLA) · Earth: NASA Blue Marble, GEBCO"
             textSize = 11f

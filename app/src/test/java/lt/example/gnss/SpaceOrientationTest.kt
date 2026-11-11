@@ -5,13 +5,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SpaceOrientationTest {
-    private val ms = 1794394292379L          // 2026-11-11 11:04:52 UTC, Vilnius (planšetės įrašas)
+    private val ms = 1794394292379L          // 2026-11-11 10:51:32 UTC, Vilnius (planšetės įrašas)
     private val lat = 54.7399767; private val lon = 25.2544567
 
     @Test
     fun vilniusNow() {
         val r = SpaceOrientation.compute(lat, lon, ms)
-        assertEquals(196.5, r.sunAz, 1.0); assertEquals(16.5, r.sunAlt, 1.0)
+        assertEquals(192.6, r.sunAz, 0.3); assertEquals(17.1, r.sunAlt, 0.3)
         assertEquals(54.1, r.polarisAlt, 0.3)
         assertTrue(r.polarisAz < 1.5 || r.polarisAz > 358.5)
         val (lo, hi) = SpaceOrientation.tiltRange(lat)

@@ -99,7 +99,8 @@ object PositionSolver {
         H3A("LE 32 b žodis, jaunesni 30 bitų"),
         H3B("LE 32 b žodis, vyresni 30 bitų"),
         H4("300 bitų iš eilės be užpildo"),
-        H5("be pariteto: 24 duomenų bitai (vyresni) + 8 kiti bitai (paritetas – jauniausi 6)");
+        H5("be pariteto: 24 duomenų bitai (vyresni) + 8 kiti bitai (paritetas – jauniausi 6)"),
+        H6("BE 32 b žodis: bitai 29–24 = paritetas D25..D30, bitai 23–0 = duomenys D1..D24 (MediaTek)");
     }
 
     private fun be32(d: ByteArray, i: Int) = ((d[4 * i].toInt() and 0xFF) shl 24) or ((d[4 * i + 1].toInt() and 0xFF) shl 16) or
@@ -116,6 +117,7 @@ object PositionSolver {
             Hyp.H3B -> le32(d, i) ushr 2
             Hyp.H4 -> bits(d, 30 * i, 30)
             Hyp.H5 -> ((be32(d, i) ushr 8) shl 6) or (be32(d, i) and 0x3F)
+            Hyp.H6 -> ((be32(d, i) and 0xFFFFFF) shl 6) or ((be32(d, i) ushr 24) and 0x3F)
             Hyp.BITS -> 0
         }
     }
@@ -290,6 +292,10 @@ object PositionSolver {
                 prev = if (pos >= 0) bits(data, pos, 2).let { if (align.inverted) it.inv() and 3 else it } else 0
             }
             var d = checkWord((prev shl 30) or w30[i], rule)
+            // 1 žodžio D29*, D30* yra ankstesnio subkadro paskutiniai bitai – nežinomi, todėl bandomi visi 4 variantai
+            if (d < 0 && i == 0 && !align.starsFromPad) for (st in intArrayOf(3, 1, 2)) {
+                d = checkWord((st shl 30) or w30[i], rule); if (d >= 0) break
+            }
             if (d >= 0) ok++ else {
                 d = (w30[i] ushr 6) and 0xFFFFFF
                 if (rule.invert((prev ushr 1) and 1, prev and 1)) d = d.inv() and 0xFFFFFF
@@ -477,7 +483,7 @@ object PositionSolver {
                 appendLine("TEISINGAS IŠDĖSTYMAS: ${fb.align.hyp.name}, ${fb.align}, pilnų subkadrų ${fb.full}")
                 appendLine("Pilni subkadrai pagal SVID: " + fb.fullPerSv.entries.joinToString(" ") { "G%02d=%d".format(Locale.US, it.key, it.value) })
             } else {
-                appendLine("TEISINGAS IŠDĖSTYMAS: nežinomas – nė viena hipotezė H1..H5 nedavė pilno subkadro; efemeridės neiššifruojamos")
+                appendLine("TEISINGAS IŠDĖSTYMAS: nežinomas – nė viena hipotezė H1..H6 nedavė pilno subkadro; efemeridės neiššifruojamos")
                 appendLine("Pirmieji 3 GPS pranešimai:")
                 firstMsgs.forEach { appendLine(it) }
             }
@@ -706,6 +712,7 @@ object PositionSolver {
             if (minOf(iC, iT, iH, iS) < 0) return out
             br.forEachLine { line ->
                 val p = line.split(',')
+                diag?.let { if (p.size > iH) { it.navRows++; if (p[iC] == "GPS") it.navGps++ } }
                 if (p.size > iH && p[iC] == "GPS" && p[iT].toIntOrNull() == NAV_TYPE_GPS_L1CA)
                     msgs.add(NavMsg(p[0].toLongOrNull() ?: 0L, p[iS].toIntOrNull() ?: 0, hexToBytes(p[iH])))
             }
@@ -737,7 +744,6 @@ object PositionSolver {
             br.forEachLine { line ->
                 val p = line.split(',')
                 if (p.size <= iHex) return@forEachLine
-                diag?.let { it.navRows++; if (p[iConst] == "GPS") it.navGps++ }
                 if (p[iConst] != "GPS" || p[iType].toIntOrNull() != NAV_TYPE_GPS_L1CA) return@forEachLine
                 diag?.let { it.navGpsL1ca++ }
                 val sv = p[iSv].toIntOrNull() ?: return@forEachLine
@@ -926,7 +932,8 @@ object PositionSolver {
                         (try {
                             val fixH = medianFixHeight(fixFile)
                             Sp3V4.atmosphereBlock(raw, r, ref, fixH) + Sp3V4.v4Block(raw, r, File(out.parentFile, Sp3V4.OUT_FILE_V4), ref, fixH) +
-                                (try { Sp3V5.v5Block(raw, r, File(out.parentFile, Sp3V5.OUT_FILE_V5), ref, fixH) }
+                                (try { Sp3V5.v5Block(raw, r, File(out.parentFile, Sp3V5.OUT_FILE_V5), ref, fixH,
+                                    ephs.mapValues { e -> e.value.maxByOrNull { it.toeAbs }!!.tgd }) }
                                  catch (e: Exception) { "\n--- SP3 TESTAS v5 ---\nNeatlikta: ${e.message}\n" }) +
                                 (try { Sp3V6.v6Block(raw, r, File(out.parentFile, Sp3V6.OUT_FILE_V6), ref, fixH) }
                                  catch (e: Exception) { "\n--- SP3 TESTAS v6 ---\nNeatlikta: ${e.message}\n" })

@@ -48,11 +48,21 @@ object Sp3Live {
         else -> null
     }
 
-    /** ECEF (km) laiku t (GPS s) arba null. */
+    /** Ar galima padėti bent dalį palydovų tiksliai: SP3 apima laiką arba yra GPS navigacinių efemeridžių. */
+    fun available(t: Double): Boolean = covers(t) || BroadcastEph.any(t)
+
+    @Volatile var fromBroadcast = 0
+        private set
+
+    /** ECEF (km) laiku t (GPS s) arba null. SP3, jei apima laiką; GPS – kitaip iš navigacinių efemeridžių. */
     fun ecefKm(id: String, t: Double): DoubleArray? {
-        val r = reader ?: return null
-        val w = Math.floorDiv(t.toLong(), Sp3Reader.WEEK.toLong()).toInt()
-        return r.positionXyz(id, w, t - w * Sp3Reader.WEEK)
+        val r = reader
+        if (r != null && covers(t)) {
+            val w = Math.floorDiv(t.toLong(), Sp3Reader.WEEK.toLong()).toInt()
+            r.positionXyz(id, w, t - w * Sp3Reader.WEEK)?.let { return it }
+        }
+        if (id[0] != 'G') return null
+        return BroadcastEph.ecefKm(id.substring(1).toInt(), t)?.also { fromBroadcast++ }
     }
 
     /** Topocentrinis (azimutas, aukštis) laipsniais iš ECEF (km) stebėtojui. */
@@ -101,9 +111,9 @@ object Sp3Live {
 
     @Synchronized
     fun text(): String {
-        if (compared == 0) return "SP3 ir Android krypčių palyginimas: nėra duomenų (SP3 neapima dabarties arba nėra palydovų ≥ 10°)\n" + approxLine()
+        if (compared == 0) return "SP3 ir Android krypčių palyginimas: nėra duomenų (SP3 neapima dabarties arba nėra palydovų ≥ 10°)\n" + approxLine() + "\n" + BroadcastEph.text()
         val names = mapOf('G' to "GPS", 'E' to "Galileo", 'R' to "GLONASS", 'C' to "BeiDou")
-        return "SP3 ir Android krypčių palyginimas (kampinis atstumas, aukštis ≥ 10°, SP3 $source):\n" +
+        return "SP3 ir Android krypčių palyginimas (kampinis atstumas, aukštis ≥ 10°, SP3 $source${if (reader != null && !covers(gpsNow())) " – dabarties neapima, GPS iš efemeridžių" else ""}):\n" +
             listOf('G', 'E', 'R', 'C').joinToString("\n") { k ->
                 val a = acc[k]
                 if (a == null || a.v.isEmpty()) "  ${names[k]}: nėra"
@@ -112,6 +122,7 @@ object Sp3Live {
                     "  %s: %d, mediana %.2f°, maks. %.2f° (%s); riba (mediana < 1°): %s".format(Locale.US, names[k], so.size, so[so.size / 2], a.maxV, a.worst,
                         if (so[so.size / 2] < 1.0) "TAIP" else "NE")
                 }
-            } + "\n  GLONASS: svid 1–24 = orbitinė vieta (SP3 Rnn); svid 93–106 (dažnio kanalas) nesiejamas\n" + approxLine()
+            } + "\n  GLONASS: svid 1–24 = orbitinė vieta (SP3 Rnn); svid 93–106 (dažnio kanalas) nesiejamas\n" + approxLine() + "\n" + BroadcastEph.text() +
+                (if (fromBroadcast > 0) "; GPS padėčių iš efemeridžių (kai SP3 neapima): $fromBroadcast" else "")
     }
 }

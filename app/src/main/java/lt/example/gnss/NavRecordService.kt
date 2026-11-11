@@ -116,6 +116,9 @@ class NavRecordService : Service() {
     private val callback = object : GnssNavigationMessage.Callback() {
         override fun onGnssNavigationMessageReceived(event: GnssNavigationMessage) {
             NavRecorder.append(cacheDir, event)
+            if (event.type == GnssNavigationMessage.TYPE_GPS_L1CA) try {
+                BroadcastEph.add(event.svid, event.data, Math.floorDiv(Sp3Live.gpsNow().toLong(), 604_800L).toInt())
+            } catch (e: Exception) { Log.w("GnssApp", "BroadcastEph: ${e.message}") }
             // pranešimo tekstą atnaujiname retai
             val n = NavRecorder.written
             if (n - lastNotifCount >= 50) { lastNotifCount = n; notifyCount() }

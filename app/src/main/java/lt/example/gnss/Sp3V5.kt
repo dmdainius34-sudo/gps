@@ -12,7 +12,7 @@ import kotlin.math.sqrt
  * SP3 sprendinys v5 (tik testui): GPS L1 C/A + Galileo E1, atskiras imtuvo laikrodis kiekvienai konsteliacijai,
  * Hatch glodinimas su ADR arba Doppler, RAIM ir Kalmano filtras. v1–v4 nekeičiami.
  * GLONASS nenaudojamas (kitas laiko pagrindas ir FDMA dažniai), BeiDou – tik jei yra SP3 (+14 s BDT).
- * TGD nenaudojamas: jis perduodamas tik navigacijos pranešimuose, o ši planšetė jų nesiunčia.
+ * TGD (GPS L1) imamas iš navigacijos pranešimų 1 subkadro, jei jie iššifruoti.
  */
 object Sp3V5 {
     const val OUT_FILE_V5 = "gnss_solver_sp3_test_v5.csv"
@@ -388,7 +388,7 @@ object Sp3V5 {
     /** Vienas žingsnis per įrašą. */
     fun run(raw: File, sp3: Sp3Reader, name: String, isb: Boolean, doppler: Boolean, raim: Boolean, kalman: Boolean, out: File? = null,
             usage: HashMap<Char, Int>? = null, clockSum: HashMap<Char, ArrayList<Double>>? = null, sm: Smoother? = null,
-            drops: HashMap<String, Int>? = null): Run {
+            drops: HashMap<String, Int>? = null, tgd: Map<Int, Double> = emptyMap()): Run {
         val sols = ArrayList<Pair<Long, PositionSolver.Solution>>()
         val smoother = sm ?: Smoother(doppler)
         var kf: Kalman? = null
@@ -398,7 +398,9 @@ object Sp3V5 {
             readRaw(raw) { ep ->
                 val t = ep.t
                 val obs = ep.meas.filter { accept(it) }.map { m ->
-                    Ob(m.sys, m.svid, smoother.apply(m, t), m.cn0, m.prr)
+                    // L1 vartotojui palydovo laikrodis = SP3 (L1/L2 kombinacija) − TGD: P − c·TGD = ρ + c·dtr − c·dts
+                    val tg = if (m.sys == 'G') tgd[m.svid] ?: 0.0 else 0.0
+                    Ob(m.sys, m.svid, smoother.apply(m, t) - C * tg, m.cn0, m.prr)
                 }.filter { isb || it.sys == 'G' }
                 if (!Sp3Solver.inRange(sp3, t)) return@readRaw
                 val fit = solve(ep.week, ep.tow, obs, sp3, isb, raim)
@@ -436,17 +438,19 @@ object Sp3V5 {
     }
 
     /** „SP3 TESTAS v5“: v4 → +ISB → +TGD → +Doppler → +RAIM → +Kalman; paskutinis – gnss_solver_sp3_test_v5.csv. */
-    fun v5Block(raw: File, sp3: Sp3Reader, outV5: File, ref: Pair<Double, Double>?, fixH: Double?): String = buildString {
+    fun v5Block(raw: File, sp3: Sp3Reader, outV5: File, ref: Pair<Double, Double>?, fixH: Double?,
+                tgd: Map<Int, Double> = emptyMap()): String = buildString {
         appendLine()
         appendLine("--- SP3 TESTAS v5 ---")
         val v4 = Sp3V4.run(raw, sp3, "v4 bazė", Sp3V4.Opts(true, true, true, true), true, true)
         val usage = HashMap<Char, Int>(); val clocks = HashMap<Char, ArrayList<Double>>()
         val isbRun = run(raw, sp3, "+ atskiri laikrodžiai (ISB)", true, false, false, false, usage = usage, clockSum = clocks)
+        val tgdRun = if (tgd.isEmpty()) null else run(raw, sp3, "+ TGD (iš navigacijos pranešimų)", true, false, false, false, tgd = tgd)
         val dSm = Smoother(true)
-        val dop = run(raw, sp3, "+ Doppler glodinimas", true, true, false, false, sm = dSm)
+        val dop = run(raw, sp3, "+ Doppler glodinimas", true, true, false, false, sm = dSm, tgd = tgd)
         val drops = HashMap<String, Int>()
-        val raimRun = run(raw, sp3, "+ RAIM", true, true, true, false, drops = drops)
-        val kal = run(raw, sp3, "+ Kalmano filtras", true, true, true, true, outV5)
+        val raimRun = run(raw, sp3, "+ RAIM", true, true, true, false, drops = drops, tgd = tgd)
+        val kal = run(raw, sp3, "+ Kalmano filtras", true, true, true, true, outV5, tgd = tgd)
         val names = mapOf('G' to "GPS", 'E' to "Galileo", 'C' to "BeiDou")
         appendLine("Konsteliacijos (palydovų-epochų sprendiniuose): " +
             (if (usage.isEmpty()) "nėra" else usage.entries.sortedBy { it.key }.joinToString(", ") { "${names[it.key] ?: it.key} ${it.value}" }) +
@@ -458,7 +462,11 @@ object Sp3V5 {
                 if (isb.isEmpty()) "" else "; Galileo−GPS (ISB) mediana %.2f m".format(Locale.US, PositionSolver.percentile(isb, 0.5)) } } ?: ""))
         appendLine(line(v4.let { Run(it.name, it.sols) }, ref, fixH))
         appendLine(line(isbRun, ref, fixH))
-        appendLine("+ TGD: nepritaikyta – TGD perduodamas tik navigacijos pranešimuose (1 subkadras), o ši planšetė jų nesiunčia; eilutė lygi ankstesnei")
+        if (tgdRun == null) appendLine("+ TGD: nepritaikyta – navigacijos pranešimuose neiššifruota nė vienos GPS efemeridės; eilutė lygi ankstesnei")
+        else {
+            appendLine(line(tgdRun, ref, fixH))
+            appendLine("  TGD (ns): " + tgd.entries.sortedBy { it.key }.joinToString(", ") { "G%02d %+.1f".format(Locale.US, it.key, it.value * 1e9) })
+        }
         appendLine(line(dop, ref, fixH))
         appendLine(line(raimRun, ref, fixH))
         appendLine(line(kal, ref, fixH))

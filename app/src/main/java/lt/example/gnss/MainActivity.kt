@@ -1551,7 +1551,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         frameNow()
         Sp3Live.refresh(appCtx)
         val tNow = Sp3Live.gpsNow()
-        val useSp3 = Sp3Live.covers(tNow) && earthMatLast[10] != 0f
+        val useSp3 = Sp3Live.available(tNow) && earthMatLast[10] != 0f
         sp3Active = useSp3
         val out = ArrayList<SatI>()
         val nowMs = System.currentTimeMillis()
@@ -5571,6 +5571,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun onLocation(loc: Location) {
         obsLatNow = loc.latitude; obsLonNow = loc.longitude
+        if (loc.hasSpeed() && loc.hasBearing() && loc.speed >= 1.5f) {
+            devAxisY?.let { if (it.second <= 45.0) compassCheck.add("ekrano viršus (Y)", it.first, loc.bearing.toDouble()) }
+            devAxisZ?.let { if (it.second <= 45.0) compassCheck.add("žiūrėjimas pro ekraną (−Z)", it.first, loc.bearing.toDouble()) }
+        }
         posText = buildString {
             appendLine("Platuma: ${fx(loc.latitude, 7)}")
             appendLine("Ilguma: ${fx(loc.longitude, 7)}")
@@ -5700,6 +5704,9 @@ class MainActivity : AppCompatActivity() {
     private var devPitch = 0.0
     private var devRoll = 0.0
     private var devAzimuth = 0.0
+    private var devAxisY: Pair<Double, Double>? = null
+    private var devAxisZ: Pair<Double, Double>? = null
+    private val compassCheck = CompassCheck()
     private var motionLevel = 0.0
     private val devSensorListener = object : SensorEventListener {
         override fun onSensorChanged(e: SensorEvent) {
@@ -5709,6 +5716,9 @@ class MainActivity : AppCompatActivity() {
                     SensorManager.getRotationMatrixFromVector(r, e.values)
                     SensorManager.getOrientation(r, o)
                     devAzimuth = (Math.toDegrees(o[0].toDouble()) + 360.0) % 360.0
+                    // ašių kryptys pasaulyje (rytai, šiaurė, aukštyn): Y = r[1], r[4], r[7]; −Z = −r[2], −r[5], −r[8]
+                    devAxisY = CompassCheck.axisAz(r[1].toDouble(), r[4].toDouble(), r[7].toDouble())
+                    devAxisZ = CompassCheck.axisAz(-r[2].toDouble(), -r[5].toDouble(), -r[8].toDouble())
                     devPitch = Math.toDegrees(o[1].toDouble())
                     devRoll = Math.toDegrees(o[2].toDouble())
                 }
@@ -5920,6 +5930,8 @@ class MainActivity : AppCompatActivity() {
                 if (kAgl != null && kMsl != null) appendLine("Žemės aukštis virš jūros (iš etalonų): ${fx(kMsl - kAgl, 2)} m")
             }
             appendLine("Planšetės padėtis: pitch ${fx(devPitch, 0)}°, roll ${fx(devRoll, 0)}°, ekrano azimutas ${fx(devAzimuth, 0)}°, judėjimas ${fx(motionLevel, 2)} m/s²")
+            devAxisZ?.let { appendLine("Žiūrėjimo pro ekraną kryptis: azimutas ${fx(it.first, 0)}°, ${fx(it.second, 0)}° nuo horizontalės") }
+            appendLine(compassCheck.text(1.5))
             appendLine()
         }
         if ("fiksas" in sections) { appendLine("=== FIKSAS ==="); appendLine(posText); appendLine() }

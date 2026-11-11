@@ -97,3 +97,19 @@ class BroadcastEphSaveTest {
         dir.deleteRecursively()
     }
 }
+
+class NavBitsTest {
+    private fun b(s: String) = ByteArray(s.length / 2) { ((Character.digit(s[2 * it], 16) shl 4) or Character.digit(s[2 * it + 1], 16)).toByte() }
+
+    @Test
+    fun describesRealMessages() {
+        val g = NavBits.describe(0x0101, b("068b063000612427206310003e5f42b3011b9d343512db8a05d4d6e8320549d32800004a18104a66"), 0L)!!
+        assertEquals("GPS", g.first); assertEquals(300, g.second.bits.length)
+        assertTrue(g.second.bits.startsWith("10001011"))                 // preambulė
+        assertEquals("SF1 laikrodis, TGD", g.second.label); assertTrue(g.second.eph)
+        val e = NavBits.describe(0x0601, b("011e139237bbdbe500313bddaa04e9cab80100f4905aaaaa91820282b0"), 0L)!!
+        assertEquals(228, e.second.bits.length); assertEquals("I/NAV žodis 1 efemeridė", e.second.label)
+        val r = NavBits.describe(0x0301, b("01074624e143023c47b2ec"), 0L)!!
+        assertEquals(85, r.second.bits.length); assertEquals("eilutė 1 efemeridė", r.second.label)
+    }
+}

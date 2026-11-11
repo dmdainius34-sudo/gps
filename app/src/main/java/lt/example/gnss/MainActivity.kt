@@ -1142,6 +1142,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     fun setMarkers(on: Boolean) { renderer.showMarkers = on }
     fun setOrient(on: Boolean) { renderer.showOrient = on }
+    fun setNavBits(on: Boolean) { renderer.showNavBits = on }
 
     /**
      * Kalibravimas pagal Saulę: planšetė nukreipta į Saulę (žiūrėjimas pro ekraną, gulint – viršutinis kraštas).
@@ -1205,6 +1206,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
         renderer.showMarkers = calPrefs.getBoolean("markers", true)
         renderer.showOrient = calPrefs.getBoolean("orient", true)
+        renderer.showNavBits = calPrefs.getBoolean("nav_bits", true)
         renderer.followDevice = calPrefs.getBoolean("follow_device", false)
         renderer.freeView = calPrefs.getBoolean("free_view", false)
         renderer.oceanOn = calPrefs.getBoolean("ocean_anim", true)
@@ -1872,8 +1874,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val usedK = if (sat.used) 1f else 0.4f
             // Švytėjimas: 0 ties 20 dB-Hz, didžiausias ties 45 dB-Hz
             val glow = ((sat.cn0 - 20f) / 25f).coerceIn(0f, 1f)
-            drawLaser(p, pin, sat.cn0, sat.svid, t)
+            val nb = if (showNavBits) NavBits.get(sat.const + sat.svid)?.takeIf { System.currentTimeMillis() - it.tMs < 8_000L } else null
+            if (nb != null && sat.cn0 > 10f) drawNavBits(p, pin, sat.const + sat.svid, nb, col)
+            else drawLaser(p, pin, sat.cn0, sat.svid, t)
             drawSatModel(p, col, glow, usedK, sat.const)
+            if (nb != null && sat.cn0 > 10f) {
+                val (lt, asp) = wideLabel(nb.label)
+                billboard(floatArrayOf(p[0], p[1], p[2] - 0.07f), eyeI, 0.022f * asp, 0.022f, lt,
+                    if (nb.eph) 0.6f else 0.8f, if (nb.eph) 1f else 0.8f, if (nb.eph) 0.7f else 0.8f, if (nb.eph) 0.95f else 0.6f)
+            }
             if (sat.cn0 >= 30f) {
                 val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
                 billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
@@ -2544,6 +2553,63 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * ≥45 – greiti elektriniai geltoni neoniniai su baltu centru; >20 – lėti tamsiai mėlyni;
      * >10 – lėti pilki; ≤10 – nėra.
      */
+    /** Spindulyje – tikri palydovo navigacijos pranešimo bitai, tekantys nuo palydovo į stebėtoją jo perdavimo sparta. */
+    @Volatile var showNavBits = true
+    private class BitTex(val tMs: Long, val tex: Int, val n: Int)
+    private val bitTex = HashMap<String, BitTex>()
+    private val BIT_WINDOW = 32
+
+    private fun bitTexture(key: String, m: NavBits.Msg): BitTex {
+        bitTex[key]?.let { if (it.tMs == m.tMs) return it; GLES20.glDeleteTextures(1, intArrayOf(it.tex), 0) }
+        val cw = 12; val h = 24
+        val n = m.bits.length
+        val bmp = Bitmap.createBitmap(cw * n, h, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(bmp)
+        val p1 = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); textSize = h * 0.95f; typeface = Typeface.MONOSPACE; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
+        val p0 = Paint(p1).apply { color = 0x88FFFFFF.toInt(); isFakeBoldText = false }
+        for (i in 0 until n) cv.drawText(m.bits[i].toString(), cw * i + cw / 2f, h * 0.85f, if (m.bits[i] == '1') p1 else p0)
+        val bt = BitTex(m.tMs, uploadTexture(bmp), n)
+        bitTex[key] = bt
+        return bt
+    }
+
+    private fun drawNavBits(sp: FloatArray, pin: FloatArray, key: String, m: NavBits.Msg, col: FloatArray) {
+        val bt = bitTexture(key, m)
+        if (bt.tex == 0 || bt.n <= BIT_WINDOW) return
+        // silpnas spindulys
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.25f)
+        bindPos(colorProg, floatBuf(floatArrayOf(sp[0], sp[1], sp[2], pin[0], pin[1], pin[2])))
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
+        // juosta, nukreipta į kamerą: u – bitų indeksas; palydovo gale naujausias bitas, stebėtojo – seniausias
+        val dx = pin[0] - sp[0]; val dy = pin[1] - sp[1]; val dz = pin[2] - sp[2]
+        var sx = dy * eyeI[2] - dz * eyeI[1]; var sy = dz * eyeI[0] - dx * eyeI[2]; var sz = dx * eyeI[1] - dy * eyeI[0]
+        val sl = sqrt(sx * sx + sy * sy + sz * sz); if (sl < 1e-6f) return
+        val w = 0.011f
+        sx = sx / sl * w; sy = sy / sl * w; sz = sz / sl * w
+        val span = bt.n - BIT_WINDOW
+        val k = BIT_WINDOW + (((System.currentTimeMillis() - m.tMs) / 1000.0 * m.rate) % span).toFloat()
+        val u0 = k / bt.n; val u1 = (k - BIT_WINDOW) / bt.n
+        val pos = floatArrayOf(
+            sp[0] - sx, sp[1] - sy, sp[2] - sz, sp[0] + sx, sp[1] + sy, sp[2] + sz,
+            pin[0] - sx, pin[1] - sy, pin[2] - sz, pin[0] + sx, pin[1] + sy, pin[2] + sz)
+        val uv = floatArrayOf(u0, 1f, u0, 0f, u1, 1f, u1, 0f)
+        GLES20.glUseProgram(texProg)
+        setMat(texProg, "uMVP", mvp)
+        val lift = 0.35f
+        setVec4(texProg, "uColor", col[0] + (1 - col[0]) * lift, col[1] + (1 - col[1]) * lift, col[2] + (1 - col[2]) * lift, if (m.eph) 1f else 0.7f)
+        resetAttribs()
+        val lp = GLES20.glGetAttribLocation(texProg, "aPos"); val lu = GLES20.glGetAttribLocation(texProg, "aUV")
+        GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lu)
+        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, floatBuf(pos))
+        GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, floatBuf(uv))
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bt.tex)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(texProg, "uTex"), 0)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    }
+
     private fun drawLaser(sp: FloatArray, pin: FloatArray, cn0: Float, svid: Int, t: Float) {
         if (cn0 <= 10f) return
         val fast = cn0 >= 45f
@@ -5308,6 +5374,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbOrient, LinearLayout.LayoutParams(mw, ww))
+        val cbBits = CheckBox(this).apply {
+            text = "Navigacijos bitai spinduliuose (vietoje lazerio)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("nav_bits", true)
+            setOnCheckedChangeListener { _, on ->
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("nav_bits", on).apply()
+                if (::skyDome.isInitialized) skyDome.setNavBits(on)
+            }
+        }
+        left.addView(cbBits, LinearLayout.LayoutParams(mw, ww))
         val cbFollow = CheckBox(this).apply {
             text = "Sukti visatą su planšete"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("follow_device", false)

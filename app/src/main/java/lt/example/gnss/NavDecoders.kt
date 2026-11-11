@@ -226,3 +226,54 @@ object NavFile {
         "\nGLONASS: eilučių ${r.glo.strings}, atmesta ${r.glo.bad}; efemeridžių ${r.glo.ephs.size}" +
         (if (r.glo.ephs.isEmpty()) "" else " (" + r.glo.ephs.keys.sorted().joinToString(" ") { "R%02d".format(Locale.US, it) } + ")")
 }
+
+/**
+ * Paskutinis kiekvieno palydovo navigacijos pranešimas 3D spinduliui: tikri perduoti bitai (GPS – 10 žodžių po 30 b su paritetu,
+ * Galileo – 228 b puslapis, GLONASS – 85 b eilutė), aprašas ir perdavimo sparta (b/s).
+ */
+object NavBits {
+    class Msg(val bits: String, val label: String, val tMs: Long, val rate: Double, val eph: Boolean)
+    private val last = java.util.concurrent.ConcurrentHashMap<String, Msg>()
+
+    fun get(key: String): Msg? = last[key]
+
+    /** type – GnssNavigationMessage tipas; key – „GPS22“, „GAL9“, „GLO3“ (kaip Sat.const + svid). */
+    fun put(type: Int, svid: Int, data: ByteArray, tMs: Long = System.currentTimeMillis()) {
+        describe(type, data, tMs)?.let { last[it.first + svid] = it.second }
+    }
+
+    fun describe(type: Int, data: ByteArray, tMs: Long): Pair<String, Msg>? = when (type) {
+        PositionSolver.NAV_TYPE_GPS_L1CA -> {
+            if (data.size < 40) null else {
+                val w = PositionSolver.hypWords(data, PositionSolver.Hyp.H6)
+                val bits = w.joinToString("") { Integer.toBinaryString(it or (1 shl 30)).substring(1) }
+                val id = ((w[1] ushr 8) and 0x7)                       // HOW: D20..D22 (be pariteto – 6 jaunesnių bitų)
+                val label = when (id) {
+                    1 -> "SF1 laikrodis, TGD"; 2, 3 -> "SF$id efemeridė"; 4, 5 -> "SF$id almanachas"; else -> "subkadras ?"
+                }
+                "GPS" to Msg(bits, label, tMs, 50.0, id in 1..3)
+            }
+        }
+        GalileoNav.TYPE -> {
+            if (data.size < 29) null else {
+                val b = Bits(data)
+                val bits = buildString { for (k in 0 until 228) append(b.bit(k)) }
+                val t = b.u(2, 6).toInt()
+                val label = "I/NAV žodis $t " + when (t) {
+                    in 1..4 -> "efemeridė"; 5 -> "jonosfera, BGD"; 6 -> "GST–UTC"; in 7..10 -> "almanachas"
+                    0 -> "laikas"; 16 -> "sumažinta efemeridė"; in 17..20 -> "FEC"; else -> ""
+                }
+                "GAL" to Msg(bits, label.trim(), tMs, 114.0, t in 1..5)
+            }
+        }
+        GloNav.TYPE -> {
+            if (data.size < 11) null else {
+                val b = Bits(data, 3)
+                val bits = buildString { for (k in 0 until 85) append(b.bit(k)) }
+                val m = GloNav.stringNo(b)
+                "GLO" to Msg(bits, "eilutė $m " + if (m in 1..4) "efemeridė" else "almanachas", tMs, 50.0, m in 1..4)
+            }
+        }
+        else -> null
+    }
+}

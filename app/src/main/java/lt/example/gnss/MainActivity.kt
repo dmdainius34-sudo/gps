@@ -5794,7 +5794,7 @@ class MainActivity : AppCompatActivity() {
         NavRecordService.onEnded = { sharePanel?.setRecording(false) }
         if (!gnssRegistered) {
             lm.registerGnssStatusCallback(statusCallback, mainHandler)
-            try { lm.registerGnssNavigationMessageCallback(navUiCallback, mainHandler) } catch (e: Exception) { Log.w("GnssApp", "nav UI: ${e.message}") }
+            try { lm.registerGnssNavigationMessageCallback(navUiCallback, mainHandler) } catch (e: Exception) { android.util.Log.w("GnssApp", "nav UI: ${e.message}") }
             if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
             SessionFiles.activityWritesFixes = true

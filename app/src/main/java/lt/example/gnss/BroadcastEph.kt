@@ -136,7 +136,7 @@ object BroadcastEph {
     @Synchronized fun addGlo(svid: Int, data: ByteArray, tRxUtcMs: Long) {
         if (svid !in 1..24) return
         glo.add(svid, data, tRxUtcMs)
-        GloNav.bits(data)?.let { b -> val m = GloNav.stringNo(b); if (b.bit(0) == 0 && m in 1..4) keep('R', svid, m, tRxUtcMs, data) }
+        GloNav.bits(data, GloNav.pad)?.let { b -> val m = GloNav.stringNo(b); if (b.bit(0) == 0 && m in 1..4) keep('R', svid, m, tRxUtcMs, data) }
     }
 
     /** Ar yra bent viena efemeridė, tinkanti laikui t (GPS s). */

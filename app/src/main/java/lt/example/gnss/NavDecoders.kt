@@ -175,12 +175,27 @@ object GloNav {
         return doubleArrayOf(x[0], x[1], x[2])
     }
 
+    /** Užpildo bitų skaičius: MediaTek – 3 priekyje, Android dokumentacija – 0 (užpildas gale); parenkamas pagal galiojančią efemeridę. */
+    @Volatile var pad = 3
+
     class Collector {
         private val strs = HashMap<Int, HashMap<Int, Pair<Long, Bits>>>()
+        private val alt = HashMap<Int, HashMap<Int, Pair<Long, Bits>>>()
         val ephs = HashMap<Int, Eph>()
         var strings = 0; var bad = 0
         fun add(slot: Int, d: ByteArray, tRxUtcMs: Long) {
-            val b = bits(d) ?: run { bad++; return }
+            // kitas užpildas – lygiagrečiai; jei jis duoda galiojančią efemeridę, perjungiama
+            val other = if (pad == 3) 0 else 3
+            bits(d, other)?.let { ob ->
+                val m = stringNo(ob)
+                if (ob.bit(0) == 0 && m in 1..4) {
+                    val st = alt.getOrPut(slot) { HashMap() }
+                    st[m] = tRxUtcMs to ob
+                    if (st.size == 4 && (1..4).all { k -> st[k]?.let { abs(it.first - tRxUtcMs) <= 30_000 } == true } && ephs.isEmpty())
+                        ephemeris(slot, st.mapValues { it.value.second }, tRxUtcMs)?.let { ephs[slot] = it; pad = other; strs.clear(); alt.clear(); return }
+                }
+            }
+            val b = bits(d, pad) ?: run { bad++; return }
             val m = stringNo(b)
             if (b.bit(0) != 0 || m !in 1..15) { bad++; return }
             strings++
@@ -268,7 +283,7 @@ object NavBits {
         }
         GloNav.TYPE -> {
             if (data.size < 11) null else {
-                val b = Bits(data, 3)
+                val b = Bits(data, GloNav.pad)
                 val bits = buildString { for (k in 0 until 85) append(b.bit(k)) }
                 val m = GloNav.stringNo(b)
                 "GLO" to Msg(bits, "eilutė $m " + if (m in 1..4) "efemeridė" else "almanachas", tMs, 50.0, m in 1..4)

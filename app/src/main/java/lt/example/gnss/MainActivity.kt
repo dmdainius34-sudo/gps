@@ -3432,13 +3432,14 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         return 385000.56 - 20905.355 * cos(M) - 3699.111 * cos(2 * D - M) - 2955.968 * cos(2 * D) - 569.925 * cos(2 * M)
     }
     @Volatile private var moonPosLast: DoubleArray? = null
+    private fun moonDistScene(): Double = if (realScale) moonDistKm() / 6371.0 * EARTH_R else 1.9
 
     /** Mėnulio orbita (silpna linija) ir užrašas su atstumu – Mėnulis tikru masteliu mažas. */
     private fun drawMoonOrbit() {
         val d = jdDays()
         val node = Math.toRadians(125.04 - 0.0529539 * d)
         val inc = Math.toRadians(5.145)
-        val r = moonDistKm() / 6371.0 * EARTH_R
+        val r = moonDistScene()
         val pts = ArrayList<Float>()
         val n = 180
         var prev: DoubleArray? = null
@@ -3476,8 +3477,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (earthPos == null) return
         val dir = moonDir()
         // Tikras mastelis: Mėnulio spindulys 1737,4 km, atstumas realiu laiku (Žemės spindulys 6371 km = EARTH_R)
-        val k = (1737.4 / 6371.0 * EARTH_R / 0.25).toFloat()   // tinklelio spindulys 0,25
-        val dist = moonDistKm() / 6371.0 * EARTH_R
+        // „Realybė“: spindulys 1737,4 km, tikras atstumas; „Mastelis“: už GEO palydovų (~1,65), arčiau nei Saulė (2,3)
+        val k = if (realScale) (1737.4 / 6371.0 * EARTH_R / 0.25).toFloat() else 0.40f   // tinklelio spindulys 0,25
+        val dist = moonDistScene()
         moonPosLast = doubleArrayOf(fP[0] + dir[0] * dist, fP[1] + dir[1] * dist, fP[2] + dir[2] * dist)
         val px = fP[0] + dir[0] * dist; val py = fP[1] + dir[1] * dist; val pz = fP[2] + dir[2] * dist
         // Artimoji pusė atsukta į Žemę

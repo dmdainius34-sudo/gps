@@ -113,3 +113,25 @@ class NavBitsTest {
         assertEquals(85, r.second.bits.length); assertEquals("eilutė 1 efemeridė", r.second.label)
     }
 }
+
+class GloPadTest {
+    @Test
+    fun standardLayoutDetected() {
+        // tos pačios eilutės, perkeltos į Android dokumentacijos išdėstymą (85 bitai nuo pradžios, užpildas gale)
+        val mtk = listOf(
+            1794396903417L to "01074624e143023c47b2ec", 1794396905384L to "0217600bd6f70433943cd8",
+            1794396907399L to "038016a546209a28d3cf37", 1794396908421L to "0481d82e600002660b0dd2")
+        fun shift(h: String): ByteArray {
+            val v = java.math.BigInteger(h, 16).shiftLeft(3).and(java.math.BigInteger.ONE.shiftLeft(88).subtract(java.math.BigInteger.ONE))
+            val raw = v.toByteArray(); val out = ByteArray(11)
+            for (i in 0 until minOf(11, raw.size)) out[10 - i] = raw[raw.size - 1 - i]
+            return out
+        }
+        GloNav.pad = 3
+        val c = GloNav.Collector()
+        mtk.forEach { c.add(3, shift(it.second), it.first) }
+        assertEquals(0, GloNav.pad)
+        assertNotNull(c.ephs[3])
+        GloNav.pad = 3
+    }
+}

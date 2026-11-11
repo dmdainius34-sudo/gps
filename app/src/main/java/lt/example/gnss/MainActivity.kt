@@ -2141,10 +2141,21 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val a = sDist / rNowUnit
         val sd = sunDir()
         val sx = fP[0] + sd[0] * sDist; val sy = fP[1] + sd[1] * sDist; val sz = fP[2] + sd[2] * sDist
-        val n = 360
+        // Anomalijos: tolygiai 720 + logaritmiškai tankėjančios link Žemės (ji guli ant orbitos, kamera šalia –
+        // be tankinimo artimiausia styga eina pro Žemę tiesia linija ir orbitoje matosi „kampas“)
+        val nu0 = lEarth - peri
+        val nus = ArrayList<Double>(1100)
+        for (i in 0 until 720) nus.add(2.0 * Math.PI * i / 720)
+        nus.add(((nu0 % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI))
+        for (j in 0..180) {
+            val dlt = Math.PI * Math.pow(10.0, -8.0 + 8.0 * j / 180)
+            for (sg in intArrayOf(-1, 1)) nus.add((((nu0 + sg * dlt) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI))
+        }
+        nus.sort()
+        val n = nus.size
         val pts = ArrayList<FloatArray>(n)
         for (i in 0 until n) {
-            val nu = 2.0 * Math.PI * i / n                  // tikroji anomalija
+            val nu = nus[i]                                 // tikroji anomalija
             val r = a * (1 - ecc * ecc) / (1 + ecc * cos(nu))
             val d = eclToEq(nu + peri, 0.0)
             pts.add(floatArrayOf((sx + d[0] * r).toFloat(), (sy + d[1] * r).toFloat(), (sz + d[2] * r).toFloat()))

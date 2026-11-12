@@ -1148,6 +1148,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setRealScale(on: Boolean) { renderer.realScale = on; calPrefs.edit().putBoolean("real_scale", on).apply() }
     val realScale get() = renderer.realScale
     fun setNavBits(on: Boolean) { renderer.showNavBits = on }
+    fun setObstacleMode(m: Int) { renderer.obstacleMode = m; calPrefs.edit().putInt("obst_mode", m).apply() }
+    val obstacleMode get() = renderer.obstacleMode
 
     /** Prietaiso kryptis (°) tokia, kokią naudoja vaizdas: žiūrėjimas pro ekraną, gulint – viršus; su šiaurės pataisomis. */
     fun headingDeg(): Double? {
@@ -1226,6 +1228,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.showOrient = calPrefs.getBoolean("orient", true)
         renderer.realScale = calPrefs.getBoolean("real_scale", false)
         renderer.showNavBits = calPrefs.getBoolean("nav_bits", true)
+        renderer.obstacleMode = calPrefs.getInt("obst_mode", 1)
         renderer.followDevice = calPrefs.getBoolean("follow_device", false)
         renderer.freeView = calPrefs.getBoolean("free_view", false)
         renderer.oceanOn = calPrefs.getBoolean("ocean_anim", true)
@@ -1922,6 +1925,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             }
         }
         drawCorrectionWaves(pin, t)
+        if (obstacleMode > 0) drawObstacleSky(pin)
         // Stebėtojas: sukasi tik apie save (rodyklė), visata nuo planšetės sukimo nepriklauso
         drawObserverHeading()
         // SP3 trajektorijos ±30 min. arba užrašas apie apytikslę padėtį
@@ -2671,6 +2675,70 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * iki stebėtojo; bangos bėga link stebėtojo, sustiprėja gavus pataisų žinutę; aplink stebėtoją – plintančios bangelės.
      * Stotis už kelių–keliasdešimties km, todėl atstumas išdidintas, kad matytųsi; kryptis tikra, tikras atstumas – užraše.
      */
+    /** Kliūčių skliautas 3D: 0 – išjungtas, 1 – kupolas, 2 – dėžė (kabinos forma, sukasi su planšete). */
+    @Volatile var obstacleMode = 1
+
+    /**
+     * Kabinos ir aplinkos žemėlapių langeliai aplink stebėtoją: neoninė geltona – švaru, mėlyna – kliūtis, raudona – atspindžiai.
+     * Kryptis iš žemėlapių (aplinkos – nuo šiaurės, kabinos – nuo planšetės krypties); forma – pusrutulis arba stačiakampė dėžė.
+     */
+    private fun drawObstacleSky(pin: FloatArray) {
+        val m = earthMat
+        val c = floatArrayOf(m[12], m[13], m[14])
+        val o = DoubleArray(3) { (c[it] + (pin[it] - c[it]) / 1.35f).toDouble() }
+        val up = DoubleArray(3) { o[it] - c[it] }.let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); DoubleArray(3) { v[it] / l } }
+        val ax = doubleArrayOf(m[8].toDouble(), m[9].toDouble(), m[10].toDouble())
+        var e = doubleArrayOf(ax[1] * up[2] - ax[2] * up[1], ax[2] * up[0] - ax[0] * up[2], ax[0] * up[1] - ax[1] * up[0])
+        val el0 = kotlin.math.sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]); if (el0 < 1e-9) return
+        e = DoubleArray(3) { e[it] / el0 }
+        val n = doubleArrayOf(up[1] * e[2] - up[2] * e[1], up[2] * e[0] - up[0] * e[2], up[0] * e[1] - up[1] * e[0])
+        val heading = LiveRtk.heading
+        val box = obstacleMode == 2
+        val boxRot = Math.toRadians(heading ?: 0.0)            // dėžė pasukta kaip kabina (planšetė)
+        val r = 0.07; val half = 0.06; val hgt = 0.05
+        fun pt(azDeg: Double, elDeg: Double): FloatArray {
+            val a = Math.toRadians(azDeg); val el = Math.toRadians(elDeg)
+            var de = kotlin.math.cos(el) * sin(a); var dn = kotlin.math.cos(el) * cos(a); val du = sin(el)
+            val k = if (!box) r else {
+                // projekcija į stačiakampę dėžę, pasuktą planšetės kryptimi
+                val x = de * cos(boxRot) - dn * sin(boxRot); val y = de * sin(boxRot) + dn * cos(boxRot)
+                minOf(half / maxOf(kotlin.math.abs(x), 1e-6), half / maxOf(kotlin.math.abs(y), 1e-6), if (du > 1e-6) hgt / du else 1e9)
+            }
+            return FloatArray(3) { (o[it] + k * (de * e[it] + dn * n[it] + du * up[it])).toFloat() }
+        }
+        val tris = arrayOf(ArrayList<Float>(), ArrayList<Float>(), ArrayList<Float>())   // švaru, kliūtis, atspindžiai
+        for (ei in 0 until CabinMap.EL) for (ai in 0 until CabinMap.AZ) {
+            val az = ai * 10.0; val elv = ei * 10.0
+            val wc = CabinMap.world.cls(az + 5, elv + 5)
+            val cc = if (heading != null) CabinMap.cabin.cls(az + 5 - heading, elv + 5) else CabinMap.UNKNOWN
+            val cls = when {
+                wc == CabinMap.REFLECT || cc == CabinMap.REFLECT -> 2
+                wc == CabinMap.WEAK || cc == CabinMap.WEAK -> 1
+                wc == CabinMap.CLEAN || cc == CabinMap.CLEAN -> 0
+                else -> -1
+            }
+            if (cls < 0) continue
+            val steps = if (box) 3 else 1                       // dėžei – smulkiau, kad briaunos būtų tiesios
+            for (sa in 0 until steps) for (se in 0 until steps) {
+                val a0 = az + 10.0 * sa / steps; val a1 = az + 10.0 * (sa + 1) / steps
+                val e0 = elv + 10.0 * se / steps; val e1 = minOf(90.0, elv + 10.0 * (se + 1) / steps)
+                val p00 = pt(a0, e0); val p10 = pt(a1, e0); val p01 = pt(a0, e1); val p11 = pt(a1, e1)
+                for (q in listOf(p00, p10, p11, p00, p11, p01)) { tris[cls].add(q[0]); tris[cls].add(q[1]); tris[cls].add(q[2]) }
+            }
+        }
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false); GLES20.glDisable(GLES20.GL_CULL_FACE)
+        val cols = arrayOf(floatArrayOf(0.9f, 1f, 0f, 0.28f), floatArrayOf(0.15f, 0.39f, 0.92f, 0.45f), floatArrayOf(0.94f, 0.27f, 0.27f, 0.5f))
+        for (k in 0..2) {
+            val a = tris[k]; if (a.isEmpty()) continue
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), cols[k][0], cols[k][1], cols[k][2], cols[k][3])
+            bindPos(colorProg, floatBuf(a.toFloatArray()))
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, a.size / 3)
+        }
+        GLES20.glDepthMask(true); GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+    }
+
     private fun drawCorrectionWaves(pin: FloatArray, t: Float) {
         val now = System.currentTimeMillis()
         val last = NtripClient.lastMsmMs
@@ -5741,6 +5809,16 @@ class MainActivity : AppCompatActivity() {
         left.addView(CheckBox(this).apply {
             text = "Naudoti žemėlapį RTK filtruose (atspindžių kryptys nenaudojamos)"; isChecked = CabinMap.useInFilters
             setOnCheckedChangeListener { _, on -> CabinMap.useInFilters = on; cabPrefs.edit().putBoolean("use", on).apply() }
+        }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(Button(this).apply {
+            val names = arrayOf("išjungtas", "kupolas", "dėžė (kabinos forma)")
+            fun lab(md: Int) { text = "Kliūčių skliautas 3D: ${names[md]}" }
+            lab(if (::skyDome.isInitialized) skyDome.obstacleMode else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getInt("obst_mode", 1))
+            setOnClickListener {
+                if (!::skyDome.isInitialized) return@setOnClickListener
+                val md = (skyDome.obstacleMode + 1) % 3
+                skyDome.setObstacleMode(md); lab(md)
+            }
         }, LinearLayout.LayoutParams(mw, ww))
         left.addView(Button(this).apply {
             text = "Išvalyti kabinos žemėlapį"

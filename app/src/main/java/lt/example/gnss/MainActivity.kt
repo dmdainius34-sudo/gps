@@ -4301,10 +4301,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glEnableVertexAttribArray(lp)
         earthPos!!.position(0)
         GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, earthPos)
-        // galinės sienelės: veikia ir kamerai esant apvalkalo viduje; įėjimo taškas skaičiuojamas šešėliuoklyje
-        GLES20.glEnable(GLES20.GL_CULL_FACE); GLES20.glCullFace(GLES20.GL_FRONT)
+        // be atmetimo: šešėliuoklis palieka tik tolimąją pusę, įėjimas ir išėjimas skaičiuojami analitiškai
+        GLES20.glDisable(GLES20.GL_CULL_FACE)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
-        GLES20.glCullFace(GLES20.GL_BACK); GLES20.glDisable(GLES20.GL_CULL_FACE)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 
@@ -4738,13 +4737,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform float uOut;
             varying vec3 vW;
             void main() {
-                vec3 rd = vW - uCam; float tEnd = length(rd); rd /= tEnd;
+                vec3 rd = normalize(vW - uCam);
+                // tik tolimoji apvalkalo pusė (nepriklauso nuo trikampių sukimo krypties ir kameros vietos)
+                if (dot(vW - uCenter, rd) < 0.0) discard;
                 vec3 oc = uCam - uCenter;
                 float b = dot(oc, rd);
                 float ro = uOut * uRs;
                 float h = b * b - (dot(oc, oc) - ro * ro);
                 if (h <= 0.0) discard;
                 float t0 = max(-b - sqrt(h), 0.0);
+                float tEnd = -b + sqrt(h);
                 // Saulės rutulys užstoja tai, kas už jo
                 float hs = b * b - (dot(oc, oc) - uRs * uRs);
                 if (hs > 0.0) { float ts = -b - sqrt(hs); if (ts > t0) tEnd = min(tEnd, ts); }

@@ -4771,8 +4771,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     acc += t * w * m;
                 }
                 float lum = dot(acc, vec3(0.5, 0.35, 0.15));
-                vec3 c = vec3(lum) * (dt / uRs) * 3.0;
-                gl_FragColor = vec4(c * vec3(0.85, 0.92, 1.0), 1.0);
+                float v = lum * (dt / uRs) * 3.0;
+                // spalva pagal ryškumą: silpni srautai – raudoni, ryškūs išmetimai – geltoni
+                vec3 col = mix(vec3(0.95, 0.18, 0.04), vec3(1.0, 0.82, 0.25), clamp(v * 1.6, 0.0, 1.0));
+                gl_FragColor = vec4(col * v * 1.2, 1.0);
             }
         """
         private const val GLOW_VS = """

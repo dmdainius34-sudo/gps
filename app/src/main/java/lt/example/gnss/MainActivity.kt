@@ -4008,6 +4008,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
         if (showSunGrid) drawSunGrid()
+        // užrašas: koks vaizdas ant Saulės
+        if (SunImage.map != null && SunImage.imageMs > 0) {
+            val lab = "NASA SDO " + java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date(SunImage.imageMs)) + " UTC"
+            val (tx, ta) = wideLabel(lab)
+            billboard(floatArrayOf(sp[0], sp[1], sp[2] + k * 0.25f * 1.4f), eyeI, k * 0.25f * 0.35f * ta, k * 0.25f * 0.35f, tx, 1f, 0.95f, 0.7f, 0.95f)
+        }
 
         // 3D korona: didesnis rutulys aplink Saulę, švyti tik prie krašto (pridėtinis maišymas)
         if (glowProg == 0) glowProg = program(GLOW_VS, SUNGLOW_FS)

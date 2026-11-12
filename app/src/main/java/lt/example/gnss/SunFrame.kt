@@ -70,6 +70,9 @@ object SunImage {
     @Volatile var status = "tikras Saulės vaizdas: neatsisiųstas"
         private set
     @Volatile var enabled = true
+    @Volatile var lastDisk = ""
+    @Volatile var imageMs = 0L
+        private set
     @Volatile private var at = 0L
     @Volatile private var busy = false
 
@@ -85,9 +88,9 @@ object SunImage {
                 val disk = c.inputStream.use { BitmapFactory.decodeStream(it) } ?: run { status = "tikras Saulės vaizdas: neperskaitomas"; return@Thread }
                 val base = try { ctx.assets.open("sun.jpg").use { BitmapFactory.decodeStream(it) } } catch (_: Exception) { null }
                 val m = build(disk, base, mod) ?: run { status = "tikras Saulės vaizdas: disko nerasta"; return@Thread }
-                map = m; version++
+                map = m; version++; imageMs = mod
                 status = "tikras Saulės vaizdas: NASA SDO HMI, %s UTC".format(Locale.US,
-                    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date(mod)))
+                    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date(mod))) + "; $lastDisk"
             } catch (e: Exception) { status = "tikras Saulės vaizdas: ${e.javaClass.simpleName}" }
             finally { busy = false }
         }.start()
@@ -97,13 +100,15 @@ object SunImage {
     fun build(disk: Bitmap, base: Bitmap?, ms: Long): Bitmap? {
         val w = disk.width; val h = disk.height
         val px = IntArray(w * h); disk.getPixels(px, 0, w, 0, 0, w, h)
-        var x0 = w; var x1 = -1; var y0 = h; var y1 = -1
-        for (y in 0 until h step 2) for (x in 0 until w step 2) {
-            val p = px[y * w + x]; val lum = ((p shr 16 and 255) + (p shr 8 and 255) + (p and 255)) / 3
-            if (lum > 40) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y }
-        }
-        if (x1 <= x0 || y1 <= y0) return null
+        // disko kraštai – per centrinę eilutę ir stulpelį (kampuose esantys užrašai netrukdo)
+        fun lum(x: Int, y: Int): Int { val p = px[y * w + x]; return ((p shr 16 and 255) + (p shr 8 and 255) + (p and 255)) / 3 }
+        val thr = 25
+        var x0 = -1; var x1 = -1; var y0 = -1; var y1 = -1
+        for (x in 0 until w) if (lum(x, h / 2) > thr) { if (x0 < 0) x0 = x; x1 = x }
+        for (y in 0 until h) if (lum(w / 2, y) > thr) { if (y0 < 0) y0 = y; y1 = y }
+        if (x0 < 0 || y0 < 0 || x1 <= x0 || y1 <= y0) return null
         val cx = (x0 + x1) / 2.0; val cy = (y0 + y1) / 2.0; val rad = ((x1 - x0) + (y1 - y0)) / 4.0
+        lastDisk = "diskas: centras %.0f, %.0f; spindulys %.0f px iš %d×%d".format(Locale.US, cx, cy, rad, w, h)
         if (rad < w * 0.2) return null
         val (ax, ay, az) = SunFrame.axes(ms).let { Triple(it[0], it[1], it[2]) }
         val v = Astro.sunEq(ms); val s = DoubleArray(3) { -v[it] }

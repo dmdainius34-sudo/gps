@@ -179,6 +179,54 @@ object Dgnss {
         return run
     }
 
+    /**
+     * Kiekvieno palydovo papildomas vėlinimas prietaise po pataisų, laikant, kad prietaisas yra atskaitos taške:
+     * P + PRC + c·dts − ρ(atskaita) − sistemos laikrodis (epochos mediana). Bazė pašalina bendras paklaidas,
+     * todėl liekana – vietinė: atspindžiai (NLOS) ir daugiakelis sklidimas. Teigiama – signalas atėjo ilgesniu keliu.
+     */
+    fun excessText(raw: File, sp3: Sp3Reader, base: Base, ref: Pair<Double, Double>, h: Double): String {
+        val rx = PositionSolver.llhToEcef(Math.toRadians(ref.first), Math.toRadians(ref.second), h)
+        val eps = base.eps; val ts = DoubleArray(eps.size) { eps[it].t }
+        val per = HashMap<String, ArrayList<Double>>(); val azel = HashMap<String, DoubleArray>(); val cn = HashMap<String, ArrayList<Double>>()
+        Sp3V5.readRaw(raw) { ep ->
+            val t = ep.t
+            var i = java.util.Arrays.binarySearch(ts, t); if (i < 0) i = -i - 1
+            val cand = listOf(i - 1, i).filter { it in eps.indices }.minByOrNull { abs(ts[it] - t) } ?: return@readRaw
+            if (abs(ts[cand] - t) > 1.5) return@readRaw
+            val e = eps[cand]
+            val obs = ep.meas.filter { Sp3V5.accept(it) && (it.sys == 'G' || it.sys == 'E') }.mapNotNull { m ->
+                e.prc[m.id]?.let { Sp3V5.Ob(m.sys, m.svid, m.pr + it, m.cn0) } }
+            val sats = Sp3V5.prepare(t, obs, sp3)
+            val r = HashMap<String, Double>(); val sysOf = HashMap<String, Char>()
+            for (s in sats) {
+                s.rp.fill(0.0); s.rotate(rx); s.rotate(rx)
+                val dx = rx[0] - s.rp[0]; val dy = rx[1] - s.rp[1]; val dz = rx[2] - s.rp[2]
+                val rho = sqrt(dx * dx + dy * dy + dz * dz)
+                val l = Sp3Solver.look(rx, s.rp, rho)
+                if (l[4] < Math.toRadians(10.0)) continue
+                val id = "%c%02d".format(Locale.US, s.sys, s.svid)
+                r[id] = s.prc - rho; sysOf[id] = s.sys
+                azel[id] = doubleArrayOf(Math.toDegrees(l[3]).let { (it + 360) % 360 }, Math.toDegrees(l[4]))
+                cn.getOrPut(id) { ArrayList() }.add(s.cn0)
+            }
+            for (sy in listOf('G', 'E')) {
+                val v = r.filter { sysOf[it.key] == sy }.values.sorted()
+                if (v.size < 3) continue
+                val m = v[v.size / 2]
+                r.filter { sysOf[it.key] == sy }.forEach { (k, x) -> per.getOrPut(k) { ArrayList() }.add(x - m) }
+            }
+        }
+        val rows = per.filter { it.value.size >= 30 }.map { (k, v) -> Triple(k, PositionSolver.percentile(v.sorted(), 0.5), azel[k]!!) }
+            .sortedByDescending { abs(it.second) }
+        val bad = rows.filter { it.second > 10.0 }
+        return "Palydovų vėlinimas prietaise po pataisų (laikant, kad prietaisas atskaitos taške; + = ilgesnis kelias, atspindys):\n" +
+            rows.take(12).joinToString("\n") { (k, v, a) ->
+                "  %s az %3.0f° aukštis %2.0f° C/N0 %.1f: %+.1f m".format(Locale.US, k, a[0], a[1],
+                    PositionSolver.percentile(cn[k]!!.sorted(), 0.5), v) } +
+            "\nTikėtini atspindžiai (NLOS, > 10 m): " + (if (bad.isEmpty()) "nėra" else bad.joinToString(", ") { "%s (az %.0f°)".format(Locale.US, it.first, it.third[0]) }) +
+            "\nPataisos pašalina orbitų, laikrodžių ir atmosferos paklaidas, bet ne vietinius atspindžius – juos lemia aplinka (plienas, pastatai, kūnas)."
+    }
+
     private fun line(r: Run, ref: Pair<Double, Double>?, fixH: Double?): String {
         if (r.sols.isEmpty()) return "${r.name}: nėra sprendinių"
         val sb = StringBuilder("${r.name}: ")
@@ -214,6 +262,7 @@ object Dgnss {
         appendLine(line(plain, ref, fixH))
         appendLine(line(dg, ref, fixH))
         appendLine("Pataisytų stebėjimų ${dg.corrected}, be pataisos (bazė palydovo nemato) ${dg.noCorr}")
+        if (ref != null) appendLine(excessText(raw, sp3, base, ref, fixH ?: 0.0))
         appendLine("Failas $OUT_FILE")
     }
 }

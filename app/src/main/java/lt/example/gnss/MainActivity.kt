@@ -4028,6 +4028,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** 3D Saulės rutulys: animuota granuliacija, dėmės, kraštų patamsėjimas; lėtai sukasi. */
     @Volatile var showSunGrid = true
     private var sunImgVer = 0
+    /** Saulės tekstūra – tikras SDO žemėlapis (ne sena programos tekstūra). */
+    private var sunReal = false
 
     /** Heliografinis tinklelis (kas 15°), pusiaujas ir nulinis dienovidinis ryškesni, ašis per polius, į Žemę atsuktas taškas. */
     private fun drawSunGrid() {
@@ -4071,7 +4073,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // tikras NASA SDO vaizdas, jei atsisiųstas (perkeliamas į GL tekstūrą)
         SunImage.map?.let { m -> if (SunImage.version != sunImgVer) { sunImgVer = SunImage.version
             if (sunImgTex != 0) GLES20.glDeleteTextures(1, intArrayOf(sunImgTex), 0)
-            sunImgTex = uploadTexture(m.copy(m.config ?: Bitmap.Config.ARGB_8888, false)) } }
+            sunImgTex = uploadTexture(m.copy(m.config ?: Bitmap.Config.ARGB_8888, false))
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sunImgTex)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR)
+            GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
+            sunReal = true } }
         sunMat[12] = sp[0]; sunMat[13] = sp[1]; sunMat[14] = sp[2]; sunMat[15] = 1f
         Matrix.multiplyMM(sunMvp, 0, mvpI, 0, sunMat, 0)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
@@ -4081,7 +4087,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform3f(GLES20.glGetUniformLocation(sunProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
         GLES20.glUniform3f(GLES20.glGetUniformLocation(sunProg, "uCam"), camPos[0], camPos[1], camPos[2])
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uTime"), t)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uHasTex"), if (sunImgTex != 0) 1f else 0f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uHasTex"), if (sunImgTex == 0) 0f else if (sunReal) 2f else 1f)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sunImgTex)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(sunProg, "uTex"), 0)
@@ -4488,7 +4494,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vec3 warm = vec3(1.0, 0.52, 0.08);
                 vec3 col = mix(warm, hot, n);
                 col *= 1.0 - 0.35 * spots;
-                if (uHasTex > 0.5) {
+                if (uHasTex > 1.5) {
+                    // tikras SDO žemėlapis (ryškus, be triukšmo); nepadengtos vietos (alfa 0) – fotosferos spalva su granuliacija
+                    vec4 tx = texture2D(uTex, vUV);
+                    col = mix(mix(warm, hot, 0.55 + 0.25 * n), tx.rgb * 1.15, tx.a);
+                } else if (uHasTex > 0.5) {
                     // NASA SDO žemėlapis + lengvas mirgėjimas, kad paviršius „gyventų“
                     col = texture2D(uTex, vUV).rgb * 1.25 * (0.92 + 0.16 * n);
                 }

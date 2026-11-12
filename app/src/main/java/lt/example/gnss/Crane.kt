@@ -113,7 +113,9 @@ object Crane {
             sb.append("; lusto fiksas %.2f m nuo ašies (turėtų būti %.2f), kampas aplink bokštą %.1f°, projektuotas %.7f, %.7f".format(Locale.US,
                 d, radius, slewDeg(fixLat, fixLon), pl, po))
         }
-        LiveRtk.last?.let { s -> sb.append("; RTK kampas aplink bokštą %.1f°".format(Locale.US, slewDeg(s.lat, s.lon))) }
+        // kampo neapibrėžtumas ≈ padėties σ / spindulys (radianais): mažu spinduliu kampas labai jautrus
+        LiveRtk.last?.let { s -> sb.append("; RTK kampas aplink bokštą %.1f° (±%.0f°)".format(Locale.US, slewDeg(s.lat, s.lon),
+            Math.toDegrees(minOf(Math.PI, s.hacc / radius)))) }
         return sb.toString()
     }
 }

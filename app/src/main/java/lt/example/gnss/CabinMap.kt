@@ -65,7 +65,8 @@ class SkyMap(val file: String) {
 
     @Synchronized fun cls(az: Double, el: Double): Int {
         val c = cells[idx(az, el) ?: return CabinMap.UNKNOWN]
-        if (c.nRes >= 15 && c.nlos.toDouble() / c.nRes > 0.3) return CabinMap.REFLECT
+        // atspindžiai: dauguma liekanų > 10 m ir vidutinė > 8 m (kabinoje vien kodo triukšmas siekia ~5–10 m)
+        if (c.nRes >= 20 && c.nlos.toDouble() / c.nRes > 0.5 && c.absRes / c.nRes > 8.0) return CabinMap.REFLECT
         if (c.n >= 30 && c.cn0 / c.n < 24.0) return CabinMap.WEAK
         if (c.n >= 30 || c.nRes >= 15) return CabinMap.CLEAN
         return CabinMap.UNKNOWN

@@ -145,6 +145,8 @@ object Rtk {
             private set
         var masked = 0
             private set
+        /** Krano apskritimo apribojimas (Crane) – gyvai ir po įrašo. */
+        var useCrane = true
         var lastPhase = 0
             private set
 
@@ -267,10 +269,14 @@ object Rtk {
             else true
         }
         if (keep.isEmpty()) return null
-        val m = keep.size
-        val H = Array(m) { keep[it].h }
-        val R = Array(m) { i -> DoubleArray(m) { k -> (if (keep[i].key == keep[k].key) keep[i].sRef * keep[i].sRef else 0.0) + (if (i == k) keep[i].sI * keep[i].sI else 0.0) } }
-        val v = Array(m) { doubleArrayOf(keep[it].v) }
+        // krano apribojimas: atstumas iki bokšto ašies ir aukštis (nepriklausomi pseudo-matavimai)
+        val cr = if (useCrane) Crane.pseudo(doubleArrayOf(ff.x[0], ff.x[1], ff.x[2])) else emptyList()
+        val m0 = keep.size; val m = m0 + cr.size
+        val H = Array(m) { i -> if (i < m0) keep[i].h else DoubleArray(n).also { r -> for (k in 0..2) r[k] = cr[i - m0].first[k] } }
+        val R = Array(m) { i -> DoubleArray(m) { k ->
+            if (i < m0 && k < m0) (if (keep[i].key == keep[k].key) keep[i].sRef * keep[i].sRef else 0.0) + (if (i == k) keep[i].sI * keep[i].sI else 0.0)
+            else if (i == k) cr[i - m0].third * cr[i - m0].third else 0.0 } }
+        val v = Array(m) { i -> doubleArrayOf(if (i < m0) keep[i].v else cr[i - m0].second) }
         val pht = mul(ff.p, tr(H))
         val sMat = mul(H, pht).also { for (i in 0 until m) for (k in 0 until m) it[i][k] += R[i][k] }
         val sInv = inv(sMat) ?: return null
@@ -296,12 +302,12 @@ object Rtk {
         }
     }
 
-    fun run(raw: File, sp3: Sp3Reader, base: Pair<DoubleArray?, List<BEp>>, qPos: Double, name: String, out: File? = null): Run {
+    fun run(raw: File, sp3: Sp3Reader, base: Pair<DoubleArray?, List<BEp>>, qPos: Double, name: String, out: File? = null, crane: Boolean = false): Run {
         val run = Run(name)
         val bp = base.first ?: return run
         val eps = base.second; if (eps.size < 2) return run
         val ts = DoubleArray(eps.size) { eps[it].t }
-        val eng = Engine(qPos, run)
+        val eng = Engine(qPos, run).also { it.useCrane = crane }
         val w = out?.bufferedWriter()
         try {
             w?.write("laikas_ms,platuma,ilguma,aukstis_m,fazes_palydovu,sigma_h_m\n")
@@ -366,6 +372,11 @@ object Rtk {
         val kin = run(raw, sp3, base, 1.0, "RTK kinematinis")
         appendLine(line(st, ref, fixH))
         appendLine(line(kin, ref, fixH))
+        if (Crane.valid) {
+            val cr = run(raw, sp3, base, 0.05, "RTK su krano apribojimu", crane = true)
+            appendLine(line(cr, ref, fixH))
+            cr.sols.lastOrNull()?.let { appendLine("  Kampas aplink bokštą (paskutinis): %.1f°".format(Locale.US, Crane.slewDeg(it.second.lat, it.second.lon))) }
+        }
         appendLine("Failas $OUT_FILE (statinis); σh – filtro įvertintas horizontalus neapibrėžtumas")
     }
 }

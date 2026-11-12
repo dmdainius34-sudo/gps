@@ -5678,6 +5678,9 @@ class MainActivity : AppCompatActivity() {
         left.addView(btnSun, LinearLayout.LayoutParams(mw, ww))
         val btnNtrip = Button(this).apply { text = "NTRIP pataisos (RTCM)…"; setOnClickListener { showNtripDialog() } }
         left.addView(btnNtrip, LinearLayout.LayoutParams(mw, ww))
+        Crane.load(this)
+        left.addView(Button(this).apply { text = "Krano apribojimas (bokšto ašis, spindulys)…"; setOnClickListener { showCraneDialog() } },
+            LinearLayout.LayoutParams(mw, ww))
         left.addView(btnResetN, LinearLayout.LayoutParams(mw, ww))
         val cbStableN = CheckBox(this).apply {
             text = "Stabili šiaurė (ignoruoti magnetometrą)"
@@ -5888,7 +5891,7 @@ class MainActivity : AppCompatActivity() {
                     report += sunReport() + Sp3Live.text() + "\n" +
                         (if (obsLatNow == 0.0 && obsLonNow == 0.0) "" else SpaceOrientation.report(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()), obsLatNow)) +
                         (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" else "") +
-                        NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + CabinMap.text() + "\n" +
+                        NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + CabinMap.text() + "\n" +
                         (Readiness.knowledge()?.let { "Lusto žinios: ${it.text}\n" } ?: "") +
                         "Pasiruošimas: " + Readiness.state(LiveRtk.enabled, LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc).text + "\n" +
                         (if (::skyDome.isInitialized) skyDome.fpsText() + "\n" else "")
@@ -6523,7 +6526,46 @@ class MainActivity : AppCompatActivity() {
         st.text = NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text()
     }
 
+    /** Krano apribojimas: bokšto ašies koordinatės, spindulys iki planšetės, aukštis (nebūtinas). */
+    private fun showCraneDialog() {
+        Crane.load(this)
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad / 2, pad, 0) }
+        val num = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+        fun field(hint: String, v: String) = EditText(this).apply { this.hint = hint; setText(v); inputType = num; isSingleLine = true; box.addView(this) }
+        box.addView(TextView(this).apply { text = "Bokšto ašies (sukimosi centro) koordinatės iš brėžinio, WGS84 laipsniais"; textSize = 13f })
+        val la = field("Ašies platuma (pvz. 54.7398000)", if (Crane.lat != 0.0) Crane.lat.toString() else "")
+        val lo = field("Ašies ilguma (pvz. 25.2545000)", if (Crane.lon != 0.0) Crane.lon.toString() else "")
+        val r = field("Spindulys: atstumas nuo ašies iki planšetės, m", if (Crane.radius > 0) Crane.radius.toString() else "")
+        val h = field("Planšetės elipsoidinis aukštis, m (nebūtina)", if (Crane.height.isNaN()) "" else Crane.height.toString())
+        val on = CheckBox(this).apply { text = "Naudoti RTK skaičiavime (planšetė juda tik ratu aplink bokštą)"; isChecked = Crane.on; box.addView(this) }
+        val st = TextView(this).apply { textSize = 12f; text = Crane.text(obsLatNow, obsLonNow); box.addView(this) }
+        box.addView(Button(this).apply {
+            text = "Spindulys = dabartinis atstumas iki ašies"
+            setOnClickListener {
+                val a = la.text.toString().toDoubleOrNull(); val b = lo.text.toString().toDoubleOrNull()
+                if (a == null || b == null) { Toast.makeText(this@MainActivity, "Pirma įveskite ašies koordinates", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+                val src = LiveRtk.last?.takeIf { it.hacc < 0.5 }
+                val d = PositionSolver.horizDist(a, b, src?.lat ?: obsLatNow, src?.lon ?: obsLonNow)
+                r.setText("%.2f".format(java.util.Locale.US, d))
+                Toast.makeText(this@MainActivity, "Iš ${if (src != null) "RTK" else "lusto fikso"}: %.2f m".format(java.util.Locale.US, d), Toast.LENGTH_SHORT).show()
+            }
+        })
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Krano apribojimas")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Išsaugoti") { _, _ ->
+                Crane.lat = la.text.toString().toDoubleOrNull() ?: 0.0; Crane.lon = lo.text.toString().toDoubleOrNull() ?: 0.0
+                Crane.radius = r.text.toString().toDoubleOrNull() ?: 0.0; Crane.height = h.text.toString().toDoubleOrNull() ?: Double.NaN
+                Crane.on = on.isChecked; Crane.save(this)
+                if (Crane.on && !Crane.valid) Toast.makeText(this, "Įveskite ašies koordinates ir spindulį", Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("Atšaukti", null)
+            .show()
+    }
+
     private fun startNtrip() {
+        Crane.load(this)
         LiveRtk.load(this)
         if (!NtripClient.enabled(this)) return
         NtripClient.start(this) { if (obsLatNow == 0.0 && obsLonNow == 0.0) null else doubleArrayOf(obsLatNow, obsLonNow, obsHNow) }

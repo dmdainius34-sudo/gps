@@ -5350,7 +5350,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (::satCountView.isInitialized) margins(satCountView, l, t, 0, 0)
         if (::orientView.isInitialized) margins(orientView, l, 0, 0, b)
-        readyView?.let { margins(it, 0, m + t, 0, 0) }
+        readyView?.let { margins(it, 0, (78 * resources.displayMetrics.density).toInt() + t, 0, 0) }
         margins(fsBtn, m, m + t, m + r, m)
         margins(scaleBtnView, m, fsBtn.layoutParams.height + 2 * m + t, m + r, m)
     }
@@ -5789,8 +5789,9 @@ class MainActivity : AppCompatActivity() {
             textSize = 13f; text = "● Šyla"
             val pd = (10 * resources.displayMetrics.density).toInt(); setPadding(pd, pd / 2, pd, pd / 2)
         }
+        // po palydovų skaičiaus eilutėmis (kad jų neuždengtų)
         skyHolder.addView(readyView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
-            topMargin = (10 * resources.displayMetrics.density).toInt()
+            topMargin = (78 * resources.displayMetrics.density).toInt()
         })
         readyLast = null; updateReady()
         orientView = TextView(this).apply {

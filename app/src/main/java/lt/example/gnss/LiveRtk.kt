@@ -120,7 +120,7 @@ object LiveRtk {
             engine.mask = { az, el -> CabinMap.excluded(az, el, heading) }
             val sol = try { engine.step(ep, e0, e1, bp, ::prepare) } catch (e: Exception) { null } ?: continue
             last = sol; lastMs = System.currentTimeMillis(); epochs++
-            heading?.let { CabinMap.learnRtk(it, engine.lastObs) }
+            CabinMap.learnRtk(heading, engine.lastObs, sol.hacc)
             log(ep.timeMs, sol)
             // kitoms programoms – tik suartėjęs ir stabilus sprendinys
             val prev = pushed

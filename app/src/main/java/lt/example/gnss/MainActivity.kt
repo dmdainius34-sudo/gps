@@ -5437,7 +5437,7 @@ class MainActivity : AppCompatActivity() {
             CabinMap.load(this@MainActivity)
             val hd = if (::skyDome.isInitialized) skyDome.headingDeg() else null
             LiveRtk.heading = hd
-            hd?.let { CabinMap.learnStatus(it, list) }
+            CabinMap.learnStatus(hd, list)
             cabinView?.let { it.heading = hd; it.sats = list; it.invalidate() }
             lastSats = list
             satMap.clear()
@@ -5718,8 +5718,14 @@ class MainActivity : AppCompatActivity() {
         left.addView(cbBits, LinearLayout.LayoutParams(mw, ww))
         CabinMap.load(this)
         val cabPrefs = getSharedPreferences("cabin", Context.MODE_PRIVATE)
-        left.addView(TextView(this).apply { text = "Kabinos dangaus žemėlapis (žalia – švaru, oranžinė – atspindžiai, pilka – užstota)"; textSize = 13f })
+        val cabTitle = TextView(this).apply { text = "Kabinos dangaus žemėlapis (paspauskite – aplinka / radaras). Žalia – švaru, oranžinė – atspindžiai, pilka – užstota"; textSize = 13f }
+        left.addView(cabTitle)
         val cv = CabinMapView(this); cabinView = cv
+        cv.onMode = { md -> cabTitle.text = when (md) {
+            0 -> "Kabinos žemėlapis (viršus – planšetė; sukasi su kabina). Žalia – švaru, oranžinė – atspindžiai, pilka – užstota"
+            1 -> "Aplinkos žemėlapis (viršus – šiaurė; pastatai, kiti kranai). Mėlyna linija – planšetės kryptis"
+            else -> "Radaras: atspindinčių paviršių atstumai (iki 60 m; spalva – palydovo aukštis). Įvertis pagal papildomą signalo kelią"
+        } }
         left.addView(cv, LinearLayout.LayoutParams((240 * resources.displayMetrics.density).toInt(), ww))
         left.addView(CheckBox(this).apply {
             text = "Mokytis kabinos žemėlapio"; isChecked = CabinMap.learn

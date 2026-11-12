@@ -20,7 +20,14 @@ class CabinMapTest {
         // kabina pasisuko kartu su prietaisu (kryptis 180°): tas pats santykinis langelis – palydovas az 5°
         assertTrue(CabinMap.excluded(5.0, 45.0, 180.0))
         assertFalse(CabinMap.excluded(185.0, 65.0, 180.0))
-        assertFalse(CabinMap.excluded(5.0, 45.0, null))
+        // aplinkos žemėlapis (nuo šiaurės): atspindžiai iš az 275° nepriklauso nuo prietaiso krypties
+        assertEquals(CabinMap.REFLECT, CabinMap.world.cls(275.0, 45.0))
+        assertTrue(CabinMap.excluded(275.0, 45.0, null))
+        CabinMap.clear()
+        // radaras: δ = 40 m, aukštis 60° -> d = 40 m, atspindys iš priešingos pusės
+        repeat(10) { CabinMap.learnRtk(null, mapOf("G05" to doubleArrayOf(275.0, 60.0, 30.0, 40.0, 0.0, 0.0)), 0.3) }
+        val r = Radar.points().last()
+        assertEquals(95.0, r.az, 1e-9); assertEquals(40.0, r.d, 1e-6)
         CabinMap.clear()
     }
 }

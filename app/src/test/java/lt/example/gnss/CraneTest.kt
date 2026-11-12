@@ -9,7 +9,9 @@ class CraneTest {
     fun circleGeometry() {
         Crane.on = true; Crane.lat = 54.7398; Crane.lon = 25.2545; Crane.radius = 3.0; Crane.height = Double.NaN
         // 5 m į rytus nuo ašies -> projektuota 3 m į rytus, kampas 90°
-        val e5 = Crane.lon + Math.toDegrees(5.0 / (6_378_137.0 * Math.cos(Math.toRadians(Crane.lat))))
+        val e2 = (1 / 298.257223563) * (2 - 1 / 298.257223563); val sl = Math.sin(Math.toRadians(Crane.lat))
+        val nRad = 6_378_137.0 / Math.sqrt(1 - e2 * sl * sl)
+        val e5 = Crane.lon + Math.toDegrees(5.0 / (nRad * Math.cos(Math.toRadians(Crane.lat))))
         assertEquals(90.0, Crane.slewDeg(Crane.lat, e5), 1e-6)
         val (pl, po) = Crane.project(Crane.lat, e5)
         assertEquals(3.0, Crane.en(pl, po)[0], 1e-3); assertEquals(0.0, Crane.en(pl, po)[1], 1e-3)

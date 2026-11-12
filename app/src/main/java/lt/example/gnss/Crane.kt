@@ -59,12 +59,17 @@ object Crane {
         return out
     }
 
+    /** Kreivumo spinduliai ašies platumoje: (N – pirmasis vertikalus, M – meridiano), m. */
+    private fun radii(): Pair<Double, Double> {
+        val a = 6_378_137.0; val f = 1 / 298.257223563; val e2 = f * (2 - f); val sl = sin(Math.toRadians(lat))
+        val w = sqrt(1 - e2 * sl * sl)
+        return a / w to a * (1 - e2) / (w * w * w)
+    }
+
     /** (rytai, šiaurė) m nuo ašies. */
     fun en(latDeg: Double, lonDeg: Double): DoubleArray {
-        val la0 = Math.toRadians(lat)
-        val e = (lonDeg - lon) * Math.toRadians(1.0) * 6_378_137.0 * cos(la0)
-        val n = (latDeg - lat) * Math.toRadians(1.0) * 6_356_752.3
-        return doubleArrayOf(e, n)
+        val (nn, mm) = radii()
+        return doubleArrayOf((lonDeg - lon) * Math.toRadians(1.0) * nn * cos(Math.toRadians(lat)), (latDeg - lat) * Math.toRadians(1.0) * mm)
     }
 
     /** Kabinos (prietaiso) padėties kampas aplink bokštą, ° nuo šiaurės. */
@@ -74,7 +79,8 @@ object Crane {
     fun project(latDeg: Double, lonDeg: Double): Pair<Double, Double> {
         val v = en(latDeg, lonDeg); val d = sqrt(v[0] * v[0] + v[1] * v[1]).coerceAtLeast(1e-6)
         val e = v[0] / d * radius; val n = v[1] / d * radius
-        return (lat + Math.toDegrees(n / 6_356_752.3)) to (lon + Math.toDegrees(e / (6_378_137.0 * cos(Math.toRadians(lat)))))
+        val (nn, mm) = radii()
+        return (lat + Math.toDegrees(n / mm)) to (lon + Math.toDegrees(e / (nn * cos(Math.toRadians(lat)))))
     }
 
     fun text(fixLat: Double?, fixLon: Double?): String {

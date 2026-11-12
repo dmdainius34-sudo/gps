@@ -5,6 +5,7 @@ Android GNSS programa (`lt.example.gnss`), Kotlin, viena veikla `app/src/main/ja
 ## Repozitorija ir build
 
 - Darbo šaka `claude/screens-workflow-setup-9rqg9v`; GitHub `dmdainius34-sudo/gps` (paskyra atkurta) ir GitLab `gitlab.com/dmdainius34/gps` – ta pati šaka abiejose.
+- Įprastai push tik į GitHub. Į GitLab (remote `gitlab`, raktas aplinkoje) siųsti **tik kai vartotojas aiškiai paprašo** – taupyti GitLab CI minutes.
 - Build: GitHub `.github/workflows/build.yml` ir GitLab `.gitlab-ci.yml` – vienetų testai ir `app-debug` APK artifact.
 
 ## Įrenginys ir GPS sprendinys

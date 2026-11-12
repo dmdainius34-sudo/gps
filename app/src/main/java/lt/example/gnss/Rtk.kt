@@ -221,6 +221,9 @@ object Rtk {
                 if (dds.isEmpty()) return@readRaw
                 // inovacijų patikra: kodo – atspindžiai (> 15 m, kai filtras jau suartėjęs); fazės – nepastebėti šuoliai
                 val posSig = sqrt(ff.p[0][0] + ff.p[1][1] + ff.p[2][2])
+                // filtras nuklydo (kodo inovacijų mediana > 30 m, nors σ maža) – iš naujo
+                val codeV = dds.filter { it.key % 2 == 0 }.map { abs(it.v) }.sorted()
+                if (codeV.size >= 4 && posSig < 5.0 && codeV[codeV.size / 2] > 30.0) { f = null; lastAdr.clear(); run.resets++; return@readRaw }
                 val keep = dds.filter { d ->
                     val isCode = d.key % 2 == 0
                     if (isCode && posSig < 5.0 && abs(d.v) > maxOf(15.0, 4 * d.sI)) { run.codeRej++; false }

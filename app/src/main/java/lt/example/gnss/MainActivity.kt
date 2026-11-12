@@ -1149,6 +1149,15 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     val realScale get() = renderer.realScale
     fun setNavBits(on: Boolean) { renderer.showNavBits = on }
 
+    /** Prietaiso kryptis (°) tokia, kokią naudoja vaizdas: žiūrėjimas pro ekraną, gulint – viršus; su šiaurės pataisomis. */
+    fun headingDeg(): Double? {
+        val r = lastRaw
+        var e = -r[2].toDouble(); var n = -r[5].toDouble()
+        if (kotlin.math.hypot(e, n) < 0.3) { e = r[1].toDouble(); n = r[4].toDouble() }
+        if (kotlin.math.hypot(e, n) < 1e-3) return null
+        return (Math.toDegrees(kotlin.math.atan2(e, n)) + 360.0) % 360.0
+    }
+
     /**
      * Kalibravimas pagal Saulę: planšetė nukreipta į Saulę (žiūrėjimas pro ekraną, gulint – viršutinis kraštas).
      * Pataisa = dabartinė vaizdo kryptis − Saulės azimutas; pridedama prie šiaurės poslinkio ir įrašoma.
@@ -5271,6 +5280,7 @@ class MainActivity : AppCompatActivity() {
     private var scaleBtnView: TextView? = null
     private lateinit var orientView: TextView
     private var readyView: TextView? = null
+    private var cabinView: CabinMapView? = null
     private var readyLast: Boolean? = null
 
     /** Mėlyna – šyla, salotinė neoninė – paruošta matavimui. */
@@ -5424,6 +5434,11 @@ class MainActivity : AppCompatActivity() {
                 )
             }
             Readiness.onSats(list)
+            CabinMap.load(this@MainActivity)
+            val hd = if (::skyDome.isInitialized) skyDome.headingDeg() else null
+            LiveRtk.heading = hd
+            hd?.let { CabinMap.learnStatus(it, list) }
+            cabinView?.let { it.heading = hd; it.sats = list; it.invalidate() }
             lastSats = list
             satMap.clear()
             for (x in list) satMap[x.const + x.svid] = x
@@ -5701,6 +5716,23 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbBits, LinearLayout.LayoutParams(mw, ww))
+        CabinMap.load(this)
+        val cabPrefs = getSharedPreferences("cabin", Context.MODE_PRIVATE)
+        left.addView(TextView(this).apply { text = "Kabinos dangaus žemėlapis (žalia – švaru, oranžinė – atspindžiai, pilka – užstota)"; textSize = 13f })
+        val cv = CabinMapView(this); cabinView = cv
+        left.addView(cv, LinearLayout.LayoutParams((240 * resources.displayMetrics.density).toInt(), ww))
+        left.addView(CheckBox(this).apply {
+            text = "Mokytis kabinos žemėlapio"; isChecked = CabinMap.learn
+            setOnCheckedChangeListener { _, on -> CabinMap.learn = on; cabPrefs.edit().putBoolean("learn", on).apply() }
+        }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(CheckBox(this).apply {
+            text = "Naudoti žemėlapį RTK filtruose (atspindžių kryptys nenaudojamos)"; isChecked = CabinMap.useInFilters
+            setOnCheckedChangeListener { _, on -> CabinMap.useInFilters = on; cabPrefs.edit().putBoolean("use", on).apply() }
+        }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(Button(this).apply {
+            text = "Išvalyti kabinos žemėlapį"
+            setOnClickListener { CabinMap.clear(); cv.invalidate(); Toast.makeText(this@MainActivity, "Žemėlapis išvalytas", Toast.LENGTH_SHORT).show() }
+        }, LinearLayout.LayoutParams(mw, ww))
         val cbFollow = CheckBox(this).apply {
             text = "Sukti visatą su planšete"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("follow_device", false)
@@ -5849,7 +5881,7 @@ class MainActivity : AppCompatActivity() {
                     report += sunReport() + Sp3Live.text() + "\n" +
                         (if (obsLatNow == 0.0 && obsLonNow == 0.0) "" else SpaceOrientation.report(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()), obsLatNow)) +
                         (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" else "") +
-                        NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" +
+                        NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + CabinMap.text() + "\n" +
                         (Readiness.knowledge()?.let { "Lusto žinios: ${it.text}\n" } ?: "") +
                         "Pasiruošimas: " + Readiness.state(LiveRtk.enabled, LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc).text + "\n" +
                         (if (::skyDome.isInitialized) skyDome.fpsText() + "\n" else "")
@@ -6012,6 +6044,7 @@ class MainActivity : AppCompatActivity() {
     private fun unregisterGnss() {
         if (!gnssRegistered) return
         try { lm.unregisterGnssNavigationMessageCallback(navUiCallback) } catch (_: Exception) {}
+        CabinMap.save(true)
         try {
             lm.unregisterGnssStatusCallback(statusCallback)
             lm.unregisterGnssMeasurementsCallback(measCallback)

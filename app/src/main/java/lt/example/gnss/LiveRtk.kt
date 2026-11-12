@@ -18,6 +18,8 @@ object LiveRtk {
     @Volatile var enabled = false
     /** Prietaisas juda (linijinis pagreitis) – tada padėties proceso triukšmas didelis, stovint – labai mažas. */
     @Volatile var moving = false
+    /** Prietaiso kryptis (°) kabinos žemėlapiui. */
+    @Volatile var heading: Double? = null
     private var movedMs = 0L
     private var engine = Rtk.Engine(1e-3, Rtk.Run("gyvas"))
     private var basePos: DoubleArray? = null
@@ -115,8 +117,10 @@ object LiveRtk {
             if (moving) movedMs = System.currentTimeMillis()
             // stovint (≥ 5 s be judesio) – statinis filtras, judant – kinematinis
             engine.qPos = if (System.currentTimeMillis() - movedMs < 5_000) 0.5 else 1e-5
+            engine.mask = { az, el -> CabinMap.excluded(az, el, heading) }
             val sol = try { engine.step(ep, e0, e1, bp, ::prepare) } catch (e: Exception) { null } ?: continue
             last = sol; lastMs = System.currentTimeMillis(); epochs++
+            heading?.let { CabinMap.learnRtk(it, engine.lastObs) }
             log(ep.timeMs, sol)
             // kitoms programoms – tik suartėjęs ir stabilus sprendinys
             val prev = pushed
@@ -160,7 +164,8 @@ object LiveRtk {
         if (!enabled) return "Gyvas RTK: išjungtas"
         val s = last ?: return "Gyvas RTK: laukiama (bazė ${if (basePos != null) "yra" else "nėra"}, bazės epochų ${baseEps.size}, prietaiso epochų eilėje ${rover.size})"
         return "Gyvas RTK: %.7f, %.7f, h %.2f m, σh %.2f m, fazės palydovų %d, prieš %d s, epochų %d (%s)".format(Locale.US,
-            s.lat, s.lon, s.h, s.hacc, s.sats, (System.currentTimeMillis() - lastMs) / 1000, epochs, source) + (if (engine.qPos > 0.1) ", judant" else ", stovint") + "; kitoms programoms perduota $pushedN, sulaikyta $heldN (nesuartėjęs ar šuolis); " + MockLoc.status
+            s.lat, s.lon, s.h, s.hacc, s.sats, (System.currentTimeMillis() - lastMs) / 1000, epochs, source) + (if (engine.qPos > 0.1) ", judant" else ", stovint") +
+            "; kaukė praleido ${engine.masked} palydovų-epochų, Doppler aptiko ${engine.dopplerSlips} fazės trūkių; kitoms programoms perduota $pushedN, sulaikyta $heldN (nesuartėjęs ar šuolis); " + MockLoc.status
     }
 }
 

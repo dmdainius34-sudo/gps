@@ -133,8 +133,17 @@ object Rtk {
     class Engine(var qPos: Double, val run: Run) {
         private var f: Filter? = null
         private var lastT = Double.NaN; private var t0 = Double.NaN
-        private val lastAdr = HashMap<String, Double>()
+        private val lastAdr = HashMap<String, DoubleArray>()          // id -> [ADR, Doppler, t]
         var lastSigH = Double.NaN
+        /** Kabinos kaukė: true – palydovą (azimutas, aukštis °) šioje epochoje nenaudoti. */
+        var mask: ((Double, Double) -> Boolean)? = null
+        /** Paskutinės epochos palydovai: id -> [azimutas °, aukštis °, C/N0, kodo DD liekana m (NaN), fazės šuolis 0/1, kaukė 0/1]. */
+        @Volatile var lastObs: Map<String, DoubleArray> = emptyMap()
+            private set
+        var dopplerSlips = 0
+            private set
+        var masked = 0
+            private set
             private set
         var lastPhase = 0
             private set
@@ -161,8 +170,13 @@ object Rtk {
                 yL = m.adr!! + cdts - (b0.rp + (b1.rp - b0.rp) * a)
                 val prev = lastAdr[id]
                 if (prev == null) slip = true
+                else if (m.prr != null && !prev[1].isNaN() && t - prev[2] in 0.2..3.0) {
+                    // fazės ir Doppler suderinamumas: ΔADR ≈ vidutinis ṙ · Δt (kitaip – nepranešta fazės trūkis)
+                    val exp = 0.5 * (m.prr + prev[1]) * (t - prev[2])
+                    if (abs(m.adr!! - prev[0] - exp) > 1.0) { slip = true; dopplerSlips++ }
+                }
             } else slip = true
-            if (adrOk) lastAdr[id] = m.adr!! else lastAdr.remove(id)
+            if (adrOk) lastAdr[id] = doubleArrayOf(m.adr!!, m.prr ?: Double.NaN, t) else lastAdr.remove(id)
             obs.add(Ob(id, s.sys, s, yP, yL, slip))
         }
         if (obs.size < 5) return null
@@ -181,13 +195,13 @@ object Rtk {
         for (i in 0..2) ff.p[i][i] += qPos * dt
         // aukščiai ir vienetiniai vektoriai
         val x = doubleArrayOf(ff.x[0], ff.x[1], ff.x[2])
-        class G(val o: Ob, val rho: Double, val e: DoubleArray, val el: Double)
+        class G(val o: Ob, val rho: Double, val e: DoubleArray, val el: Double, val az: Double)
         val geo = obs.mapNotNull { o ->
             o.s.rp.fill(0.0); o.s.rotate(x); o.s.rotate(x)
             val r = dist(x, o.s.rp)
             val l = Sp3Solver.look(x, o.s.rp, r)
             if (l[4] < Math.toRadians(10.0)) null
-            else G(o, r, DoubleArray(3) { (x[it] - o.s.rp[it]) / r }, l[4])
+            else G(o, r, DoubleArray(3) { (x[it] - o.s.rp[it]) / r }, l[4], (Math.toDegrees(l[3]) + 360) % 360)
         }
         // fazės dviprasmybės: nauji palydovai ir šuoliai
         for (g in geo) {
@@ -201,14 +215,23 @@ object Rtk {
         class Dd(val h: DoubleArray, val v: Double, val sRef: Double, val sI: Double, val key: Int, val id: String)
         val dds = ArrayList<Dd>()
         val n = ff.x.size
+        val masks = geo.associate { it.o.id to (mask?.invoke(it.az, Math.toDegrees(it.el)) == true) }
+        val maskedRes = HashMap<String, Double>()
         for ((si, sy) in listOf('G', 'E').withIndex()) {
-            val gs = geo.filter { it.o.sys == sy }
+            val gs = geo.filter { it.o.sys == sy && masks[it.o.id] != true }
+            // užmaskuotų palydovų kodo liekana (tik žemėlapiui) – to paties atskaitos palydovo atžvilgiu
+            gs.maxByOrNull { it.el }?.let { ref -> geo.filter { it.o.sys == sy && masks[it.o.id] == true }.forEach { g ->
+                maskedRes[g.o.id] = (g.o.yP - ref.o.yP) - (g.rho - ref.rho) } }
             if (gs.size < 2) continue
             for (type in 0..1) {
                 val cand = if (type == 0) gs else gs.filter { !it.o.yL.isNaN() && it.o.id in ff.idx }
                 if (cand.size < 2) continue
                 val ref = cand.maxByOrNull { it.el }!!
-                fun sd(g: G) = if (type == 0) 3.0 / sin(g.el) else 0.02 / sin(g.el)
+                // svoris pagal aukštį ir signalo stiprumą: silpnas signalas – didesnė σ
+                fun sd(g: G): Double {
+                    val k = Math.pow(10.0, (40.0 - g.o.s.cn0) / 20.0).coerceIn(0.7, 5.0)
+                    return (if (type == 0) 3.0 else 0.02) * k / sin(g.el)
+                }
                 for (g in cand) {
                     if (g === ref) continue
                     val h = DoubleArray(n)
@@ -227,6 +250,11 @@ object Rtk {
             }
         }
         if (dds.isEmpty()) return null
+        // kabinos kaukė ir paskutinės epochos palydovų informacija (žemėlapio mokymuisi – visi, ir užmaskuoti)
+        masked += masks.count { it.value }
+        val codeRes = dds.filter { it.key % 2 == 0 }.associate { it.id to it.v } + maskedRes
+        lastObs = geo.associate { g -> g.o.id to doubleArrayOf(g.az, Math.toDegrees(g.el), g.o.s.cn0, codeRes[g.o.id] ?: Double.NaN,
+            if (g.o.slip) 1.0 else 0.0, if (masks[g.o.id] == true) 1.0 else 0.0) }
         // inovacijų patikra: kodo – atspindžiai (> 15 m, kai filtras jau suartėjęs); fazės – nepastebėti šuoliai
         val posSig = sqrt(ff.p[0][0] + ff.p[1][1] + ff.p[2][2])
         // filtras nuklydo (kodo inovacijų mediana > 30 m, nors σ maža) – iš naujo

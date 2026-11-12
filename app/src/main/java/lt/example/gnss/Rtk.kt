@@ -130,7 +130,7 @@ object Rtk {
 
     /** qPos – padėties proceso triukšmas (m²/s): statinis ~1e-4, kinematinis ~1. */
     /** Vieno epochos RTK žingsnis (po įrašo ir gyvai): e0, e1 – bazės epochos aplink prietaiso laiką. */
-    class Engine(val qPos: Double, val run: Run) {
+    class Engine(var qPos: Double, val run: Run) {
         private var f: Filter? = null
         private var lastT = Double.NaN; private var t0 = Double.NaN
         private val lastAdr = HashMap<String, Double>()

@@ -6318,6 +6318,7 @@ class MainActivity : AppCompatActivity() {
                 Sensor.TYPE_LINEAR_ACCELERATION -> {
                     val a = kotlin.math.sqrt((e.values[0] * e.values[0] + e.values[1] * e.values[1] + e.values[2] * e.values[2]).toDouble())
                     motionLevel = motionLevel * 0.9 + a * 0.1     // išlygintas judėjimo lygis
+                    LiveRtk.moving = motionLevel > 0.15
                 }
             }
         }

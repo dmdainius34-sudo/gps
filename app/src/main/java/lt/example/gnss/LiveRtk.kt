@@ -16,6 +16,9 @@ import java.util.Locale
 object LiveRtk {
     private const val C = PositionSolver.C
     @Volatile var enabled = false
+    /** Prietaisas juda (linijinis pagreitis) – tada padėties proceso triukšmas didelis, stovint – labai mažas. */
+    @Volatile var moving = false
+    private var movedMs = 0L
     private var engine = Rtk.Engine(1e-3, Rtk.Run("gyvas"))
     private var basePos: DoubleArray? = null
     private val pending = java.util.TreeMap<Double, HashMap<String, Pair<Int, Rtcm3.Obs>>>()
@@ -109,6 +112,9 @@ object LiveRtk {
             var i = baseEps.indexOfFirst { it.t >= t }; if (i <= 0) continue
             val e0 = baseEps[i - 1]; val e1 = baseEps[i]
             if (e1.t - e0.t > 2.5) continue
+            if (moving) movedMs = System.currentTimeMillis()
+            // stovint (≥ 5 s be judesio) – statinis filtras, judant – kinematinis
+            engine.qPos = if (System.currentTimeMillis() - movedMs < 5_000) 0.5 else 1e-5
             val sol = try { engine.step(ep, e0, e1, bp, ::prepare) } catch (e: Exception) { null } ?: continue
             last = sol; lastMs = System.currentTimeMillis(); epochs++
             log(ep.timeMs, sol)
@@ -154,7 +160,7 @@ object LiveRtk {
         if (!enabled) return "Gyvas RTK: išjungtas"
         val s = last ?: return "Gyvas RTK: laukiama (bazė ${if (basePos != null) "yra" else "nėra"}, bazės epochų ${baseEps.size}, prietaiso epochų eilėje ${rover.size})"
         return "Gyvas RTK: %.7f, %.7f, h %.2f m, σh %.2f m, fazės palydovų %d, prieš %d s, epochų %d (%s)".format(Locale.US,
-            s.lat, s.lon, s.h, s.hacc, s.sats, (System.currentTimeMillis() - lastMs) / 1000, epochs, source) + "; kitoms programoms perduota $pushedN, sulaikyta $heldN (nesuartėjęs ar šuolis); " + MockLoc.status
+            s.lat, s.lon, s.h, s.hacc, s.sats, (System.currentTimeMillis() - lastMs) / 1000, epochs, source) + (if (engine.qPos > 0.1) ", judant" else ", stovint") + "; kitoms programoms perduota $pushedN, sulaikyta $heldN (nesuartėjęs ar šuolis); " + MockLoc.status
     }
 }
 

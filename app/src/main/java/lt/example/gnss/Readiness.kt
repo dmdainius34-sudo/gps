@@ -61,8 +61,9 @@ object Readiness {
         val accMed = acc[acc.size / 2]; val dAcc = acc.last() - acc.first()
         if (dUsed > 3) return State(false, "Šyla: palydovų skaičius dar kinta (${used.min()}–${used.max()})")
         if (accMed > 3.0 || dAcc > 1.5) return State(false, "Šyla: tikslumas dar kinta (%.1f–%.1f m)".format(Locale.US, acc.first(), acc.last()))
-        if (rtkOn && (rtkSig == null || rtkSig >= 0.5)) return State(false, "Šyla: RTK dar nesuartėjęs" + (rtkSig?.let { " (±%.2f m)".format(Locale.US, it) } ?: ""))
+        // GPS paruoštas; RTK būsena – atskirai (jis suartėja vėliau ir pasiruošimo nestabdo)
         return State(true, "Paruošta matavimui: palydovų ~${used.last()}, tikslumas %.1f m".format(Locale.US, accMed) +
-            (if (rtkOn && rtkSig != null) ", RTK ±%.2f m".format(Locale.US, rtkSig) else ""))
+            (if (!rtkOn) "" else if (rtkSig == null) "; RTK laukiama" else if (rtkSig < 0.5) "; RTK ±%.2f m".format(Locale.US, rtkSig)
+             else "; RTK dar suartėja ±%.2f m".format(Locale.US, rtkSig)))
     }
 }

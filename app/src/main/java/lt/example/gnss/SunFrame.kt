@@ -54,7 +54,7 @@ object SunFrame {
     fun text(ms: Long = System.currentTimeMillis()): String {
         val (p, b, l) = pbl(ms).let { Triple(it[0], it[1], it[2]) }
         return "Saulės koordinatės: P = %+.2f°, B₀ = %+.2f°, L₀ = %.2f° (į Žemę atsuktas dienovidinis), Carringtono apsisukimas %.2f; ".format(
-            Locale.US, p, b, l, carrington(ms)) + SunImage.status + "; " + Lasco.status + "; " + Donki.text()
+            Locale.US, p, b, l, carrington(ms)) + SunImage.status + "; " + Lasco.status + "; " + Donki.text() + (if (GlCaps.err.isNotEmpty()) "; " + GlCaps.err else "")
     }
 }
 
@@ -234,7 +234,7 @@ object MoonFrame {
 }
 
 /** Įrenginio grafikos galimybės (nustatomos GL konteksto sukūrimo metu). */
-object GlCaps { @Volatile var maxTex = 0 }
+object GlCaps { @Volatile var maxTex = 0; @Volatile var err = "" }
 
 /**
  * Saulės išmetimai (vainikinės masės išmetimai, CME): SOHO LASCO C2 koronografo naujausias vaizdas (NASA/ESA, kas ~12–20 min.).
@@ -313,14 +313,20 @@ object Donki {
         Thread {
             try {
                 val f = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
-                val url = "https://kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get/CMEAnalysis?startDate=" + f.format(java.util.Date(now - 8 * 86_400_000L)) +
+                val q = "CMEAnalysis?startDate=" + f.format(java.util.Date(now - 8 * 86_400_000L)) +
                     "&endDate=" + f.format(java.util.Date(now + 86_400_000L)) + "&mostAccurateOnly=true&speed=0&halfAngle=0&catalog=ALL"
-                val c = (URL(url).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 15_000; readTimeout = 60_000; setRequestProperty("User-Agent", "Mozilla/5.0 (Android) GnssApp") }
-                if (c.responseCode != 200) { status = "NASA DONKI: HTTP ${c.responseCode}"; return@Thread }
-                val txt = c.inputStream.bufferedReader().readText().trim()
+                // pirmiausia CCMC serveris, nepavykus – NASA API tarpininkas (DEMO_KEY)
+                var txt: String? = null; var err = ""
+                for (url in listOf("https://kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get/$q", "https://api.nasa.gov/DONKI/$q&api_key=DEMO_KEY")) {
+                    try {
+                        val c = (URL(url).openConnection() as HttpURLConnection).apply {
+                            connectTimeout = 20_000; readTimeout = 60_000; setRequestProperty("User-Agent", "Mozilla/5.0 (Android) GnssApp") }
+                        if (c.responseCode == 200) { txt = c.inputStream.bufferedReader().readText().trim(); status = "NASA DONKI (${URL(url).host}): atnaujinta"; break }
+                        err += " ${URL(url).host} HTTP ${c.responseCode}"
+                    } catch (e: Exception) { err += " ${URL(url).host} ${e.javaClass.simpleName}" }
+                }
+                if (txt == null) { status = "NASA DONKI: nepavyko –$err"; return@Thread }
                 list = if (txt.isEmpty()) emptyList() else parse(txt)
-                status = "NASA DONKI: atnaujinta"
             } catch (e: Exception) { status = "NASA DONKI: ${e.javaClass.simpleName} ${e.message ?: ""}".trim() }
             finally { busy = false }
         }.start()

@@ -1026,6 +1026,8 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
         GLES20.glAttachShader(prog, v)
         GLES20.glAttachShader(prog, f)
         GLES20.glLinkProgram(prog)
+        val ok = IntArray(1); GLES20.glGetProgramiv(prog, GLES20.GL_LINK_STATUS, ok, 0)
+        if (ok[0] == 0) GlCaps.err = ("šešėliuoklis: " + GLES20.glGetShaderInfoLog(f) + " " + GLES20.glGetProgramInfoLog(prog)).replace('\n', ' ').take(300)
         return prog
     }
 
@@ -3086,8 +3088,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** „Realybė“: Saulė tikru dydžiu ir atstumu (Žemės spindulys 6371 km = EARTH_R); „Mastelis“ – schema. */
     @Volatile var realScale = false
-        set(v) { field = v; if (!v) zoom = zoom.coerceAtMost(EARTH_R + 5.75f) }
-    private fun maxZoomOut(): Float = if (realScale) (sunDistScene() * 2.6).toFloat() else 5.75f
+        set(v) { field = v; if (!v) zoom = zoom.coerceAtMost(EARTH_R + 9f) }
+    private fun maxZoomOut(): Float = if (realScale) (sunDistScene() * 2.6).toFloat() else 9f
 
     /** Atstumas Žemė–Saulė (km) pagal Saulės vidutinę anomaliją. */
     private fun sunDistKm(): Double {
@@ -3859,7 +3861,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (earthPos == null) return
         val dir = moonDir()
         // Tikras mastelis: Mėnulio spindulys 1737,4 km, atstumas realiu laiku (Žemės spindulys 6371 km = EARTH_R)
-        // „Realybė“: spindulys 1737,4 km, tikras atstumas; „Mastelis“: už GEO palydovų (~1,65), arčiau nei Saulė (2,3)
+        // „Realybė“: spindulys 1737,4 km, tikras atstumas; „Vietinis“: už GEO palydovų (~1,65), toliau nuo Saulės (3,6) nei jos korona
         val k = if (realScale) (1737.4 / 6371.0 * EARTH_R / 0.25).toFloat() else 0.40f   // tinklelio spindulys 0,25
         val dist = moonDistScene()
         moonPosLast = doubleArrayOf(fP[0] + dir[0] * dist, fP[1] + dir[1] * dist, fP[2] + dir[2] * dist)
@@ -4035,7 +4037,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     private var sunProg = 0
     // GEO palydovai (~36 000 km) scenoje yra ~1,6 vnt. nuo stebėtojo; Saulė – toliau, už jų
-    private val SUN_DIST = 2.3
+    /** Vietinis mastelis (Žemės spindulys 0,25): GNSS orbitos tikros (GEO 1,65), Mėnulis 1,9, Saulė 3,6 (spindulys 0,5, korona iki 1,0) – kūnai nesikerta. */
+    private val SUN_DIST = 3.6
     private val sunMat = FloatArray(16)
     private val sunMvp = FloatArray(16)
 
@@ -4141,6 +4144,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uCam"), camPos[0], camPos[1], camPos[2])
         GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uCenter"), sp[0], sp[1], sp[2])
         GLES20.glUniform1f(GLES20.glGetUniformLocation(glowProg, "uTime"), t)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(glowProg, "uGain"), if (showLasco && Lasco.image != null) 0.3f else 1f)
         resetAttribs()
         val gl = GLES20.glGetAttribLocation(glowProg, "aPos")
         GLES20.glEnableVertexAttribArray(gl)
@@ -4182,10 +4186,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val img = Lasco.image ?: return
         if (Lasco.version != lascoVer) { lascoVer = Lasco.version
             if (lascoTex != 0) GLES20.glDeleteTextures(1, intArrayOf(lascoTex), 0)
-            lascoTex = uploadTexture(img)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, lascoTex)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR)
-            GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D) }
+            lascoTex = uploadTexture(img) }
         if (lascoProg == 0) lascoProg = program(GLOW_VS, LASCO_VOL_FS)
         val ro = (LASCO_OUT * rs).toFloat()
         val gm = FloatArray(16); val sc = ro / EARTH_R
@@ -4403,6 +4404,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glAttachShader(prog, v)
         GLES20.glAttachShader(prog, f)
         GLES20.glLinkProgram(prog)
+        val ok = IntArray(1); GLES20.glGetProgramiv(prog, GLES20.GL_LINK_STATUS, ok, 0)
+        if (ok[0] == 0) GlCaps.err = ("šešėliuoklis: " + GLES20.glGetShaderInfoLog(f) + " " + GLES20.glGetProgramInfoLog(prog)).replace('\n', ' ').take(300)
         return prog
     }
 
@@ -4669,8 +4672,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     float m = smoothstep(1.0, 1.06, rho) * (1.0 - smoothstep(uOut - 0.1, uOut, rho));
                     acc += t * w * m;
                 }
-                vec3 c = acc * (dt / uRs) * 1.5;
-                gl_FragColor = vec4(c * vec3(1.0, 0.85, 0.65), 1.0);
+                float lum = dot(acc, vec3(0.5, 0.35, 0.15));
+                vec3 c = vec3(lum) * (dt / uRs) * 3.0;
+                gl_FragColor = vec4(c * vec3(0.85, 0.92, 1.0), 1.0);
             }
         """
         private const val GLOW_VS = """
@@ -4692,6 +4696,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform vec3 uCam;
             uniform vec3 uCenter;
             uniform float uTime;
+            uniform float uGain;
             varying vec3 vW;
             void main() {
                 // Spindulio nuo kameros atstumas iki Saulės centro – korona visada koncentriška su Saule
@@ -4703,7 +4708,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 float r = dist / shellR;                      // 0 centre, 1 korona kraštas
                 float r0 = 1.0 / 2.0;                         // Saulės kraštas
                 float g = r < r0 ? 0.35 : pow(clamp((1.0 - r) / (1.0 - r0), 0.0, 1.0), 1.8);
-                g *= 0.85 + 0.15 * sin(uTime * 1.5);
+                g *= (0.85 + 0.15 * sin(uTime * 1.5)) * uGain;
                 gl_FragColor = vec4(vec3(1.0, 0.62, 0.22) * g, g);
             }
         """

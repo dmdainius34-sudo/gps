@@ -58,6 +58,13 @@ object Rtcm3 {
         return doubleArrayOf(x, y, z)
     }
 
+    /** 1032: fizinės bazinės stoties (iš kurios skaičiuojama VRS) ECEF, m; (stoties ID, koordinatės). */
+    fun physStation(p: ByteArray): Pair<Int, DoubleArray>? {
+        val b = Bits(p)
+        if (b.u(0, 12).toInt() != 1032 || b.size < 156) return null
+        return b.u(24, 12).toInt() to doubleArrayOf(b.s(42, 38) * 1e-4, b.s(80, 38) * 1e-4, b.s(118, 38) * 1e-4)
+    }
+
     class Obs(val sys: Char, val prn: Int, val sig: String, val pr: Double, val cn0: Double)
     /** tow – GPS savaitės laikas (s); GLONASS – paros laikas Maskvos laiku (s), dow – savaitės diena. */
     class Msm(val sys: Char, val type: Int, val tow: Double, val dow: Int, val obs: List<Obs>)

@@ -31,6 +31,12 @@ object NtripClient {
         private set
     @Volatile var base: DoubleArray? = null
         private set
+    /** Fizinė bazinė stotis (1032): ID ir ECEF, m. */
+    @Volatile var phys: Pair<Int, DoubleArray>? = null
+        private set
+    /** Pataisų (MSM) žinučių gavimo laikai – bangelėms 3D vaizde. */
+    @Volatile var lastMsmMs = 0L
+        private set
     val counts = java.util.concurrent.ConcurrentHashMap<Int, Int>()
     /** Paskutinis MSM pagal sistemą: palydovų skaičius. */
     val satsBySys = java.util.concurrent.ConcurrentHashMap<Char, Int>()
@@ -118,6 +124,8 @@ object NtripClient {
                         lastMsgMs = tMs
                         RtcmRecorder.append(dir, tMs, type, p)
                         Rtcm3.station(p)?.let { base = it }
+                        Rtcm3.physStation(p)?.let { phys = it }
+                        if (Rtcm3.sysOf(type) != null) lastMsmMs = tMs
                         if (Rtcm3.sysOf(type) != null) Rtcm3.msm(p)?.let { m -> satsBySys[m.sys] = m.obs.map { it.prn }.distinct().size }
                     }
                 }
@@ -142,6 +150,11 @@ object NtripClient {
             append("; bazė %.6f, %.6f".format(Locale.US, Math.toDegrees(llh[0]), Math.toDegrees(llh[1])))
             if (lat != null && lon != null) append(", atstumas %.2f km".format(Locale.US,
                 PositionSolver.horizDist(lat, lon, Math.toDegrees(llh[0]), Math.toDegrees(llh[1])) / 1000.0))
+        }
+        phys?.let { (id, x) ->
+            val l = PositionSolver.ecefToLlh(x[0], x[1], x[2])
+            append("; fizinė stotis ID $id: %.5f, %.5f".format(Locale.US, Math.toDegrees(l[0]), Math.toDegrees(l[1])))
+            if (lat != null && lon != null) append(", %.1f km".format(Locale.US, PositionSolver.horizDist(lat, lon, Math.toDegrees(l[0]), Math.toDegrees(l[1])) / 1000.0))
         }
         if (lastMsgMs > 0) append("; paskutinė žinutė prieš %d s".format(Locale.US, (System.currentTimeMillis() - lastMsgMs) / 1000))
     }

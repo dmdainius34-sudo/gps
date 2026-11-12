@@ -1905,6 +1905,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
             }
         }
+        drawCorrectionWaves(pin, t)
         // Stebėtojas: sukasi tik apie save (rodyklė), visata nuo planšetės sukimo nepriklauso
         drawObserverHeading()
         // SP3 trajektorijos ±30 min. arba užrašas apie apytikslę padėtį
@@ -2647,6 +2648,99 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bt.tex)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(texProg, "uTex"), 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    }
+
+    /**
+     * NTRIP pataisos: banguota violetinė linija lanku nuo bazinės stoties (1032, kitaip – virtualios bazės kryptimi iš šiaurės)
+     * iki stebėtojo; bangos bėga link stebėtojo, sustiprėja gavus pataisų žinutę; aplink stebėtoją – plintančios bangelės.
+     * Stotis už kelių–keliasdešimties km, todėl atstumas išdidintas, kad matytųsi; kryptis tikra, tikras atstumas – užraše.
+     */
+    private fun drawCorrectionWaves(pin: FloatArray, t: Float) {
+        val now = System.currentTimeMillis()
+        val last = NtripClient.lastMsmMs
+        if (last == 0L || now - last > 10_000L || earthMatLast[10] == 0f) return
+        val m = earthMat
+        val c = floatArrayOf(m[12], m[13], m[14])
+        val o = FloatArray(3) { c[it] + (pin[it] - c[it]) / 1.35f }                  // stebėtojo vieta paviršiuje
+        val up = FloatArray(3) { o[it] - c[it] }.let { v -> val l = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); FloatArray(3) { v[it] / l } }
+        // kryptis į stotį (paviršiaus liestinė)
+        var dir: FloatArray? = null; var label = "NTRIP pataisos (virtuali bazė)"
+        NtripClient.phys?.let { (id, x) ->
+            val sp = ecefToScene(doubleArrayOf(x[0] / 1000, x[1] / 1000, x[2] / 1000))
+            val d = FloatArray(3) { sp[it] - o[it] }
+            val dn = d[0] * up[0] + d[1] * up[1] + d[2] * up[2]
+            val tg = FloatArray(3) { d[it] - dn * up[it] }
+            val tl = sqrt(tg[0] * tg[0] + tg[1] * tg[1] + tg[2] * tg[2])
+            if (tl > 1e-7f) dir = FloatArray(3) { tg[it] / tl }
+            val l = PositionSolver.ecefToLlh(x[0], x[1], x[2])
+            label = "NTRIP pataisos · stotis $id · %.1f km".format(java.util.Locale.US,
+                PositionSolver.horizDist(obsLat, obsLon, Math.toDegrees(l[0]), Math.toDegrees(l[1])) / 1000.0)
+        }
+        val d0 = dir ?: run {                                                        // be 1032: iš šiaurės
+            val z = floatArrayOf(m[8], m[9], m[10])
+            val dn = z[0] * up[0] + z[1] * up[1] + z[2] * up[2]
+            val tg = FloatArray(3) { z[it] - dn * up[it] }
+            val tl = sqrt(tg[0] * tg[0] + tg[1] * tg[1] + tg[2] * tg[2]).coerceAtLeast(1e-6f)
+            FloatArray(3) { tg[it] / tl }
+        }
+        val span = 0.16f; val h = 0.10f
+        val s0 = FloatArray(3) { o[it] + d0[it] * span }
+        val age = (now - last) / 1000f
+        val boost = 1f + 2.5f * kotlin.math.exp(-age / 0.4f)
+        val amp = 0.006f * boost
+        val n = 160
+        val pts = FloatArray((n + 1) * 3)
+        var tx = 0f; var ty = 0f; var tz = 0f
+        for (i in 0..n) {
+            val u = i.toFloat() / n
+            val arc = 4f * u * (1f - u) * h
+            val bx = s0[0] + (pin[0] - s0[0]) * u + up[0] * arc
+            val by = s0[1] + (pin[1] - s0[1]) * u + up[1] * arc
+            val bz = s0[2] + (pin[2] - s0[2]) * u + up[2] * arc
+            if (i == n / 2) { tx = bx; ty = by; tz = bz }
+            // statmena kryptis: kreivės liestinė × kryptis į kamerą
+            val du = 1f / n
+            val ax = (pin[0] - s0[0]) + up[0] * h * 4f * (1f - 2f * u)
+            val ay = (pin[1] - s0[1]) + up[1] * h * 4f * (1f - 2f * u)
+            val az = (pin[2] - s0[2]) + up[2] * h * 4f * (1f - 2f * u)
+            var px = ay * eyeI[2] - az * eyeI[1]; var py = az * eyeI[0] - ax * eyeI[2]; var pz = ax * eyeI[1] - ay * eyeI[0]
+            val pl = sqrt(px * px + py * py + pz * pz).coerceAtLeast(1e-6f); px /= pl; py /= pl; pz /= pl
+            val wave = sin((u * 9f - t * 1.6f) * 2f * Math.PI.toFloat()) * amp * (0.3f + 0.7f * sin(u * Math.PI.toFloat()))
+            pts[i * 3] = bx + px * wave; pts[i * 3 + 1] = by + py * wave; pts[i * 3 + 2] = bz + pz * wave
+            if (du < 0f) break
+        }
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        val buf = floatBuf(pts)
+        GLES20.glLineWidth(6f * density)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 0.75f, 0.3f, 1f, 0.35f)
+        bindPos(colorProg, buf); GLES20.glDrawArrays(GLES20.GL_LINE_STRIP, 0, n + 1)
+        GLES20.glLineWidth(2.2f * density)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 0.95f, 0.75f, 1f, (0.55f + 0.45f * (boost - 1f) / 2.5f).coerceAtMost(1f))
+        bindPos(colorProg, buf); GLES20.glDrawArrays(GLES20.GL_LINE_STRIP, 0, n + 1)
+        // bangelės aplink stebėtoją: 3 plintantys žiedai po kiekvienos žinutės
+        var e1 = floatArrayOf(up[1] * d0[2] - up[2] * d0[1], up[2] * d0[0] - up[0] * d0[2], up[0] * d0[1] - up[1] * d0[0])
+        val k = 64
+        for (r in 0 until 3) {
+            val a = age - r * 0.25f
+            if (a < 0f || a > 1.2f) continue
+            val rad = 0.008f + a * 0.06f
+            val ring = FloatArray((k + 1) * 3)
+            for (i in 0..k) {
+                val ang = 2f * Math.PI.toFloat() * i / k
+                for (j in 0..2) ring[i * 3 + j] = o[j] + up[j] * 0.003f + (d0[j] * kotlin.math.cos(ang) + e1[j] * kotlin.math.sin(ang)) * rad
+            }
+            GLES20.glLineWidth(2f * density)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 0.85f, 0.5f, 1f, (1f - a / 1.2f) * 0.9f)
+            bindPos(colorProg, floatBuf(ring)); GLES20.glDrawArrays(GLES20.GL_LINE_STRIP, 0, k + 1)
+        }
+        GLES20.glLineWidth(1f)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        // stoties taškas ir užrašas
+        val (tex, asp) = wideLabel(label)
+        billboard(floatArrayOf(tx + up[0] * 0.02f, ty + up[1] * 0.02f, tz + up[2] * 0.02f), eyeI, 0.022f * asp, 0.022f, tex, 0.9f, 0.7f, 1f, 0.95f)
+        if (starTex != 0) billboard(s0, eyeI, 0.02f, 0.02f, starTex, 0.85f, 0.5f, 1f, 1f)
     }
 
     private fun drawLaser(sp: FloatArray, pin: FloatArray, cn0: Float, svid: Int, t: Float) {

@@ -50,6 +50,14 @@ class Rtcm3Test {
     }
 
     @Test
+    fun physicalStation1032() {
+        val a = W(); a.u(1032, 12); a.u(0, 12); a.u(42, 12); a.u(0, 6)
+        a.s(31_000_000_000L, 38); a.s(14_600_000_000L, 38); a.s(51_800_000_000L, 38)
+        val (id, x) = Rtcm3.physStation(a.bytes())!!
+        assertEquals(42, id); assertEquals(3_100_000.0, x[0], 1e-6); assertEquals(5_180_000.0, x[2], 1e-6)
+    }
+
+    @Test
     fun ggaChecksum() {
         val g = Rtcm3.gga(54.74, 25.2545, 200.0, 1794394292000L)
         assertTrue(g.startsWith("\$GPGGA,"))

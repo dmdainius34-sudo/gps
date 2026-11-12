@@ -13,32 +13,43 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
-/** Dangaus kliūčių žemėlapis: langeliai 10° (azimutas) × 10° (aukštis); azimutas – prietaiso arba pasaulio atžvilgiu. */
+/**
+ * Dangaus kliūčių žemėlapis: langeliai 5° (azimutas) × 5° (aukštis); azimutas – prietaiso arba pasaulio atžvilgiu.
+ * Vaizdui – clsSmooth: langelis be pakankamų duomenų klasifikuojamas pagal 3×3 kaimynų sumą (tarpai užsipildo, sienos ištisinės).
+ */
 class SkyMap(val file: String) {
     private class Cell { var n = 0; var cn0 = 0.0; var nRes = 0; var nlos = 0; var absRes = 0.0; var slips = 0; var nPh = 0 }
     private val cells = Array(CabinMap.AZ * CabinMap.EL) { Cell() }
     var samples = 0L
         private set
 
-    private fun idx(az: Double, el: Double): Int? {
-        if (el < 0 || el > 90) return null
-        val a = (((az % 360) + 360) % 360 / 10).toInt().coerceIn(0, CabinMap.AZ - 1)
-        val e = (el / 10).toInt().coerceIn(0, CabinMap.EL - 1)
-        return e * CabinMap.AZ + a
-    }
+    private fun ia(az: Double) = (((az % 360) + 360) % 360 / CabinMap.STEP).toInt().coerceIn(0, CabinMap.AZ - 1)
+    private fun ie(el: Double) = (el / CabinMap.STEP).toInt().coerceIn(0, CabinMap.EL - 1)
+    private fun idx(az: Double, el: Double): Int? = if (el < 0 || el > 90) null else ie(el) * CabinMap.AZ + ia(az)
 
     @Synchronized fun load(d: File) {
         val f = File(d, file); if (!f.exists()) return
         try {
             val lines = f.readLines()
-            val v2 = lines.firstOrNull()?.contains("v2") == true          // v1 liekanos kauptos ir nesuartėjus RTK – atmetamos
+            val head = lines.firstOrNull() ?: ""
+            val v2 = head.contains("v2")                         // v1 liekanos kauptos ir nesuartėjus RTK – atmetamos
+            val g5 = head.contains("g5")                         // 5° tinklelis; senas 10° – išskaidomas į 4 langelius
             lines.drop(1).forEach { l ->
                 val v = l.split(','); if (v.size < 8) return@forEach
-                val i = v[0].toInt(); if (i !in cells.indices) return@forEach
-                cells[i].n = v[1].toInt(); cells[i].cn0 = v[2].toDouble(); cells[i].nRes = v[3].toInt(); cells[i].nlos = v[4].toInt()
-                cells[i].absRes = v[5].toDouble(); cells[i].slips = v[6].toInt(); cells[i].nPh = v[7].toInt()
-                if (!v2) { cells[i].nRes = 0; cells[i].nlos = 0; cells[i].absRes = 0.0 }
-                samples += cells[i].n
+                val i = v[0].toInt()
+                val parts = if (g5) listOf(i) else {
+                    val e = i / 36; val a = i % 36
+                    listOf((2 * e) * CabinMap.AZ + 2 * a, (2 * e) * CabinMap.AZ + 2 * a + 1, (2 * e + 1) * CabinMap.AZ + 2 * a, (2 * e + 1) * CabinMap.AZ + 2 * a + 1)
+                }
+                val k = parts.size
+                for (j in parts) {
+                    if (j !in cells.indices) continue
+                    val c = cells[j]
+                    c.n += (v[1].toInt() + k - 1) / k; c.cn0 += v[2].toDouble() / k
+                    if (v2) { c.nRes += (v[3].toInt() + k - 1) / k; c.nlos += (v[4].toInt() + k - 1) / k; c.absRes += v[5].toDouble() / k }
+                    c.slips += v[6].toInt() / k; c.nPh += v[7].toInt() / k
+                    samples += c.n
+                }
             }
         } catch (_: Exception) {}
     }
@@ -46,7 +57,7 @@ class SkyMap(val file: String) {
     @Synchronized fun save(d: File) {
         try {
             File(d, file).bufferedWriter().use { w ->
-                w.write("langelis,n,cn0_suma,n_liekanu,n_atspindziu,abs_liekanu_suma,fazes_truikiai,n_fazes,v2\n")
+                w.write("langelis,n,cn0_suma,n_liekanu,n_atspindziu,abs_liekanu_suma,fazes_truikiai,n_fazes,v2,g5\n")
                 for ((i, c) in cells.withIndex()) if (c.n > 0 || c.nRes > 0)
                     w.write(String.format(Locale.US, "%d,%d,%.1f,%d,%d,%.1f,%d,%d\n", i, c.n, c.cn0, c.nRes, c.nlos, c.absRes, c.slips, c.nPh))
             }
@@ -63,23 +74,43 @@ class SkyMap(val file: String) {
         cells[i].nPh++; if (slip) cells[i].slips++
     }
 
+    private fun classify(n: Int, cn0: Double, nRes: Int, nlos: Int, absRes: Double): Int {
+        // atspindžiai: dauguma liekanų > 10 m ir vidutinė > 8 m (kabinoje vien kodo triukšmas siekia ~5–10 m)
+        if (nRes >= 12 && nlos.toDouble() / nRes > 0.5 && absRes / nRes > 8.0) return CabinMap.REFLECT
+        if (n >= 20 && cn0 / n < 24.0) return CabinMap.WEAK
+        if (n >= 20 || nRes >= 12) return CabinMap.CLEAN
+        return CabinMap.UNKNOWN
+    }
+
+    /** Langelio klasė tik iš jo paties duomenų (filtrams). */
     @Synchronized fun cls(az: Double, el: Double): Int {
         val c = cells[idx(az, el) ?: return CabinMap.UNKNOWN]
-        // atspindžiai: dauguma liekanų > 10 m ir vidutinė > 8 m (kabinoje vien kodo triukšmas siekia ~5–10 m)
-        if (c.nRes >= 20 && c.nlos.toDouble() / c.nRes > 0.5 && c.absRes / c.nRes > 8.0) return CabinMap.REFLECT
-        if (c.n >= 30 && c.cn0 / c.n < 24.0) return CabinMap.WEAK
-        if (c.n >= 30 || c.nRes >= 15) return CabinMap.CLEAN
-        return CabinMap.UNKNOWN
+        return classify(c.n, c.cn0, c.nRes, c.nlos, c.absRes)
+    }
+
+    /** Vaizdui: savas langelis, o jei duomenų mažai – 3×3 kaimynų suma. */
+    @Synchronized fun clsSmooth(az: Double, el: Double): Int {
+        if (el < 0 || el > 90) return CabinMap.UNKNOWN
+        val own = cls(az, el); if (own != CabinMap.UNKNOWN) return own
+        val a0 = ia(az); val e0 = ie(el)
+        var n = 0; var cn = 0.0; var nr = 0; var nl = 0; var ar = 0.0
+        for (de in -1..1) for (da in -1..1) {
+            val e = e0 + de; if (e < 0 || e >= CabinMap.EL) continue
+            val c = cells[e * CabinMap.AZ + (a0 + da + CabinMap.AZ) % CabinMap.AZ]
+            n += c.n; cn += c.cn0; nr += c.nRes; nl += c.nlos; ar += c.absRes
+        }
+        return classify(n, cn, nr, nl, ar)
     }
 
     fun counts(): IntArray {
         val n = IntArray(4)
-        for (e in 0 until CabinMap.EL) for (a in 0 until CabinMap.AZ) n[cls(a * 10.0 + 5, e * 10.0 + 5)]++
+        for (e in 0 until CabinMap.EL) for (a in 0 until CabinMap.AZ) n[cls(CabinMap.center(a), CabinMap.center(e))]++
         return n
     }
 
     fun sectors(): String = (0 until 12).joinToString(" ") { s ->
-        val cs = (0 until CabinMap.EL).flatMap { e -> (s * 3 until s * 3 + 3).map { a -> cls(a * 10.0 + 5, e * 10.0 + 5) } }.filter { it != CabinMap.UNKNOWN }
+        val per = (30.0 / CabinMap.STEP).toInt()
+        val cs = (0 until CabinMap.EL).flatMap { e -> (s * per until s * per + per).map { a -> clsSmooth(CabinMap.center(a), CabinMap.center(e)) } }.filter { it != CabinMap.UNKNOWN }
         val lab = when { cs.isEmpty() -> "?"; cs.count { it == CabinMap.REFLECT } * 3 >= cs.size -> "A"; cs.count { it == CabinMap.WEAK } * 2 >= cs.size -> "U"; else -> "Š" }
         "%d°:%s".format(Locale.US, s * 30, lab)
     }
@@ -90,7 +121,10 @@ class SkyMap(val file: String) {
  * (azimutas nuo šiaurės – pastatai, kiti kranai). Kartu – „radaras“: atstumai iki atspindinčių paviršių iš papildomo signalo kelio.
  */
 object CabinMap {
-    const val AZ = 36; const val EL = 9
+    const val STEP = 5.0
+    const val AZ = 72; const val EL = 18
+    /** Langelio (indeksas) centro kampas, °. */
+    fun center(i: Int) = i * STEP + STEP / 2
     const val UNKNOWN = 0; const val CLEAN = 1; const val REFLECT = 2; const val WEAK = 3
     val cabin = SkyMap("cabin_map.csv")
     val world = SkyMap("world_map.csv")
@@ -242,18 +276,19 @@ class CabinMapView(ctx: Context) : View(ctx) {
         // kiek pasukti: kabinoje viršus – prietaisas, aplinkoje ir radare – šiaurė
         if (mode == 2) drawRadar(c, cx, cy, r) else {
             val map = if (mode == 0) CabinMap.cabin else CabinMap.world
+            val st = CabinMap.STEP.toFloat()
             for (e in 0 until CabinMap.EL) for (a in 0 until CabinMap.AZ) {
-                val col = when (map.cls(a * 10.0 + 5, e * 10.0 + 5)) {
+                val col = when (map.clsSmooth(CabinMap.center(a), CabinMap.center(e))) {
                     // švaru – neoninė geltona, kliūtis (užstota) – mėlyna, atspindžiai – raudona
                     CabinMap.CLEAN -> 0xDDE6FF00.toInt(); CabinMap.REFLECT -> 0xDDEF4444.toInt(); CabinMap.WEAK -> 0xDD2563EB.toInt(); else -> 0
                 }
                 if (col == 0) continue
                 p.color = col
-                val r1 = r * (90 - e * 10) / 90f; val r0 = r * (90 - (e + 1) * 10) / 90f
+                val r1 = r * (90 - e * st) / 90f; val r0 = r * (90 - (e + 1) * st) / 90f
                 val path = android.graphics.Path()
-                val a0 = a * 10f - 90f
-                path.arcTo(RectF(cx - r1, cy - r1, cx + r1, cy + r1), a0, 10f)
-                path.arcTo(RectF(cx - r0, cy - r0, cx + r0, cy + r0), a0 + 10f, -10f)
+                val a0 = a * st - 90f
+                path.arcTo(RectF(cx - r1, cy - r1, cx + r1, cy + r1), a0, st)
+                path.arcTo(RectF(cx - r0, cy - r0, cx + r0, cy + r0), a0 + st, -st)
                 path.close(); c.drawPath(path, p)
             }
         }
@@ -304,39 +339,32 @@ class CabinMapView(ctx: Context) : View(ctx) {
             val a2 = proj(-20.0, k * 5.0, 0.0); val b2 = proj(20.0, k * 5.0, 0.0)
             if (a2 != null && b2 != null) c.drawLine(a2[0].toFloat(), a2[1].toFloat(), b2[0].toFloat(), b2[1].toFloat(), p)
         }
-        // kubeliai
-        class Face(val pts: List<DoubleArray>, val depth: Double, val col: Int)
+        // plytelės 10 m spinduliu (5°×5°), ištisinės; kontūras – kur keičiasi klasė (sienų kraštai)
+        class Face(val pts: List<DoubleArray>, val depth: Double, val col: Int, val edges: BooleanArray)
         val faces = ArrayList<Face>()
-        val dots = ArrayList<DoubleArray>()
-        val radar = Radar.points()
-        fun dist(relAz: Double): Double {
-            if (h == null) return 10.0
-            val abs = (relAz + h + 360) % 360
-            val d = radar.filter { kotlin.math.abs(((it.az - abs + 540) % 360) - 180) < 15 }.map { it.d }.sorted()
-            return if (d.size >= 5) d[d.size / 2].coerceIn(4.0, 30.0) else 10.0
-        }
-        for (ei in 0 until CabinMap.EL) for (ai in 0 until CabinMap.AZ) {
-            val rel = ai * 10.0 + 5; val el = ei * 10.0 + 5
-            val wc = if (h != null) CabinMap.world.cls(rel + h, el) else CabinMap.UNKNOWN
-            val cc = CabinMap.cabin.cls(rel, el)
-            val cls = when { wc == CabinMap.REFLECT || cc == CabinMap.REFLECT -> 2; wc == CabinMap.WEAK || cc == CabinMap.WEAK -> 1
+        val D = 10.0
+        val grid = Array(CabinMap.EL) { ei -> IntArray(CabinMap.AZ) { ai ->
+            val rel = CabinMap.center(ai); val el = CabinMap.center(ei)
+            val wc = if (h != null) CabinMap.world.clsSmooth(rel + h, el) else CabinMap.UNKNOWN
+            val cc = CabinMap.cabin.clsSmooth(rel, el)
+            when { wc == CabinMap.REFLECT || cc == CabinMap.REFLECT -> 2; wc == CabinMap.WEAK || cc == CabinMap.WEAK -> 1
                 wc == CabinMap.CLEAN || cc == CabinMap.CLEAN -> 0; else -> -1 }
-            if (cls < 0) continue
-            val d = dist(rel)
-            val a = Math.toRadians(rel); val e = Math.toRadians(el)
-            val x = d * kotlin.math.cos(e) * sin(a); val y = d * kotlin.math.cos(e) * cos(a); val z = 1.5 + d * sin(e)
-            if (cls == 0) { proj(x, y, z)?.let { dots.add(it) }; continue }
-            val sz = (d * 0.17).coerceIn(0.8, 4.0) / 2
-            val base = if (cls == 2) intArrayOf(239, 68, 68) else intArrayOf(37, 99, 235)
-            val v = Array(8) { k -> proj(x + if (k and 1 != 0) sz else -sz, y + if (k and 2 != 0) sz else -sz, z + if (k and 4 != 0) sz else -sz) }
-            if (v.any { it == null }) continue
-            val quads = arrayOf(intArrayOf(0, 1, 3, 2) to 0.55, intArrayOf(4, 5, 7, 6) to 1.0, intArrayOf(0, 1, 5, 4) to 0.75,
-                intArrayOf(2, 3, 7, 6) to 0.75, intArrayOf(0, 2, 6, 4) to 0.65, intArrayOf(1, 3, 7, 5) to 0.65)
-            for ((q, shade) in quads) {
-                val pts = q.map { v[it]!! }
-                val col = Color.argb(150, (base[0] * shade).toInt(), (base[1] * shade).toInt(), (base[2] * shade).toInt())
-                faces.add(Face(pts, pts.sumOf { it[2] } / 4, col))
-            }
+        } }
+        fun pt(azD: Double, elD: Double): DoubleArray? {
+            val a = Math.toRadians(azD); val e = Math.toRadians(elD)
+            return proj(D * kotlin.math.cos(e) * sin(a), D * kotlin.math.cos(e) * cos(a), 1.5 + D * sin(e))
+        }
+        val st = CabinMap.STEP
+        for (ei in 0 until CabinMap.EL) for (ai in 0 until CabinMap.AZ) {
+            val cls = grid[ei][ai]; if (cls < 0) continue
+            val a0 = ai * st; val a1 = a0 + st; val e0 = ei * st; val e1 = minOf(90.0, e0 + st)
+            val q = listOf(pt(a0, e0), pt(a1, e0), pt(a1, e1), pt(a0, e1))
+            if (q.any { it == null }) continue
+            val col = when (cls) { 2 -> Color.argb(170, 239, 68, 68); 1 -> Color.argb(170, 37, 99, 235); else -> Color.argb(60, 230, 255, 0) }
+            fun nb(de: Int, da: Int): Int { val e = ei + de; if (e < 0 || e >= CabinMap.EL) return -2; return grid[e][(ai + da + CabinMap.AZ) % CabinMap.AZ] }
+            // kraštai: apačia, dešinė, viršus, kairė
+            val edges = booleanArrayOf(nb(-1, 0) != cls, nb(0, 1) != cls, nb(1, 0) != cls, nb(0, -1) != cls)
+            faces.add(Face(q.map { it!! }, q.sumOf { it!![2] } / 4, col, edges))
         }
         // permatoma kabinos dėžė aplink stebėtoją
         val bx = 3.0; val bz = 3.5
@@ -346,13 +374,12 @@ class CabinMapView(ctx: Context) : View(ctx) {
             val a = box[i]; val b = box[j]; if (a != null && b != null) c.drawLine(a[0].toFloat(), a[1].toFloat(), b[0].toFloat(), b[1].toFloat(), p)
         }
         // geltoni (švarūs) taškai, tada kubeliai nuo tolimiausių
-        p.style = Paint.Style.FILL; p.color = 0xAAE6FF00.toInt()
-        for (d in dots) c.drawCircle(d[0].toFloat(), d[1].toFloat(), (f * 0.25 / d[2]).toFloat().coerceIn(1.5f, 5f), p)
         for (fc in faces.sortedByDescending { it.depth }) {
             val path = android.graphics.Path(); path.moveTo(fc.pts[0][0].toFloat(), fc.pts[0][1].toFloat())
             for (k in 1 until fc.pts.size) path.lineTo(fc.pts[k][0].toFloat(), fc.pts[k][1].toFloat()); path.close()
             p.style = Paint.Style.FILL; p.color = fc.col; c.drawPath(path, p)
-            p.style = Paint.Style.STROKE; p.strokeWidth = 1f; p.color = 0x55FFFFFF; c.drawPath(path, p)
+            p.style = Paint.Style.STROKE; p.strokeWidth = 2.5f; p.color = 0xDDFFFFFF.toInt()
+            for (k in 0..3) if (fc.edges[k]) { val u = fc.pts[k]; val v = fc.pts[(k + 1) % 4]; c.drawLine(u[0].toFloat(), u[1].toFloat(), v[0].toFloat(), v[1].toFloat(), p) }
         }
         // stebėtojas ir planšetės kryptis
         p.style = Paint.Style.FILL; p.color = Color.WHITE
@@ -360,7 +387,7 @@ class CabinMapView(ctx: Context) : View(ctx) {
         val a = proj(0.0, 0.0, 0.05); val b = proj(0.0, 4.0, 0.05)
         if (a != null && b != null) { p.strokeWidth = 4f; p.style = Paint.Style.STROKE; p.color = 0xFF38BDF8.toInt(); c.drawLine(a[0].toFloat(), a[1].toFloat(), b[0].toFloat(), b[1].toFloat(), p) }
         p.style = Paint.Style.FILL; p.color = Color.WHITE; p.textSize = minOf(w, hgt) * 0.045f; p.textAlign = Paint.Align.CENTER
-        c.drawText("3D · vilkite – sukasi; mėlyna – kliūtis, raudona – atspindžiai", w / 2, hgt * 0.06f, p)
+        c.drawText("3D · vilkite – sukasi; mėlyna – kliūtis, raudona – atspindžiai, geltona – švaru (10 m kupolas)", w / 2, hgt * 0.06f, p)
         if (h == null) c.drawText("(planšetės kryptis nežinoma – rodomas tik kabinos žemėlapis)", w / 2, hgt * 0.97f, p)
     }
 

@@ -2708,9 +2708,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         val tris = arrayOf(ArrayList<Float>(), ArrayList<Float>(), ArrayList<Float>())   // švaru, kliūtis, atspindžiai
         for (ei in 0 until CabinMap.EL) for (ai in 0 until CabinMap.AZ) {
-            val az = ai * 10.0; val elv = ei * 10.0
-            val wc = CabinMap.world.cls(az + 5, elv + 5)
-            val cc = if (heading != null) CabinMap.cabin.cls(az + 5 - heading, elv + 5) else CabinMap.UNKNOWN
+            val stp = CabinMap.STEP
+            val az = ai * stp; val elv = ei * stp
+            val wc = CabinMap.world.clsSmooth(az + stp / 2, elv + stp / 2)
+            val cc = if (heading != null) CabinMap.cabin.clsSmooth(az + stp / 2 - heading, elv + stp / 2) else CabinMap.UNKNOWN
             val cls = when {
                 wc == CabinMap.REFLECT || cc == CabinMap.REFLECT -> 2
                 wc == CabinMap.WEAK || cc == CabinMap.WEAK -> 1
@@ -2718,10 +2719,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 else -> -1
             }
             if (cls < 0) continue
-            val steps = if (box) 3 else 1                       // dėžei – smulkiau, kad briaunos būtų tiesios
+            val steps = if (box) 2 else 1                       // dėžei – smulkiau, kad briaunos būtų tiesios
             for (sa in 0 until steps) for (se in 0 until steps) {
-                val a0 = az + 10.0 * sa / steps; val a1 = az + 10.0 * (sa + 1) / steps
-                val e0 = elv + 10.0 * se / steps; val e1 = minOf(90.0, elv + 10.0 * (se + 1) / steps)
+                val a0 = az + stp * sa / steps; val a1 = az + stp * (sa + 1) / steps
+                val e0 = elv + stp * se / steps; val e1 = minOf(90.0, elv + stp * (se + 1) / steps)
                 val p00 = pt(a0, e0); val p10 = pt(a1, e0); val p01 = pt(a0, e1); val p11 = pt(a1, e1)
                 for (q in listOf(p00, p10, p11, p00, p11, p01)) { tris[cls].add(q[0]); tris[cls].add(q[1]); tris[cls].add(q[2]) }
             }
@@ -5800,7 +5801,7 @@ class MainActivity : AppCompatActivity() {
             0 -> "Kabinos žemėlapis (viršus – planšetė; sukasi su kabina). Neoninė geltona – švaru, mėlyna – kliūtis, raudona – atspindžiai"
             1 -> "Aplinkos žemėlapis (viršus – šiaurė; pastatai, kiti kranai). Mėlyna linija – planšetės kryptis"
             2 -> "Radaras: atspindinčių paviršių atstumai (iki 60 m; spalva – palydovo aukštis). Įvertis pagal papildomą signalo kelią"
-            else -> "3D: kubeliai – kliūtys ir atspindžiai jų kryptimi (atstumas – radaro įvertis arba 10 m); vilkite pirštu – sukasi"
+            else -> "3D: plytelės 10 m kupole (5°×5°), baltas kontūras – kliūčių sienų kraštai; vilkite pirštu – sukasi"
         } }
         left.addView(cv, LinearLayout.LayoutParams((240 * resources.displayMetrics.density).toInt(), ww))
         left.addView(CheckBox(this).apply {

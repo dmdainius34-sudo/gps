@@ -89,9 +89,13 @@ object Brdc {
             val sys = l[0]
             val prn = l.substring(1, 3).trim().toIntOrNull()
             if (prn == null) { i++; continue }
-            val nLines = when (sys) { 'R' -> if (set.version >= 3.05) 5 else 4; 'S' -> 4; 'I' -> 8; else -> 8 }
-            if (i + nLines > lines.size) break
-            val rec = lines.subList(i, i + nLines); i += nLines
+            // įrašo tęsinio eilutės prasideda 4 tarpais (GLONASS 3.04 – 3, 3.05/4 – 4 eilutės)
+            var j = i + 1
+            while (j < lines.size && lines[j].startsWith("    ") && j - i < 9) j++
+            val nLines = j - i
+            val need = if (sys == 'R' || sys == 'S') 4 else 8
+            val rec = lines.subList(i, j); i = j
+            if (nLines < need) continue
             try {
                 val y = rec[0].substring(4, 8).trim().toInt(); val mo = rec[0].substring(9, 11).trim().toInt()
                 val d = rec[0].substring(12, 14).trim().toInt(); val h = rec[0].substring(15, 17).trim().toInt()

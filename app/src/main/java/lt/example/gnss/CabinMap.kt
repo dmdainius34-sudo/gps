@@ -215,12 +215,27 @@ class CabinMapView(ctx: Context) : View(ctx) {
 
     override fun onMeasure(w: Int, h: Int) { val s = MeasureSpec.getSize(w); setMeasuredDimension(s, s) }
 
+    // 3D vaizdo kamera: posūkis (yaw) ir pakilimas (pitch), keičiami vilkimu
+    private var yaw = 0.0; private var pitch = 35.0
+    private var dx0 = 0f; private var dy0 = 0f; private var lx = 0f; private var ly = 0f; private var dragged = false
+
     override fun onTouchEvent(e: MotionEvent): Boolean {
-        if (e.action == MotionEvent.ACTION_UP) { mode = (mode + 1) % 3; onMode?.invoke(mode); invalidate() }
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { dx0 = e.x; dy0 = e.y; lx = e.x; ly = e.y; dragged = false; parent?.requestDisallowInterceptTouchEvent(true) }
+            MotionEvent.ACTION_MOVE -> {
+                if (kotlin.math.abs(e.x - dx0) + kotlin.math.abs(e.y - dy0) > 12f) dragged = true
+                if (dragged && mode == 3) {
+                    yaw -= (e.x - lx) * 0.4; pitch = (pitch + (e.y - ly) * 0.3).coerceIn(-10.0, 89.0)
+                    lx = e.x; ly = e.y; invalidate()
+                }
+            }
+            MotionEvent.ACTION_UP -> { if (!dragged) { mode = (mode + 1) % 4; onMode?.invoke(mode); invalidate() } }
+        }
         return true
     }
 
     override fun onDraw(c: Canvas) {
+        if (mode == 3) { draw3d(c); return }
         val cx = width / 2f; val cy = height / 2f; val r = minOf(cx, cy) * 0.88f
         p.style = Paint.Style.FILL; p.color = 0xFF0B1020.toInt(); c.drawCircle(cx, cy, r, p)
         val h = heading
@@ -261,6 +276,92 @@ class CabinMapView(ctx: Context) : View(ctx) {
             p.color = if (s.used) Color.WHITE else 0x99FFFFFF.toInt()
             c.drawCircle(cx + (rr * sin(rel)).toFloat(), cy - (rr * cos(rel)).toFloat(), r * 0.035f, p)
         }
+    }
+
+    /**
+     * 3D: stebėtojas centre (planšetės sistema: +y – planšetės kryptis, +z – aukštyn). Kiekvienam kliūties langeliui –
+     * kubelis ta kryptimi (atstumas – radaro mediana tame sektoriuje arba 10 m): mėlyna – kliūtis, raudona – atspindžiai;
+     * švarios kryptys – maži geltoni taškai. Permatoma kabinos dėžė ir žemės tinklelis; vilkite – sukasi vaizdas.
+     */
+    private fun draw3d(c: Canvas) {
+        c.drawColor(0xFF0B1020.toInt())
+        val w = width.toFloat(); val hgt = height.toFloat()
+        val h = heading
+        val cy = Math.toRadians(yaw); val cp = Math.toRadians(pitch)
+        val camD = 34.0; val f = minOf(w, hgt) * 1.1
+        // pasaulio (planšetės) taškas -> ekranas; grąžina (x, y, gylis)
+        fun proj(x: Double, y: Double, z: Double): DoubleArray? {
+            val x1 = x * cos(cy) - y * sin(cy); val y1 = x * sin(cy) + y * cos(cy)
+            val y2 = y1 * cos(cp) + z * sin(cp); val z2 = -y1 * sin(cp) + z * cos(cp)
+            val depth = camD + y2
+            if (depth < 1.0) return null
+            return doubleArrayOf(w / 2 + f * x1 / depth, hgt * 0.55 - f * z2 / depth, depth)
+        }
+        p.style = Paint.Style.STROKE; p.strokeWidth = 1f; p.color = 0x334ADE80
+        for (k in -4..4) {                                       // žemės tinklelis 40×40 m
+            val a = proj(k * 5.0, -20.0, 0.0); val b = proj(k * 5.0, 20.0, 0.0)
+            if (a != null && b != null) c.drawLine(a[0].toFloat(), a[1].toFloat(), b[0].toFloat(), b[1].toFloat(), p)
+            val a2 = proj(-20.0, k * 5.0, 0.0); val b2 = proj(20.0, k * 5.0, 0.0)
+            if (a2 != null && b2 != null) c.drawLine(a2[0].toFloat(), a2[1].toFloat(), b2[0].toFloat(), b2[1].toFloat(), p)
+        }
+        // kubeliai
+        class Face(val pts: List<DoubleArray>, val depth: Double, val col: Int)
+        val faces = ArrayList<Face>()
+        val dots = ArrayList<DoubleArray>()
+        val radar = Radar.points()
+        fun dist(relAz: Double): Double {
+            if (h == null) return 10.0
+            val abs = (relAz + h + 360) % 360
+            val d = radar.filter { kotlin.math.abs(((it.az - abs + 540) % 360) - 180) < 15 }.map { it.d }.sorted()
+            return if (d.size >= 5) d[d.size / 2].coerceIn(4.0, 30.0) else 10.0
+        }
+        for (ei in 0 until CabinMap.EL) for (ai in 0 until CabinMap.AZ) {
+            val rel = ai * 10.0 + 5; val el = ei * 10.0 + 5
+            val wc = if (h != null) CabinMap.world.cls(rel + h, el) else CabinMap.UNKNOWN
+            val cc = CabinMap.cabin.cls(rel, el)
+            val cls = when { wc == CabinMap.REFLECT || cc == CabinMap.REFLECT -> 2; wc == CabinMap.WEAK || cc == CabinMap.WEAK -> 1
+                wc == CabinMap.CLEAN || cc == CabinMap.CLEAN -> 0; else -> -1 }
+            if (cls < 0) continue
+            val d = dist(rel)
+            val a = Math.toRadians(rel); val e = Math.toRadians(el)
+            val x = d * kotlin.math.cos(e) * sin(a); val y = d * kotlin.math.cos(e) * cos(a); val z = 1.5 + d * sin(e)
+            if (cls == 0) { proj(x, y, z)?.let { dots.add(it) }; continue }
+            val sz = (d * 0.17).coerceIn(0.8, 4.0) / 2
+            val base = if (cls == 2) intArrayOf(239, 68, 68) else intArrayOf(37, 99, 235)
+            val v = Array(8) { k -> proj(x + if (k and 1 != 0) sz else -sz, y + if (k and 2 != 0) sz else -sz, z + if (k and 4 != 0) sz else -sz) }
+            if (v.any { it == null }) continue
+            val quads = arrayOf(intArrayOf(0, 1, 3, 2) to 0.55, intArrayOf(4, 5, 7, 6) to 1.0, intArrayOf(0, 1, 5, 4) to 0.75,
+                intArrayOf(2, 3, 7, 6) to 0.75, intArrayOf(0, 2, 6, 4) to 0.65, intArrayOf(1, 3, 7, 5) to 0.65)
+            for ((q, shade) in quads) {
+                val pts = q.map { v[it]!! }
+                val col = Color.argb(150, (base[0] * shade).toInt(), (base[1] * shade).toInt(), (base[2] * shade).toInt())
+                faces.add(Face(pts, pts.sumOf { it[2] } / 4, col))
+            }
+        }
+        // permatoma kabinos dėžė aplink stebėtoją
+        val bx = 3.0; val bz = 3.5
+        val box = Array(8) { k -> proj(if (k and 1 != 0) bx else -bx, if (k and 2 != 0) bx else -bx, if (k and 4 != 0) bz else 0.0) }
+        p.style = Paint.Style.STROKE; p.strokeWidth = 2f; p.color = 0x88E6FF00.toInt()
+        for ((i, j) in listOf(0 to 1, 1 to 3, 3 to 2, 2 to 0, 4 to 5, 5 to 7, 7 to 6, 6 to 4, 0 to 4, 1 to 5, 2 to 6, 3 to 7)) {
+            val a = box[i]; val b = box[j]; if (a != null && b != null) c.drawLine(a[0].toFloat(), a[1].toFloat(), b[0].toFloat(), b[1].toFloat(), p)
+        }
+        // geltoni (švarūs) taškai, tada kubeliai nuo tolimiausių
+        p.style = Paint.Style.FILL; p.color = 0xAAE6FF00.toInt()
+        for (d in dots) c.drawCircle(d[0].toFloat(), d[1].toFloat(), (f * 0.25 / d[2]).toFloat().coerceIn(1.5f, 5f), p)
+        for (fc in faces.sortedByDescending { it.depth }) {
+            val path = android.graphics.Path(); path.moveTo(fc.pts[0][0].toFloat(), fc.pts[0][1].toFloat())
+            for (k in 1 until fc.pts.size) path.lineTo(fc.pts[k][0].toFloat(), fc.pts[k][1].toFloat()); path.close()
+            p.style = Paint.Style.FILL; p.color = fc.col; c.drawPath(path, p)
+            p.style = Paint.Style.STROKE; p.strokeWidth = 1f; p.color = 0x55FFFFFF; c.drawPath(path, p)
+        }
+        // stebėtojas ir planšetės kryptis
+        p.style = Paint.Style.FILL; p.color = Color.WHITE
+        proj(0.0, 0.0, 1.5)?.let { c.drawCircle(it[0].toFloat(), it[1].toFloat(), 6f, p) }
+        val a = proj(0.0, 0.0, 0.05); val b = proj(0.0, 4.0, 0.05)
+        if (a != null && b != null) { p.strokeWidth = 4f; p.style = Paint.Style.STROKE; p.color = 0xFF38BDF8.toInt(); c.drawLine(a[0].toFloat(), a[1].toFloat(), b[0].toFloat(), b[1].toFloat(), p) }
+        p.style = Paint.Style.FILL; p.color = Color.WHITE; p.textSize = minOf(w, hgt) * 0.045f; p.textAlign = Paint.Align.CENTER
+        c.drawText("3D · vilkite – sukasi; mėlyna – kliūtis, raudona – atspindžiai", w / 2, hgt * 0.06f, p)
+        if (h == null) c.drawText("(planšetės kryptis nežinoma – rodomas tik kabinos žemėlapis)", w / 2, hgt * 0.97f, p)
     }
 
     private fun drawRadar(c: Canvas, cx: Float, cy: Float, r: Float) {

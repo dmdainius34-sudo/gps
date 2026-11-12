@@ -5799,7 +5799,8 @@ class MainActivity : AppCompatActivity() {
         cv.onMode = { md -> cabTitle.text = when (md) {
             0 -> "Kabinos žemėlapis (viršus – planšetė; sukasi su kabina). Neoninė geltona – švaru, mėlyna – kliūtis, raudona – atspindžiai"
             1 -> "Aplinkos žemėlapis (viršus – šiaurė; pastatai, kiti kranai). Mėlyna linija – planšetės kryptis"
-            else -> "Radaras: atspindinčių paviršių atstumai (iki 60 m; spalva – palydovo aukštis). Įvertis pagal papildomą signalo kelią"
+            2 -> "Radaras: atspindinčių paviršių atstumai (iki 60 m; spalva – palydovo aukštis). Įvertis pagal papildomą signalo kelią"
+            else -> "3D: kubeliai – kliūtys ir atspindžiai jų kryptimi (atstumas – radaro įvertis arba 10 m); vilkite pirštu – sukasi"
         } }
         left.addView(cv, LinearLayout.LayoutParams((240 * resources.displayMetrics.density).toInt(), ww))
         left.addView(CheckBox(this).apply {

@@ -1149,6 +1149,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     val realScale get() = renderer.realScale
     fun setNavBits(on: Boolean) { renderer.showNavBits = on }
     fun setGrid(on: Boolean) { renderer.showGrid = on; calPrefs.edit().putBoolean("grid", on).apply() }
+    fun setSunGrid(on: Boolean) { renderer.showSunGrid = on; calPrefs.edit().putBoolean("sun_grid", on).apply() }
     fun setObstacleMode(m: Int) { renderer.obstacleMode = m; calPrefs.edit().putInt("obst_mode", m).apply() }
     val obstacleMode get() = renderer.obstacleMode
 
@@ -1230,6 +1231,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.realScale = calPrefs.getBoolean("real_scale", false)
         renderer.showNavBits = calPrefs.getBoolean("nav_bits", true)
         renderer.showGrid = calPrefs.getBoolean("grid", true)
+        renderer.showSunGrid = calPrefs.getBoolean("sun_grid", true)
         renderer.obstacleMode = calPrefs.getInt("obst_mode", 1)
         renderer.followDevice = calPrefs.getBoolean("follow_device", false)
         renderer.freeView = calPrefs.getBoolean("free_view", false)
@@ -3938,16 +3940,48 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private val sunMvp = FloatArray(16)
 
     /** 3D Saulės rutulys: animuota granuliacija, dėmės, kraštų patamsėjimas; lėtai sukasi. */
+    @Volatile var showSunGrid = true
+    private var sunImgVer = 0
+
+    /** Heliografinis tinklelis (kas 15°), pusiaujas ir nulinis dienovidinis ryškesni, ašis per polius, į Žemę atsuktas taškas. */
+    private fun drawSunGrid() {
+        val r = 0.25 * 1.006
+        fun pt(la: Double, lo: Double, k: Double = r) = floatArrayOf((k * cos(Math.toRadians(la)) * cos(Math.toRadians(lo))).toFloat(),
+            (k * cos(Math.toRadians(la)) * sin(Math.toRadians(lo))).toFloat(), (k * sin(Math.toRadians(la))).toFloat())
+        val thin = ArrayList<Float>(); val main = ArrayList<Float>(); val axis = ArrayList<Float>()
+        fun seg(d: ArrayList<Float>, a: FloatArray, b: FloatArray) { d.add(a[0]); d.add(a[1]); d.add(a[2]); d.add(b[0]); d.add(b[1]); d.add(b[2]) }
+        for (la in -75..75 step 15) { val d = if (la == 0) main else thin; var lo = -180.0; while (lo < 180) { seg(d, pt(la.toDouble(), lo), pt(la.toDouble(), lo + 5)); lo += 5.0 } }
+        for (lo in -180 until 180 step 15) { val d = if (lo == 0) main else thin; var la = -85.0; while (la < 85) { seg(d, pt(la, lo.toDouble()), pt(la + 5, lo.toDouble())); la += 5.0 } }
+        seg(axis, pt(90.0, 0.0, 0.25 * 1.0), pt(90.0, 0.0, 0.25 * 1.5)); seg(axis, pt(-90.0, 0.0, 0.25 * 1.0), pt(-90.0, 0.0, 0.25 * 1.5))
+        val pbl = SunFrame.pbl(System.currentTimeMillis())
+        val b0 = pbl[1]; val l0 = if (pbl[2] > 180) pbl[2] - 360 else pbl[2]
+        val earthPt = ArrayList<Float>()
+        seg(earthPt, pt(b0 - 6, l0), pt(b0 + 6, l0)); seg(earthPt, pt(b0, l0 - 6), pt(b0, l0 + 6))
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, sunMvp, 0)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        for ((arr, col, wdt) in listOf(Triple(thin, floatArrayOf(1f, 0.9f, 0.6f, 0.35f), 1f), Triple(main, floatArrayOf(1f, 1f, 0.85f, 0.85f), 2f),
+                Triple(axis, floatArrayOf(0.6f, 0.9f, 1f, 1f), 3f), Triple(earthPt, floatArrayOf(0.3f, 0.8f, 1f, 1f), 3f))) {
+            GLES20.glLineWidth(wdt * density)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], col[3])
+            bindPos(colorProg, floatBuf(arr.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, arr.size / 3)
+        }
+        GLES20.glLineWidth(1f); GLES20.glDepthMask(true)
+    }
+
     private fun drawSun3D(sp: FloatArray, t: Float) {
         if (earthPos == null) return
         if (sunProg == 0) sunProg = program(SUN_VS, SUN_FS)
         // Schema: spindulys 0,12 scenos vnt.; „Realybė“: 696 000 km (109 Žemės spinduliai)
         val k = if (realScale) (696_000.0 / 6371.0 * EARTH_R / 0.25).toFloat() else 0.48f
-        val a = t * 0.08                                  // lėtas sukimasis aplink ašį
+        // tikra Saulės orientacija: IAU ašis ir Carringtono sukimasis (tinklelio u = 0,5 – nulinis dienovidinis)
+        val ax = SunFrame.axes(System.currentTimeMillis())
         java.util.Arrays.fill(sunMat, 0f)
-        sunMat[0] = (cos(a) * k).toFloat(); sunMat[1] = (sin(a) * k).toFloat()
-        sunMat[4] = (-sin(a) * k).toFloat(); sunMat[5] = (cos(a) * k).toFloat()
-        sunMat[10] = k
+        for (i in 0..2) { sunMat[i] = (ax[0][i] * k).toFloat(); sunMat[4 + i] = (ax[1][i] * k).toFloat(); sunMat[8 + i] = (ax[2][i] * k).toFloat() }
+        // tikras NASA SDO vaizdas, jei atsisiųstas (perkeliamas į GL tekstūrą)
+        SunImage.map?.let { m -> if (SunImage.version != sunImgVer) { sunImgVer = SunImage.version
+            if (sunImgTex != 0) GLES20.glDeleteTextures(1, intArrayOf(sunImgTex), 0)
+            sunImgTex = uploadTexture(m.copy(m.config ?: Bitmap.Config.ARGB_8888, false)) } }
         sunMat[12] = sp[0]; sunMat[13] = sp[1]; sunMat[14] = sp[2]; sunMat[15] = 1f
         Matrix.multiplyMM(sunMvp, 0, mvpI, 0, sunMat, 0)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
@@ -3973,6 +4007,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, earthUv)
         }
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+        if (showSunGrid) drawSunGrid()
 
         // 3D korona: didesnis rutulys aplink Saulę, švyti tik prie krašto (pridėtinis maišymas)
         if (glowProg == 0) glowProg = program(GLOW_VS, SUNGLOW_FS)
@@ -5877,6 +5912,18 @@ class MainActivity : AppCompatActivity() {
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("grid", true)
             setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.setGrid(on) }
         }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(CheckBox(this).apply {
+            text = "Saulės koordinatės (heliografinis tinklelis, ašis, į Žemę atsuktas taškas)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_grid", true)
+            setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.setSunGrid(on) }
+        }, LinearLayout.LayoutParams(mw, ww))
+        SunImage.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_sdo", true)
+        left.addView(CheckBox(this).apply {
+            text = "Tikras Saulės vaizdas (NASA SDO, kas 30 min.)"
+            isChecked = SunImage.enabled
+            setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_sdo", on).apply(); SunImage.enabled = on
+                if (on) SunImage.refresh(this@MainActivity) }
+        }, LinearLayout.LayoutParams(mw, ww))
         Uvi.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("uv_layer", false)
         left.addView(CheckBox(this).apply {
             text = "Saulės patikra pagal UV indeksą (Open-Meteo): kryžiai ant gaublio"
@@ -6085,7 +6132,7 @@ class MainActivity : AppCompatActivity() {
                     report += sunReport() + Sp3Live.text() + "\n" +
                         (if (obsLatNow == 0.0 && obsLonNow == 0.0) "" else SpaceOrientation.report(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()), obsLatNow)) +
                         (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" + skyDome.northText(devAzimuth) + "\n" else "") +
-                        (if (Uvi.enabled) Uvi.text() + "\n" else "") +
+                        (if (Uvi.enabled) Uvi.text() + "\n" else "") + SunFrame.text() + "\n" +
                         NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + CabinMap.text() + "\n" +
                         (Readiness.knowledge()?.let { "Lusto žinios: ${it.text}\n" } ?: "") +
                         "Pasiruošimas: " + Readiness.state(LiveRtk.enabled, LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc).text + "\n" +

@@ -27,6 +27,7 @@ object Sp3Live {
     fun refresh(ctx: Context, force: Boolean = false) {
         try { Brdc.refresh(ctx.applicationContext) } catch (_: Exception) {}
         if (Uvi.enabled) try { Uvi.refresh(ctx.applicationContext) } catch (_: Exception) {}
+        try { SunImage.refresh(ctx.applicationContext) } catch (_: Exception) {}
         try { BroadcastEph.load(ctx.applicationContext.filesDir) } catch (e: Exception) { android.util.Log.w("GnssApp", "BroadcastEph.load: ${e.message}") }
         val now = System.currentTimeMillis()
         if (loading || (!force && now - loadedAt < 600_000L)) return

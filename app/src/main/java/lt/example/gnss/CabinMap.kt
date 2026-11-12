@@ -229,7 +229,8 @@ class CabinMapView(ctx: Context) : View(ctx) {
             val map = if (mode == 0) CabinMap.cabin else CabinMap.world
             for (e in 0 until CabinMap.EL) for (a in 0 until CabinMap.AZ) {
                 val col = when (map.cls(a * 10.0 + 5, e * 10.0 + 5)) {
-                    CabinMap.CLEAN -> 0xCC22C55E.toInt(); CabinMap.REFLECT -> 0xDDF59E0B.toInt(); CabinMap.WEAK -> 0xCC6B7280.toInt(); else -> 0
+                    // švaru – neoninė geltona, kliūtis (užstota) – mėlyna, atspindžiai – raudona
+                    CabinMap.CLEAN -> 0xDDE6FF00.toInt(); CabinMap.REFLECT -> 0xDDEF4444.toInt(); CabinMap.WEAK -> 0xDD2563EB.toInt(); else -> 0
                 }
                 if (col == 0) continue
                 p.color = col

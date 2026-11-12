@@ -1184,6 +1184,10 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         return Triple(az, alt, d)
     }
 
+    /** Krypties diagnostika ataskaitai: iš ko sudaryta dabartinė kryptis. */
+    fun northText(magAz: Double): String = "Kryptis: vaizdo %s°, magnetometro (be pataisų) %.0f°; šiaurės poslinkis %.1f°, deklinacija %.1f°; stabili šiaurė %s (giroskopas, kompasas tik pradžioje)".format(
+        java.util.Locale.US, headingDeg()?.let { "%.0f".format(java.util.Locale.US, it) } ?: "?", magAz, offsetDeg, declDeg, if (stableNorth) "taip" else "ne")
+
     fun sunCalText(): String {
         val ms = calPrefs.getLong("sun_cal_ms", 0L)
         if (ms == 0L) return "Kalibravimas pagal Saulę: neatliktas"
@@ -5721,11 +5725,11 @@ class MainActivity : AppCompatActivity() {
         left.addView(cbBits, LinearLayout.LayoutParams(mw, ww))
         CabinMap.load(this)
         val cabPrefs = getSharedPreferences("cabin", Context.MODE_PRIVATE)
-        val cabTitle = TextView(this).apply { text = "Kabinos dangaus žemėlapis (paspauskite – aplinka / radaras). Žalia – švaru, oranžinė – atspindžiai, pilka – užstota"; textSize = 13f }
+        val cabTitle = TextView(this).apply { text = "Kabinos dangaus žemėlapis (paspauskite – aplinka / radaras). Neoninė geltona – švaru, mėlyna – kliūtis, raudona – atspindžiai"; textSize = 13f }
         left.addView(cabTitle)
         val cv = CabinMapView(this); cabinView = cv
         cv.onMode = { md -> cabTitle.text = when (md) {
-            0 -> "Kabinos žemėlapis (viršus – planšetė; sukasi su kabina). Žalia – švaru, oranžinė – atspindžiai, pilka – užstota"
+            0 -> "Kabinos žemėlapis (viršus – planšetė; sukasi su kabina). Neoninė geltona – švaru, mėlyna – kliūtis, raudona – atspindžiai"
             1 -> "Aplinkos žemėlapis (viršus – šiaurė; pastatai, kiti kranai). Mėlyna linija – planšetės kryptis"
             else -> "Radaras: atspindinčių paviršių atstumai (iki 60 m; spalva – palydovo aukštis). Įvertis pagal papildomą signalo kelią"
         } }
@@ -5890,7 +5894,7 @@ class MainActivity : AppCompatActivity() {
                     val zipName = SessionZip.name(System.currentTimeMillis(), Build.MODEL)
                     report += sunReport() + Sp3Live.text() + "\n" +
                         (if (obsLatNow == 0.0 && obsLonNow == 0.0) "" else SpaceOrientation.report(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()), obsLatNow)) +
-                        (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" else "") +
+                        (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" + skyDome.northText(devAzimuth) + "\n" else "") +
                         NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + CabinMap.text() + "\n" +
                         (Readiness.knowledge()?.let { "Lusto žinios: ${it.text}\n" } ?: "") +
                         "Pasiruošimas: " + Readiness.state(LiveRtk.enabled, LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc).text + "\n" +

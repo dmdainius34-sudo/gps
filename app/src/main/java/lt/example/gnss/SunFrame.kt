@@ -242,10 +242,16 @@ object GlCaps { @Volatile var maxTex = 0; @Volatile var err = "" }
  */
 object Lasco {
     const val URL_C2 = "https://soho.nascom.nasa.gov/data/realtime/c2/1024/latest.jpg"
-    /** Pusė vaizdo pločio Saulės spinduliais (C2: 11,9″/px 1024 px vaizde, R☉ ≈ 960″). */
+    private const val DIR = "https://soho.nascom.nasa.gov/data/REPROCESSING/Completed/%s/c2/%s/"
+    /** Pusė vaizdo pločio Saulės spinduliais (C2: 11,9″/px 1024 px vaizde, R☉ ≈ 960″); 512 px kadrams – tas pats laukas. */
     const val HALF_RSUN = 1024 * 11.9 / 2 / 960.0
-    @Volatile var image: Bitmap? = null
+    const val MAX_FRAMES = 12
+    /** Animacijos kadrai (seniausias pirmas) ir jų laikai. */
+    @Volatile var frames: List<Bitmap> = emptyList()
         private set
+    @Volatile var frameMs: List<Long> = emptyList()
+        private set
+    val image: Bitmap? get() = frames.lastOrNull()
     @Volatile var version = 0
         private set
     @Volatile var imageMs = 0L
@@ -255,23 +261,61 @@ object Lasco {
     @Volatile var enabled = true
     @Volatile private var at = 0L
     @Volatile private var busy = false
+    private val cache = LinkedHashMap<String, Bitmap>()
+
+    private fun get(url: String): HttpURLConnection = (URL(url).openConnection() as HttpURLConnection).apply {
+        connectTimeout = 15_000; readTimeout = 60_000; instanceFollowRedirects = true
+        setRequestProperty("User-Agent", "Mozilla/5.0 (Android) GnssApp")
+    }
+
+    /** Kadrų vardai iš SOHO katalogo puslapio (pvz. 20261112_2112_c2_512.jpg). */
+    fun names(html: String): List<String> {
+        val r512 = Regex("""\d{8}_\d{4}_c2_512\.jpg""").findAll(html).map { it.value }.toSortedSet()
+        return (if (r512.isNotEmpty()) r512 else Regex("""\d{8}_\d{4}_c2_1024\.jpg""").findAll(html).map { it.value }.toSortedSet()).toList()
+    }
+
+    fun nameMs(n: String): Long = try {
+        java.text.SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.parse(n.substring(0, 13))!!.time
+    } catch (_: Exception) { 0L }
 
     fun refresh(ctx: Context) {
         val now = System.currentTimeMillis()
-        if (!enabled || busy || now - at < (if (image == null) 2 * 60_000L else 15 * 60_000L)) return
+        if (!enabled || busy || now - at < (if (frames.isEmpty()) 2 * 60_000L else 15 * 60_000L)) return
         busy = true; at = now
         Thread {
             try {
-                val c = (URL(URL_C2).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 15_000; readTimeout = 60_000; instanceFollowRedirects = true
-                    setRequestProperty("User-Agent", "Mozilla/5.0 (Android) GnssApp")
+                // 1) paskutinių ~8 val. kadrai iš SOHO katalogo (šiandien ir vakar, UTC)
+                val fd = java.text.SimpleDateFormat("yyyyMMdd", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                val all = ArrayList<Pair<String, String>>()
+                var dirErr = ""
+                for (d in listOf(now - 86_400_000L, now)) {
+                    val day = fd.format(java.util.Date(d)); val base = DIR.format(Locale.US, day.substring(0, 4), day)
+                    try { val c = get(base)
+                        if (c.responseCode == 200) names(c.inputStream.bufferedReader().readText()).forEach { all.add(it to base + it) }
+                        else dirErr = " katalogas HTTP ${c.responseCode}"
+                    } catch (e: Exception) { dirErr = " katalogas ${e.javaClass.simpleName}" }
                 }
-                if (c.responseCode != 200) { status = "Saulės išmetimai (LASCO C2): HTTP ${c.responseCode}"; return@Thread }
-                val mod = c.lastModified.takeIf { it > 0 } ?: now
-                val b = c.inputStream.use { BitmapFactory.decodeStream(it) } ?: run { status = "Saulės išmetimai (LASCO C2): neperskaitomas"; return@Thread }
-                image = b; version++; imageMs = mod
-                status = "Saulės išmetimai: SOHO LASCO C2 %d px, %s UTC (dangaus plokštuma iš Žemės, 2–6 Saulės spinduliai)".format(Locale.US, b.width,
-                    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date(mod)))
+                val pick = all.filter { now - nameMs(it.first) < 8 * 3_600_000L }.takeLast(MAX_FRAMES - 1)
+                val out = ArrayList<Pair<Long, Bitmap>>()
+                for ((n, url) in pick) {
+                    val bmp = synchronized(cache) { cache[n] } ?: try {
+                        val c = get(url); if (c.responseCode == 200) c.inputStream.use { BitmapFactory.decodeStream(it) } else null
+                    } catch (_: Exception) { null }
+                    if (bmp != null) { synchronized(cache) { cache[n] = bmp }; out.add(nameMs(n) to bmp) }
+                }
+                // 2) naujausias realaus laiko kadras
+                val c = get(URL_C2)
+                if (c.responseCode == 200) {
+                    val mod = c.lastModified.takeIf { it > 0 } ?: now
+                    c.inputStream.use { BitmapFactory.decodeStream(it) }?.let { b -> if (out.none { kotlin.math.abs(it.first - mod) < 5 * 60_000L }) out.add(mod to b) }
+                }
+                if (out.isEmpty()) { status = "Saulės išmetimai (LASCO C2): nepavyko –$dirErr, realaus laiko HTTP ${c.responseCode}"; return@Thread }
+                out.sortBy { it.first }
+                synchronized(cache) { val keep = pick.map { it.first }.toSet(); cache.keys.retainAll(keep) }
+                frames = out.map { it.second }; frameMs = out.map { it.first }; imageMs = out.last().first; version++
+                val f = java.text.SimpleDateFormat("MM-dd HH:mm", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                status = "Saulės išmetimai: SOHO LASCO C2, animacija %d kadr. %s–%s UTC%s".format(Locale.US, out.size,
+                    f.format(java.util.Date(out.first().first)), f.format(java.util.Date(out.last().first)), if (out.size == 1) " (tik naujausias:$dirErr)" else "")
             } catch (e: Exception) { status = "Saulės išmetimai (LASCO C2): ${e.javaClass.simpleName} ${e.message ?: ""}".trim() }
             finally { busy = false }
         }.start()

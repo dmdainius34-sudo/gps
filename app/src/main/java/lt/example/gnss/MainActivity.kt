@@ -1759,7 +1759,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
         glowProg = 0
-        lascoProg = 0; lascoTex = 0; lascoVer = -1; sunImgVer = -1
+        lascoProg = 0; lascoTex = 0; lascoTexs = IntArray(0); lascoVer = -1; sunImgVer = -1
         buildEarth()
         loadCmb()
         starTex = makeStarTexture()
@@ -4252,6 +4252,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     private var lascoProg = 0
     private var lascoTex = 0
+    private var lascoTexs = IntArray(0)
     private var lascoVer = -1
     @Volatile var showLasco = true
     /** Išmetimų žiedo išorinis spindulys (Saulės spinduliais): koronografo laukas 2,3–5,8 R suspaudžiamas į 1,0–1,8 R. */
@@ -4273,10 +4274,18 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val ul = kotlin.math.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]); for (i in 0..2) u[i] /= ul
         val r = floatArrayOf(d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0])   // vakarai
         drawCmeCones(sp, rs, dl, z)
-        val img = Lasco.image ?: return
+        val frames = Lasco.frames; if (frames.isEmpty()) return
         if (Lasco.version != lascoVer) { lascoVer = Lasco.version
-            if (lascoTex != 0) GLES20.glDeleteTextures(1, intArrayOf(lascoTex), 0)
-            lascoTex = uploadTexture(img.copy(img.config ?: Bitmap.Config.ARGB_8888, false)) }
+            if (lascoTexs.isNotEmpty()) GLES20.glDeleteTextures(lascoTexs.size, lascoTexs, 0)
+            lascoTexs = IntArray(frames.size) { uploadTexture(frames[it].copy(frames[it].config ?: Bitmap.Config.ARGB_8888, false)) }
+            lascoTex = lascoTexs.last() }
+        // animacija: kadras 0,6 s su perėjimu, paskutinis laikomas 2 s
+        val nF = lascoTexs.size
+        val cyc = (nF - 1) * 0.6 + 2.0
+        val ph = (System.nanoTime() / 1e9) % cyc
+        val fi = (ph / 0.6).toInt().coerceAtMost(nF - 1)
+        val mixF = if (fi >= nF - 1) 0f else ((ph - fi * 0.6) / 0.6).toFloat().coerceIn(0f, 1f)
+        val texA = lascoTexs[fi]; val texB = lascoTexs[(fi + 1).coerceAtMost(nF - 1)]
         if (lascoProg == 0) lascoProg = program(GLOW_VS, LASCO_VOL_FS)
         val ro = (LASCO_OUT * rs).toFloat()
         val gm = FloatArray(16); val sc = ro / EARTH_R
@@ -4292,8 +4301,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uRs"), rs)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uHalf"), Lasco.HALF_RSUN.toFloat())
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uOut"), LASCO_OUT.toFloat())
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, lascoTex)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texB)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(lascoProg, "uTex2"), 1)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texA)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(lascoProg, "uTex"), 0)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uMix"), mixF)
         resetAttribs()
         val lp = GLES20.glGetAttribLocation(lascoProg, "aPos")
         GLES20.glEnableVertexAttribArray(lp)
@@ -4725,6 +4737,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             precision mediump float;
             #endif
             uniform sampler2D uTex;
+            uniform sampler2D uTex2;
+            uniform float uMix;
             uniform vec3 uCam;
             uniform vec3 uCenter;
             uniform vec3 uD;
@@ -4762,7 +4776,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     // atstumas nuo Saulės → koronografo laukas 2,3–5,8 R (suspausta į 1,0–uOut R)
                     float src = 2.3 + (rho - 1.0) / (uOut - 1.0) * 3.5;
                     vec2 uv = 0.5 + vec2(q.x, -q.y) / ql * src / (2.0 * uHalf);
-                    vec3 t = max(texture2D(uTex, uv).rgb - vec3(0.10), vec3(0.0));
+                    vec3 t = max(mix(texture2D(uTex, uv).rgb, texture2D(uTex2, uv).rgb, uMix) - vec3(0.10), vec3(0.0));
                     float beta = asin(clamp(dot(p, uD) / rho, -1.0, 1.0));   // kampas nuo dangaus plokštumos
                     float w = exp(-(beta * beta) / 0.5);
                     float m = smoothstep(1.0, 1.06, rho) * (1.0 - smoothstep(uOut - 0.1, uOut, rho));

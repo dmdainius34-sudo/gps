@@ -96,6 +96,18 @@ jobs:
             echo "Paskutiniai C įrašai:"; grep -E '^C[0-9]{2} ' b.rnx | tail -3
           fi
 
+      - name: SOHO LASCO ir NASA žvaigždžių fono patikra (informacija, nenukrenta)
+        continue-on-error: true
+        run: |
+          D=$(date -u +%Y%m%d); Y=$(date -u +%Y)
+          U="https://soho.nascom.nasa.gov/data/REPROCESSING/Completed/$Y/c2/$D/"
+          curl -sS -L -m 60 -o c2.html -w "HTTP %{http_code} %{url_effective}\n" "$U" || true
+          grep -oE '[0-9]{8}_[0-9]{4}_c2_(512|1024)\.jpg' c2.html | sort -u | tail -4
+          curl -sS -I -m 30 https://soho.nascom.nasa.gov/data/realtime/c2/1024/latest.jpg | grep -iE "^HTTP|last-modified|content-length" || true
+          curl -sS -L -m 60 -o svs.html -w "HTTP %{http_code} %{url_effective}\n" "https://svs.gsfc.nasa.gov/4851" || true
+          grep -oE 'https?://[^"]*a004851/[^"]*\.(jpg|tif|exr|png)' svs.html | sort -u | head -40
+          grep -oE '/vis/a000000/a004800/a004851/[^"]*' svs.html | sort -u | head -40
+
       - uses: actions/upload-artifact@v4
         with:
           name: app-debug

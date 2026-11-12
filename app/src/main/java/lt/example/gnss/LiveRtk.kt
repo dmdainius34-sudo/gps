@@ -37,6 +37,7 @@ object LiveRtk {
         private set
     @Volatile var epochs = 0
         private set
+    val fix get() = engine.lastFix
     private var pushed: PositionSolver.Solution? = null
     private var held = 0
     @Volatile var pushedN = 0
@@ -52,9 +53,9 @@ object LiveRtk {
         try {
             if (logW == null) {
                 val f = java.io.File(d, LOG); val fresh = !f.exists()
-                logW = java.io.BufferedWriter(java.io.FileWriter(f, true)).also { if (fresh) it.write("laikas_ms,platuma,ilguma,aukstis_m,fazes_palydovu,sigma_h_m,saltinis\n") }
+                logW = java.io.BufferedWriter(java.io.FileWriter(f, true)).also { if (fresh) it.write("laikas_ms,platuma,ilguma,aukstis_m,fazes_palydovu,sigma_h_m,saltinis,fix,ratio\n") }
             }
-            logW?.write(String.format(Locale.US, "%d,%.9f,%.9f,%.3f,%d,%.3f,%s\n", ms, s.lat, s.lon, s.h, s.sats, s.hacc, source))
+            logW?.write(String.format(Locale.US, "%d,%.9f,%.9f,%.3f,%d,%.3f,%s,%d,%.2f\n", ms, s.lat, s.lon, s.h, s.sats, s.hacc, source, if (engine.lastFix) 1 else 0, engine.lastRatio))
             if (epochs % 10 == 0) logW?.flush()
         } catch (_: Exception) {}
     }
@@ -165,8 +166,8 @@ object LiveRtk {
     fun text(): String {
         if (!enabled) return "Gyvas RTK: išjungtas"
         val s = last ?: return "Gyvas RTK: laukiama (bazė ${if (basePos != null) "yra" else "nėra"}, bazės epochų ${baseEps.size}, prietaiso epochų eilėje ${rover.size})"
-        return "Gyvas RTK: %.7f, %.7f, h %.2f m, σh %.2f m, fazės palydovų %d, prieš %d s, epochų %d (%s)".format(Locale.US,
-            s.lat, s.lon, s.h, s.hacc, s.sats, (System.currentTimeMillis() - lastMs) / 1000, epochs, source) + (if (engine.qPos > 0.1) ", judant" else ", stovint") +
+        return "Gyvas RTK: %s %.7f, %.7f, h %.2f m, σh %.2f m, fazės palydovų %d, ratio %.1f, prieš %d s, epochų %d, FIX epochų %d (%s)".format(Locale.US,
+            if (engine.lastFix) "FIX" else "FLOAT", s.lat, s.lon, s.h, s.hacc, s.sats, engine.lastRatio, (System.currentTimeMillis() - lastMs) / 1000, epochs, engine.run.fixEpochs, source) + (if (engine.qPos > 0.1) ", judant" else ", stovint") +
             "; kaukė praleido ${engine.masked} palydovų-epochų, Doppler aptiko ${engine.dopplerSlips} fazės trūkių; kitoms programoms perduota $pushedN, sulaikyta $heldN (nesuartėjęs ar šuolis); " + MockLoc.status
     }
 }

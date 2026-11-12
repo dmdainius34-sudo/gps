@@ -20,9 +20,12 @@ object Rtk {
     private const val ADR_VALID = 1
     private const val ADR_RESET = 2
     private const val ADR_SLIP = 4
+    /** GPS L1 / Galileo E1 bangos ilgis, m. */
+    const val LAMBDA_L1 = PositionSolver.C / 1575.42e6
+    const val RATIO = 3.0
 
     /** Bazės liekanos (m): kodas ir fazė be geometrijos ir palydovo laikrodžio; lock – užrakto indikatorius. */
-    class BObs(val rc: Double, val rp: Double, val lock: Int)
+    class BObs(val rc: Double, val rp: Double, val lock: Int, val half: Int = 0)
     class BEp(val t: Double, val obs: Map<String, BObs>)
 
     private fun pick(sys: Char, sig: String): Int = when (sys) {
@@ -76,7 +79,7 @@ object Rtk {
             s.rp.fill(0.0); s.rotate(bp); s.rotate(bp)
             val rho = dist(bp, s.rp)
             val cdts = s.prc - o.pr
-            out[id] = BObs(s.prc - rho, if (o.phase.isNaN()) Double.NaN else o.phase + cdts - rho, o.lock)
+            out[id] = BObs(s.prc - rho, if (o.phase.isNaN()) Double.NaN else o.phase + cdts - rho, o.lock, o.half)
         }
         return if (out.isEmpty()) null else BEp(t, out)
     }
@@ -126,7 +129,9 @@ object Rtk {
     }
 
     class Run(val name: String, val sols: ArrayList<Pair<Long, PositionSolver.Solution>> = ArrayList(),
-              var resets: Int = 0, var phaseObs: Int = 0, var codeRej: Int = 0, var convergedS: Double = Double.NaN, val sigH: ArrayList<Double> = ArrayList())
+              var resets: Int = 0, var phaseObs: Int = 0, var codeRej: Int = 0, var convergedS: Double = Double.NaN, val sigH: ArrayList<Double> = ArrayList(),
+              var fixEpochs: Int = 0, var firstFixS: Double = Double.NaN, val ratios: ArrayList<Double> = ArrayList(),
+              val fixed: ArrayList<Boolean> = ArrayList())
 
     /** qPos – padėties proceso triukšmas (m²/s): statinis ~1e-4, kinematinis ~1. */
     /** Vieno epochos RTK žingsnis (po įrašo ir gyvai): e0, e1 – bazės epochos aplink prietaiso laiką. */
@@ -147,6 +152,16 @@ object Rtk {
             private set
         /** Krano apskritimo apribojimas (Crane) – gyvai ir po įrašo. */
         var useCrane = true
+        /** Sveikųjų dviprasmybių sprendimas (LAMBDA). */
+        var ambRes = true
+        var lastFix = false
+            private set
+        var lastRatio = 0.0
+            private set
+        var lastNFix = 0
+            private set
+        private var fixRun = 0
+        private val lockN = HashMap<String, Int>()
         var lastPhase = 0
             private set
 
@@ -157,7 +172,7 @@ object Rtk {
         val sats = prepare(t, acc.map { Sp3V5.Ob(it.sys, it.svid, it.pr, it.cn0) })
         val byId = acc.associateBy { it.id }
         // matavimai: yP = P + c·dts − bazės liekana, yL = Φ + c·dts − bazės fazės liekana
-        class Ob(val id: String, val sys: Char, val s: Sp3V5.SatEp, val yP: Double, val yL: Double, val slip: Boolean)
+        class Ob(val id: String, val sys: Char, val s: Sp3V5.SatEp, val yP: Double, val yL: Double, val slip: Boolean, val arOk: Boolean = false)
         val obs = ArrayList<Ob>()
         for (s in sats) {
             val id = "%c%02d".format(Locale.US, s.sys, s.svid)
@@ -179,7 +194,8 @@ object Rtk {
                 }
             } else slip = true
             if (adrOk) lastAdr[id] = doubleArrayOf(m.adr!!, m.prr ?: Double.NaN, t) else lastAdr.remove(id)
-            obs.add(Ob(id, s.sys, s, yP, yL, slip))
+            val arOk = !yL.isNaN() && (m.adrState and 8) != 0 && b0.half == 0 && b1.half == 0
+            obs.add(Ob(id, s.sys, s, yP, yL, slip, arOk))
         }
         if (obs.size < 5) return null
         // inicializacija: bazės vieta (VRS – šalia prietaiso), σ 30 m
@@ -289,16 +305,70 @@ object Rtk {
         val ikh = Array(n) { i -> DoubleArray(n) { k -> (if (i == k) 1.0 else 0.0) - kh[i][k] } }
         ff.p = mul(ikh, ff.p).let { p2 -> Array(n) { i -> DoubleArray(n) { k -> 0.5 * (p2[i][k] + p2[k][i]) } } }
         run.phaseObs += keep.count { it.key % 2 == 1 }
+        // fazės tęstinumas (epochų be trūkio) – sveikųjų dviprasmybių kandidatams
+        for (g in geo) { val id = g.o.id; if (g.o.yL.isNaN() || g.o.slip) lockN.remove(id) else lockN[id] = (lockN[id] ?: 0) + 1 }
+        lockN.keys.retainAll(geo.map { it.o.id }.toSet())
+        // ---- sveikųjų dviprasmybių sprendimas (LAMBDA, dvigubi skirtumai, dalinis, ratio testas) ----
+        var xOut = doubleArrayOf(ff.x[0], ff.x[1], ff.x[2]); var pOut: Array<DoubleArray>? = null
+        lastFix = false; lastRatio = 0.0; lastNFix = 0
+        if (ambRes) {
+            val pairs = ArrayList<IntArray>()                         // [ki, kr]
+            for (sy in listOf('G', 'E')) {
+                val cand = geo.filter { it.o.sys == sy && it.o.arOk && (lockN[it.o.id] ?: 0) >= 5 && it.el >= Math.toRadians(15.0) && it.o.id in ff.idx && masks[it.o.id] != true }
+                if (cand.size < 2) continue
+                val ref = cand.maxByOrNull { it.el }!!
+                for (g in cand) if (g !== ref) pairs.add(intArrayOf(ff.idx[g.o.id]!!, ff.idx[ref.o.id]!!))
+            }
+            val nd = pairs.size
+            if (nd >= 4) {
+                val am = DoubleArray(nd) { ff.x[pairs[it][0]] - ff.x[pairs[it][1]] }
+                // Q = D P Dᵀ (m²), Pxd = P[0..2] Dᵀ
+                fun pd(r: Int, i: Int) = ff.p[r][pairs[i][0]] - ff.p[r][pairs[i][1]]
+                val qm = Array(nd) { i -> DoubleArray(nd) { j -> pd(pairs[i][0], j) - pd(pairs[i][1], j) } }
+                val res = Lambda.solve(DoubleArray(nd) { am[it] / LAMBDA_L1 }, Array(nd) { i -> DoubleArray(nd) { j -> qm[i][j] / (LAMBDA_L1 * LAMBDA_L1) } })
+                if (res != null) {
+                    lastRatio = res.ratio; run.ratios.add(res.ratio)
+                    if (res.ratio >= RATIO) {
+                        val qInv = inv(qm)
+                        if (qInv != null) {
+                            val db = DoubleArray(nd) { am[it] - res.best[it] * LAMBDA_L1 }
+                            val pxd = Array(3) { r -> DoubleArray(nd) { j -> pd(r, j) } }
+                            val k = mul(pxd, qInv)
+                            xOut = DoubleArray(3) { r -> ff.x[r] - (0 until nd).sumOf { j -> k[r][j] * db[j] } }
+                            val kp = mul(k, tr(pxd))
+                            pOut = Array(3) { r -> DoubleArray(3) { c -> ff.p[r][c] - kp[r][c] } }
+                            lastFix = true; lastNFix = nd; fixRun++
+                            // laikymas („fix-and-hold“): po 3 iš eilės fiksų – dviprasmybės pririšamos prie sveikųjų
+                            if (fixRun >= 3) {
+                                val hH = Array(nd) { i -> DoubleArray(n).also { r -> r[pairs[i][0]] = 1.0; r[pairs[i][1]] = -1.0 } }
+                                val hv = Array(nd) { i -> doubleArrayOf(res.best[i] * LAMBDA_L1 - am[i]) }
+                                val hpht = mul(ff.p, tr(hH)); val hs = mul(hH, hpht).also { for (i in 0 until nd) it[i][i] += 1e-6 }
+                                inv(hs)?.let { si ->
+                                    val kk = mul(hpht, si); val ddx = mul(kk, hv)
+                                    for (i in 0 until n) ff.x[i] += ddx[i][0]
+                                    val khh = mul(kk, hH)
+                                    ff.p = mul(Array(n) { i -> DoubleArray(n) { c -> (if (i == c) 1.0 else 0.0) - khh[i][c] } }, ff.p)
+                                        .let { p2 -> Array(n) { i -> DoubleArray(n) { c -> 0.5 * (p2[i][c] + p2[c][i]) } } }
+                                }
+                            }
+                        }
+                    } else fixRun = 0
+                } else fixRun = 0
+            } else fixRun = 0
+        }
+        if (lastFix) { run.fixEpochs++; if (run.firstFixS.isNaN()) run.firstFixS = t - t0 }
+        run.fixed.add(lastFix)
         // rezultatas
-        val llh = PositionSolver.ecefToLlh(ff.x[0], ff.x[1], ff.x[2])
+        val llh = PositionSolver.ecefToLlh(xOut[0], xOut[1], xOut[2])
         val la = llh[0]; val lo = llh[1]
         val eN = doubleArrayOf(-sin(la) * cos(lo), -sin(la) * sin(lo), cos(la)); val eE = doubleArrayOf(-sin(lo), cos(lo), 0.0)
-        fun q(a: DoubleArray) = (0..2).sumOf { i -> (0..2).sumOf { k -> a[i] * ff.p[i][k] * a[k] } }
+        val pp = pOut ?: ff.p
+        fun q(a: DoubleArray) = (0..2).sumOf { i -> (0..2).sumOf { k -> a[i] * pp[i][k] * a[k] } }
         val sh = sqrt(q(eN) + q(eE))
         run.sigH.add(sh)
         if (run.convergedS.isNaN() && sh < 0.5) run.convergedS = t - t0
         val nPh = keep.count { it.key % 2 == 1 }
-        val sol = PositionSolver.Solution(Math.toDegrees(la), Math.toDegrees(lo), llh[2], nPh, sh, doubleArrayOf(ff.x[0], ff.x[1], ff.x[2]))
+        val sol = PositionSolver.Solution(Math.toDegrees(la), Math.toDegrees(lo), llh[2], nPh, sh, xOut)
         lastSigH = sh; lastPhase = nPh
         return sol
         }
@@ -312,7 +382,7 @@ object Rtk {
         val eng = Engine(qPos, run).also { it.useCrane = crane }
         val w = out?.bufferedWriter()
         try {
-            w?.write("laikas_ms,platuma,ilguma,aukstis_m,fazes_palydovu,sigma_h_m\n")
+            w?.write("laikas_ms,platuma,ilguma,aukstis_m,fazes_palydovu,sigma_h_m,fix,ratio\n")
             Sp3V5.readRaw(raw) { ep ->
                 val t = ep.t
                 if (!Sp3Solver.inRange(sp3, t)) return@readRaw
@@ -322,7 +392,7 @@ object Rtk {
                 if (e1.t - e0.t > 2.5) return@readRaw
                 val sol = eng.step(ep, e0, e1, bp) { tt, ob -> Sp3V5.prepare(tt, ob, sp3) } ?: return@readRaw
                 run.sols.add(ep.timeMs to sol)
-                w?.write(String.format(Locale.US, "%d,%.9f,%.9f,%.3f,%d,%.3f\n", ep.timeMs, sol.lat, sol.lon, sol.h, sol.sats, sol.hacc))
+                w?.write(String.format(Locale.US, "%d,%.9f,%.9f,%.3f,%d,%.3f,%d,%.2f\n", ep.timeMs, sol.lat, sol.lon, sol.h, sol.sats, sol.hacc, if (eng.lastFix) 1 else 0, eng.lastRatio))
             }
         } finally { w?.close() }
         return run
@@ -347,6 +417,20 @@ object Rtk {
         sb.append("; filtro σh (paskutinis) %.2f m".format(Locale.US, r.sigH.lastOrNull() ?: Double.NaN))
         sb.append("; suartėjo (σh < 0,5 m) po ").append(if (r.convergedS.isNaN()) "nesuartėjo" else "%.0f s".format(Locale.US, r.convergedS))
         sb.append("; sprendinių ${r.sols.size}, fazės DD ${r.phaseObs}, dviprasmybių paleidimų ${r.resets}, atmesta kodo (atspindžiai) ${r.codeRej}")
+        // FIX (sveikosios dviprasmybės)
+        val fixSols = r.sols.filterIndexed { i, _ -> r.fixed.getOrElse(i) { false } }
+        sb.append("; FIX %d epochų (%.0f %%), pirmas po %s".format(Locale.US, r.fixEpochs, 100.0 * r.fixEpochs / maxOf(1, r.sols.size),
+            if (r.firstFixS.isNaN()) "nebuvo" else "%.0f s".format(Locale.US, r.firstFixS)))
+        if (r.ratios.isNotEmpty()) sb.append(", ratio mediana %.1f".format(Locale.US, PositionSolver.percentile(r.ratios.sorted(), 0.5)))
+        if (fixSols.size >= 5) {
+            val fl = fixSols.map { it.second.lat }.sorted()[fixSols.size / 2]; val fo = fixSols.map { it.second.lon }.sorted()[fixSols.size / 2]
+            val fd = fixSols.map { sqrt(((it.second.lon - fo) * mPerDeg * cos(Math.toRadians(fl))).let { e -> e * e } + ((it.second.lat - fl) * mPerDeg).let { nn -> nn * nn }) }.sorted()
+            sb.append("; FIX sprendinių sklaida: mediana %.3f m, 90 %% %.3f m".format(Locale.US, PositionSolver.percentile(fd, 0.5), PositionSolver.percentile(fd, 0.9)))
+            if (ref != null) {
+                val e = (fo - ref.second) * mPerDeg * cos(Math.toRadians(ref.first)); val nn = (fl - ref.first) * mPerDeg
+                sb.append(", FIX medianos poslinkis nuo atskaitos %.2f m".format(Locale.US, sqrt(e * e + nn * nn)))
+            }
+        }
         return sb.toString()
     }
 

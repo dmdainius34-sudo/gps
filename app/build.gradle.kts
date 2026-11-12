@@ -34,6 +34,7 @@ android {
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
 
 tasks.withType<Test>().configureEach {

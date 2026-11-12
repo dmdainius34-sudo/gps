@@ -62,6 +62,7 @@ object SessionFiles {
         }
         openWriters(d, append = cont)
         NavRecorder.open(d, append = cont)
+        RtcmRecorder.open(d, append = cont)
         GapLog.newSession(ctx)
     }
 
@@ -72,6 +73,7 @@ object SessionFiles {
         prefs(ctx).edit().putBoolean("active", true).putInt("restarts", 0).apply()
         openWriters(d, append = false)
         NavRecorder.open(d, append = false)
+        RtcmRecorder.open(d, append = false)
         GapLog.newSession(ctx)
         GapLog.event(ctx, "SESIJA nauja (vartotojas pradėjo įrašą)")
     }

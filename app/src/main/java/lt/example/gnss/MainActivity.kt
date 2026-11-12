@@ -5524,6 +5524,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(btnSun, LinearLayout.LayoutParams(mw, ww))
+        val btnNtrip = Button(this).apply { text = "NTRIP pataisos (RTCM)…"; setOnClickListener { showNtripDialog() } }
+        left.addView(btnNtrip, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnResetN, LinearLayout.LayoutParams(mw, ww))
         val cbStableN = CheckBox(this).apply {
             text = "Stabili šiaurė (ignoruoti magnetometrą)"
@@ -5702,6 +5704,7 @@ class MainActivity : AppCompatActivity() {
                     report += sunReport() + Sp3Live.text() + "\n" +
                         (if (obsLatNow == 0.0 && obsLonNow == 0.0) "" else SpaceOrientation.report(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()), obsLatNow)) +
                         (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" else "") +
+                        NtripClient.text(obsLatNow, obsLonNow) + "\n" +
                         (if (::skyDome.isInitialized) skyDome.fpsText() + "\n" else "")
                     report += "Eksportuota: " + names.joinToString(", ") + "\n"
                     report += "ZIP: $zipName (Download/GNSS)\nZIP failai: " + names.joinToString(", ") + "\n"
@@ -5723,6 +5726,7 @@ class MainActivity : AppCompatActivity() {
                     rawCsvUri()?.let { uris.add(it) }
                     fixCsvUri()?.let { uris.add(it) }
                     navCsvUri()?.let { uris.add(it) }
+                    rtcmCsvUri()?.let { uris.add(it) }
                     gapLogUri()?.let { uris.add(it) }
                     // GPS pozicijos skaičiuoklė (1 žingsnis) – fone, rezultatas gnss_solver.csv
                     offerSp3PickerOnce { Thread {
@@ -5929,6 +5933,7 @@ class MainActivity : AppCompatActivity() {
         if (!gnssRegistered) {
             lm.registerGnssStatusCallback(statusCallback, mainHandler)
             try { lm.registerGnssNavigationMessageCallback(navUiCallback, mainHandler) } catch (e: Exception) { android.util.Log.w("GnssApp", "nav UI: ${e.message}") }
+            startNtrip()
             if (Build.VERSION.SDK_INT >= 31) registerFullTracking() else lm.registerGnssMeasurementsCallback(measCallback, mainHandler)
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
             SessionFiles.activityWritesFixes = true
@@ -5953,6 +5958,7 @@ class MainActivity : AppCompatActivity() {
         lm.registerGnssMeasurementsCallback(request, mainExecutor, measCallback)
     }
 
+    private var obsHNow = 0.0
     private var obsLatNow = 54.74
     private var obsLonNow = 25.25
 
@@ -5994,6 +6000,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun onLocation(loc: Location) {
         obsLatNow = loc.latitude; obsLonNow = loc.longitude
+        if (loc.hasAltitude()) obsHNow = loc.altitude
         if (loc.hasSpeed() && loc.hasBearing() && loc.speed >= 1.5f) {
             devAxisY?.let { if (it.second <= 45.0) compassCheck.add("ekrano viršus (Y)", it.first, loc.bearing.toDouble()) }
             devAxisZ?.let { if (it.second <= 45.0) compassCheck.add("žiūrėjimas pro ekraną (−Z)", it.first, loc.bearing.toDouble()) }
@@ -6265,6 +6272,46 @@ class MainActivity : AppCompatActivity() {
         if (!f.exists()) f.writeText("")
         FileProvider.getUriForFile(this, "$packageName.fileprovider", f)
     } catch (e: Exception) { null }
+
+    private fun rtcmCsvUri(): Uri? = try {
+        val f = RtcmRecorder.file(cacheDir)
+        if (f.length() <= RtcmRecorder.HEADER.length) null else FileProvider.getUriForFile(this, "$packageName.fileprovider", f)
+    } catch (e: Exception) { null }
+
+    /** NTRIP nustatymai: serveris, prievadas, mount point, vartotojas, slaptažodis (saugomi tik prietaise). */
+    private fun showNtripDialog() {
+        val p = getSharedPreferences("ntrip", Context.MODE_PRIVATE)
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad / 2, pad, 0) }
+        fun field(hint: String, value: String, type: Int) = EditText(this).apply {
+            this.hint = hint; setText(value); inputType = type; isSingleLine = true; box.addView(this)
+        }
+        val host = field("Serveris (pvz. 195.182.72.152)", p.getString("host", "")!!, android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI)
+        val port = field("Prievadas", p.getInt("port", 2101).toString(), android.text.InputType.TYPE_CLASS_NUMBER)
+        val mount = field("Mount point (pvz. VRS_RTCM32)", p.getString("mount", "")!!, android.text.InputType.TYPE_CLASS_TEXT)
+        val user = field("Vartotojas", p.getString("user", "")!!, android.text.InputType.TYPE_CLASS_TEXT)
+        val pass = field("Slaptažodis", p.getString("pass", "")!!, android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        val on = CheckBox(this).apply { text = "Jungtis (pataisos įrašomos į gnss_rtcm.csv)"; isChecked = p.getBoolean("on", false); box.addView(this) }
+        val st = TextView(this).apply { text = NtripClient.text(obsLatNow, obsLonNow); textSize = 12f; box.addView(this) }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("NTRIP pataisos (RTCM 3)")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Išsaugoti") { _, _ ->
+                p.edit().putString("host", host.text.toString().trim()).putInt("port", port.text.toString().toIntOrNull() ?: 2101)
+                    .putString("mount", mount.text.toString().trim()).putString("user", user.text.toString())
+                    .putString("pass", pass.text.toString()).putBoolean("on", on.isChecked).apply()
+                NtripClient.stopNow()
+                if (on.isChecked) startNtrip()
+            }
+            .setNegativeButton("Atšaukti", null)
+            .show()
+        st.text = NtripClient.text(obsLatNow, obsLonNow)
+    }
+
+    private fun startNtrip() {
+        if (!NtripClient.enabled(this)) return
+        NtripClient.start(this) { if (obsLatNow == 0.0 && obsLonNow == 0.0) null else doubleArrayOf(obsLatNow, obsLonNow, obsHNow) }
+    }
 
     private fun navCsvUri(): Uri? = try {
         val file = NavRecorder.file(cacheDir)

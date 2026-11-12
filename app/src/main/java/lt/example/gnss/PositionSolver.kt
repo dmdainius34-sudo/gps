@@ -938,7 +938,9 @@ object PositionSolver {
                                     ephs.mapValues { e -> e.value.maxByOrNull { it.toeAbs }!!.tgd } + galBgd) }
                                  catch (e: Exception) { "\n--- SP3 TESTAS v5 ---\nNeatlikta: ${e.message}\n" }) +
                                 (try { Sp3V6.v6Block(raw, r, File(out.parentFile, Sp3V6.OUT_FILE_V6), ref, fixH) }
-                                 catch (e: Exception) { "\n--- SP3 TESTAS v6 ---\nNeatlikta: ${e.message}\n" })
+                                 catch (e: Exception) { "\n--- SP3 TESTAS v6 ---\nNeatlikta: ${e.message}\n" }) +
+                                (try { Dgnss.block(raw, File(raw.parentFile, RtcmRecorder.FILE), r, File(out.parentFile, Dgnss.OUT_FILE), ref, fixH) }
+                                 catch (e: Exception) { "\n--- DGNSS (NTRIP / RTCM 3) ---\nNeatlikta: ${e.message}\n" })
                         } catch (e: Exception) { "\n--- SP3 TESTAS v4 ---\nNeatlikta: ${e.message}\n" })
                 } catch (e: Exception) { Sp3Solver.diagBlock(null, e.message) }
                 Sp3Reader.diagBlock(location, r, searched = searched) + sp3Sol

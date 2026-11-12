@@ -135,6 +135,7 @@ object Rtk {
         private var lastT = Double.NaN; private var t0 = Double.NaN
         private val lastAdr = HashMap<String, DoubleArray>()          // id -> [ADR, Doppler, t]
         var lastSigH = Double.NaN
+            private set
         /** Kabinos kaukė: true – palydovą (azimutas, aukštis °) šioje epochoje nenaudoti. */
         var mask: ((Double, Double) -> Boolean)? = null
         /** Paskutinės epochos palydovai: id -> [azimutas °, aukštis °, C/N0, kodo DD liekana m (NaN), fazės šuolis 0/1, kaukė 0/1]. */
@@ -143,7 +144,6 @@ object Rtk {
         var dopplerSlips = 0
             private set
         var masked = 0
-            private set
             private set
         var lastPhase = 0
             private set

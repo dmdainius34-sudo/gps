@@ -4162,9 +4162,23 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile var showLasco = true
     /** Išmetimų žiedo išorinis spindulys (Saulės spinduliais): koronografo laukas 2,3–5,8 R suspaudžiamas į 1,0–1,8 R. */
     private val LASCO_OUT = 1.8
-    /** SOHO LASCO C2 vaizdas plokštumoje per Saulės centrą, statmenoje Saulės–Žemės krypčiai (taip, kaip jis matomas iš Žemės). */
+    /**
+     * Saulės išmetimai erdvėje.
+     * 1) Tūris: LASCO C2 nuotrauka „ištempiama“ į 3D apvalkalą aplink Saulę – spindulys žengia per apvalkalą, kiekvienas taškas
+     *    projektuojamas į nuotrauką (pozicijos kampas ir atstumas nuo Saulės), šviesumas silpsta tolstant nuo dangaus plokštumos
+     *    (Tomsono sklaida; iš Žemės pusės vaizdas sutampa su nuotrauka, iš šono – tūriniai debesys).
+     * 2) NASA DONKI: tikra 3D išmetimų kryptis, kūgio plotis ir greitis – kūgiai, plintantys link Žemės orbitos.
+     */
     private fun drawLasco(sp: FloatArray, rs: Float) {
         if (!showLasco) return
+        val dl = kotlin.math.sqrt(sp[0] * sp[0] + sp[1] * sp[1] + sp[2] * sp[2]); if (dl < 1e-6f) return
+        val d = floatArrayOf(sp[0] / dl, sp[1] / dl, sp[2] / dl)                 // Žemė → Saulė
+        val z = SunFrame.axes(System.currentTimeMillis())[2]
+        val pz = (z[0] * d[0] + z[1] * d[1] + z[2] * d[2]).toFloat()
+        val u = floatArrayOf(z[0].toFloat() - pz * d[0], z[1].toFloat() - pz * d[1], z[2].toFloat() - pz * d[2])
+        val ul = kotlin.math.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]); for (i in 0..2) u[i] /= ul
+        val r = floatArrayOf(d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0])   // vakarai
+        drawCmeCones(sp, rs, dl, z)
         val img = Lasco.image ?: return
         if (Lasco.version != lascoVer) { lascoVer = Lasco.version
             if (lascoTex != 0) GLES20.glDeleteTextures(1, intArrayOf(lascoTex), 0)
@@ -4172,38 +4186,73 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, lascoTex)
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR)
             GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D) }
-        if (lascoProg == 0) lascoProg = program(LASCO_VS, LASCO_FS)
-        // ašys: d – nuo Žemės į Saulę, u – Saulės šiaurė dangaus plokštumoje, r = d × u – vakarai (vaizdo dešinė)
-        val dl = kotlin.math.sqrt(sp[0] * sp[0] + sp[1] * sp[1] + sp[2] * sp[2]); if (dl < 1e-6f) return
-        val d = floatArrayOf(sp[0] / dl, sp[1] / dl, sp[2] / dl)
-        val z = SunFrame.axes(System.currentTimeMillis())[2]
-        val pz = (z[0] * d[0] + z[1] * d[1] + z[2] * d[2]).toFloat()
-        val u = floatArrayOf(z[0].toFloat() - pz * d[0], z[1].toFloat() - pz * d[1], z[2].toFloat() - pz * d[2])
-        val ul = kotlin.math.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]); for (i in 0..2) u[i] /= ul
-        val r = floatArrayOf(d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0])
-        val h = (LASCO_OUT * rs).toFloat()
-        val v = FloatArray(4 * 5)
-        val corners = arrayOf(floatArrayOf(-1f, -1f), floatArrayOf(1f, -1f), floatArrayOf(-1f, 1f), floatArrayOf(1f, 1f))
-        for ((i, c) in corners.withIndex()) {
-            for (j in 0..2) v[i * 5 + j] = sp[j] + (r[j] * c[0] + u[j] * c[1]) * h
-            v[i * 5 + 3] = (c[0] + 1f) / 2f; v[i * 5 + 4] = (1f - c[1]) / 2f
-        }
-        val buf = floatBuf(v)
-        GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        if (lascoProg == 0) lascoProg = program(GLOW_VS, LASCO_VOL_FS)
+        val ro = (LASCO_OUT * rs).toFloat()
+        val gm = FloatArray(16); val sc = ro / EARTH_R
+        gm[0] = sc; gm[5] = sc; gm[10] = sc; gm[12] = sp[0]; gm[13] = sp[1]; gm[14] = sp[2]; gm[15] = 1f
+        val gmvp = FloatArray(16); Matrix.multiplyMM(gmvp, 0, mvpI, 0, gm, 0)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE)
         GLES20.glUseProgram(lascoProg)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(lascoProg, "uMVP"), 1, false, mvpI, 0)
+        fun u3(n: String, v: FloatArray) = GLES20.glUniform3f(GLES20.glGetUniformLocation(lascoProg, n), v[0], v[1], v[2])
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(lascoProg, "uMVP"), 1, false, gmvp, 0)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(lascoProg, "uModel"), 1, false, gm, 0)
+        u3("uCam", camPos); u3("uCenter", sp); u3("uD", d); u3("uU", u); u3("uR", r)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uRs"), rs)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uHalf"), Lasco.HALF_RSUN.toFloat())
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uOut"), LASCO_OUT.toFloat())
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, lascoTex)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(lascoProg, "uTex"), 0)
         resetAttribs()
-        val lp = GLES20.glGetAttribLocation(lascoProg, "aPos"); val lu = GLES20.glGetAttribLocation(lascoProg, "aUV")
-        GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lu)
-        buf.position(0); GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 20, buf)
-        buf.position(3); GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 20, buf)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        GLES20.glDisableVertexAttribArray(lu)
+        val lp = GLES20.glGetAttribLocation(lascoProg, "aPos")
+        GLES20.glEnableVertexAttribArray(lp)
+        earthPos!!.position(0)
+        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, earthPos)
+        // galinės sienelės: veikia ir kamerai esant apvalkalo viduje; įėjimo taškas skaičiuojamas šešėliuoklyje
+        GLES20.glEnable(GLES20.GL_CULL_FACE); GLES20.glCullFace(GLES20.GL_FRONT)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+        GLES20.glCullFace(GLES20.GL_BACK); GLES20.glDisable(GLES20.GL_CULL_FACE)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    /** DONKI išmetimų kūgiai: viršūnė Saulės centre, priekis – nuskriestas atstumas (21,5 R + greitis × laikas), mastelis iki Žemės orbitos. */
+    private fun drawCmeCones(sp: FloatArray, rs: Float, au: Float, pole: DoubleArray) {
+        val list = Donki.active(System.currentTimeMillis()); if (list.isEmpty()) return
+        val ez = doubleArrayOf(pole[0], pole[1], pole[2])
+        val e = doubleArrayOf(-sp[0].toDouble() / au, -sp[1].toDouble() / au, -sp[2].toDouble() / au)   // Saulė → Žemė
+        val now = System.currentTimeMillis()
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        for (c in list) {
+            val (n, ex, ey) = Donki.frame(c, e, ez)
+            val fr = Donki.frontRsun(c, now)                                    // Saulės spinduliais
+            val dist = (fr / Donki.AU_RSUN * au).coerceAtLeast(rs * 1.05f.toDouble())
+            val col = Donki.color(c.speed)
+            val ha = Math.toRadians(c.halfAngle.coerceIn(5.0, 80.0))
+            val rad = dist * kotlin.math.tan(ha); val cd = dist
+            val ring = ArrayList<Float>(); val sides = ArrayList<Float>()
+            fun pt(a: Double, rr: Double, dd: Double) = FloatArray(3) { (sp[it] + n[it] * dd + (ex[it] * kotlin.math.cos(a) + ey[it] * kotlin.math.sin(a)) * rr).toFloat() }
+            for (i in 0 until 36) { val a0 = i * Math.PI / 18; val a1 = (i + 1) * Math.PI / 18
+                pt(a0, rad, cd).forEach { ring.add(it) }; pt(a1, rad, cd).forEach { ring.add(it) } }
+            val r0 = rs * kotlin.math.sin(ha); val d0 = rs * kotlin.math.cos(ha)
+            for (i in 0 until 8) { val a = i * Math.PI / 4; pt(a, r0, d0).forEach { sides.add(it) }; pt(a, rad, cd).forEach { sides.add(it) } }
+            GLES20.glLineWidth(2.5f * density)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.9f)
+            bindPos(colorProg, floatBuf(ring.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, ring.size / 3)
+            GLES20.glLineWidth(1.2f * density)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.5f)
+            bindPos(colorProg, floatBuf(sides.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, sides.size / 3)
+            val lab = "CME %.0f km/s".format(java.util.Locale.US, c.speed) + (if (Donki.hitsEarth(c, e, ez)) " → Žemė" else "")
+            val (tx, ta) = wideLabel(lab)
+            val lp = FloatArray(3) { (sp[it] + n[it] * cd * 1.05).toFloat() }
+            val hh = (rs * 0.22f) * labelK(lp)
+            billboard(lp, eyeI, hh * ta, hh, tx, col[0], col[1], col[2], 0.95f)
+            GLES20.glUseProgram(colorProg)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        }
+        GLES20.glLineWidth(1f); GLES20.glDepthMask(true)
     }
 
     private var glowProg = 0
@@ -4573,30 +4622,54 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 gl_FragColor = vec4(col, 1.0);
             }
         """
-        private const val LASCO_VS = """
-            attribute vec3 aPos;
-            attribute vec2 aUV;
-            uniform mat4 uMVP;
-            varying vec2 vUV;
-            void main() { vUV = aUV; gl_Position = uMVP * vec4(aPos, 1.0); }
-        """
-        private const val LASCO_FS = """
+        private const val LASCO_VOL_FS = """
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
             precision mediump float;
+            #endif
             uniform sampler2D uTex;
+            uniform vec3 uCam;
+            uniform vec3 uCenter;
+            uniform vec3 uD;
+            uniform vec3 uU;
+            uniform vec3 uR;
+            uniform float uRs;
             uniform float uHalf;
             uniform float uOut;
-            varying vec2 vUV;
+            varying vec3 vW;
             void main() {
-                // rodomas spindulys rho (Saulės spinduliais): 1 – Saulės kraštas, uOut – žiedo kraštas
-                vec2 q = (vUV - 0.5) * 2.0;
-                float rho = length(q) * uOut;
-                if (rho < 1.0 || rho > uOut) discard;
-                // radialinis suspaudimas: visas koronografo laukas 2,3–5,8 R be tarpo prigludęs prie Saulės krašto
-                float src = 2.3 + (rho - 1.0) / (uOut - 1.0) * 3.5;
-                vec2 uv = 0.5 + normalize(q) * src / (2.0 * uHalf);
-                float m = smoothstep(1.0, 1.04, rho) * (1.0 - smoothstep(uOut - 0.08, uOut, rho));
-                vec3 t = texture2D(uTex, uv).rgb;
-                vec3 c = max(t - vec3(0.10), vec3(0.0)) * 1.6 * m * (0.6 + 0.4 * (src - 2.3) / 3.5 + 0.4);   // fono atėmimas: lieka srautai ir išmetimai
+                vec3 rd = vW - uCam; float tEnd = length(rd); rd /= tEnd;
+                vec3 oc = uCam - uCenter;
+                float b = dot(oc, rd);
+                float ro = uOut * uRs;
+                float h = b * b - (dot(oc, oc) - ro * ro);
+                if (h <= 0.0) discard;
+                float t0 = max(-b - sqrt(h), 0.0);
+                // Saulės rutulys užstoja tai, kas už jo
+                float hs = b * b - (dot(oc, oc) - uRs * uRs);
+                if (hs > 0.0) { float ts = -b - sqrt(hs); if (ts > t0) tEnd = min(tEnd, ts); }
+                if (tEnd <= t0) discard;
+                const int N = 28;
+                float dt = (tEnd - t0) / float(N);
+                vec3 acc = vec3(0.0);
+                for (int i = 0; i < N; i++) {
+                    vec3 p = (uCam + rd * (t0 + (float(i) + 0.5) * dt) - uCenter) / uRs;
+                    float rho = length(p);
+                    if (rho < 1.0 || rho > uOut) continue;
+                    vec2 q = vec2(dot(p, uR), dot(p, uU));
+                    float ql = length(q);
+                    if (ql < 1e-4) continue;
+                    // atstumas nuo Saulės → koronografo laukas 2,3–5,8 R (suspausta į 1,0–uOut R)
+                    float src = 2.3 + (rho - 1.0) / (uOut - 1.0) * 3.5;
+                    vec2 uv = 0.5 + vec2(q.x, -q.y) / ql * src / (2.0 * uHalf);
+                    vec3 t = max(texture2D(uTex, uv).rgb - vec3(0.10), vec3(0.0));
+                    float beta = asin(clamp(dot(p, uD) / rho, -1.0, 1.0));   // kampas nuo dangaus plokštumos
+                    float w = exp(-(beta * beta) / 0.5);
+                    float m = smoothstep(1.0, 1.06, rho) * (1.0 - smoothstep(uOut - 0.1, uOut, rho));
+                    acc += t * w * m;
+                }
+                vec3 c = acc * (dt / uRs) * 1.5;
                 gl_FragColor = vec4(c * vec3(1.0, 0.85, 0.65), 1.0);
             }
         """
@@ -6147,11 +6220,11 @@ class MainActivity : AppCompatActivity() {
         Lasco.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_lasco", true)
         if (::skyDome.isInitialized) skyDome.setLasco(Lasco.enabled)
         left.addView(CheckBox(this).apply {
-            text = "Saulės išmetimai (SOHO LASCO C2 koronografas, kas 15 min.)"
+            text = "Saulės išmetimai: SOHO LASCO C2 tūris ir NASA DONKI 3D kryptys (kas 15–30 min.)"
             isChecked = Lasco.enabled
             setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_lasco", on).apply(); Lasco.enabled = on
                 if (::skyDome.isInitialized) skyDome.setLasco(on)
-                if (on) Lasco.refresh(this@MainActivity) }
+                if (on) { Lasco.refresh(this@MainActivity); Donki.refresh(this@MainActivity) } }
         }, LinearLayout.LayoutParams(mw, ww))
         Uvi.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("uv_layer", false)
         left.addView(CheckBox(this).apply {

@@ -54,7 +54,7 @@ object SunFrame {
     fun text(ms: Long = System.currentTimeMillis()): String {
         val (p, b, l) = pbl(ms).let { Triple(it[0], it[1], it[2]) }
         return "Saulės koordinatės: P = %+.2f°, B₀ = %+.2f°, L₀ = %.2f° (į Žemę atsuktas dienovidinis), Carringtono apsisukimas %.2f; ".format(
-            Locale.US, p, b, l, carrington(ms)) + SunImage.status + "; " + Lasco.status
+            Locale.US, p, b, l, carrington(ms)) + SunImage.status + "; " + Lasco.status + "; " + Donki.text()
     }
 }
 
@@ -275,5 +275,96 @@ object Lasco {
             } catch (e: Exception) { status = "Saulės išmetimai (LASCO C2): ${e.javaClass.simpleName} ${e.message ?: ""}".trim() }
             finally { busy = false }
         }.start()
+    }
+}
+
+/**
+ * NASA CCMC DONKI: išmetimų (CME) 3D analizė – heliografinė platuma, Stonyhursto ilguma (0° – į Žemę, + vakarai),
+ * kūgio pusė kampo, greitis ir laikas, kai priekis pasiekė 21,5 Saulės spindulio.
+ */
+object Donki {
+    const val AU_RSUN = 215.03
+    private const val RSUN_KM = 696_000.0
+    class Cme(val t215Ms: Long, val lat: Double, val lon: Double, val halfAngle: Double, val speed: Double, val type: String, val id: String)
+    @Volatile var list: List<Cme> = emptyList()
+        private set
+    @Volatile var status = "NASA DONKI: neatsisiųsta"
+        private set
+    @Volatile private var at = 0L
+    @Volatile private var busy = false
+
+    fun parse(json: String): List<Cme> {
+        val a = org.json.JSONArray(json); val out = ArrayList<Cme>()
+        for (i in 0 until a.length()) {
+            val o = a.optJSONObject(i) ?: continue
+            if (o.isNull("time21_5") || o.isNull("latitude") || o.isNull("longitude") || o.isNull("speed")) continue
+            val t = try { java.time.OffsetDateTime.parse(o.getString("time21_5")).toInstant().toEpochMilli() } catch (_: Exception) { continue }
+            out.add(Cme(t, o.getDouble("latitude"), o.getDouble("longitude"), if (o.isNull("halfAngle")) 30.0 else o.getDouble("halfAngle"),
+                o.getDouble("speed"), o.optString("type", ""), o.optString("associatedCMEID", "")))
+        }
+        // vienam išmetimui – naujausia analizė
+        return out.groupBy { it.id.ifEmpty { it.t215Ms.toString() } }.values.map { it.last() }.sortedBy { it.t215Ms }
+    }
+
+    fun refresh(ctx: Context) {
+        val now = System.currentTimeMillis()
+        if (!Lasco.enabled || busy || now - at < (if (list.isEmpty()) 5 * 60_000L else 30 * 60_000L)) return
+        busy = true; at = now
+        Thread {
+            try {
+                val f = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                val url = "https://kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get/CMEAnalysis?startDate=" + f.format(java.util.Date(now - 8 * 86_400_000L)) +
+                    "&endDate=" + f.format(java.util.Date(now + 86_400_000L)) + "&mostAccurateOnly=true&speed=0&halfAngle=0&catalog=ALL"
+                val c = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 15_000; readTimeout = 60_000; setRequestProperty("User-Agent", "Mozilla/5.0 (Android) GnssApp") }
+                if (c.responseCode != 200) { status = "NASA DONKI: HTTP ${c.responseCode}"; return@Thread }
+                val txt = c.inputStream.bufferedReader().readText().trim()
+                list = if (txt.isEmpty()) emptyList() else parse(txt)
+                status = "NASA DONKI: atnaujinta"
+            } catch (e: Exception) { status = "NASA DONKI: ${e.javaClass.simpleName} ${e.message ?: ""}".trim() }
+            finally { busy = false }
+        }.start()
+    }
+
+    /** Priekio atstumas Saulės spinduliais (pastovus greitis nuo 21,5 R). */
+    fun frontRsun(c: Cme, ms: Long): Double = 21.5 + c.speed * (ms - c.t215Ms) / 1000.0 / RSUN_KM
+
+    /** Rodomi išmetimai: jau pasirodę ir dar nenuskridę toliau nei 1,3 AU. */
+    fun active(ms: Long): List<Cme> = list.filter { ms >= c0(it) && frontRsun(it, ms) < 1.3 * AU_RSUN }
+    private fun c0(c: Cme) = c.t215Ms - ((21.5 - 1.0) * RSUN_KM / c.speed.coerceAtLeast(50.0) * 1000).toLong()
+
+    /** Kryptis n ir dvi statmenos ašys; e – Saulė→Žemė, z – Saulės šiaurės ašis (scenos koordinatėmis). */
+    fun frame(c: Cme, e: DoubleArray, z: DoubleArray): Triple<DoubleArray, DoubleArray, DoubleArray> {
+        val ez = e[0] * z[0] + e[1] * z[1] + e[2] * z[2]
+        var x = DoubleArray(3) { e[it] - ez * z[it] }; val xl = sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]); x = DoubleArray(3) { x[it] / xl }
+        val y = SunFrame.cross(z, x)
+        val la = Math.toRadians(c.lat); val lo = Math.toRadians(c.lon)
+        val n = DoubleArray(3) { cos(la) * cos(lo) * x[it] + cos(la) * sin(lo) * y[it] + sin(la) * z[it] }
+        val ref = if (kotlin.math.abs(n[0] * z[0] + n[1] * z[1] + n[2] * z[2]) < 0.9) z else x
+        var a = SunFrame.cross(n, ref); val al = sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); a = DoubleArray(3) { a[it] / al }
+        return Triple(n, a, SunFrame.cross(n, a))
+    }
+
+    fun hitsEarth(c: Cme, e: DoubleArray, z: DoubleArray): Boolean {
+        val n = frame(c, e, z).first
+        val ang = Math.toDegrees(kotlin.math.acos((n[0] * e[0] + n[1] * e[1] + n[2] * e[2]).coerceIn(-1.0, 1.0)))
+        return ang <= c.halfAngle
+    }
+
+    /** Atskridimas prie Žemės (1 AU) pastoviu greičiu, ms. */
+    fun arrivalMs(c: Cme): Long = c.t215Ms + ((AU_RSUN - 21.5) * RSUN_KM / c.speed.coerceAtLeast(50.0) * 1000).toLong()
+
+    fun color(v: Double): FloatArray = when {
+        v < 500 -> floatArrayOf(1f, 0.92f, 0.35f); v < 1000 -> floatArrayOf(1f, 0.6f, 0.15f); else -> floatArrayOf(1f, 0.25f, 0.2f)
+    }
+
+    fun text(ms: Long = System.currentTimeMillis()): String {
+        val act = active(ms); if (act.isEmpty()) return "$status; aktyvių išmetimų nėra"
+        val e = doubleArrayOf(1.0, 0.0, 0.0); val z = doubleArrayOf(0.0, 0.0, 1.0)     // Stonyhursto sistema
+        val fmt = java.text.SimpleDateFormat("MM-dd HH:mm", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+        return "$status; išmetimai: " + act.joinToString(", ") { c ->
+            "%s UTC %.0f km/s, plat. %+.0f° ilg. %+.0f°, pločio ±%.0f°".format(Locale.US, fmt.format(java.util.Date(c.t215Ms)), c.speed, c.lat, c.lon, c.halfAngle) +
+                (if (hitsEarth(c, e, z)) " → į Žemę, atskris ~" + fmt.format(java.util.Date(arrivalMs(c))) + " UTC" else "")
+        }
     }
 }

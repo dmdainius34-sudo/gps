@@ -1952,10 +1952,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val sd = sunDir()
             val sp = floatArrayOf(
                 (fP[0] + sd[0] * SUN_DIST).toFloat(), (fP[1] + sd[1] * SUN_DIST).toFloat(), (fP[2] + sd[2] * SUN_DIST).toFloat())
-            val dd = sp[0] * eyeI[0] + sp[1] * eyeI[1] + sp[2] * eyeI[2]
-            val qx = sp[0] - dd * eyeI[0]; val qy = sp[1] - dd * eyeI[1]; val qz = sp[2] - dd * eyeI[2]
-            val hidden = dd < 0f && kotlin.math.sqrt(qx * qx + qy * qy + qz * qz) < EARTH_R
-            if (!hidden && sunTex != 0) {
+            // Saulė (spindulys 2× Žemės) nebeslepiama visa – Žemė ją užstoja tik iš dalies (gylio testas)
+            if (sunTex != 0) {
                 val pulse = 1f + 0.04f * kotlin.math.sin(t * 1.5f)
                 drawSun3D(sp, t)
             }
@@ -4284,7 +4282,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val gm = FloatArray(16); val sc = ro / EARTH_R
         gm[0] = sc; gm[5] = sc; gm[10] = sc; gm[12] = sp[0]; gm[13] = sp[1]; gm[14] = sp[2]; gm[15] = 1f
         val gmvp = FloatArray(16); Matrix.multiplyMM(gmvp, 0, mvpI, 0, gm, 0)
-        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)   // Žemė priekyje užstoja išmetimus
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE)
         GLES20.glUseProgram(lascoProg)
         fun u3(n: String, v: FloatArray) = GLES20.glUniform3f(GLES20.glGetUniformLocation(lascoProg, n), v[0], v[1], v[2])

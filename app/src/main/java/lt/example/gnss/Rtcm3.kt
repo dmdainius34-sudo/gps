@@ -65,7 +65,9 @@ object Rtcm3 {
         return b.u(24, 12).toInt() to doubleArrayOf(b.s(42, 38) * 1e-4, b.s(80, 38) * 1e-4, b.s(118, 38) * 1e-4)
     }
 
-    class Obs(val sys: Char, val prn: Int, val sig: String, val pr: Double, val cn0: Double)
+    /** pr, phase – metrais (fazė NaN, jei negalioja); lock – užrakto laiko indikatorius (sumažėjus – fazės šuolis). */
+    class Obs(val sys: Char, val prn: Int, val sig: String, val pr: Double, val cn0: Double,
+              val phase: Double = Double.NaN, val lock: Int = 0, val half: Int = 0)
     /** tow – GPS savaitės laikas (s); GLONASS – paros laikas Maskvos laiku (s), dow – savaitės diena. */
     class Msm(val sys: Char, val type: Int, val tow: Double, val dow: Int, val obs: List<Obs>)
 
@@ -111,9 +113,11 @@ object Rtcm3 {
         // signalų duomenys
         val prBits = if (kind == 7) 20 else 15; val prScale = if (kind == 7) Math.scalb(1.0, -29) else Math.scalb(1.0, -24)
         val fine = DoubleArray(nc) { val v = b.s(i, prBits); i += prBits; if (v == -(1L shl (prBits - 1))) Double.NaN else v * prScale }
-        i += nc * (if (kind == 7) 24 else 22)                           // fazė
-        i += nc * (if (kind == 7) 10 else 4)                            // užrakto laikas
-        i += nc                                                         // pusciklis
+        val phBits = if (kind == 7) 24 else 22; val phScale = if (kind == 7) Math.scalb(1.0, -31) else Math.scalb(1.0, -29)
+        val finePh = DoubleArray(nc) { val v = b.s(i, phBits); i += phBits; if (v == -(1L shl (phBits - 1))) Double.NaN else v * phScale }
+        val lkBits = if (kind == 7) 10 else 4
+        val lock = IntArray(nc) { val v = b.u(i, lkBits).toInt(); i += lkBits; v }
+        val half = IntArray(nc) { val v = b.u(i, 1).toInt(); i += 1; v }
         val cnBits = if (kind == 7) 10 else 6; val cnScale = if (kind == 7) 1.0 / 16 else 1.0
         val cn = DoubleArray(nc) { val v = b.u(i, cnBits) * cnScale; i += cnBits; v }
         if (i > b.size) return null
@@ -122,7 +126,8 @@ object Rtcm3 {
             val (s, g) = c
             if (rInt[s] == 255 || fine[k].isNaN()) continue
             val ms = rInt[s] + rMod[s] + fine[k]
-            obs.add(Obs(sys, sats[s], sigCode(sys, sigs[g]), ms * 1e-3 * C, cn[k]))
+            val ph = if (finePh[k].isNaN()) Double.NaN else (rInt[s] + rMod[s] + finePh[k]) * 1e-3 * C
+            obs.add(Obs(sys, sats[s], sigCode(sys, sigs[g]), ms * 1e-3 * C, cn[k], ph, lock[k], half[k]))
         }
         return Msm(sys, type, tow, dow, obs)
     }

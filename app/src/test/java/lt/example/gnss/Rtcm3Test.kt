@@ -47,6 +47,7 @@ class Rtcm3Test {
         val o = msm.obs[0]
         assertEquals(5, o.prn); assertEquals("1C", o.sig); assertEquals(45.0, o.cn0, 0.0)
         assertEquals((70 + 0.5 + 1000 * Math.scalb(1.0, -24)) * 1e-3 * Rtcm3.C, o.pr, 1e-6)
+        assertEquals((70 + 0.5) * 1e-3 * Rtcm3.C, o.phase, 1e-6)
     }
 
     @Test

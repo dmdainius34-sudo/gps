@@ -915,6 +915,12 @@ object PositionSolver {
                 if (used == null) throw java.io.FileNotFoundException(Sp3Locator.NOT_FOUND)
                 location = used.location
                 val r = used.open().use { Sp3Reader.read(it) }
+                try {
+                    val copy = File(out.parentFile, "orbitos_" + used.name.substringAfterLast('/'))
+                    out.parentFile?.listFiles()?.filter { it.name.startsWith("orbitos_") && it != copy }?.forEach { it.delete() }
+                    used.open().use { inp -> copy.outputStream().use { inp.copyTo(it) } }
+                    lastSp3Copy = copy.name
+                } catch (_: Exception) {}
                 val note = Sp3Solver.staleNote(r, rec)
                 lastSp3Note = note
                 val fixFile = File(raw.parentFile, SessionFiles.FIX)
@@ -940,7 +946,9 @@ object PositionSolver {
                                 (try { Sp3V6.v6Block(raw, r, File(out.parentFile, Sp3V6.OUT_FILE_V6), ref, fixH) }
                                  catch (e: Exception) { "\n--- SP3 TESTAS v6 ---\nNeatlikta: ${e.message}\n" }) +
                                 (try { Dgnss.block(raw, File(raw.parentFile, RtcmRecorder.FILE), r, File(out.parentFile, Dgnss.OUT_FILE), ref, fixH) }
-                                 catch (e: Exception) { "\n--- DGNSS (NTRIP / RTCM 3) ---\nNeatlikta: ${e.message}\n" })
+                                 catch (e: Exception) { "\n--- DGNSS (NTRIP / RTCM 3) ---\nNeatlikta: ${e.message}\n" }) +
+                                (try { Rtk.block(raw, File(raw.parentFile, RtcmRecorder.FILE), r, File(out.parentFile, Rtk.OUT_FILE), ref, fixH) }
+                                 catch (e: Exception) { "\n--- RTK ---\nNeatlikta: ${e.message}\n" })
                         } catch (e: Exception) { "\n--- SP3 TESTAS v4 ---\nNeatlikta: ${e.message}\n" })
                 } catch (e: Exception) { Sp3Solver.diagBlock(null, e.message) }
                 Sp3Reader.diagBlock(location, r, searched = searched) + sp3Sol
@@ -952,6 +960,8 @@ object PositionSolver {
     }
 
     const val DIAG_FILE = "gnss_solver_diag.txt"
+    /** SP3 failo, naudoto skaičiavimui, kopija cache kataloge (ZIP testams). */
+    @Volatile var lastSp3Copy: String? = null
     /** Paskutinės solveFiles() diagnostikos tekstas. */
     @Volatile var lastDiagText: String = ""
 

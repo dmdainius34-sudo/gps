@@ -5838,8 +5838,18 @@ class MainActivity : AppCompatActivity() {
                         val s5 = sp3TestCsvUri(Sp3V5.OUT_FILE_V5)
                         val s6 = sp3TestCsvUri(Sp3V6.OUT_FILE_V6)
                         val sd = sp3TestCsvUri(Dgnss.OUT_FILE)
+                        val rk = sp3TestCsvUri(Rtk.OUT_FILE)
+                        val orb = PositionSolver.lastSp3Copy?.let { sp3TestCsvUri(it) }
+                        val brd = try {
+                            Brdc.dir(this).listFiles()?.filter { it.name.endsWith(".rnx") }?.maxByOrNull { it.lastModified() }?.let { f ->
+                                val c = File(cacheDir, "brdc_" + f.name)
+                                cacheDir.listFiles()?.filter { it.name.startsWith("brdc_") && it != c }?.forEach { it.delete() }
+                                if (!c.exists() || c.length() != f.length()) f.copyTo(c, overwrite = true)
+                                sp3TestCsvUri(c.name)
+                            }
+                        } catch (_: Exception) { null }
                         val d = solverDiagUri()
-                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; s2?.let { uris.add(it) }; s3?.let { uris.add(it) }; s4?.let { uris.add(it) }; s5?.let { uris.add(it) }; s6?.let { uris.add(it) }; sd?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
+                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; s2?.let { uris.add(it) }; s3?.let { uris.add(it) }; s4?.let { uris.add(it) }; s5?.let { uris.add(it) }; s6?.let { uris.add(it) }; sd?.let { uris.add(it) }; rk?.let { uris.add(it) }; orb?.let { uris.add(it) }; brd?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
                     }.start() }
                 } else send()
             }
@@ -6337,6 +6347,7 @@ class MainActivity : AppCompatActivity() {
         File(cacheDir, Sp3V5.OUT_FILE_V5).delete()
         File(cacheDir, Sp3V6.OUT_FILE_V6).delete()
         File(cacheDir, Dgnss.OUT_FILE).delete()
+        File(cacheDir, Rtk.OUT_FILE).delete()
         // Atskaitos taškas SP3 testams: „Žinomos koordinatės“, jei įvestos
         PositionSolver.knownRef = try { sharePanel?.knownLatLon } catch (e: Exception) { null }
         // „SP3 TESTAS“ / „SP3 INTERPOLIACIJA“ diagnostikai (skaičiuoklė SP3 nenaudoja)

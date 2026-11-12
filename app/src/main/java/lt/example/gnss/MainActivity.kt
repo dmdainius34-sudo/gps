@@ -5171,6 +5171,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var skyHolder: FrameLayout
     private lateinit var fsBtn: TextView
     private lateinit var satCountView: TextView
+    private var scaleBtnView: TextView? = null
     private lateinit var orientView: TextView
     private var lastSatCount: SatCount.Result? = null
     private var skyHolderParent: ViewGroup? = null
@@ -5187,24 +5188,58 @@ class MainActivity : AppCompatActivity() {
      * (tai gadindavo vaizdą ir uždarydavo programą) – keičiamas tik jo dydis,
      * o kiti elementai laikinai paslepiami.
      */
+    /** Visas ekranas: turinys po permatomomis būsenos ir naršymo juostomis; užrašai atitraukiami nuo jų. */
+    private fun edgeToEdge(on: Boolean) {
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, !on)
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = if (on) Color.TRANSPARENT else Color.WHITE
+        if (Build.VERSION.SDK_INT >= 29) { window.isNavigationBarContrastEnforced = !on; window.isStatusBarContrastEnforced = false }
+        if (Build.VERSION.SDK_INT >= 28) window.attributes = window.attributes.apply {
+            layoutInDisplayCutoutMode = if (on) WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                else WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+        }
+        androidx.core.view.WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !on            // tamsiame kosmose – šviesios piktogramos
+            isAppearanceLightNavigationBars = !on
+        }
+        val ins = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)
+            ?.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars() or androidx.core.view.WindowInsetsCompat.Type.displayCutout())
+        val m = (10 * resources.displayMetrics.density).toInt()
+        val t = if (on) ins?.top ?: 0 else 0; val b = if (on) ins?.bottom ?: 0 else 0
+        val l = if (on) ins?.left ?: 0 else 0; val r = if (on) ins?.right ?: 0 else 0
+        fun margins(v: View?, lft: Int, top: Int, rgt: Int, bot: Int) {
+            val lp = v?.layoutParams as? FrameLayout.LayoutParams ?: return
+            lp.setMargins(lft, top, rgt, bot); v.layoutParams = lp
+        }
+        if (::satCountView.isInitialized) margins(satCountView, l, t, 0, 0)
+        if (::orientView.isInitialized) margins(orientView, l, 0, 0, b)
+        margins(fsBtn, m, m + t, m + r, m)
+        margins(scaleBtnView, m, fsBtn.layoutParams.height + 2 * m + t, m + r, m)
+    }
+
     private fun toggleFullscreen() {
         if (!::skyHolder.isInitialized) return
         if (!fullscreen) {
-            val w = container.width
-            val h = container.height
-            if (w <= 0 || h <= 0) return
+            if (container.width <= 0 || container.height <= 0) return
             leftCol?.visibility = View.GONE
             cnoView.visibility = View.GONE
             rootScroll?.scrollTo(0, 0)
-            skyHolder.layoutParams = LinearLayout.LayoutParams(w, h)
             fsBtn.text = "\u2715"
             fullscreen = true
+            edgeToEdge(true)
+            // po išdėstymo – visas ekranas, įskaitant sritis po būsenos ir naršymo juostomis
+            container.post {
+                if (!fullscreen) return@post
+                skyHolder.layoutParams = LinearLayout.LayoutParams(container.width, container.height)
+                skyHolder.requestLayout()
+            }
         } else {
             leftCol?.visibility = View.VISIBLE
             cnoView.visibility = View.VISIBLE
             skyHolder.layoutParams = skyHolderLp
             fsBtn.text = "\u26F6"
             fullscreen = false
+            edgeToEdge(false)
         }
         skyHolder.requestLayout()
         sharePanel?.bringToFront()
@@ -5599,7 +5634,7 @@ class MainActivity : AppCompatActivity() {
             setMargins(m, m, m, m)
         })
         val scaleBtn = TextView(this).apply {
-            fun label() { text = if (skyDome.realScale) "Realybė" else "Mastelis" }
+            fun label() { text = if (skyDome.realScale) "Realybė" else "Vietinis" }
             label()
             textSize = 14f
             gravity = Gravity.CENTER
@@ -5610,9 +5645,10 @@ class MainActivity : AppCompatActivity() {
                 skyDome.setRealScale(!skyDome.realScale); label()
                 Toast.makeText(this@MainActivity, if (skyDome.realScale)
                     "Realybė: Saulė ir orbita tikru masteliu – atitolinkite pirštais, kad pamatytumėte visą orbitą"
-                    else "Mastelis: schema (Saulė arti, kad matytųsi)", Toast.LENGTH_SHORT).show()
+                    else "Vietinis: Saulė ir Mėnulis arti, kad matytųsi", Toast.LENGTH_SHORT).show()
             }
         }
+        scaleBtnView = scaleBtn
         skyHolder.addView(scaleBtn, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
             val m = (10 * resources.displayMetrics.density).toInt()
             setMargins(m, fsSize + 2 * m, m, m)

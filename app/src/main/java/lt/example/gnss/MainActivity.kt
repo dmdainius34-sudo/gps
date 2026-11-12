@@ -5842,6 +5842,8 @@ class MainActivity : AppCompatActivity() {
                         val s6 = sp3TestCsvUri(Sp3V6.OUT_FILE_V6)
                         val sd = sp3TestCsvUri(Dgnss.OUT_FILE)
                         val rk = sp3TestCsvUri(Rtk.OUT_FILE)
+                        LiveRtk.flushLog()
+                        val rl = sp3TestCsvUri(LiveRtk.LOG)
                         val orb = PositionSolver.lastSp3Copy?.let { sp3TestCsvUri(it) }
                         val brd = try {
                             Brdc.dir(this).listFiles()?.filter { it.name.endsWith(".rnx") }?.maxByOrNull { it.lastModified() }?.let { f ->
@@ -5852,7 +5854,7 @@ class MainActivity : AppCompatActivity() {
                             }
                         } catch (_: Exception) { null }
                         val d = solverDiagUri()
-                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; s2?.let { uris.add(it) }; s3?.let { uris.add(it) }; s4?.let { uris.add(it) }; s5?.let { uris.add(it) }; s6?.let { uris.add(it) }; sd?.let { uris.add(it) }; rk?.let { uris.add(it) }; orb?.let { uris.add(it) }; brd?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
+                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; s2?.let { uris.add(it) }; s3?.let { uris.add(it) }; s4?.let { uris.add(it) }; s5?.let { uris.add(it) }; s6?.let { uris.add(it) }; sd?.let { uris.add(it) }; rk?.let { uris.add(it) }; rl?.let { uris.add(it) }; orb?.let { uris.add(it) }; brd?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
                     }.start() }
                 } else send()
             }

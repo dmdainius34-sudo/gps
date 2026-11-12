@@ -32,8 +32,33 @@ object LiveRtk {
         private set
     @Volatile var epochs = 0
         private set
+    private var pushed: PositionSolver.Solution? = null
+    private var held = 0
+    @Volatile var pushedN = 0
+        private set
+    @Volatile var heldN = 0
+        private set
+    const val LOG = "gnss_rtk_live.csv"
+    private var logW: java.io.BufferedWriter? = null
+    @Volatile var logDir: java.io.File? = null
 
-    fun load(ctx: Context) { enabled = ctx.getSharedPreferences("ntrip", Context.MODE_PRIVATE).getBoolean("rtk_live", false) }
+    private fun log(ms: Long, s: PositionSolver.Solution) {
+        val d = logDir ?: return
+        try {
+            if (logW == null) {
+                val f = java.io.File(d, LOG); val fresh = !f.exists()
+                logW = java.io.BufferedWriter(java.io.FileWriter(f, true)).also { if (fresh) it.write("laikas_ms,platuma,ilguma,aukstis_m,fazes_palydovu,sigma_h_m,saltinis\n") }
+            }
+            logW?.write(String.format(Locale.US, "%d,%.9f,%.9f,%.3f,%d,%.3f,%s\n", ms, s.lat, s.lon, s.h, s.sats, s.hacc, source))
+            if (epochs % 10 == 0) logW?.flush()
+        } catch (_: Exception) {}
+    }
+    @Synchronized fun flushLog() { try { logW?.flush() } catch (_: Exception) {} }
+
+    fun load(ctx: Context) {
+        enabled = ctx.getSharedPreferences("ntrip", Context.MODE_PRIVATE).getBoolean("rtk_live", false)
+        logDir = ctx.applicationContext.cacheDir
+    }
 
     @Synchronized fun reset() {
         engine = Rtk.Engine(1e-3, Rtk.Run("gyvas")); pending.clear(); baseEps.clear(); rover.clear(); last = null; epochs = 0
@@ -86,7 +111,12 @@ object LiveRtk {
             if (e1.t - e0.t > 2.5) continue
             val sol = try { engine.step(ep, e0, e1, bp, ::prepare) } catch (e: Exception) { null } ?: continue
             last = sol; lastMs = System.currentTimeMillis(); epochs++
-            MockLoc.push(sol)
+            log(ep.timeMs, sol)
+            // kitoms programoms – tik suartėjęs ir stabilus sprendinys
+            val prev = pushed
+            val ok = sol.hacc < 0.5 && sol.sats >= 4 &&
+                (prev == null || PositionSolver.horizDist(prev.lat, prev.lon, sol.lat, sol.lon) < maxOf(1.0, 4 * sol.hacc) || held >= 10)
+            if (ok) { MockLoc.push(sol); pushed = sol; held = 0; pushedN++ } else { held++; heldN++ }
         }
     }
 
@@ -124,7 +154,7 @@ object LiveRtk {
         if (!enabled) return "Gyvas RTK: išjungtas"
         val s = last ?: return "Gyvas RTK: laukiama (bazė ${if (basePos != null) "yra" else "nėra"}, bazės epochų ${baseEps.size}, prietaiso epochų eilėje ${rover.size})"
         return "Gyvas RTK: %.7f, %.7f, h %.2f m, σh %.2f m, fazės palydovų %d, prieš %d s, epochų %d (%s)".format(Locale.US,
-            s.lat, s.lon, s.h, s.hacc, s.sats, (System.currentTimeMillis() - lastMs) / 1000, epochs, source) + "; " + MockLoc.status
+            s.lat, s.lon, s.h, s.hacc, s.sats, (System.currentTimeMillis() - lastMs) / 1000, epochs, source) + "; kitoms programoms perduota $pushedN, sulaikyta $heldN (nesuartėjęs ar šuolis); " + MockLoc.status
     }
 }
 

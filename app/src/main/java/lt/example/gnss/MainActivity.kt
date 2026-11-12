@@ -1743,6 +1743,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
         glowProg = 0
+        lascoProg = 0; lascoTex = 0; lascoVer = -1; sunImgVer = -1
         buildEarth()
         loadCmb()
         starTex = makeStarTexture()
@@ -4186,7 +4187,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val img = Lasco.image ?: return
         if (Lasco.version != lascoVer) { lascoVer = Lasco.version
             if (lascoTex != 0) GLES20.glDeleteTextures(1, intArrayOf(lascoTex), 0)
-            lascoTex = uploadTexture(img) }
+            lascoTex = uploadTexture(img.copy(img.config ?: Bitmap.Config.ARGB_8888, false)) }
         if (lascoProg == 0) lascoProg = program(GLOW_VS, LASCO_VOL_FS)
         val ro = (LASCO_OUT * rs).toFloat()
         val gm = FloatArray(16); val sc = ro / EARTH_R
@@ -4226,8 +4227,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        val newest = list.sortedByDescending { it.t215Ms }.take(3).toSet()
         for (c in list) {
             val (n, ex, ey) = Donki.frame(c, e, ez)
+            val toEarth = Donki.hitsEarth(c, e, ez)
+            val aMul = if (toEarth) 1f else if (c in newest) 0.55f else 0.3f
             val fr = Donki.frontRsun(c, now)                                    // Saulės spinduliais
             val dist = (fr / Donki.AU_RSUN * au).coerceAtLeast(rs * 1.05f.toDouble())
             val col = Donki.color(c.speed)
@@ -4238,14 +4242,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             for (i in 0 until 36) { val a0 = i * Math.PI / 18; val a1 = (i + 1) * Math.PI / 18
                 pt(a0, rad, cd).forEach { ring.add(it) }; pt(a1, rad, cd).forEach { ring.add(it) } }
             val r0 = rs * kotlin.math.sin(ha); val d0 = rs * kotlin.math.cos(ha)
-            for (i in 0 until 8) { val a = i * Math.PI / 4; pt(a, r0, d0).forEach { sides.add(it) }; pt(a, rad, cd).forEach { sides.add(it) } }
-            GLES20.glLineWidth(2.5f * density)
-            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.9f)
+            for (i in 0 until 4) { val a = i * Math.PI / 2; pt(a, r0, d0).forEach { sides.add(it) }; pt(a, rad, cd).forEach { sides.add(it) } }
+            GLES20.glLineWidth((if (toEarth) 3f else 1.5f) * density)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.9f * aMul)
             bindPos(colorProg, floatBuf(ring.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, ring.size / 3)
-            GLES20.glLineWidth(1.2f * density)
-            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.5f)
+            GLES20.glLineWidth(1f * density)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.4f * aMul)
             bindPos(colorProg, floatBuf(sides.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, sides.size / 3)
-            val lab = "CME %.0f km/s".format(java.util.Locale.US, c.speed) + (if (Donki.hitsEarth(c, e, ez)) " → Žemė" else "")
+            if (!toEarth && c !in newest) continue
+            val lab = "CME %.0f km/s".format(java.util.Locale.US, c.speed) + (if (toEarth) " → Žemė" else "")
             val (tx, ta) = wideLabel(lab)
             val lp = FloatArray(3) { (sp[it] + n[it] * cd * 1.05).toFloat() }
             val hh = (rs * 0.22f) * labelK(lp)

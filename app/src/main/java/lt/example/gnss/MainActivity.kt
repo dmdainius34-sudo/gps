@@ -1148,6 +1148,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setRealScale(on: Boolean) { renderer.realScale = on; calPrefs.edit().putBoolean("real_scale", on).apply() }
     val realScale get() = renderer.realScale
     fun setNavBits(on: Boolean) { renderer.showNavBits = on }
+    fun setGrid(on: Boolean) { renderer.showGrid = on; calPrefs.edit().putBoolean("grid", on).apply() }
     fun setObstacleMode(m: Int) { renderer.obstacleMode = m; calPrefs.edit().putInt("obst_mode", m).apply() }
     val obstacleMode get() = renderer.obstacleMode
 
@@ -1228,6 +1229,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.showOrient = calPrefs.getBoolean("orient", true)
         renderer.realScale = calPrefs.getBoolean("real_scale", false)
         renderer.showNavBits = calPrefs.getBoolean("nav_bits", true)
+        renderer.showGrid = calPrefs.getBoolean("grid", true)
         renderer.obstacleMode = calPrefs.getInt("obst_mode", 1)
         renderer.followDevice = calPrefs.getBoolean("follow_device", false)
         renderer.freeView = calPrefs.getBoolean("free_view", false)
@@ -1927,6 +1929,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawCorrectionWaves(pin, t)
         if (obstacleMode > 0) drawObstacleSky(pin)
         if (Uvi.enabled) drawUvi()
+        if (showGrid) drawGraticule()
         // Stebėtojas: sukasi tik apie save (rodyklė), visata nuo planšetės sukimo nepriklauso
         drawObserverHeading()
         // SP3 trajektorijos ±30 min. arba užrašas apie apytikslę padėtį
@@ -2676,30 +2679,70 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * iki stebėtojo; bangos bėga link stebėtojo, sustiprėja gavus pataisų žinutę; aplink stebėtoją – plintančios bangelės.
      * Stotis už kelių–keliasdešimties km, todėl atstumas išdidintas, kad matytųsi; kryptis tikra, tikras atstumas – užraše.
      */
+    /** Koordinačių tinklelis ant gaublio: kas 15°, pusiaujas ir Grinvičo dienovidinis ryškesni, atogrąžos ir poliarinės ribos – geltonos. */
+    @Volatile var showGrid = true
+
+    private fun drawGraticule() {
+        if (earthMatLast[10] == 0f) return
+        fun sc(la: Double, lo: Double): FloatArray {
+            val e = PositionSolver.llhToEcef(Math.toRadians(la), Math.toRadians(lo), 0.0)
+            return ecefToScene(doubleArrayOf(e[0] / 1000 * 1.003, e[1] / 1000 * 1.003, e[2] / 1000 * 1.003))
+        }
+        val normal = ArrayList<Float>(); val main = ArrayList<Float>(); val special = ArrayList<Float>()
+        fun seg(dst: ArrayList<Float>, a: FloatArray, b: FloatArray) { dst.add(a[0]); dst.add(a[1]); dst.add(a[2]); dst.add(b[0]); dst.add(b[1]); dst.add(b[2]) }
+        for (la in -75..75 step 15) {                                   // lygiagretės
+            val dst = if (la == 0) main else normal
+            var lo = -180.0; while (lo < 180.0) { seg(dst, sc(la.toDouble(), lo), sc(la.toDouble(), lo + 3)); lo += 3.0 }
+        }
+        for (lo in -180 until 180 step 15) {                            // dienovidiniai
+            val dst = if (lo == 0) main else normal
+            var la = -87.0; while (la < 87.0) { seg(dst, sc(la, lo.toDouble()), sc(la + 3, lo.toDouble())); la += 3.0 }
+        }
+        val eps = SpaceOrientation.ECLIPTIC_OBLIQUITY
+        for (la in listOf(eps, -eps, 90 - eps, -(90 - eps))) {          // atogrąžos ir poliariniai ratai – brūkšniais
+            var lo = -180.0; var k = 0
+            while (lo < 180.0) { if (k % 2 == 0) seg(special, sc(la, lo), sc(la, lo + 2)); lo += 2.0; k++ }
+        }
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        for ((arr, col) in listOf(normal to floatArrayOf(0.75f, 0.85f, 1f, 0.28f), main to floatArrayOf(0.9f, 0.95f, 1f, 0.7f), special to floatArrayOf(1f, 0.85f, 0.2f, 0.75f))) {
+            if (arr.isEmpty()) continue
+            GLES20.glLineWidth((if (arr === normal) 1f else 2f) * density)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], col[3])
+            bindPos(colorProg, floatBuf(arr.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, arr.size / 3)
+        }
+        GLES20.glLineWidth(1f); GLES20.glDepthMask(true); GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        // užrašai: ilgumos ant pusiaujo kas 30°, platumos ant Grinvičo dienovidinio
+        for (lo in -150..180 step 30) {
+            val p = sc(2.0, lo.toDouble()); if (!facing(p)) continue
+            val (tex, asp) = wideLabel(if (lo == 180) "180°" else if (lo < 0) "${-lo}°V" else if (lo == 0) "0°" else "${lo}°R")
+            billboard(p, eyeI, 0.018f * asp, 0.018f, tex, 0.85f, 0.92f, 1f, 0.85f)
+        }
+        for (la in listOf(-60, -30, 30, 60)) {
+            val p = sc(la.toDouble(), 1.5); if (!facing(p)) continue
+            val (tex, asp) = wideLabel(if (la < 0) "${-la}°P" else "${la}°Š")
+            billboard(p, eyeI, 0.018f * asp, 0.018f, tex, 0.85f, 0.92f, 1f, 0.85f)
+        }
+        val (tt, ta) = wideLabel("Vėžio atogrąža %.2f°".format(java.util.Locale.US, eps)); sc(eps + 1.5, -30.0).let { if (facing(it)) billboard(it, eyeI, 0.016f * ta, 0.016f, tt, 1f, 0.85f, 0.3f, 0.85f) }
+        val (tc, tca) = wideLabel("Ožiaragio atogrąža"); sc(-eps - 1.5, -30.0).let { if (facing(it)) billboard(it, eyeI, 0.016f * tca, 0.016f, tc, 1f, 0.85f, 0.3f, 0.85f) }
+    }
+
+    /** Ar gaublio taškas atsuktas į kamerą (užrašai galinėje pusėje nepiešiami). */
+    private fun facing(p: FloatArray): Boolean = p[0] * eyeI[0] + p[1] * eyeI[1] + p[2] * eyeI[2] > 0f
+
     /** UV indekso sluoksnis ant gaublio (Open-Meteo) ir subsolarinių taškų palyginimas: programos Saulė ir UVI dėmės centras. */
     private fun drawUvi() {
         if (earthMatLast[10] == 0f) return
         val now = System.currentTimeMillis()
-        val f = Uvi.field(now); if (f.isEmpty()) return
-        val groups = HashMap<Int, ArrayList<Float>>()
+        if (Uvi.field(now).isEmpty()) return
         fun sc(la: Double, lo: Double, k: Double = 1.004): FloatArray {
             val e = PositionSolver.llhToEcef(Math.toRadians(la), Math.toRadians(lo), 0.0)
             return ecefToScene(doubleArrayOf(e[0] / 1000 * k, e[1] / 1000 * k, e[2] / 1000 * k))
         }
-        for (p in f) {
-            val col = Uvi.color(p[2]); if (col == 0) continue
-            val la0 = (p[0] - 5).coerceAtLeast(-90.0); val la1 = (p[0] + 5).coerceAtMost(90.0)
-            val q = listOf(sc(la0, p[1] - 5), sc(la0, p[1] + 5), sc(la1, p[1] + 5), sc(la1, p[1] - 5))
-            val g = groups.getOrPut(col) { ArrayList() }
-            for (v in listOf(q[0], q[1], q[2], q[0], q[2], q[3])) { g.add(v[0]); g.add(v[1]); g.add(v[2]) }
-        }
         GLES20.glUseProgram(colorProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false); GLES20.glDisable(GLES20.GL_CULL_FACE)
-        for ((col, g) in groups) {
-            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), Color.red(col) / 255f, Color.green(col) / 255f, Color.blue(col) / 255f, 0.33f)
-            bindPos(colorProg, floatBuf(g.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, g.size / 3)
-        }
         // subsolariniai taškai: programos (geltonas kryžius) ir UVI dėmės centras (rožinis)
         val (mLat, mLon) = Uvi.modelSubsolar(now)
         fun cross(la: Double, lo: Double, r: Float, g: Float, b: Float, size: Double) {
@@ -4481,7 +4524,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 // Blizgesys: ryškus Saulės atspindys ir dangaus atspindys pakraščiuose (lygus vandens paviršius)
                 vec3 h = normalize(l + v);
                 float nh = max(dot(sN, h), 0.0);
-                float spec = (pow(nh, 160.0) * 1.6 + pow(nh, 24.0) * 0.18) * ocean;
+                float spec = 0.0;          // Saulės blizgesys pašalintas (priklausė nuo žiūrėjimo kampo, ne nuo koordinačių)
                 vec3 foamCol = vec3(0.0);
                 if (uAnim > 0.5 && uHasMask > 0.5 && ocean > 0.5) {
                     vec4 mk = texture2D(uMask, vUV);
@@ -4494,7 +4537,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                         float a3 = sin(vUV.x * 3700.0 - vUV.y * 2600.0 + uTime * 1.3);
                         vec3 nW = normalize(sN + (tE * (a1 + 0.5 * a3) + tN * (a2 - 0.5 * a3)) * 0.035);
                         float nhW = max(dot(nW, h), 0.0);
-                        spec = (pow(nhW, 160.0) * 1.8 + pow(nhW, 24.0) * 0.2) * ocean;
+                        spec = 0.0 * nhW;
                     }
                     // pakrantės puta: bangos bėga link kranto (atstumas iki kranto mk.g · 255 / 8 taškų)
                     float dpx = mk.g * 31.875;
@@ -5829,9 +5872,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbOrient, LinearLayout.LayoutParams(mw, ww))
+        left.addView(CheckBox(this).apply {
+            text = "Koordinačių tinklelis ant gaublio (kas 15°, atogrąžos)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("grid", true)
+            setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.setGrid(on) }
+        }, LinearLayout.LayoutParams(mw, ww))
         Uvi.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("uv_layer", false)
         left.addView(CheckBox(this).apply {
-            text = "UV indeksas ant gaublio (Open-Meteo) ir Saulės patikra"
+            text = "Saulės patikra pagal UV indeksą (Open-Meteo): kryžiai ant gaublio"
             isChecked = Uvi.enabled
             setOnCheckedChangeListener { _, on ->
                 getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("uv_layer", on).apply()

@@ -30,11 +30,14 @@ class SkyMap(val file: String) {
     @Synchronized fun load(d: File) {
         val f = File(d, file); if (!f.exists()) return
         try {
-            f.readLines().drop(1).forEach { l ->
+            val lines = f.readLines()
+            val v2 = lines.firstOrNull()?.contains("v2") == true          // v1 liekanos kauptos ir nesuartėjus RTK – atmetamos
+            lines.drop(1).forEach { l ->
                 val v = l.split(','); if (v.size < 8) return@forEach
                 val i = v[0].toInt(); if (i !in cells.indices) return@forEach
                 cells[i].n = v[1].toInt(); cells[i].cn0 = v[2].toDouble(); cells[i].nRes = v[3].toInt(); cells[i].nlos = v[4].toInt()
                 cells[i].absRes = v[5].toDouble(); cells[i].slips = v[6].toInt(); cells[i].nPh = v[7].toInt()
+                if (!v2) { cells[i].nRes = 0; cells[i].nlos = 0; cells[i].absRes = 0.0 }
                 samples += cells[i].n
             }
         } catch (_: Exception) {}
@@ -43,7 +46,7 @@ class SkyMap(val file: String) {
     @Synchronized fun save(d: File) {
         try {
             File(d, file).bufferedWriter().use { w ->
-                w.write("langelis,n,cn0_suma,n_liekanu,n_atspindziu,abs_liekanu_suma,fazes_truikiai,n_fazes\n")
+                w.write("langelis,n,cn0_suma,n_liekanu,n_atspindziu,abs_liekanu_suma,fazes_truikiai,n_fazes,v2\n")
                 for ((i, c) in cells.withIndex()) if (c.n > 0 || c.nRes > 0)
                     w.write(String.format(Locale.US, "%d,%d,%.1f,%d,%d,%.1f,%d,%d\n", i, c.n, c.cn0, c.nRes, c.nlos, c.absRes, c.slips, c.nPh))
             }
@@ -128,10 +131,12 @@ object CabinMap {
     /** RTK epochos palydovai: [az, el, C/N0, kodo liekana, šuolis, kaukė]; sigH – RTK neapibrėžtumas (radarui). */
     fun learnRtk(heading: Double?, obs: Map<String, DoubleArray>, sigH: Double = Double.NaN) {
         if (!learn) return
+        // liekanos prasmingos tik suartėjus RTK (kitaip jos – filtro, o ne aplinkos paklaida)
+        if (sigH.isNaN() || sigH >= 1.0) return
         for (v in obs.values) {
             world.addRtk(v[0], v[1], v[3], v[4] > 0.5)
             if (heading != null) cabin.addRtk(v[0] - heading, v[1], v[3], v[4] > 0.5)
-            if (!sigH.isNaN() && sigH < 1.0) Radar.add(v[0], v[1], v[3])
+            Radar.add(v[0], v[1], v[3])
         }
     }
 

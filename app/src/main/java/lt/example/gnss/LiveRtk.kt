@@ -127,6 +127,8 @@ object LiveRtk {
             val ok = sol.hacc < 0.5 && sol.sats >= 4 &&
                 (prev == null || PositionSolver.horizDist(prev.lat, prev.lon, sol.lat, sol.lon) < maxOf(1.0, 4 * sol.hacc) || held >= 10)
             if (ok) { MockLoc.push(sol); pushed = sol; held = 0; pushedN++ } else { held++; heldN++ }
+            // ilgiau nei 10 s be gero sprendinio – sistemai grąžinamas lusto GPS (bandomoji vieta laikinai nuimama)
+            if (held > 10) MockLoc.suspend()
         }
     }
 
@@ -182,16 +184,39 @@ object MockLoc {
     private var lm: LocationManager? = null
     private var since = 0L
 
-    @Suppress("DEPRECATION")
+    /** Įjungta vartotojo (net jei laikinai nuimta, kol RTK nesuartėjęs). */
+    @Volatile var armed = false
+        private set
+    @Volatile var active = false
+        private set
+    private var ctxApp: Context? = null
+
+    /** Vartotojas įjungia: patikrinama leidimas; teikėjas uždedamas tik kai RTK suartėjęs. */
     fun enable(ctx: Context): Boolean {
+        ctxApp = ctx.applicationContext
+        val ok = attach()
+        if (ok) { armed = true; detach("laukiama suartėjusio RTK (tol rodomas lusto GPS)") }
+        return ok
+    }
+
+    fun suspend() { if (active) detach("laikinai nuimta: RTK nesuartėjęs – rodomas lusto GPS") }
+
+    private fun detach(why: String) {
+        try { lm?.removeTestProvider(LocationManager.GPS_PROVIDER) } catch (_: Exception) {}
+        active = false; on = armed; status = "bandomoji vieta: $why"
+    }
+
+    @Suppress("DEPRECATION")
+    private fun attach(): Boolean {
+        val ctx = ctxApp ?: return false
         val m = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         return try {
             try { m.removeTestProvider(LocationManager.GPS_PROVIDER) } catch (_: Exception) {}
             m.addTestProvider(LocationManager.GPS_PROVIDER, false, true, false, false, true, true, true,
                 android.location.Criteria.POWER_LOW, android.location.Criteria.ACCURACY_FINE)
             m.setTestProviderEnabled(LocationManager.GPS_PROVIDER, true)
-            lm = m; on = true; since = System.currentTimeMillis()
-            status = "bandomoji vieta įjungta (GPS teikėjas)"
+            lm = m; on = true; active = true; since = System.currentTimeMillis()
+            status = "bandomoji vieta: perduodamas RTK (GPS teikėjas)"
             true
         } catch (e: SecurityException) {
             status = "bandomoji vieta neleidžiama: kūrėjo nustatymuose pasirinkite šią programą „Bandomosios vietos programa“"
@@ -201,18 +226,19 @@ object MockLoc {
 
     fun disable(why: String = "išjungta") {
         try { lm?.removeTestProvider(LocationManager.GPS_PROVIDER) } catch (_: Exception) {}
-        on = false; lm = null; status = "bandomoji vieta $why"
+        on = false; armed = false; active = false; lm = null; status = "bandomoji vieta $why"
     }
 
     /** Sargas: lustas nebeteikia matavimų – išjungti. */
     fun watchdog() {
-        if (on && System.currentTimeMillis() - since > 15_000 && System.currentTimeMillis() - LiveRtk.lastMeasMs > 15_000)
+        if (active && System.currentTimeMillis() - since > 15_000 && System.currentTimeMillis() - LiveRtk.lastMeasMs > 15_000)
             disable("išjungta: GNSS lustas su bandomąja vieta nebeteikė matavimų")
     }
 
     fun push(s: PositionSolver.Solution) {
+        if (!armed) return
+        if (!active && !attach()) return
         val m = lm ?: return
-        if (!on) return
         try {
             val l = Location(LocationManager.GPS_PROVIDER).apply {
                 latitude = s.lat; longitude = s.lon; altitude = s.h

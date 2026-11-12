@@ -5448,7 +5448,7 @@ class MainActivity : AppCompatActivity() {
             updateReady()
             if (::satCountView.isInitialized) satCountView.text = SatCount.count(list.map { SatCount.Sig(it.const, it.svid, it.used) })
                 .let { "Palydovų ${it.satVisible} (naud. ${it.satUsed})\nSignalų ${it.sigVisible}" } +
-                    (LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.let { "\nRTK ±%.2f m (fazė %d)%s".format(java.util.Locale.US, it.hacc, it.sats, if (MockLoc.on) " → kitoms programoms" else "") } ?: "")
+                    (LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.let { "\nRTK ±%.2f m (fazė %d)%s".format(java.util.Locale.US, it.hacc, it.sats, if (MockLoc.active) " → kitoms programoms" else "") } ?: "")
             if (::orientView.isInitialized && orientView.visibility == View.VISIBLE && !(obsLatNow == 0.0 && obsLonNow == 0.0))
                 orientView.text = SpaceOrientation.shortText(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()))
             val used = list.filter { it.used }
@@ -6357,7 +6357,7 @@ class MainActivity : AppCompatActivity() {
                 Sensor.TYPE_LINEAR_ACCELERATION -> {
                     val a = kotlin.math.sqrt((e.values[0] * e.values[0] + e.values[1] * e.values[1] + e.values[2] * e.values[2]).toDouble())
                     motionLevel = motionLevel * 0.9 + a * 0.1     // išlygintas judėjimo lygis
-                    LiveRtk.moving = motionLevel > 0.15
+                    LiveRtk.moving = motionLevel > 0.4             // krano kabinos vibracija ~0,1–0,2 m/s² – ne judėjimas
                 }
             }
         }
@@ -6498,7 +6498,7 @@ class MainActivity : AppCompatActivity() {
         val pass = field("Slaptažodis", p.getString("pass", "")!!, android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val on = CheckBox(this).apply { text = "Jungtis (pataisos įrašomos į gnss_rtcm.csv)"; isChecked = p.getBoolean("on", false); box.addView(this) }
         val rtk = CheckBox(this).apply { text = "Gyvas RTK (nešlio fazė; planšetė)"; isChecked = p.getBoolean("rtk_live", false); box.addView(this) }
-        val mock = CheckBox(this).apply { text = "Perduoti RTK vietą kitoms programoms (bandomoji vieta, pvz. AlpineQuest)"; isChecked = MockLoc.on; box.addView(this) }
+        val mock = CheckBox(this).apply { text = "Perduoti RTK vietą kitoms programoms (bandomoji vieta, pvz. AlpineQuest)"; isChecked = MockLoc.armed; box.addView(this) }
         val st = TextView(this).apply { text = NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text(); textSize = 12f; box.addView(this) }
         android.app.AlertDialog.Builder(this)
             .setTitle("NTRIP pataisos (RTCM 3)")
@@ -6508,12 +6508,12 @@ class MainActivity : AppCompatActivity() {
                     .putString("mount", mount.text.toString().trim()).putString("user", user.text.toString())
                     .putString("pass", pass.text.toString()).putBoolean("on", on.isChecked).putBoolean("rtk_live", rtk.isChecked).apply()
                 LiveRtk.load(this); if (!rtk.isChecked) LiveRtk.reset()
-                if (mock.isChecked && !MockLoc.on) {
+                if (mock.isChecked && !MockLoc.armed) {
                     if (!MockLoc.enable(this)) {
                         Toast.makeText(this, MockLoc.status, Toast.LENGTH_LONG).show()
                         try { startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) } catch (_: Exception) {}
                     }
-                } else if (!mock.isChecked && MockLoc.on) MockLoc.disable()
+                } else if (!mock.isChecked && MockLoc.armed) MockLoc.disable()
                 NtripClient.stopNow()
                 if (on.isChecked) startNtrip()
             }

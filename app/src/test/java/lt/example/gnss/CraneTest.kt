@@ -23,4 +23,13 @@ class CraneTest {
         val h = ps[0].first; assertTrue(Math.abs(Math.sqrt(h[0] * h[0] + h[1] * h[1] + h[2] * h[2]) - 1.0) < 1e-9)
         Crane.on = false
     }
+
+    @Test
+    fun degreeInput() {
+        assertEquals(54.7400171, Crane.parseDeg("547400171", 90.0)!!, 1e-9)
+        assertEquals(54.7400171, Crane.parseDeg("54,7400171", 90.0)!!, 1e-9)
+        assertEquals(25.2545205, Crane.parseDeg("252545205", 180.0)!!, 1e-9)
+        assertEquals(25.2545205, Crane.parseDeg("25.2545205", 180.0)!!, 1e-9)
+        assertEquals(null, Crane.parseDeg("ab", 90.0))
+    }
 }

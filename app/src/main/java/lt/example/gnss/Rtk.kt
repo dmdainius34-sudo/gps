@@ -217,7 +217,9 @@ object Rtk {
         class Dd(val h: DoubleArray, val v: Double, val sRef: Double, val sI: Double, val key: Int, val id: String)
         val dds = ArrayList<Dd>()
         val n = ff.x.size
-        val masks = geo.associate { it.o.id to (mask?.invoke(it.az, Math.toDegrees(it.el)) == true) }
+        var masks = geo.associate { it.o.id to (mask?.invoke(it.az, Math.toDegrees(it.el)) == true) }
+        // kaukė netaikoma, jei ji išmestų daugiau nei pusę palydovų arba liktų mažiau nei 6
+        if (masks.count { it.value } * 2 > geo.size || geo.size - masks.count { it.value } < 6) masks = masks.mapValues { false }
         val maskedRes = HashMap<String, Double>()
         for ((si, sy) in listOf('G', 'E').withIndex()) {
             val gs = geo.filter { it.o.sys == sy && masks[it.o.id] != true }

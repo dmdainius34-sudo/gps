@@ -6543,7 +6543,7 @@ class MainActivity : AppCompatActivity() {
         box.addView(Button(this).apply {
             text = "Spindulys = dabartinis atstumas iki ašies"
             setOnClickListener {
-                val a = la.text.toString().toDoubleOrNull(); val b = lo.text.toString().toDoubleOrNull()
+                val a = Crane.parseDeg(la.text.toString(), 90.0); val b = Crane.parseDeg(lo.text.toString(), 180.0)
                 if (a == null || b == null) { Toast.makeText(this@MainActivity, "Pirma įveskite ašies koordinates", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
                 val src = LiveRtk.last?.takeIf { it.hacc < 0.5 }
                 val d = PositionSolver.horizDist(a, b, src?.lat ?: obsLatNow, src?.lon ?: obsLonNow)
@@ -6555,10 +6555,16 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Krano apribojimas")
             .setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("Išsaugoti") { _, _ ->
-                Crane.lat = la.text.toString().toDoubleOrNull() ?: 0.0; Crane.lon = lo.text.toString().toDoubleOrNull() ?: 0.0
-                Crane.radius = r.text.toString().toDoubleOrNull() ?: 0.0; Crane.height = h.text.toString().toDoubleOrNull() ?: Double.NaN
-                Crane.on = on.isChecked; Crane.save(this)
-                if (Crane.on && !Crane.valid) Toast.makeText(this, "Įveskite ašies koordinates ir spindulį", Toast.LENGTH_LONG).show()
+                val pla = Crane.parseDeg(la.text.toString(), 90.0); val plo = Crane.parseDeg(lo.text.toString(), 180.0)
+                val pr = Crane.parseNum(r.text.toString()); val ph = Crane.parseNum(h.text.toString())
+                Crane.lat = pla ?: 0.0; Crane.lon = plo ?: 0.0; Crane.radius = pr ?: 0.0; Crane.height = ph ?: Double.NaN
+                Crane.on = on.isChecked
+                if (Crane.on && !Crane.valid) Crane.on = false
+                Crane.save(this)
+                Toast.makeText(this, if (on.isChecked && !Crane.on) "Neteisingi duomenys – apribojimas neįjungtas (ašis, spindulys 0,1–200 m)"
+                    else "Ašis %.7f, %.7f; spindulys %.2f m%s%s".format(java.util.Locale.US, Crane.lat, Crane.lon, Crane.radius,
+                        if (Crane.height.isNaN()) "" else "; aukštis %.2f m".format(java.util.Locale.US, Crane.height), if (Crane.on) "; įjungta" else "; išjungta"),
+                    Toast.LENGTH_LONG).show()
             }
             .setNegativeButton("Atšaukti", null)
             .show()

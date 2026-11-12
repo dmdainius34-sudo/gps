@@ -34,7 +34,26 @@ object Crane {
             .putString("h_s", if (height.isNaN()) "" else height.toString()).apply()
     }
 
-    val valid get() = on && radius > 0.1 && (lat != 0.0 || lon != 0.0)
+    val valid get() = on && radius in 0.1..200.0 && lat in -90.0..90.0 && lon in -180.0..180.0 && (lat != 0.0 || lon != 0.0) &&
+        (height.isNaN() || height in -500.0..9000.0)
+
+    /**
+     * Laipsnių įvedimo taisymas: kablelis -> taškas; jei trūksta dešimtainio skirtuko (pvz. „547400171“),
+     * įterpiamas po sveikųjų laipsnių skaitmenų (platumai – 2, ilgumai – 2, jei taip gaunamas leistinas skaičius).
+     */
+    fun parseDeg(text: String, max: Double): Double? {
+        val t = text.trim().replace(',', '.').replace(" ", "")
+        t.toDoubleOrNull()?.let { if (kotlin.math.abs(it) <= max) return it }
+        val neg = t.startsWith("-"); val digits = t.removePrefix("-").filter { it.isDigit() }
+        if (digits.length < 3) return null
+        for (k in listOf(2, 3, 1)) {
+            val v = "${digits.substring(0, k)}.${digits.substring(k)}".toDoubleOrNull() ?: continue
+            if (v <= max) return if (neg) -v else v
+        }
+        return null
+    }
+
+    fun parseNum(text: String): Double? = text.trim().replace(',', '.').replace(" ", "").toDoubleOrNull()
 
     /** Ašies taškas (ECEF, m; aukštis h0 arba 0) ir vietinis zenitas. */
     fun axis(): Pair<DoubleArray, DoubleArray> {
@@ -54,8 +73,9 @@ object Crane {
         val hz = DoubleArray(3) { d[it] - du * u[it] }
         val rh = sqrt(hz[0] * hz[0] + hz[1] * hz[1] + hz[2] * hz[2])
         val out = ArrayList<Triple<DoubleArray, Double, Double>>()
-        if (rh > 0.05) out.add(Triple(DoubleArray(3) { hz[it] / rh }, radius - rh, SIGMA_R))
-        if (!height.isNaN()) out.add(Triple(u.copyOf(), -du, SIGMA_H))
+        // apsauga: filtras dar toli (kodas nesuartėjęs) arba klaidingi duomenys – apribojimas netaikomas
+        if (rh > 0.05 && kotlin.math.abs(radius - rh) < 50.0) out.add(Triple(DoubleArray(3) { hz[it] / rh }, radius - rh, SIGMA_R))
+        if (!height.isNaN() && kotlin.math.abs(du) < 100.0) out.add(Triple(u.copyOf(), -du, SIGMA_H))
         return out
     }
 

@@ -1216,9 +1216,19 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private val gd = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
         override fun onDoubleTap(e: MotionEvent): Boolean { onDoubleTapCb?.invoke(); return true }
+        override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+            // bakstelėjimas į Saulę ar Mėnulį – kamera nuskrenda prie jo; į Žemę – grįžta
+            when (val id = renderer.pick(e.x, e.y)) {
+                1, 2 -> { renderer.focusOn(id); android.widget.Toast.makeText(context, (if (id == 1) "Saulė" else "Mėnulis") +
+                    ": sukite pirštu aplink centrą, dviem pirštais – stumdyti ir artinti; bakstelėkite Žemę – grįžti", android.widget.Toast.LENGTH_SHORT).show() }
+                0 -> if (renderer.focus != 0) { renderer.focusOn(0); renderer.resetUser() }
+            }
+            return true
+        }
     })
     private var prevArc = doubleArrayOf(0.0, 0.0, 1.0)
     private var pinchLast = 0f
+    private var midX = 0f; private var midY = 0f
     private var pinchAngle = 0.0
 
     init {
@@ -1479,6 +1489,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                 if (e.pointerCount >= 2) {
                     pinchLast = pinchDist(e)
                     pinchAngle = pinchAng(e)
+                    midX = (e.getX(0) + e.getX(1)) / 2; midY = (e.getY(0) + e.getY(1)) / 2
                 }
                 return true
             }
@@ -1493,6 +1504,10 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                     if (da < -Math.PI) da += 2 * Math.PI
                     renderer.rollBy(da)
                     pinchAngle = ang
+                    // dviem pirštais – vaizdo poslinkis (kai kamera prie Saulės ar Mėnulio)
+                    val mx = (e.getX(0) + e.getX(1)) / 2; val my = (e.getY(0) + e.getY(1)) / 2
+                    renderer.panBy((mx - midX) / height.coerceAtLeast(1), (my - midY) / height.coerceAtLeast(1))
+                    midX = mx; midY = my
                 } else {
                     val cur = arcMap(e.x, e.y)
                     renderer.arcRotate(prevArc, cur)
@@ -1741,6 +1756,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
         GLES20.glViewport(0, 0, w, h)
+        lastW = maxOf(1, w); lastH = maxOf(1, h)
         val aspect = if (h == 0) 1f else w.toFloat() / h
         aspectNow = aspect
         Matrix.perspectiveM(proj, 0, 40f, aspect, 0.1f, 20f)
@@ -1827,6 +1843,20 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val mvU = FloatArray(16)
         Matrix.multiplyMM(mvU, 0, u4, 0, mv, 0)
         Matrix.multiplyMM(mvpI, 0, pv, 0, mvU, 0)          // Žemė, palydovai (sideralinė erdvė)
+        if (focus != 0) {
+            // skrydis iki kūno (1 s) ir sukimas aplink jo centrą; dviem pirštais – poslinkis
+            val tgt = bodyPos(focus) ?: doubleArrayOf(0.0, 0.0, 0.0)
+            val a = ((System.currentTimeMillis() - focusT0) / 1000.0).coerceIn(0.0, 1.0); val sm = a * a * (3 - 2 * a)
+            focusPt = DoubleArray(3) { focusFrom[it] + (tgt[it] - focusFrom[it]) * sm }
+            val far = maxOf(60f, focusZoom * 4f + (sunDistScene() * 2.2).toFloat())
+            Matrix.perspectiveM(proj, 0, 40f, aspectNow, (focusZoom * 0.02f).coerceAtLeast(0.001f), far)
+            Matrix.setIdentityM(view, 0); Matrix.translateM(view, 0, panX, panY, -focusZoom)
+            Matrix.multiplyMM(pv, 0, proj, 0, view, 0)
+            val tr = FloatArray(16); Matrix.setIdentityM(tr, 0); Matrix.translateM(tr, 0, -focusPt[0].toFloat(), -focusPt[1].toFloat(), -focusPt[2].toFloat())
+            val mvT = FloatArray(16); Matrix.multiplyMM(mvT, 0, mvU, 0, tr, 0)
+            Matrix.multiplyMM(mvpI, 0, pv, 0, mvT, 0)
+        }
+        System.arraycopy(mvpI, 0, lastMvpI, 0, 16)
         if (observerView()) observerCamera()
         // Stebėtojo lokali sistema (dangaus kupolas, horizontas): ENU -> I + vieta
         java.util.Arrays.fill(lMat, 0f)
@@ -1836,6 +1866,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (observerView()) {
             val l = kotlin.math.sqrt(camPos[0] * camPos[0] + camPos[1] * camPos[1] + camPos[2] * camPos[2]).coerceAtLeast(1e-6f)
             eyeI = floatArrayOf(camPos[0] / l, camPos[1] / l, camPos[2] / l)
+        } else if (focus != 0) {
+            eyeI = floatArrayOf(mvU[2], mvU[6], mvU[10])
+            camPos = floatArrayOf((focusPt[0] + eyeI[0] * focusZoom).toFloat(), (focusPt[1] + eyeI[1] * focusZoom).toFloat(), (focusPt[2] + eyeI[2] * focusZoom).toFloat())
         } else {
             eyeI = floatArrayOf(mvU[2], mvU[6], mvU[10])
             camPos = floatArrayOf(eyeI[0] * zoom, eyeI[1] * zoom, eyeI[2] * zoom)
@@ -3038,6 +3071,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile var zoom = 3f
     /** Priartinimas pagal aukštį virš paviršiaus: arčiausiai ~0,05 vnt. (≈ 1 300 km) – Kreta ~2 cm ekrane. */
     fun zoomBy(factor: Float) {
+        if (focus != 0) { val r = bodyRadius(focus).toFloat(); focusZoom = (focusZoom / factor).coerceIn(r * 1.3f, r * 2000f); return }
         // „Realybėje“ diapazonas ~1:300 000 – žingsnis spartesnis
         val f = if (realScale) Math.pow(factor.toDouble(), 2.0).toFloat() else factor
         zoom = EARTH_R + ((zoom - EARTH_R) / f).coerceIn(0.05f, maxZoomOut())
@@ -3112,7 +3146,58 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var camPos = floatArrayOf(0f, 0f, 3f)
     private var headingSm = Double.NaN
 
-    private fun observerView() = !followDevice && !freeView
+    private fun observerView() = !followDevice && !freeView && focus == 0
+
+    // ---- Fokusas: kamera prie Saulės (1) ar Mėnulio (2), sukama aplink jų centrą; 0 – įprastai ----
+    @Volatile var focus = 0
+        private set
+    private var focusFrom = doubleArrayOf(0.0, 0.0, 0.0)
+    private var focusPt = doubleArrayOf(0.0, 0.0, 0.0)
+    private var focusT0 = 0L
+    @Volatile private var focusZoom = 1f
+    @Volatile private var panX = 0f
+    @Volatile private var panY = 0f
+    private val lastMvpI = FloatArray(16)
+    private var lastW = 1; private var lastH = 1
+
+    private fun bodyPos(id: Int): DoubleArray? = when (id) {
+        1 -> sunDir().let { d -> val r = sunDistScene(); doubleArrayOf(fP[0] + d[0] * r, fP[1] + d[1] * r, fP[2] + d[2] * r) }
+        2 -> moonDir().let { d -> val r = moonDistScene(); doubleArrayOf(fP[0] + d[0] * r, fP[1] + d[1] * r, fP[2] + d[2] * r) }
+        else -> null
+    }
+    private fun bodyRadius(id: Int): Double = when (id) {
+        1 -> if (realScale) 696_000.0 / 6371.0 * EARTH_R else 0.12
+        2 -> if (realScale) 1737.4 / 6371.0 * EARTH_R else 0.10
+        else -> EARTH_R.toDouble()
+    }
+
+    fun focusOn(id: Int) {
+        focusFrom = if (focus != 0) focusPt.copyOf() else doubleArrayOf(0.0, 0.0, 0.0)
+        focus = id; focusT0 = System.currentTimeMillis(); panX = 0f; panY = 0f
+        if (id != 0) focusZoom = (bodyRadius(id) * 5).toFloat()
+    }
+
+    fun panBy(dx: Float, dy: Float) { if (focus != 0) { panX += dx * focusZoom * 0.8f; panY -= dy * focusZoom * 0.8f } }
+
+    /** Bakstelėjimas: ar pataikyta į Saulę / Mėnulį (1/2), Žemę (0), ar į nieką (-1). */
+    fun pick(x: Float, y: Float): Int {
+        val m = lastMvpI
+        fun scr(p: DoubleArray): FloatArray? {
+            val v = FloatArray(4); Matrix.multiplyMV(v, 0, m, 0, floatArrayOf(p[0].toFloat(), p[1].toFloat(), p[2].toFloat(), 1f), 0)
+            if (v[3] <= 1e-6f) return null
+            return floatArrayOf((v[0] / v[3] + 1f) / 2f * lastW, (1f - v[1] / v[3]) / 2f * lastH, v[3])
+        }
+        val tanHalf = kotlin.math.tan(Math.toRadians(20.0)).toFloat()
+        var best = -1; var bestD = Float.MAX_VALUE
+        for (id in listOf(1, 2, 0)) {
+            val p = if (id == 0) doubleArrayOf(0.0, 0.0, 0.0) else bodyPos(id) ?: continue
+            val s = scr(p) ?: continue
+            val rpx = (lastH / 2f) * bodyRadius(id).toFloat() / (s[2] * tanHalf)
+            val d = kotlin.math.hypot(s[0] - x, s[1] - y)
+            if (d < maxOf(45f * density, rpx * 1.3f) && d < bestD) { best = id; bestD = d }
+        }
+        return best
+    }
 
     /**
      * Stebėtojo vaizdas: žmogus stovi ant Žemės (smeigtukas – vertikalus, galvutė – akys), planšetė – langas prieš veidą.
@@ -3717,6 +3802,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Mėnulio orbita (silpna linija) ir užrašas su atstumu – Mėnulis tikru masteliu mažas. */
     private fun drawMoonOrbit() {
+        if (showSunGrid && moonMvp[15] != 0f) {
+            val se = MoonFrame.subEarth(System.currentTimeMillis(), moonDir())
+            drawBodyGrid(moonMvp, se[0], se[1], 0.25 * 1.03, floatArrayOf(0.85f, 0.9f, 1f))
+        }
         val d = jdDays()
         val node = Math.toRadians(125.04 - 0.0529539 * d)
         val inc = Math.toRadians(5.145)
@@ -3763,12 +3852,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val dist = moonDistScene()
         moonPosLast = doubleArrayOf(fP[0] + dir[0] * dist, fP[1] + dir[1] * dist, fP[2] + dir[2] * dist)
         val px = fP[0] + dir[0] * dist; val py = fP[1] + dir[1] * dist; val pz = fP[2] + dir[2] * dist
-        // Artimoji pusė atsukta į Žemę
-        val x = doubleArrayOf(-dir[0], -dir[1], -dir[2])
-        var y = doubleArrayOf(-x[1], x[0], 0.0)                 // z0 × x
-        val yl = kotlin.math.sqrt(y[0] * y[0] + y[1] * y[1]).coerceAtLeast(1e-9)
-        y = doubleArrayOf(y[0] / yl, y[1] / yl, 0.0)
-        val z = doubleArrayOf(x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0])
+        // Tikra Mėnulio orientacija (IAU): x – nulinis dienovidinis, z – šiaurės polius; libracija įskaityta
+        val mAx = MoonFrame.axes(System.currentTimeMillis())
+        val x = mAx[0]; val y = mAx[1]; val z = mAx[2]
         java.util.Arrays.fill(moonMat, 0f)
         for (i in 0..2) {
             moonMat[i] = (x[i] * k).toFloat()
@@ -3945,22 +4031,26 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Heliografinis tinklelis (kas 15°), pusiaujas ir nulinis dienovidinis ryškesni, ašis per polius, į Žemę atsuktas taškas. */
     private fun drawSunGrid() {
-        val r = 0.25 * 1.006
+        val pbl = SunFrame.pbl(System.currentTimeMillis())
+        drawBodyGrid(sunMvp, if (pbl[2] > 180) pbl[2] - 360 else pbl[2], pbl[1], 0.25 * 1.006, floatArrayOf(1f, 0.9f, 0.6f))
+    }
+
+    /** Kūno koordinačių tinklelis modelio erdvėje (tinklelio spindulys r): lygiagretės ir dienovidiniai kas 15°, ašis, į Žemę atsuktas taškas. */
+    private fun drawBodyGrid(mvpM: FloatArray, subLon: Double, subLat: Double, r: Double, tint: FloatArray) {
         fun pt(la: Double, lo: Double, k: Double = r) = floatArrayOf((k * cos(Math.toRadians(la)) * cos(Math.toRadians(lo))).toFloat(),
             (k * cos(Math.toRadians(la)) * sin(Math.toRadians(lo))).toFloat(), (k * sin(Math.toRadians(la))).toFloat())
         val thin = ArrayList<Float>(); val main = ArrayList<Float>(); val axis = ArrayList<Float>()
         fun seg(d: ArrayList<Float>, a: FloatArray, b: FloatArray) { d.add(a[0]); d.add(a[1]); d.add(a[2]); d.add(b[0]); d.add(b[1]); d.add(b[2]) }
         for (la in -75..75 step 15) { val d = if (la == 0) main else thin; var lo = -180.0; while (lo < 180) { seg(d, pt(la.toDouble(), lo), pt(la.toDouble(), lo + 5)); lo += 5.0 } }
         for (lo in -180 until 180 step 15) { val d = if (lo == 0) main else thin; var la = -85.0; while (la < 85) { seg(d, pt(la, lo.toDouble()), pt(la + 5, lo.toDouble())); la += 5.0 } }
-        seg(axis, pt(90.0, 0.0, 0.25 * 1.0), pt(90.0, 0.0, 0.25 * 1.5)); seg(axis, pt(-90.0, 0.0, 0.25 * 1.0), pt(-90.0, 0.0, 0.25 * 1.5))
-        val pbl = SunFrame.pbl(System.currentTimeMillis())
-        val b0 = pbl[1]; val l0 = if (pbl[2] > 180) pbl[2] - 360 else pbl[2]
+        seg(axis, pt(90.0, 0.0, r), pt(90.0, 0.0, 0.25 * 1.5)); seg(axis, pt(-90.0, 0.0, r), pt(-90.0, 0.0, 0.25 * 1.5))
+        val b0 = subLat; val l0 = subLon
         val earthPt = ArrayList<Float>()
         seg(earthPt, pt(b0 - 6, l0), pt(b0 + 6, l0)); seg(earthPt, pt(b0, l0 - 6), pt(b0, l0 + 6))
         GLES20.glUseProgram(colorProg)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, sunMvp, 0)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpM, 0)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
-        for ((arr, col, wdt) in listOf(Triple(thin, floatArrayOf(1f, 0.9f, 0.6f, 0.35f), 1f), Triple(main, floatArrayOf(1f, 1f, 0.85f, 0.85f), 2f),
+        for ((arr, col, wdt) in listOf(Triple(thin, floatArrayOf(tint[0], tint[1], tint[2], 0.35f), 1f), Triple(main, floatArrayOf(tint[0], tint[1], tint[2], 0.85f), 2f),
                 Triple(axis, floatArrayOf(0.6f, 0.9f, 1f, 1f), 3f), Triple(earthPt, floatArrayOf(0.3f, 0.8f, 1f, 1f), 3f))) {
             GLES20.glLineWidth(wdt * density)
             GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], col[3])

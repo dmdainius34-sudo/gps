@@ -78,11 +78,15 @@ object SunImage {
 
     fun refresh(ctx: Context) {
         val now = System.currentTimeMillis()
-        if (!enabled || busy || now - at < 30 * 60_000L) return
+        if (!enabled || busy || now - at < (if (map == null) 2 * 60_000L else 30 * 60_000L)) return
         busy = true; at = now
         Thread {
             try {
-                val c = (URL(URL_HMI).openConnection() as HttpURLConnection).apply { connectTimeout = 15_000; readTimeout = 60_000 }
+                status = "tikras Saulės vaizdas: siunčiama…"
+                val c = (URL(URL_HMI).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 15_000; readTimeout = 60_000; instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", "Mozilla/5.0 (Android) GnssApp")
+                }
                 if (c.responseCode != 200) { status = "tikras Saulės vaizdas: HTTP ${c.responseCode}"; return@Thread }
                 val mod = c.lastModified.takeIf { it > 0 } ?: now
                 val disk = c.inputStream.use { BitmapFactory.decodeStream(it) } ?: run { status = "tikras Saulės vaizdas: neperskaitomas"; return@Thread }
@@ -140,5 +144,37 @@ object SunImage {
             }
         }
         return Bitmap.createBitmap(out, mw, mh, Bitmap.Config.ARGB_8888)
+    }
+}
+
+/**
+ * Mėnulio selenografinės koordinatės (IAU 2009 modelis, vidutinės Žemės / poliaus ašių sistema – ta pati kaip LRO žemėlapio):
+ * polius α0, δ0 ir nulinio dienovidinio kampas W su pagrindiniais periodiniais nariais (libracija ~ ±7°).
+ */
+object MoonFrame {
+    fun axes(ms: Long): Array<DoubleArray> {
+        val d = Astro.daysJ2000(ms); val t = d / 36525.0
+        fun e(a: Double, b: Double) = Math.toRadians(a + b * d)
+        val e1 = e(125.045, -0.0529921); val e2 = e(250.089, -0.1059842); val e3 = e(260.008, 13.0120009); val e4 = e(176.625, 13.3407154)
+        val e5 = e(357.529, 0.9856003); val e6 = e(311.589, 26.4057084); val e7 = e(134.963, 13.0649930); val e8 = e(276.617, 0.3287146)
+        val e9 = e(34.226, 1.7484877); val e10 = e(15.134, -0.1589763); val e11 = e(119.743, 0.0036096); val e12 = e(239.961, 0.1643573); val e13 = e(25.053, 12.9590088)
+        val a0 = 269.9949 + 0.0031 * t - 3.8787 * sin(e1) - 0.1204 * sin(e2) + 0.0700 * sin(e3) - 0.0172 * sin(e4) + 0.0072 * sin(e6) - 0.0052 * sin(e10) + 0.0043 * sin(e13)
+        val d0 = 66.5392 + 0.0130 * t + 1.5419 * cos(e1) + 0.0239 * cos(e2) - 0.0278 * cos(e3) + 0.0068 * cos(e4) - 0.0029 * cos(e6) + 0.0009 * cos(e7) + 0.0008 * cos(e10) - 0.0009 * cos(e13)
+        val w = 38.3213 + 13.17635815 * d - 1.4e-12 * d * d + 3.5610 * sin(e1) + 0.1208 * sin(e2) - 0.0642 * sin(e3) + 0.0158 * sin(e4) + 0.0252 * sin(e5) -
+            0.0066 * sin(e6) - 0.0047 * sin(e7) - 0.0046 * sin(e8) + 0.0028 * sin(e9) + 0.0052 * sin(e10) + 0.0040 * sin(e11) + 0.0019 * sin(e12) - 0.0044 * sin(e13)
+        val a = Math.toRadians(a0); val dd = Math.toRadians(d0); val ww = Math.toRadians(((w % 360) + 360) % 360)
+        val z = doubleArrayOf(cos(dd) * cos(a), cos(dd) * sin(a), sin(dd))
+        val q = doubleArrayOf(-sin(a), cos(a), 0.0)
+        val zq = SunFrame.cross(z, q)
+        val x = DoubleArray(3) { q[it] * cos(ww) + zq[it] * sin(ww) }
+        return arrayOf(x, SunFrame.cross(z, x), z)
+    }
+
+    /** Į Žemę atsuktas taškas (selenografinė ilguma, platuma – optinė libracija), °; moonDir – kryptis Žemė -> Mėnulis. */
+    fun subEarth(ms: Long, moonDir: DoubleArray): DoubleArray {
+        val (x, y, z) = axes(ms)
+        val s = DoubleArray(3) { -moonDir[it] }
+        fun dot(a: DoubleArray, b: DoubleArray) = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+        return doubleArrayOf(Math.toDegrees(atan2(dot(s, y), dot(s, x))), Math.toDegrees(asin(dot(s, z).coerceIn(-1.0, 1.0))))
     }
 }

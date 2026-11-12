@@ -5267,6 +5267,28 @@ class MainActivity : AppCompatActivity() {
     private lateinit var satCountView: TextView
     private var scaleBtnView: TextView? = null
     private lateinit var orientView: TextView
+    private var readyView: TextView? = null
+    private var readyLast: Boolean? = null
+
+    /** Mėlyna – šyla, salotinė neoninė – paruošta matavimui. */
+    private fun updateReady() {
+        val v = readyView ?: return
+        val live = LiveRtk.enabled
+        val sig = LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc
+        val st = Readiness.state(live, sig)
+        v.text = "● " + st.text
+        if (readyLast != st.ready) {
+            readyLast = st.ready
+            val col = if (st.ready) 0xFFB6FF00.toInt() else 0xFF3B82F6.toInt()
+            v.setTextColor(if (st.ready) 0xFF0A1A00.toInt() else 0xFFFFFFFF.toInt())
+            v.background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 40f; setColor(col) }
+            v.setShadowLayer(if (st.ready) 0f else 4f, 0f, 0f, 0xFF000000.toInt())
+            v.elevation = if (st.ready) 12f else 4f
+            if (st.ready) v.outlineSpotShadowColorCompat(col)
+        }
+    }
+
+    private fun TextView.outlineSpotShadowColorCompat(c: Int) { if (Build.VERSION.SDK_INT >= 28) outlineSpotShadowColor = c }
     private var lastSatCount: SatCount.Result? = null
     private var skyHolderParent: ViewGroup? = null
     private var skyHolderLp: ViewGroup.LayoutParams? = null
@@ -5307,6 +5329,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (::satCountView.isInitialized) margins(satCountView, l, t, 0, 0)
         if (::orientView.isInitialized) margins(orientView, l, 0, 0, b)
+        readyView?.let { margins(it, 0, m + t, 0, 0) }
         margins(fsBtn, m, m + t, m + r, m)
         margins(scaleBtnView, m, fsBtn.layoutParams.height + 2 * m + t, m + r, m)
     }
@@ -5392,6 +5415,8 @@ class MainActivity : AppCompatActivity() {
             for (x in list) satMap[x.const + x.svid] = x
             skyView.sats = list
             if (::skyDome.isInitialized) skyDome.setSats(list)
+            Readiness.onStatus(SatCount.count(list.map { SatCount.Sig(it.const, it.svid, it.used) }).satUsed)
+            updateReady()
             if (::satCountView.isInitialized) satCountView.text = SatCount.count(list.map { SatCount.Sig(it.const, it.svid, it.used) })
                 .let { "Palydovų ${it.satVisible} (naud. ${it.satUsed})\nSignalų ${it.sigVisible}" } +
                     (LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.let { "\nRTK ±%.2f m (fazė %d)%s".format(java.util.Locale.US, it.hacc, it.sats, if (MockLoc.on) " → kitoms programoms" else "") } ?: "")
@@ -5707,6 +5732,14 @@ class MainActivity : AppCompatActivity() {
             val pd = (8 * resources.displayMetrics.density).toInt(); setPadding(pd, pd, pd, pd)
         }
         skyHolder.addView(satCountView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START))
+        readyView = TextView(this).apply {
+            textSize = 13f; text = "● Šyla"
+            val pd = (10 * resources.displayMetrics.density).toInt(); setPadding(pd, pd / 2, pd, pd / 2)
+        }
+        skyHolder.addView(readyView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+            topMargin = (10 * resources.displayMetrics.density).toInt()
+        })
+        readyLast = null; updateReady()
         orientView = TextView(this).apply {
             textSize = 12f
             setTextColor(0xFFE8FFF0.toInt())
@@ -5802,6 +5835,7 @@ class MainActivity : AppCompatActivity() {
                         (if (obsLatNow == 0.0 && obsLonNow == 0.0) "" else SpaceOrientation.report(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()), obsLatNow)) +
                         (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" else "") +
                         NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" +
+                        "Pasiruošimas: " + Readiness.state(LiveRtk.enabled, LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc).text + "\n" +
                         (if (::skyDome.isInitialized) skyDome.fpsText() + "\n" else "")
                     report += "Eksportuota: " + names.joinToString(", ") + "\n"
                     report += "ZIP: $zipName (Download/GNSS)\nZIP failai: " + names.joinToString(", ") + "\n"
@@ -6111,6 +6145,7 @@ class MainActivity : AppCompatActivity() {
     private fun onLocation(loc: Location) {
         @Suppress("DEPRECATION")
         if (loc.isFromMockProvider) return                 // mūsų pačių RTK bandomoji vieta – ne lusto fiksas
+        if (loc.hasAccuracy()) Readiness.onFix(loc.accuracy.toDouble())
         obsLatNow = loc.latitude; obsLonNow = loc.longitude
         if (loc.hasAltitude()) obsHNow = loc.altitude
         if (loc.hasSpeed() && loc.hasBearing() && loc.speed >= 1.5f) {

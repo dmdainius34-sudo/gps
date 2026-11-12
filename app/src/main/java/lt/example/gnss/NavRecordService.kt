@@ -216,6 +216,7 @@ class NavRecordService : Service() {
         SessionFiles.flush()
         val m = lm ?: (getSystemService(LOCATION_SERVICE) as LocationManager)
         val ok = deleteAidingData(m)
+        Readiness.coldStartMs = System.currentTimeMillis()
         GapLog.event(this, "ŠALTAS STARTAS: pagalbos duomenų trynimas ${if (ok) "priimtas" else "nepriimtas"}; GNSS klausytojai atjungti 3 s")
         handler.postDelayed({ if (running) { register(); GapLog.event(this, "ŠALTAS STARTAS: GNSS klausytojai prijungti iš naujo") } }, 3000)
     }

@@ -1220,6 +1220,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         override fun onDown(e: MotionEvent): Boolean = true
         override fun onDoubleTap(e: MotionEvent): Boolean { onDoubleTapCb?.invoke(); return true }
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+            // bakstelėjimas į palydovą – jo duomenų lentelė
+            renderer.pickSat(e.x, e.y)?.let { showSatInfo(it); return true }
             // bakstelėjimas į Saulę ar Mėnulį – kamera nuskrenda prie jo; į Žemę – grįžta
             when (val id = renderer.pick(e.x, e.y)) {
                 1, 2 -> { renderer.focusOn(id); android.widget.Toast.makeText(context, (if (id == 1) "Saulė" else "Mėnulis") +
@@ -1229,6 +1231,20 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             return true
         }
     })
+    private fun showSatInfo(s: Sat) {
+        val (title, rows) = try { renderer.satInfo(s) } catch (e: Exception) { (s.const + " " + s.svid) to listOf("Klaida" to (e.message ?: e.javaClass.simpleName)) }
+        val dp = resources.displayMetrics.density
+        val table = android.widget.TableLayout(context).apply { setPadding((20 * dp).toInt(), (8 * dp).toInt(), (20 * dp).toInt(), 0); isStretchAllColumns = false; setColumnShrinkable(1, true) }
+        for ((k, v) in rows) {
+            val tr = android.widget.TableRow(context)
+            tr.addView(android.widget.TextView(context).apply { text = k; setTypeface(typeface, android.graphics.Typeface.BOLD); setPadding(0, (4 * dp).toInt(), (12 * dp).toInt(), (4 * dp).toInt()) })
+            tr.addView(android.widget.TextView(context).apply { text = v; setPadding(0, (4 * dp).toInt(), 0, (4 * dp).toInt()) })
+            table.addView(tr)
+        }
+        android.app.AlertDialog.Builder(context).setTitle(title)
+            .setView(android.widget.ScrollView(context).apply { addView(table) })
+            .setPositiveButton("Gerai", null).show()
+    }
     private var prevArc = doubleArrayOf(0.0, 0.0, 1.0)
     private var pinchLast = 0f
     private var midX = 0f; private var midY = 0f
@@ -1638,7 +1654,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         sp3Active = useSp3
         val out = ArrayList<SatI>()
         val nowMs = System.currentTimeMillis()
-        val makeTracks = useSp3 && nowMs - tracksAt > 30_000L
+        val makeTracks = false        // trajektorijos nebepiešiamos (palydovo duomenys – bakstelėjus)
         val tracks = if (makeTracks) ArrayList<Pair<FloatArray, FloatArray>>() else null
         val approx = HashSet<String>()
         for (s in l) {
@@ -1909,7 +1925,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawEquatorRing(t)
         drawMoon()
         drawMoonOrbit()
-        drawTrails()
 
 
         // Žymos ir palydovai piešiami be gylio testo (visada matomi priekyje)
@@ -1980,7 +1995,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // SP3 trajektorijos ±30 min. arba užrašas apie apytikslę padėtį
         if (sp3Active) {
             GLES20.glEnable(GLES20.GL_DEPTH_TEST)
-            for ((seg, c) in sp3Tracks) if (seg.isNotEmpty()) drawLines(seg, c[0], c[1], c[2], 0.35f)
             GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         } else if (satsI.isNotEmpty()) {
             if (noSp3Tex == 0) noSp3Tex = makeTextureW("SP3 nėra – apytikslė padėtis", 0xFFFFE08A.toInt(), 64, 8)
@@ -3188,6 +3202,83 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     fun panBy(dx: Float, dy: Float) { if (focus != 0) { panX += dx * focusZoom * 0.8f; panY -= dy * focusZoom * 0.8f } }
+
+    /** Bakstelėjimas į palydovą (artimiausias ekrane, iki ~32 dp) arba null. */
+    fun pickSat(x: Float, y: Float): Sat? {
+        val m = lastMvpI
+        var best: Sat? = null; var bestD = 32f * density
+        for (si in satsI) {
+            val v = FloatArray(4); Matrix.multiplyMV(v, 0, m, 0, floatArrayOf(si.pos[0], si.pos[1], si.pos[2], 1f), 0)
+            if (v[3] <= 1e-6f) continue
+            val sx = (v[0] / v[3] + 1f) / 2f * lastW; val sy = (1f - v[1] / v[3]) / 2f * lastH
+            val d = kotlin.math.hypot(sx - x, sy - y)
+            if (d < bestD) { bestD = d; best = si.sat }
+        }
+        return best
+    }
+
+    /** Palydovo duomenų lentelė: (pavadinimas, eilutės „parametras – reikšmė“). */
+    fun satInfo(s: Sat): Pair<String, List<Pair<String, String>>> {
+        val L = java.util.Locale.US
+        val sys = when (s.const) { "GPS" -> "GPS (JAV)"; "GAL" -> "Galileo (ES)"; "GLO" -> "GLONASS (Rusija)"; "BDS" -> "BeiDou (Kinija)"
+            "SBS" -> "SBAS (pataisų palydovas)"; "QZS" -> "QZSS (Japonija)"; else -> s.const }
+        val id = Sp3Live.id(s.const, s.svid)
+        val title = (id ?: (s.const + " " + s.svid)) + " · " + sys
+        val rows = ArrayList<Pair<String, String>>()
+        rows.add("Signalo stiprumas" to "%.1f dB-Hz".format(L, s.cn0) + when { s.cn0 >= 40 -> " (stiprus)"; s.cn0 >= 30 -> " (vidutinis)"; else -> " (silpnas)" })
+        rows.add("Naudojamas padėčiai" to if (s.used) "taip" else "ne")
+        rows.add("Kryptis (lustas)" to "azimutas %.0f°, aukštis %.0f°".format(L, s.az, s.elev))
+        rows.add("Lusto žinios" to (if (s.eph) "efemeridė yra" else "efemeridės nėra") + ", " + (if (s.alm) "almanachas yra" else "almanacho nėra"))
+        val t = Sp3Live.gpsNow()
+        val p0 = id?.let { Sp3Live.ecefKm(it, t) }
+        if (id == null || p0 == null) {
+            rows.add("Orbita" to "nežinoma – palydovas padėtas apytiksliai pagal lusto azimutą ir aukštį")
+        } else {
+            rows.add("Orbitos šaltinis" to when {
+                Sp3Live.covers(t) -> "SP3 tikslios orbitos (AIUB CODE)"
+                BroadcastEph.ecefKm(id, t) != null -> "navigacinės žinutės, gautos iš paties palydovo"
+                else -> "BRDC efemeridės iš interneto"
+            })
+            val o = PositionSolver.llhToEcef(Math.toRadians(obsLat), Math.toRadians(obsLon), 0.0).map { it / 1000.0 }
+            fun rng(p: DoubleArray) = sqrt((p[0] - o[0]).let { it * it } + (p[1] - o[1]).let { it * it } + (p[2] - o[2]).let { it * it })
+            val r0 = rng(p0)
+            rows.add("Atstumas iki jūsų" to "%,.0f km (signalas skrenda %.1f ms)".format(L, r0, r0 / 299_792.458 * 1000).replace(',', ' '))
+            val rad = sqrt(p0[0] * p0[0] + p0[1] * p0[1] + p0[2] * p0[2])
+            rows.add("Aukštis virš Žemės" to "%,.0f km".format(L, rad - 6371.0).replace(',', ' '))
+            Sp3Live.ecefKm(id, t + 1.0)?.let { p1 ->
+                val w = PositionSolver.OMEGA_E / 1000.0 * 1000.0
+                // inercinis greitis: v_ECEF + ω × r
+                val v = doubleArrayOf(p1[0] - p0[0] - w * p0[1], p1[1] - p0[1] + w * p0[0], p1[2] - p0[2])
+                val vs = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+                val h = doubleArrayOf(p0[1] * v[2] - p0[2] * v[1], p0[2] * v[0] - p0[0] * v[2], p0[0] * v[1] - p0[1] * v[0])
+                val inc = Math.toDegrees(kotlin.math.acos(h[2] / sqrt(h[0] * h[0] + h[1] * h[1] + h[2] * h[2])))
+                val per = 2 * Math.PI * sqrt(rad * rad * rad / 398_600.4418) / 3600.0
+                rows.add("Greitis orbitoje" to "%.2f km/s".format(L, vs))
+                rows.add("Orbita" to "%s, polinkis %.1f°, apskriejimas %d h %02d min".format(L,
+                    if (rad - 6371 > 30_000) (if (inc < 5) "geostacionari (GEO)" else "geosinchroninė pasvirusi (IGSO)") else "vidutinė (MEO)",
+                    inc, per.toInt(), ((per - per.toInt()) * 60).toInt()))
+                val rr = rng(p1) - r0
+                rows.add("Radialinis greitis" to "%+.2f km/s (%s), Doplerio poslinkis L1 %+.0f Hz".format(L, rr, if (rr < 0) "artėja" else "tolsta", -rr / 299_792.458 * 1575.42e6))
+            }
+            val (az, el) = Sp3Live.azEl(p0, obsLat, obsLon, 0.0)
+            rows.add("Kryptis (orbita)" to "azimutas %.1f°, aukštis %.1f°; skirtumas nuo lusto %.2f°".format(L, az, el, Sp3Live.angSep(az, el, s.az.toDouble(), s.elev.toDouble())))
+            // kyla ar leidžiasi; kada nusileis
+            Sp3Live.ecefKm(id, t + 600.0)?.let { p10 ->
+                val e10 = Sp3Live.azEl(p10, obsLat, obsLon, 0.0).second
+                var setT = -1.0; var k = 120.0
+                while (k <= 14 * 3600.0) { val pk = Sp3Live.ecefKm(id, t + k) ?: break; if (Sp3Live.azEl(pk, obsLat, obsLon, 0.0).second < 0) { setT = k; break }; k += 120.0 }
+                var maxEl = el; var j = 60.0
+                while (j <= (if (setT > 0) setT else 6 * 3600.0)) { val pk = Sp3Live.ecefKm(id, t + j) ?: break; maxEl = maxOf(maxEl, Sp3Live.azEl(pk, obsLat, obsLon, 0.0).second); j += 300.0 }
+                rows.add("Judėjimas danguje" to (if (e10 > el) "kyla" else "leidžiasi") + " (po 10 min. aukštis %.0f°)".format(L, e10) +
+                    (if (setT > 0) "; nusileis po %d h %02d min".format(L, (setT / 3600).toInt(), ((setT % 3600) / 60).toInt()) else "; per 14 h nenusileis") +
+                    "; aukščiausiai %.0f°".format(L, maxEl))
+            }
+        }
+        val cls = CabinMap.world.clsSmooth(s.az.toDouble(), s.elev.toDouble())
+        rows.add("Aplinkos žemėlapis šia kryptimi" to when (cls) { CabinMap.CLEAN -> "švaru"; CabinMap.WEAK -> "kliūtis (silpnas signalas)"
+            CabinMap.REFLECT -> "atspindžiai"; else -> "dar nežinoma" })
+        return title to rows
+    }
 
     /** Bakstelėjimas: ar pataikyta į Saulę / Mėnulį (1/2), Žemę (0), ar į nieką (-1). */
     fun pick(x: Float, y: Float): Int {

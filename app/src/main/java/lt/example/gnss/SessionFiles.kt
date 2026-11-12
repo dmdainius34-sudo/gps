@@ -219,6 +219,13 @@ object RawRecorder {
         SessionFiles.flush()
     }
 
+    /** Partijos eilutės (be naujos eilutės simbolio) – gyvam RTK. */
+    fun lines(event: GnssMeasurementsEvent): List<String> {
+        val out = ArrayList<String>(event.measurements.size); val sb = StringBuilder(256)
+        for (m in event.measurements) { sb.setLength(0); line(sb, m, event.clock); out.add(sb.toString().trimEnd('\n')) }
+        return out
+    }
+
     private fun line(sb: StringBuilder, m: GnssMeasurement, clk: android.location.GnssClock) {
         val c = constName(m.constellationType)
         val hz = if (m.hasCarrierFrequencyHz()) m.carrierFrequencyHz.toDouble() else 1575.42e6

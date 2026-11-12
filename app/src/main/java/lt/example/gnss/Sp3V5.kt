@@ -52,7 +52,12 @@ object Sp3V5 {
 
     fun readRaw(raw: File, consumer: (Ep) -> Unit) {
         if (!raw.exists()) return
-        raw.bufferedReader().use { br ->
+        raw.bufferedReader().use { br -> readRaw(br, consumer) }
+    }
+
+    /** Tas pats skaitymas iš srauto (antraštė + eilutės) – gyvam RTK. */
+    fun readRaw(br: java.io.BufferedReader, consumer: (Ep) -> Unit) {
+        run {
             val head = br.readLine()?.split(',') ?: return
             fun idx(n: String) = head.indexOf(n)
             val iMs = idx("laikas_ms"); val iC = idx("konstelacija"); val iSv = idx("svid"); val iSig = idx("signalas")

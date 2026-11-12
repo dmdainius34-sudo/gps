@@ -123,6 +123,7 @@ object NtripClient {
                         counts[type] = (counts[type] ?: 0) + 1
                         lastMsgMs = tMs
                         RtcmRecorder.append(dir, tMs, type, p)
+                        try { LiveRtk.onRtcm(type, p) } catch (_: Exception) {}
                         Rtcm3.station(p)?.let { base = it }
                         Rtcm3.physStation(p)?.let { phys = it }
                         if (Rtcm3.sysOf(type) != null) lastMsmMs = tMs

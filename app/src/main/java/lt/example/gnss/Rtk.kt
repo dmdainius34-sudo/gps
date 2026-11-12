@@ -60,20 +60,34 @@ object Rtk {
         val eps = ArrayList<BEp>()
         for ((t, map) in byEpoch) {
             if (!Sp3Solver.inRange(sp3, t)) continue
-            val obs = map.values.map { Sp3V5.Ob(it.second.sys, it.second.prn, it.second.pr, it.second.cn0) }
-            val sats = Sp3V5.prepare(t, obs, sp3)
-            val out = HashMap<String, BObs>()
-            for (s in sats) {
-                val id = "%c%02d".format(Locale.US, s.sys, s.svid)
-                val o = map[id]?.second ?: continue
-                s.rp.fill(0.0); s.rotate(bp); s.rotate(bp)
-                val rho = dist(bp, s.rp)
-                val cdts = s.prc - o.pr
-                out[id] = BObs(s.prc - rho, if (o.phase.isNaN()) Double.NaN else o.phase + cdts - rho, o.lock)
-            }
-            if (out.isNotEmpty()) eps.add(BEp(t, out))
+            baseEpoch(t, map.values.map { it.second }, bp) { tt, ob -> Sp3V5.prepare(tt, ob, sp3) }?.let { eps.add(it) }
         }
         return bp to eps
+    }
+
+    /** Viena bazės epocha: liekanos be geometrijos ir palydovo laikrodžio (prepare – SP3 arba transliuojamos efemeridės). */
+    fun baseEpoch(t: Double, obs: Collection<Rtcm3.Obs>, bp: DoubleArray, prepare: (Double, List<Sp3V5.Ob>) -> List<Sp3V5.SatEp>): BEp? {
+        val byId = obs.associateBy { "%c%02d".format(Locale.US, it.sys, it.prn) }
+        val sats = prepare(t, obs.map { Sp3V5.Ob(it.sys, it.prn, it.pr, it.cn0) })
+        val out = HashMap<String, BObs>()
+        for (s in sats) {
+            val id = "%c%02d".format(Locale.US, s.sys, s.svid)
+            val o = byId[id] ?: continue
+            s.rp.fill(0.0); s.rotate(bp); s.rotate(bp)
+            val rho = dist(bp, s.rp)
+            val cdts = s.prc - o.pr
+            out[id] = BObs(s.prc - rho, if (o.phase.isNaN()) Double.NaN else o.phase + cdts - rho, o.lock)
+        }
+        return if (out.isEmpty()) null else BEp(t, out)
+    }
+
+    /** Bazės matavimų pasirinkimas (GPS 1C, Galileo 1C/1X/1B) iš vienos MSM žinutės. */
+    fun pickObs(m: Rtcm3.Msm, into: HashMap<String, Pair<Int, Rtcm3.Obs>>) {
+        for (o in m.obs) {
+            val r = pick(o.sys, o.sig); if (r < 0) continue
+            val id = "%c%02d".format(Locale.US, o.sys, o.prn)
+            val cur = into[id]; if (cur == null || r < cur.first) into[id] = r to o
+        }
     }
 
     private fun dist(a: DoubleArray, b: DoubleArray): Double { val x = a[0] - b[0]; val y = a[1] - b[1]; val z = a[2] - b[2]; return sqrt(x * x + y * y + z * z) }
@@ -115,14 +129,151 @@ object Rtk {
               var resets: Int = 0, var phaseObs: Int = 0, var codeRej: Int = 0, var convergedS: Double = Double.NaN, val sigH: ArrayList<Double> = ArrayList())
 
     /** qPos – padėties proceso triukšmas (m²/s): statinis ~1e-4, kinematinis ~1. */
+    /** Vieno epochos RTK žingsnis (po įrašo ir gyvai): e0, e1 – bazės epochos aplink prietaiso laiką. */
+    class Engine(val qPos: Double, val run: Run) {
+        private var f: Filter? = null
+        private var lastT = Double.NaN; private var t0 = Double.NaN
+        private val lastAdr = HashMap<String, Double>()
+        var lastSigH = Double.NaN
+            private set
+        var lastPhase = 0
+            private set
+
+        fun step(ep: Sp3V5.Ep, e0: BEp, e1: BEp, bp: DoubleArray, prepare: (Double, List<Sp3V5.Ob>) -> List<Sp3V5.SatEp>): PositionSolver.Solution? {
+        val t = ep.t
+        val a = (t - e0.t) / (e1.t - e0.t)
+        val acc = ep.meas.filter { Sp3V5.accept(it) && (it.sys == 'G' || it.sys == 'E') }
+        val sats = prepare(t, acc.map { Sp3V5.Ob(it.sys, it.svid, it.pr, it.cn0) })
+        val byId = acc.associateBy { it.id }
+        // matavimai: yP = P + c·dts − bazės liekana, yL = Φ + c·dts − bazės fazės liekana
+        class Ob(val id: String, val sys: Char, val s: Sp3V5.SatEp, val yP: Double, val yL: Double, val slip: Boolean)
+        val obs = ArrayList<Ob>()
+        for (s in sats) {
+            val id = "%c%02d".format(Locale.US, s.sys, s.svid)
+            val m = byId[id] ?: continue
+            val b0 = e0.obs[id] ?: continue; val b1 = e1.obs[id] ?: continue
+            val cdts = s.prc - m.pr
+            val rc = b0.rc + (b1.rc - b0.rc) * a
+            val yP = s.prc - rc
+            var yL = Double.NaN; var slip = false
+            val adrOk = m.adr != null && (m.adrState and ADR_VALID) != 0 && (m.adrState and (ADR_RESET or ADR_SLIP)) == 0
+            if (adrOk && !b0.rp.isNaN() && !b1.rp.isNaN() && b1.lock >= b0.lock) {
+                yL = m.adr!! + cdts - (b0.rp + (b1.rp - b0.rp) * a)
+                val prev = lastAdr[id]
+                if (prev == null) slip = true
+            } else slip = true
+            if (adrOk) lastAdr[id] = m.adr!! else lastAdr.remove(id)
+            obs.add(Ob(id, s.sys, s, yP, yL, slip))
+        }
+        if (obs.size < 5) return null
+        // inicializacija: bazės vieta (VRS – šalia prietaiso), σ 30 m
+        if (f == null) {
+            f = Filter(doubleArrayOf(bp[0], bp[1], bp[2]), Array(3) { i -> DoubleArray(3) { k -> if (i == k) 900.0 else 0.0 } }, HashMap())
+            t0 = t
+        }
+        val ff = f!!
+        // prognozė
+        val dt = if (lastT.isNaN()) 1.0 else (t - lastT).coerceIn(0.0, 30.0)
+        if (!lastT.isNaN() && t - lastT > 2.5) {
+            for (id in ff.idx.keys.toList()) resetAmb(ff, id, 0.0, 1e4); run.resets++
+        }
+        lastT = t
+        for (i in 0..2) ff.p[i][i] += qPos * dt
+        // aukščiai ir vienetiniai vektoriai
+        val x = doubleArrayOf(ff.x[0], ff.x[1], ff.x[2])
+        class G(val o: Ob, val rho: Double, val e: DoubleArray, val el: Double)
+        val geo = obs.mapNotNull { o ->
+            o.s.rp.fill(0.0); o.s.rotate(x); o.s.rotate(x)
+            val r = dist(x, o.s.rp)
+            val l = Sp3Solver.look(x, o.s.rp, r)
+            if (l[4] < Math.toRadians(10.0)) null
+            else G(o, r, DoubleArray(3) { (x[it] - o.s.rp[it]) / r }, l[4])
+        }
+        // fazės dviprasmybės: nauji palydovai ir šuoliai
+        for (g in geo) {
+            if (g.o.yL.isNaN()) continue
+            val init = g.o.yL - g.o.yP
+            if (g.o.id !in ff.idx) addAmb(ff, g.o.id, init, 30.0)
+            else if (g.o.slip) { resetAmb(ff, g.o.id, init, 30.0); run.resets++ }
+        }
+        // dvigubi skirtumai kiekvienai sistemai
+        // key = sistema·2 + tipas (0 kodas, 1 fazė) – kovariacijai (bendras atskaitos palydovas)
+        class Dd(val h: DoubleArray, val v: Double, val sRef: Double, val sI: Double, val key: Int, val id: String)
+        val dds = ArrayList<Dd>()
+        val n = ff.x.size
+        for ((si, sy) in listOf('G', 'E').withIndex()) {
+            val gs = geo.filter { it.o.sys == sy }
+            if (gs.size < 2) continue
+            for (type in 0..1) {
+                val cand = if (type == 0) gs else gs.filter { !it.o.yL.isNaN() && it.o.id in ff.idx }
+                if (cand.size < 2) continue
+                val ref = cand.maxByOrNull { it.el }!!
+                fun sd(g: G) = if (type == 0) 3.0 / sin(g.el) else 0.02 / sin(g.el)
+                for (g in cand) {
+                    if (g === ref) continue
+                    val h = DoubleArray(n)
+                    for (k in 0..2) h[k] = g.e[k] - ref.e[k]
+                    var pred = g.rho - ref.rho
+                    val meas: Double
+                    if (type == 0) meas = g.o.yP - ref.o.yP
+                    else {
+                        val ki = ff.idx[g.o.id]!!; val kr = ff.idx[ref.o.id]!!
+                        h[ki] += 1.0; h[kr] -= 1.0
+                        pred += ff.x[ki] - ff.x[kr]
+                        meas = g.o.yL - ref.o.yL
+                    }
+                    dds.add(Dd(h, meas - pred, sd(ref), sd(g), si * 2 + type, g.o.id))
+                }
+            }
+        }
+        if (dds.isEmpty()) return null
+        // inovacijų patikra: kodo – atspindžiai (> 15 m, kai filtras jau suartėjęs); fazės – nepastebėti šuoliai
+        val posSig = sqrt(ff.p[0][0] + ff.p[1][1] + ff.p[2][2])
+        // filtras nuklydo (kodo inovacijų mediana > 30 m, nors σ maža) – iš naujo
+        val codeV = dds.filter { it.key % 2 == 0 }.map { abs(it.v) }.sorted()
+        if (codeV.size >= 4 && posSig < 5.0 && codeV[codeV.size / 2] > 30.0) { f = null; lastAdr.clear(); run.resets++; return null }
+        val keep = dds.filter { d ->
+            val isCode = d.key % 2 == 0
+            if (isCode && posSig < 5.0 && abs(d.v) > maxOf(15.0, 4 * d.sI)) { run.codeRej++; false }
+            else if (!isCode && posSig < 2.0 && abs(d.v) > 1.5) { resetAmb(ff, d.id, ff.x[ff.idx[d.id]!!] + d.v, 30.0); run.resets++; false }
+            else true
+        }
+        if (keep.isEmpty()) return null
+        val m = keep.size
+        val H = Array(m) { keep[it].h }
+        val R = Array(m) { i -> DoubleArray(m) { k -> (if (keep[i].key == keep[k].key) keep[i].sRef * keep[i].sRef else 0.0) + (if (i == k) keep[i].sI * keep[i].sI else 0.0) } }
+        val v = Array(m) { doubleArrayOf(keep[it].v) }
+        val pht = mul(ff.p, tr(H))
+        val sMat = mul(H, pht).also { for (i in 0 until m) for (k in 0 until m) it[i][k] += R[i][k] }
+        val sInv = inv(sMat) ?: return null
+        val K = mul(pht, sInv)
+        val dx = mul(K, v)
+        for (i in 0 until n) ff.x[i] += dx[i][0]
+        val kh = mul(K, H)
+        val ikh = Array(n) { i -> DoubleArray(n) { k -> (if (i == k) 1.0 else 0.0) - kh[i][k] } }
+        ff.p = mul(ikh, ff.p).let { p2 -> Array(n) { i -> DoubleArray(n) { k -> 0.5 * (p2[i][k] + p2[k][i]) } } }
+        run.phaseObs += keep.count { it.key % 2 == 1 }
+        // rezultatas
+        val llh = PositionSolver.ecefToLlh(ff.x[0], ff.x[1], ff.x[2])
+        val la = llh[0]; val lo = llh[1]
+        val eN = doubleArrayOf(-sin(la) * cos(lo), -sin(la) * sin(lo), cos(la)); val eE = doubleArrayOf(-sin(lo), cos(lo), 0.0)
+        fun q(a: DoubleArray) = (0..2).sumOf { i -> (0..2).sumOf { k -> a[i] * ff.p[i][k] * a[k] } }
+        val sh = sqrt(q(eN) + q(eE))
+        run.sigH.add(sh)
+        if (run.convergedS.isNaN() && sh < 0.5) run.convergedS = t - t0
+        val nPh = keep.count { it.key % 2 == 1 }
+        val sol = PositionSolver.Solution(Math.toDegrees(la), Math.toDegrees(lo), llh[2], nPh, sh, doubleArrayOf(ff.x[0], ff.x[1], ff.x[2]))
+        lastSigH = sh; lastPhase = nPh
+        return sol
+        }
+    }
+
     fun run(raw: File, sp3: Sp3Reader, base: Pair<DoubleArray?, List<BEp>>, qPos: Double, name: String, out: File? = null): Run {
         val run = Run(name)
         val bp = base.first ?: return run
         val eps = base.second; if (eps.size < 2) return run
         val ts = DoubleArray(eps.size) { eps[it].t }
-        var f: Filter? = null
-        var lastT = Double.NaN; var t0 = Double.NaN
-        val lastAdr = HashMap<String, Double>()
+        val eng = Engine(qPos, run)
         val w = out?.bufferedWriter()
         try {
             w?.write("laikas_ms,platuma,ilguma,aukstis_m,fazes_palydovu,sigma_h_m\n")
@@ -133,130 +284,9 @@ object Rtk {
                 if (j <= 0 || j >= eps.size) return@readRaw
                 val e0 = eps[j - 1]; val e1 = eps[j]
                 if (e1.t - e0.t > 2.5) return@readRaw
-                val a = (t - e0.t) / (e1.t - e0.t)
-                val acc = ep.meas.filter { Sp3V5.accept(it) && (it.sys == 'G' || it.sys == 'E') }
-                val sats = Sp3V5.prepare(t, acc.map { Sp3V5.Ob(it.sys, it.svid, it.pr, it.cn0) }, sp3)
-                val byId = acc.associateBy { it.id }
-                // matavimai: yP = P + c·dts − bazės liekana, yL = Φ + c·dts − bazės fazės liekana
-                class Ob(val id: String, val sys: Char, val s: Sp3V5.SatEp, val yP: Double, val yL: Double, val slip: Boolean)
-                val obs = ArrayList<Ob>()
-                for (s in sats) {
-                    val id = "%c%02d".format(Locale.US, s.sys, s.svid)
-                    val m = byId[id] ?: continue
-                    val b0 = e0.obs[id] ?: continue; val b1 = e1.obs[id] ?: continue
-                    val cdts = s.prc - m.pr
-                    val rc = b0.rc + (b1.rc - b0.rc) * a
-                    val yP = s.prc - rc
-                    var yL = Double.NaN; var slip = false
-                    val adrOk = m.adr != null && (m.adrState and ADR_VALID) != 0 && (m.adrState and (ADR_RESET or ADR_SLIP)) == 0
-                    if (adrOk && !b0.rp.isNaN() && !b1.rp.isNaN() && b1.lock >= b0.lock) {
-                        yL = m.adr!! + cdts - (b0.rp + (b1.rp - b0.rp) * a)
-                        val prev = lastAdr[id]
-                        if (prev == null) slip = true
-                    } else slip = true
-                    if (adrOk) lastAdr[id] = m.adr!! else lastAdr.remove(id)
-                    obs.add(Ob(id, s.sys, s, yP, yL, slip))
-                }
-                if (obs.size < 5) return@readRaw
-                // inicializacija: bazės vieta (VRS – šalia prietaiso), σ 30 m
-                if (f == null) {
-                    f = Filter(doubleArrayOf(bp[0], bp[1], bp[2]), Array(3) { i -> DoubleArray(3) { k -> if (i == k) 900.0 else 0.0 } }, HashMap())
-                    t0 = t
-                }
-                val ff = f!!
-                // prognozė
-                val dt = if (lastT.isNaN()) 1.0 else (t - lastT).coerceIn(0.0, 30.0)
-                if (!lastT.isNaN() && t - lastT > 2.5) {
-                    for (id in ff.idx.keys.toList()) resetAmb(ff, id, 0.0, 1e4); run.resets++
-                }
-                lastT = t
-                for (i in 0..2) ff.p[i][i] += qPos * dt
-                // aukščiai ir vienetiniai vektoriai
-                val x = doubleArrayOf(ff.x[0], ff.x[1], ff.x[2])
-                class G(val o: Ob, val rho: Double, val e: DoubleArray, val el: Double)
-                val geo = obs.mapNotNull { o ->
-                    o.s.rp.fill(0.0); o.s.rotate(x); o.s.rotate(x)
-                    val r = dist(x, o.s.rp)
-                    val l = Sp3Solver.look(x, o.s.rp, r)
-                    if (l[4] < Math.toRadians(10.0)) null
-                    else G(o, r, DoubleArray(3) { (x[it] - o.s.rp[it]) / r }, l[4])
-                }
-                // fazės dviprasmybės: nauji palydovai ir šuoliai
-                for (g in geo) {
-                    if (g.o.yL.isNaN()) continue
-                    val init = g.o.yL - g.o.yP
-                    if (g.o.id !in ff.idx) addAmb(ff, g.o.id, init, 30.0)
-                    else if (g.o.slip) { resetAmb(ff, g.o.id, init, 30.0); run.resets++ }
-                }
-                // dvigubi skirtumai kiekvienai sistemai
-                // key = sistema·2 + tipas (0 kodas, 1 fazė) – kovariacijai (bendras atskaitos palydovas)
-                class Dd(val h: DoubleArray, val v: Double, val sRef: Double, val sI: Double, val key: Int, val id: String)
-                val dds = ArrayList<Dd>()
-                val n = ff.x.size
-                for ((si, sy) in listOf('G', 'E').withIndex()) {
-                    val gs = geo.filter { it.o.sys == sy }
-                    if (gs.size < 2) continue
-                    for (type in 0..1) {
-                        val cand = if (type == 0) gs else gs.filter { !it.o.yL.isNaN() && it.o.id in ff.idx }
-                        if (cand.size < 2) continue
-                        val ref = cand.maxByOrNull { it.el }!!
-                        fun sd(g: G) = if (type == 0) 3.0 / sin(g.el) else 0.02 / sin(g.el)
-                        for (g in cand) {
-                            if (g === ref) continue
-                            val h = DoubleArray(n)
-                            for (k in 0..2) h[k] = g.e[k] - ref.e[k]
-                            var pred = g.rho - ref.rho
-                            val meas: Double
-                            if (type == 0) meas = g.o.yP - ref.o.yP
-                            else {
-                                val ki = ff.idx[g.o.id]!!; val kr = ff.idx[ref.o.id]!!
-                                h[ki] += 1.0; h[kr] -= 1.0
-                                pred += ff.x[ki] - ff.x[kr]
-                                meas = g.o.yL - ref.o.yL
-                            }
-                            dds.add(Dd(h, meas - pred, sd(ref), sd(g), si * 2 + type, g.o.id))
-                        }
-                    }
-                }
-                if (dds.isEmpty()) return@readRaw
-                // inovacijų patikra: kodo – atspindžiai (> 15 m, kai filtras jau suartėjęs); fazės – nepastebėti šuoliai
-                val posSig = sqrt(ff.p[0][0] + ff.p[1][1] + ff.p[2][2])
-                // filtras nuklydo (kodo inovacijų mediana > 30 m, nors σ maža) – iš naujo
-                val codeV = dds.filter { it.key % 2 == 0 }.map { abs(it.v) }.sorted()
-                if (codeV.size >= 4 && posSig < 5.0 && codeV[codeV.size / 2] > 30.0) { f = null; lastAdr.clear(); run.resets++; return@readRaw }
-                val keep = dds.filter { d ->
-                    val isCode = d.key % 2 == 0
-                    if (isCode && posSig < 5.0 && abs(d.v) > maxOf(15.0, 4 * d.sI)) { run.codeRej++; false }
-                    else if (!isCode && posSig < 2.0 && abs(d.v) > 1.5) { resetAmb(ff, d.id, ff.x[ff.idx[d.id]!!] + d.v, 30.0); run.resets++; false }
-                    else true
-                }
-                if (keep.isEmpty()) return@readRaw
-                val m = keep.size
-                val H = Array(m) { keep[it].h }
-                val R = Array(m) { i -> DoubleArray(m) { k -> (if (keep[i].key == keep[k].key) keep[i].sRef * keep[i].sRef else 0.0) + (if (i == k) keep[i].sI * keep[i].sI else 0.0) } }
-                val v = Array(m) { doubleArrayOf(keep[it].v) }
-                val pht = mul(ff.p, tr(H))
-                val sMat = mul(H, pht).also { for (i in 0 until m) for (k in 0 until m) it[i][k] += R[i][k] }
-                val sInv = inv(sMat) ?: return@readRaw
-                val K = mul(pht, sInv)
-                val dx = mul(K, v)
-                for (i in 0 until n) ff.x[i] += dx[i][0]
-                val kh = mul(K, H)
-                val ikh = Array(n) { i -> DoubleArray(n) { k -> (if (i == k) 1.0 else 0.0) - kh[i][k] } }
-                ff.p = mul(ikh, ff.p).let { p2 -> Array(n) { i -> DoubleArray(n) { k -> 0.5 * (p2[i][k] + p2[k][i]) } } }
-                run.phaseObs += keep.count { it.key % 2 == 1 }
-                // rezultatas
-                val llh = PositionSolver.ecefToLlh(ff.x[0], ff.x[1], ff.x[2])
-                val la = llh[0]; val lo = llh[1]
-                val eN = doubleArrayOf(-sin(la) * cos(lo), -sin(la) * sin(lo), cos(la)); val eE = doubleArrayOf(-sin(lo), cos(lo), 0.0)
-                fun q(a: DoubleArray) = (0..2).sumOf { i -> (0..2).sumOf { k -> a[i] * ff.p[i][k] * a[k] } }
-                val sh = sqrt(q(eN) + q(eE))
-                run.sigH.add(sh)
-                if (run.convergedS.isNaN() && sh < 0.5) run.convergedS = t - t0
-                val nPh = keep.count { it.key % 2 == 1 }
-                val sol = PositionSolver.Solution(Math.toDegrees(la), Math.toDegrees(lo), llh[2], nPh, sh, doubleArrayOf(ff.x[0], ff.x[1], ff.x[2]))
+                val sol = eng.step(ep, e0, e1, bp) { tt, ob -> Sp3V5.prepare(tt, ob, sp3) } ?: return@readRaw
                 run.sols.add(ep.timeMs to sol)
-                w?.write(String.format(Locale.US, "%d,%.9f,%.9f,%.3f,%d,%.3f\n", ep.timeMs, sol.lat, sol.lon, sol.h, nPh, sh))
+                w?.write(String.format(Locale.US, "%d,%.9f,%.9f,%.3f,%d,%.3f\n", ep.timeMs, sol.lat, sol.lon, sol.h, sol.sats, sol.hacc))
             }
         } finally { w?.close() }
         return run

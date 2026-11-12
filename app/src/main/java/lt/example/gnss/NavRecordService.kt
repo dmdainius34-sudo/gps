@@ -76,6 +76,7 @@ class NavRecordService : Service() {
     private val measCb = object : GnssMeasurementsEvent.Callback() {
         override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
             RawRecorder.onEvent(this@NavRecordService, event)
+            try { LiveRtk.onMeasurements(event) } catch (_: Exception) {}
         }
     }
 

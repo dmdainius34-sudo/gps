@@ -5393,7 +5393,8 @@ class MainActivity : AppCompatActivity() {
             skyView.sats = list
             if (::skyDome.isInitialized) skyDome.setSats(list)
             if (::satCountView.isInitialized) satCountView.text = SatCount.count(list.map { SatCount.Sig(it.const, it.svid, it.used) })
-                .let { "Palydovų ${it.satVisible} (naud. ${it.satUsed})\nSignalų ${it.sigVisible}" }
+                .let { "Palydovų ${it.satVisible} (naud. ${it.satUsed})\nSignalų ${it.sigVisible}" } +
+                    (LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.let { "\nRTK ±%.2f m (fazė %d)%s".format(java.util.Locale.US, it.hacc, it.sats, if (MockLoc.on) " → kitoms programoms" else "") } ?: "")
             if (::orientView.isInitialized && orientView.visibility == View.VISIBLE && !(obsLatNow == 0.0 && obsLonNow == 0.0))
                 orientView.text = SpaceOrientation.shortText(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()))
             val used = list.filter { it.used }
@@ -5443,6 +5444,8 @@ class MainActivity : AppCompatActivity() {
     private val measCallback = object : GnssMeasurementsEvent.Callback() {
         override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
             measText = "Neapdoroti matavimai: ${event.measurements.size}"
+            try { LiveRtk.onMeasurements(event) } catch (_: Exception) {}
+            MockLoc.watchdog()
             RawRecorder.envTag = envTag()
             render()
         }
@@ -5798,7 +5801,7 @@ class MainActivity : AppCompatActivity() {
                     report += sunReport() + Sp3Live.text() + "\n" +
                         (if (obsLatNow == 0.0 && obsLonNow == 0.0) "" else SpaceOrientation.report(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()), obsLatNow)) +
                         (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" else "") +
-                        NtripClient.text(obsLatNow, obsLonNow) + "\n" +
+                        NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" +
                         (if (::skyDome.isInitialized) skyDome.fpsText() + "\n" else "")
                     report += "Eksportuota: " + names.joinToString(", ") + "\n"
                     report += "ZIP: $zipName (Download/GNSS)\nZIP failai: " + names.joinToString(", ") + "\n"
@@ -6104,6 +6107,8 @@ class MainActivity : AppCompatActivity() {
     } catch (e: Exception) { runOnUiThread { logError("ZIP nepavyko: ${e.message}") }; null }
 
     private fun onLocation(loc: Location) {
+        @Suppress("DEPRECATION")
+        if (loc.isFromMockProvider) return                 // mūsų pačių RTK bandomoji vieta – ne lusto fiksas
         obsLatNow = loc.latitude; obsLonNow = loc.longitude
         if (loc.hasAltitude()) obsHNow = loc.altitude
         if (loc.hasSpeed() && loc.hasBearing() && loc.speed >= 1.5f) {
@@ -6399,23 +6404,33 @@ class MainActivity : AppCompatActivity() {
         val user = field("Vartotojas", p.getString("user", "")!!, android.text.InputType.TYPE_CLASS_TEXT)
         val pass = field("Slaptažodis", p.getString("pass", "")!!, android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val on = CheckBox(this).apply { text = "Jungtis (pataisos įrašomos į gnss_rtcm.csv)"; isChecked = p.getBoolean("on", false); box.addView(this) }
-        val st = TextView(this).apply { text = NtripClient.text(obsLatNow, obsLonNow); textSize = 12f; box.addView(this) }
+        val rtk = CheckBox(this).apply { text = "Gyvas RTK (nešlio fazė; planšetė)"; isChecked = p.getBoolean("rtk_live", false); box.addView(this) }
+        val mock = CheckBox(this).apply { text = "Perduoti RTK vietą kitoms programoms (bandomoji vieta, pvz. AlpineQuest)"; isChecked = MockLoc.on; box.addView(this) }
+        val st = TextView(this).apply { text = NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text(); textSize = 12f; box.addView(this) }
         android.app.AlertDialog.Builder(this)
             .setTitle("NTRIP pataisos (RTCM 3)")
             .setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("Išsaugoti") { _, _ ->
                 p.edit().putString("host", host.text.toString().trim()).putInt("port", port.text.toString().toIntOrNull() ?: 2101)
                     .putString("mount", mount.text.toString().trim()).putString("user", user.text.toString())
-                    .putString("pass", pass.text.toString()).putBoolean("on", on.isChecked).apply()
+                    .putString("pass", pass.text.toString()).putBoolean("on", on.isChecked).putBoolean("rtk_live", rtk.isChecked).apply()
+                LiveRtk.load(this); if (!rtk.isChecked) LiveRtk.reset()
+                if (mock.isChecked && !MockLoc.on) {
+                    if (!MockLoc.enable(this)) {
+                        Toast.makeText(this, MockLoc.status, Toast.LENGTH_LONG).show()
+                        try { startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) } catch (_: Exception) {}
+                    }
+                } else if (!mock.isChecked && MockLoc.on) MockLoc.disable()
                 NtripClient.stopNow()
                 if (on.isChecked) startNtrip()
             }
             .setNegativeButton("Atšaukti", null)
             .show()
-        st.text = NtripClient.text(obsLatNow, obsLonNow)
+        st.text = NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text()
     }
 
     private fun startNtrip() {
+        LiveRtk.load(this)
         if (!NtripClient.enabled(this)) return
         NtripClient.start(this) { if (obsLatNow == 0.0 && obsLonNow == 0.0) null else doubleArrayOf(obsLatNow, obsLonNow, obsHNow) }
     }

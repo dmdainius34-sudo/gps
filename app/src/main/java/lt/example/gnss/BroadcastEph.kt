@@ -121,6 +121,7 @@ object BroadcastEph {
     }
 
     @Synchronized fun get(svid: Int): PositionSolver.Ephemeris? = ephs[svid]
+    @Synchronized fun galEph(svid: Int): PositionSolver.Ephemeris? = gal.ephs[svid]
     @Synchronized fun count(): Int = ephs.size + gal.ephs.size + glo.ephs.size
 
     private val gal = GalileoNav.Collector()

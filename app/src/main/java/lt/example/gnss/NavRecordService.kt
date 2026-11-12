@@ -82,7 +82,21 @@ class NavRecordService : Service() {
 
     /** Fiksai: kol veikla gyva, juos rašo ji (su padėties laukais); kitaip – paslauga. */
     private val locCb = LocationListener { loc ->
-        if (!SessionFiles.activityWritesFixes) SessionFiles.writeFix(this, RawRecorder.fixLineWithoutActivity(loc))
+        if (!SessionFiles.activityWritesFixes) {
+            Orient.onLocation(loc)
+            SessionFiles.writeFix(this, RawRecorder.fixLineWithoutActivity(loc))
+        }
+    }
+
+    /** Orientacija fone (ekranas užgesęs, kuprinėje): sukimo vektorius ir linijinis pagreitis ~5 Hz. */
+    private val sensorCb = object : android.hardware.SensorEventListener {
+        override fun onSensorChanged(e: android.hardware.SensorEvent) {
+            when (e.sensor.type) {
+                android.hardware.Sensor.TYPE_ROTATION_VECTOR -> Orient.onRotation(e.values)
+                android.hardware.Sensor.TYPE_LINEAR_ACCELERATION -> Orient.onLinear(e.values)
+            }
+        }
+        override fun onAccuracyChanged(s: android.hardware.Sensor?, a: Int) {}
     }
 
     private val sysReceiver = object : BroadcastReceiver() {
@@ -191,6 +205,11 @@ class NavRecordService : Service() {
             else m.registerGnssMeasurementsCallback(measCb, handler)
         } catch (e: Exception) { Log.e("GnssApp", "NavRecordService: matavimai: ${e.message}") }
         try { m.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locCb, Looper.getMainLooper()) } catch (_: Exception) {}
+        try {
+            val sm = getSystemService(SENSOR_SERVICE) as android.hardware.SensorManager
+            sm.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR)?.let { sm.registerListener(sensorCb, it, android.hardware.SensorManager.SENSOR_DELAY_NORMAL, handler) }
+            sm.getDefaultSensor(android.hardware.Sensor.TYPE_LINEAR_ACCELERATION)?.let { sm.registerListener(sensorCb, it, android.hardware.SensorManager.SENSOR_DELAY_NORMAL, handler) }
+        } catch (_: Exception) {}
     }
 
     private fun acquireWakeLock() {
@@ -207,6 +226,7 @@ class NavRecordService : Service() {
         try { lm?.unregisterGnssStatusCallback(statusCb) } catch (_: Exception) {}
         try { lm?.unregisterGnssMeasurementsCallback(measCb) } catch (_: Exception) {}
         try { lm?.removeUpdates(locCb) } catch (_: Exception) {}
+        try { (getSystemService(SENSOR_SERVICE) as android.hardware.SensorManager).unregisterListener(sensorCb) } catch (_: Exception) {}
         listenerRegistered = false
     }
 

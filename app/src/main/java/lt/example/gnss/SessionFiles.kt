@@ -281,7 +281,8 @@ object RawRecorder {
             .append(used.size).append(',').append(list.size).append(',')
             .append(if (avg.isNaN()) "" else fx(avg, 1)).append(',')
             .append(t4?.let { fx(it.toDouble(), 1) } ?: "").append(',')
-            .append(",,,,")                                   // pitch, roll, azimutas, judėjimas – nėra veiklos
+            // pitch, roll, azimutas, judėjimas – iš paslaugos jutiklių (Orient), jei švieži; kitaip tušti
+            .append(if (Orient.fresh) "${fx(Orient.pitch, 1)},${fx(Orient.roll, 1)},${fx(Orient.az, 1)},${fx(Orient.motion, 3)}," else ",,,,")
             .append(SessionFiles.clean(envTag)).append(',')
             .append(",,,,,,,\n")                              // žinomi taškai ir paklaidos
         return sb.toString()

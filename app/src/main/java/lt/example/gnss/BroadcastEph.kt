@@ -223,3 +223,35 @@ class CompassCheck {
             ((Math.toDegrees(atan2(e, n)) + 360.0) % 360.0) to Math.toDegrees(atan2(abs(u), sqrt(e * e + n * n)))
     }
 }
+
+/**
+ * Planšetės orientacija, kurią skaito ir foninė paslauga (ekranas užgesęs, kuprinėje): pitch, roll, azimutas (getOrientation),
+ * judėjimo lygis ir ašių kryptys; bendra kompaso patikra judant (veikla ir paslauga).
+ */
+object Orient {
+    @Volatile var pitch = Double.NaN; @Volatile var roll = Double.NaN; @Volatile var az = Double.NaN; @Volatile var motion = 0.0
+    @Volatile var axisY: Pair<Double, Double>? = null; @Volatile var axisZ: Pair<Double, Double>? = null
+    @Volatile var ms = 0L
+    val check = CompassCheck()
+
+    fun onRotation(values: FloatArray) {
+        val r = FloatArray(9); val o = FloatArray(3)
+        android.hardware.SensorManager.getRotationMatrixFromVector(r, values)
+        android.hardware.SensorManager.getOrientation(r, o)
+        az = (Math.toDegrees(o[0].toDouble()) + 360.0) % 360.0; pitch = Math.toDegrees(o[1].toDouble()); roll = Math.toDegrees(o[2].toDouble())
+        axisY = CompassCheck.axisAz(r[1].toDouble(), r[4].toDouble(), r[7].toDouble())
+        axisZ = CompassCheck.axisAz(-r[2].toDouble(), -r[5].toDouble(), -r[8].toDouble())
+        ms = System.currentTimeMillis()
+    }
+
+    fun onLinear(v: FloatArray) { motion = motion * 0.9 + 0.1 * kotlin.math.sqrt((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).toDouble()) }
+
+    val fresh get() = System.currentTimeMillis() - ms < 5_000
+
+    /** Kompaso patikra: GNSS kursas judant ≥ 1,5 m/s. */
+    fun onLocation(loc: android.location.Location) {
+        if (!fresh || !loc.hasSpeed() || !loc.hasBearing() || loc.speed < 1.5f) return
+        axisY?.let { if (it.second <= 45.0) check.add("ekrano viršus (Y)", it.first, loc.bearing.toDouble()) }
+        axisZ?.let { if (it.second <= 45.0) check.add("žiūrėjimas pro ekraną (−Z)", it.first, loc.bearing.toDouble()) }
+    }
+}

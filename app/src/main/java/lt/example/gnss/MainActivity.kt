@@ -6212,8 +6212,8 @@ class MainActivity : AppCompatActivity() {
         obsLatNow = loc.latitude; obsLonNow = loc.longitude
         if (loc.hasAltitude()) obsHNow = loc.altitude
         if (loc.hasSpeed() && loc.hasBearing() && loc.speed >= 1.5f) {
-            devAxisY?.let { if (it.second <= 45.0) compassCheck.add("ekrano viršus (Y)", it.first, loc.bearing.toDouble()) }
-            devAxisZ?.let { if (it.second <= 45.0) compassCheck.add("žiūrėjimas pro ekraną (−Z)", it.first, loc.bearing.toDouble()) }
+            devAxisY?.let { if (it.second <= 45.0) Orient.check.add("ekrano viršus (Y)", it.first, loc.bearing.toDouble()) }
+            devAxisZ?.let { if (it.second <= 45.0) Orient.check.add("žiūrėjimas pro ekraną (−Z)", it.first, loc.bearing.toDouble()) }
         }
         posText = buildString {
             appendLine("Platuma: ${fx(loc.latitude, 7)}")
@@ -6346,7 +6346,6 @@ class MainActivity : AppCompatActivity() {
     private var devAzimuth = 0.0
     private var devAxisY: Pair<Double, Double>? = null
     private var devAxisZ: Pair<Double, Double>? = null
-    private val compassCheck = CompassCheck()
     private var motionLevel = 0.0
     private val devSensorListener = object : SensorEventListener {
         override fun onSensorChanged(e: SensorEvent) {
@@ -6669,7 +6668,7 @@ class MainActivity : AppCompatActivity() {
             }
             appendLine("Planšetės padėtis: pitch ${fx(devPitch, 0)}°, roll ${fx(devRoll, 0)}°, ekrano azimutas ${fx(devAzimuth, 0)}°, judėjimas ${fx(motionLevel, 2)} m/s²")
             devAxisZ?.let { appendLine("Žiūrėjimo pro ekraną kryptis: azimutas ${fx(it.first, 0)}°, ${fx(it.second, 0)}° nuo horizontalės") }
-            appendLine(compassCheck.text(1.5))
+            appendLine(Orient.check.text(1.5))
             appendLine()
         }
         if ("fiksas" in sections) { appendLine("=== FIKSAS ==="); appendLine(posText); appendLine() }

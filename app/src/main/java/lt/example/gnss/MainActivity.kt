@@ -1707,6 +1707,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private val prnTex = HashMap<String, Int>()
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        GlCaps.maxTex = IntArray(1).also { GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_SIZE, it, 0) }[0]
         GLES20.glClearColor(0f, 0f, 0f, 0f)
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
@@ -3460,7 +3461,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         try {
             appCtx.assets.open("moon.jpg").use { ins ->
                 val bmp = android.graphics.BitmapFactory.decodeStream(ins)
-                if (bmp != null) moonTex = uploadTexture(bmp)
+                if (bmp != null) {
+                    moonTex = uploadTexture(bmp)
+                    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, moonTex)
+                    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR)
+                    GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
+                }
             }
         } catch (e: Exception) {
             android.util.Log.w("GnssApp", "moon.jpg nerastas: app/src/main/assets/moon.jpg (rodomas pilkas Mėnulis)")
@@ -3870,6 +3876,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(moonProg, "uMVP"), 1, false, moonMvp, 0)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(moonProg, "uModel"), 1, false, moonMat, 0)
             GLES20.glUniform3f(GLES20.glGetUniformLocation(moonProg, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(moonProg, "uCam"), camPos[0], camPos[1], camPos[2])
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(moonProg, "uEarth"), 0f, 0f, 0f)
             resetAttribs()
             val lp = GLES20.glGetAttribLocation(moonProg, "aPos")
             val lu = GLES20.glGetAttribLocation(moonProg, "aUV")
@@ -4570,9 +4578,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform mat4 uModel;
             varying vec2 vUV;
             varying vec3 vN;
+            varying vec3 vS;
+            varying vec3 vW;
             void main() {
                 vUV = aUV;
                 vN = mat3(uModel) * aNormal;
+                vS = mat3(uModel) * aPos;
+                vW = (uModel * vec4(aPos, 1.0)).xyz;
                 gl_Position = uMVP * vec4(aPos, 1.0);
             }
         """
@@ -4580,14 +4592,32 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             precision mediump float;
             uniform sampler2D uTex;
             uniform vec3 uLight;
+            uniform vec3 uCam;
+            uniform vec3 uEarth;
             varying vec2 vUV;
             varying vec3 vN;
+            varying vec3 vS;
+            varying vec3 vW;
             void main() {
-                vec3 n = normalize(vN);
-                float d = max(dot(n, normalize(uLight)), 0.0);
+                vec3 n = normalize(vN);                       // reljefo normalė (šlaitai)
+                vec3 s = normalize(vS);                       // rutulio normalė
+                vec3 l = normalize(uLight);
+                vec3 v = normalize(uCam - vW);
+                float mu0 = max(dot(n, l), 0.0);
+                float mu = max(dot(s, v), 0.02);
+                // Lommelio–Seeligerio dėsnis (regolitas): pilnatis tolygiai šviesi iki krašto, be Lamberto patamsėjimo
+                float ls = 2.0 * mu0 / (mu0 + mu);
+                // opozicijos efektas: kai Saulė už stebėtojo nugaros, regolitas šviečia ryškiau
+                float g = acos(clamp(dot(l, v), -1.0, 1.0));
+                float opp = 1.0 + 0.4 * exp(-g / 0.12);
                 vec3 t = texture2D(uTex, vUV).rgb;
-                // be atmosferos: ryškus terminatorius, silpna Žemės šviesa nakties pusėje
-                gl_FragColor = vec4(t * (0.03 + 1.15 * d), 1.0);
+                vec3 day = t * 1.9 * ls * opp;
+                // Žemės šviesa nakties pusėje (melsva), kai Žemė apšviesta ir matoma iš Mėnulio
+                float es = max(dot(s, normalize(uEarth - vW)), 0.0);
+                vec3 night = t * vec3(0.55, 0.65, 0.9) * 0.07 * es;
+                vec3 c = day + night;
+                c = vec3(1.0) - exp(-c * 1.25);              // švelnus tonų suspaudimas (HDR)
+                gl_FragColor = vec4(c, 1.0);
             }
         """
         private const val EARTH_RELIEF_VS = """

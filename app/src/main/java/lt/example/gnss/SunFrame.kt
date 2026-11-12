@@ -65,10 +65,14 @@ object SunFrame {
  * Krašto šešėliavimas išlyginamas (I/I(μ)), kontrastas ištempiamas. Nepadengtos vietos – vienoda fotosferos spalva.
  */
 object SunImage {
-    const val URL_HMI = "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_2048_HMIIC.jpg"
+    private const val URL_BASE = "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_%d_HMIIC.jpg"
+    /** Didžiausia raiška pagal įrenginio grafiką: 4096 px nuotrauka ir 4096×2048 žemėlapis, jei leidžia tekstūros dydis. */
+    private val big get() = GlCaps.maxTex >= 8192
+    val urlHmi get() = URL_BASE.format(if (big) 4096 else 2048)
     const val MAP_FILE = "sun_synoptic.png"
     const val COV_FILE = "sun_synoptic_cov.txt"
-    const val MW = 2048; const val MH = 1024
+    val MW get() = if (big) 4096 else 2048
+    val MH get() = MW / 2
     @Volatile var map: Bitmap? = null
         private set
     @Volatile var version = 0
@@ -104,22 +108,24 @@ object SunImage {
         Thread {
             try {
                 status = "tikras Saulės vaizdas: siunčiama…"
-                val c = (URL(URL_HMI).openConnection() as HttpURLConnection).apply {
+                if (GlCaps.maxTex == 0) { status = "tikras Saulės vaizdas: laukiama grafikos"; return@Thread }
+                val c = (URL(urlHmi).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 15_000; readTimeout = 90_000; instanceFollowRedirects = true
                     setRequestProperty("User-Agent", "Mozilla/5.0 (Android) GnssApp")
                 }
                 if (c.responseCode != 200) { status = "tikras Saulės vaizdas: HTTP ${c.responseCode}"; return@Thread }
                 val mod = c.lastModified.takeIf { it > 0 } ?: now
-                val disk = c.inputStream.use { BitmapFactory.decodeStream(it) } ?: run { status = "tikras Saulės vaizdas: neperskaitomas"; return@Thread }
+                val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }   // 4096² – mažiau atminties
+                val disk = c.inputStream.use { BitmapFactory.decodeStream(it, null, opts) } ?: run { status = "tikras Saulės vaizdas: neperskaitomas"; return@Thread }
                 val m = build(disk, map, mod) ?: run { status = "tikras Saulės vaizdas: disko nerasta"; return@Thread }
-                disk.recycle()
+                val dw = disk.width; disk.recycle()
                 map = m; version++; imageMs = mod
                 try {
                     val d = ctx.applicationContext.filesDir
                     File(d, MAP_FILE).outputStream().use { m.compress(Bitmap.CompressFormat.PNG, 100, it) }
                     File(d, COV_FILE).writeText(cov.joinToString("\n"))
                 } catch (_: Exception) {}
-                status = "tikras Saulės vaizdas: NASA SDO HMI 2048 px, %s UTC; padengta %d %% paviršiaus".format(Locale.US,
+                status = "tikras Saulės vaizdas: NASA SDO HMI ${dw} px, žemėlapis ${MW}×${MH}, %s UTC; padengta %d %% paviršiaus".format(Locale.US,
                     java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date(mod)), coverage()) +
                     oldest(now) + "; $lastDisk"
             } catch (e: Exception) { status = "tikras Saulės vaizdas: ${e.javaClass.simpleName} ${e.message ?: ""}".trim() }
@@ -135,8 +141,10 @@ object SunImage {
     /** Disko radimas, krašto šešėliavimo išlyginimas ir įrašymas į kaupiamą heliografinį žemėlapį. */
     fun build(disk: Bitmap, prev: Bitmap?, ms: Long): Bitmap? {
         val w = disk.width; val h = disk.height
-        val px = IntArray(w * h); disk.getPixels(px, 0, w, 0, 0, w, h)
-        fun lum(x: Int, y: Int): Int { val p = px[y * w + x]; return ((p shr 16 and 255) + (p shr 8 and 255) + (p and 255)) / 3 }
+        val lumA = ByteArray(w * h)
+        val row = IntArray(w)
+        for (y in 0 until h) { disk.getPixels(row, 0, w, 0, y, w, 1); for (x in 0 until w) { val p = row[x]; lumA[y * w + x] = (((p shr 16 and 255) + (p shr 8 and 255) + (p and 255)) / 3).toByte() } }
+        fun lum(x: Int, y: Int): Int = lumA[y * w + x].toInt() and 255
         val thr = 25
         var x0 = -1; var x1 = -1; var y0 = -1; var y1 = -1
         for (x in 0 until w) if (lum(x, h / 2) > thr) { if (x0 < 0) x0 = x; x1 = x }
@@ -154,8 +162,10 @@ object SunImage {
         val zs = az[0] * s[0] + az[1] * s[1] + az[2] * s[2]
         val up = DoubleArray(3) { az[it] - zs * s[it] }.let { u -> val l = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]); DoubleArray(3) { u[it] / l } }
         val right = SunFrame.cross(v, up)
+        val MW = this.MW; val MH = this.MH
         val out = IntArray(MW * MH)
         if (prev != null && prev.width == MW && prev.height == MH) prev.getPixels(out, 0, MW, 0, 0, MW, MH)
+        else if (prev != null) Bitmap.createScaledBitmap(prev, MW, MH, true).getPixels(out, 0, MW, 0, 0, MW, MH)
         else java.util.Arrays.fill(out, 0)                              // 0 – nepadengta (šešėliuoklė rodo fotosferos spalvą)
         val now = ms
         for (r in 0 until MH) {
@@ -222,3 +232,6 @@ object MoonFrame {
         return doubleArrayOf(Math.toDegrees(atan2(dot(s, y), dot(s, x))), Math.toDegrees(asin(dot(s, z).coerceIn(-1.0, 1.0))))
     }
 }
+
+/** Įrenginio grafikos galimybės (nustatomos GL konteksto sukūrimo metu). */
+object GlCaps { @Volatile var maxTex = 0 }

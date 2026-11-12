@@ -54,7 +54,7 @@ object SunFrame {
     fun text(ms: Long = System.currentTimeMillis()): String {
         val (p, b, l) = pbl(ms).let { Triple(it[0], it[1], it[2]) }
         return "Saulės koordinatės: P = %+.2f°, B₀ = %+.2f°, L₀ = %.2f° (į Žemę atsuktas dienovidinis), Carringtono apsisukimas %.2f; ".format(
-            Locale.US, p, b, l, carrington(ms)) + SunImage.status
+            Locale.US, p, b, l, carrington(ms)) + SunImage.status + "; " + Lasco.status
     }
 }
 
@@ -235,3 +235,45 @@ object MoonFrame {
 
 /** Įrenginio grafikos galimybės (nustatomos GL konteksto sukūrimo metu). */
 object GlCaps { @Volatile var maxTex = 0 }
+
+/**
+ * Saulės išmetimai (vainikinės masės išmetimai, CME): SOHO LASCO C2 koronografo naujausias vaizdas (NASA/ESA, kas ~12–20 min.).
+ * Vaizdas – dangaus plokštumos projekcija, matoma iš Žemės: šiaurė viršuje, rytai kairėje, laukas ≈ ±6 Saulės spindulių.
+ */
+object Lasco {
+    const val URL_C2 = "https://soho.nascom.nasa.gov/data/realtime/c2/1024/latest.jpg"
+    /** Pusė vaizdo pločio Saulės spinduliais (C2: 11,9″/px 1024 px vaizde, R☉ ≈ 960″). */
+    const val HALF_RSUN = 1024 * 11.9 / 2 / 960.0
+    @Volatile var image: Bitmap? = null
+        private set
+    @Volatile var version = 0
+        private set
+    @Volatile var imageMs = 0L
+        private set
+    @Volatile var status = "Saulės išmetimai (LASCO C2): neatsisiųsta"
+        private set
+    @Volatile var enabled = true
+    @Volatile private var at = 0L
+    @Volatile private var busy = false
+
+    fun refresh(ctx: Context) {
+        val now = System.currentTimeMillis()
+        if (!enabled || busy || now - at < (if (image == null) 2 * 60_000L else 15 * 60_000L)) return
+        busy = true; at = now
+        Thread {
+            try {
+                val c = (URL(URL_C2).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 15_000; readTimeout = 60_000; instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", "Mozilla/5.0 (Android) GnssApp")
+                }
+                if (c.responseCode != 200) { status = "Saulės išmetimai (LASCO C2): HTTP ${c.responseCode}"; return@Thread }
+                val mod = c.lastModified.takeIf { it > 0 } ?: now
+                val b = c.inputStream.use { BitmapFactory.decodeStream(it) } ?: run { status = "Saulės išmetimai (LASCO C2): neperskaitomas"; return@Thread }
+                image = b; version++; imageMs = mod
+                status = "Saulės išmetimai: SOHO LASCO C2 %d px, %s UTC (dangaus plokštuma iš Žemės, 2–6 Saulės spinduliai)".format(Locale.US, b.width,
+                    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date(mod)))
+            } catch (e: Exception) { status = "Saulės išmetimai (LASCO C2): ${e.javaClass.simpleName} ${e.message ?: ""}".trim() }
+            finally { busy = false }
+        }.start()
+    }
+}

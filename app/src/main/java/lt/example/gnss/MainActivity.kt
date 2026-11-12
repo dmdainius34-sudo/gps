@@ -4078,8 +4078,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawSun3D(sp: FloatArray, t: Float) {
         if (earthPos == null) return
         if (sunProg == 0) sunProg = program(SUN_VS, SUN_FS)
-        // Schema: spindulys 0,12 scenos vnt.; „Realybė“: 696 000 km (109 Žemės spinduliai)
-        val k = if (realScale) (696_000.0 / 6371.0 * EARTH_R / 0.25).toFloat() else 0.48f
+        // Vietinis: spindulys 2× Žemės (0,5 scenos vnt.); „Realybė“: 696 000 km (109 Žemės spinduliai)
+        val k = if (realScale) (696_000.0 / 6371.0 * EARTH_R / 0.25).toFloat() else 2.0f
         // tikra Saulės orientacija: IAU ašis ir Carringtono sukimasis (tinklelio u = 0,5 – nulinis dienovidinis)
         val ax = SunFrame.axes(System.currentTimeMillis())
         java.util.Arrays.fill(sunMat, 0f)
@@ -4160,13 +4160,18 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var lascoTex = 0
     private var lascoVer = -1
     @Volatile var showLasco = true
+    /** Išmetimų žiedo išorinis spindulys (Saulės spinduliais): koronografo laukas 2,3–5,8 R suspaudžiamas į 1,0–1,8 R. */
+    private val LASCO_OUT = 1.8
     /** SOHO LASCO C2 vaizdas plokštumoje per Saulės centrą, statmenoje Saulės–Žemės krypčiai (taip, kaip jis matomas iš Žemės). */
     private fun drawLasco(sp: FloatArray, rs: Float) {
         if (!showLasco) return
         val img = Lasco.image ?: return
         if (Lasco.version != lascoVer) { lascoVer = Lasco.version
             if (lascoTex != 0) GLES20.glDeleteTextures(1, intArrayOf(lascoTex), 0)
-            lascoTex = uploadTexture(img) }
+            lascoTex = uploadTexture(img)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, lascoTex)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR)
+            GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D) }
         if (lascoProg == 0) lascoProg = program(LASCO_VS, LASCO_FS)
         // ašys: d – nuo Žemės į Saulę, u – Saulės šiaurė dangaus plokštumoje, r = d × u – vakarai (vaizdo dešinė)
         val dl = kotlin.math.sqrt(sp[0] * sp[0] + sp[1] * sp[1] + sp[2] * sp[2]); if (dl < 1e-6f) return
@@ -4176,7 +4181,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val u = floatArrayOf(z[0].toFloat() - pz * d[0], z[1].toFloat() - pz * d[1], z[2].toFloat() - pz * d[2])
         val ul = kotlin.math.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]); for (i in 0..2) u[i] /= ul
         val r = floatArrayOf(d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0])
-        val h = (Lasco.HALF_RSUN * rs).toFloat()
+        val h = (LASCO_OUT * rs).toFloat()
         val v = FloatArray(4 * 5)
         val corners = arrayOf(floatArrayOf(-1f, -1f), floatArrayOf(1f, -1f), floatArrayOf(-1f, 1f), floatArrayOf(1f, 1f))
         for ((i, c) in corners.withIndex()) {
@@ -4189,6 +4194,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUseProgram(lascoProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(lascoProg, "uMVP"), 1, false, mvpI, 0)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uHalf"), Lasco.HALF_RSUN.toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uOut"), LASCO_OUT.toFloat())
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, lascoTex)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(lascoProg, "uTex"), 0)
         resetAttribs()
@@ -4578,13 +4584,19 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             precision mediump float;
             uniform sampler2D uTex;
             uniform float uHalf;
+            uniform float uOut;
             varying vec2 vUV;
             void main() {
-                // atstumas nuo Saulės centro Saulės spinduliais; tik koronografo laukas 2,3–5,8 R (be užtvaro ir užrašų kampuose)
-                float rr = length(vUV - 0.5) * 2.0 * uHalf;
-                float m = smoothstep(2.3, 2.8, rr) * (1.0 - smoothstep(5.3, 5.8, rr));
-                vec3 t = texture2D(uTex, vUV).rgb;
-                vec3 c = max(t - vec3(0.10), vec3(0.0)) * 1.6 * m;   // fono atėmimas: lieka srautai ir išmetimai
+                // rodomas spindulys rho (Saulės spinduliais): 1 – Saulės kraštas, uOut – žiedo kraštas
+                vec2 q = (vUV - 0.5) * 2.0;
+                float rho = length(q) * uOut;
+                if (rho < 1.0 || rho > uOut) discard;
+                // radialinis suspaudimas: visas koronografo laukas 2,3–5,8 R be tarpo prigludęs prie Saulės krašto
+                float src = 2.3 + (rho - 1.0) / (uOut - 1.0) * 3.5;
+                vec2 uv = 0.5 + normalize(q) * src / (2.0 * uHalf);
+                float m = smoothstep(1.0, 1.04, rho) * (1.0 - smoothstep(uOut - 0.08, uOut, rho));
+                vec3 t = texture2D(uTex, uv).rgb;
+                vec3 c = max(t - vec3(0.10), vec3(0.0)) * 1.6 * m * (0.6 + 0.4 * (src - 2.3) / 3.5 + 0.4);   // fono atėmimas: lieka srautai ir išmetimai
                 gl_FragColor = vec4(c * vec3(1.0, 0.85, 0.65), 1.0);
             }
         """

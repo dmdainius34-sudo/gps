@@ -20,3 +20,15 @@ class ReadinessTest {
         Readiness.coldStartMs = 0L
     }
 }
+
+class KnowledgeTest {
+    @Test
+    fun percentages() {
+        val l = (1..10).map { Sat("GPS", it, 35f, 40f, 0f, true, eph = it <= 5, alm = true) } + Sat("GPS", 30, 35f, 5f, 0f, false)
+        Readiness.onSats(l)
+        Readiness.onMeas((1..10).map { Triple(1000 + it, 35.0, if (it <= 8) 8 else 4) })
+        val k = Readiness.knowledge()!!
+        org.junit.Assert.assertEquals(50, k.eph); org.junit.Assert.assertEquals(80, k.tow); org.junit.Assert.assertEquals(100, k.alm)
+        org.junit.Assert.assertEquals(10, k.n); org.junit.Assert.assertEquals(66, k.total)
+    }
+}

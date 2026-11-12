@@ -26,6 +26,27 @@ object Readiness {
         while (hist.isNotEmpty() && now - hist.first().ms > 60_000) hist.removeFirst()
     }
 
+    // ---- Lusto žinios: kiek informacijos iš palydovų lustas jau turi ----
+    @Volatile private var sats: List<Sat> = emptyList()
+    @Volatile private var meas: List<Triple<Int, Double, Int>> = emptyList()
+    fun onSats(l: List<Sat>) { sats = l }
+    fun onMeas(l: List<Triple<Int, Double, Int>>) { meas = l }
+
+    /** total 0–100: 60 % efemeridės, 20 % laikas (TOW iššifruotas), 20 % almanachas – matomiems (≥ 10°, C/N0 ≥ 20) palydovams. */
+    class Knowledge(val total: Int, val eph: Int, val tow: Int, val alm: Int, val n: Int) {
+        val text get() = "$total % (efemeridės $eph %, laikas $tow %, almanachas $alm %; matomų palydovų $n)"
+    }
+
+    fun knowledge(): Knowledge? {
+        val vis = sats.filter { it.elev >= 10f && it.cn0 >= 20f }.distinctBy { it.const to it.svid }
+        if (vis.isEmpty()) return null
+        val eph = 100 * vis.count { it.eph } / vis.size
+        val alm = 100 * vis.count { it.alm } / vis.size
+        val m = meas.filter { it.second >= 20.0 }.distinctBy { it.first }
+        val tow = if (m.isEmpty()) 0 else 100 * m.count { (it.third and 8) != 0 || (it.third and 0x4000) != 0 } / m.size
+        return Knowledge((0.6 * eph + 0.2 * tow + 0.2 * alm).toInt(), eph, tow, alm, vis.size)
+    }
+
     class State(val ready: Boolean, val text: String)
 
     @Synchronized fun state(rtkOn: Boolean, rtkSig: Double?, now: Long = System.currentTimeMillis()): State {

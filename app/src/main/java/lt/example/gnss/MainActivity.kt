@@ -352,7 +352,10 @@ data class Sat(
     val cn0: Float,
     val elev: Float,
     val az: Float,
-    val used: Boolean
+    val used: Boolean,
+    /** Lustas turi šio palydovo efemeridę / almanachą (GnssStatus). */
+    val eph: Boolean = false,
+    val alm: Boolean = false
 )
 
 fun constColor(c: String): Int = when (c) {
@@ -5276,12 +5279,20 @@ class MainActivity : AppCompatActivity() {
         val live = LiveRtk.enabled
         val sig = LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc
         val st = Readiness.state(live, sig)
-        v.text = "● " + st.text
+        val k = Readiness.knowledge()
+        v.text = "● " + (if (k != null) "Lusto žinios %d %% · ".format(java.util.Locale.US, k.total) else "") + st.text
+        val lvl = ((k?.total ?: 0) * 100).coerceIn(0, 10000)
+        if (readyLast == st.ready) (v.background as? android.graphics.drawable.LayerDrawable)?.getDrawable(1)?.level = if (st.ready) 10000 else lvl
         if (readyLast != st.ready) {
             readyLast = st.ready
             val col = if (st.ready) 0xFFB6FF00.toInt() else 0xFF3B82F6.toInt()
             v.setTextColor(if (st.ready) 0xFF0A1A00.toInt() else 0xFFFFFFFF.toInt())
-            v.background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 40f; setColor(col) }
+            // pagrindas + užpildas pagal lusto žinių %: mėlyna šylant, salotinė neoninė – paruošta
+            val baseCol = if (st.ready) col else 0xFF1E3A8A.toInt()
+            val fill = android.graphics.drawable.ClipDrawable(android.graphics.drawable.GradientDrawable().apply { cornerRadius = 40f; setColor(col) },
+                Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL).apply { level = if (st.ready) 10000 else lvl }
+            v.background = android.graphics.drawable.LayerDrawable(arrayOf(
+                android.graphics.drawable.GradientDrawable().apply { cornerRadius = 40f; setColor(baseCol) }, fill))
             v.setShadowLayer(if (st.ready) 0f else 4f, 0f, 0f, 0xFF000000.toInt())
             v.elevation = if (st.ready) 12f else 4f
             if (st.ready) v.outlineSpotShadowColorCompat(col)
@@ -5407,9 +5418,12 @@ class MainActivity : AppCompatActivity() {
                     cn0 = status.getCn0DbHz(i),
                     elev = status.getElevationDegrees(i),
                     az = status.getAzimuthDegrees(i),
-                    used = status.usedInFix(i)
+                    used = status.usedInFix(i),
+                    eph = status.hasEphemerisData(i),
+                    alm = status.hasAlmanacData(i)
                 )
             }
+            Readiness.onSats(list)
             lastSats = list
             satMap.clear()
             for (x in list) satMap[x.const + x.svid] = x
@@ -5469,6 +5483,7 @@ class MainActivity : AppCompatActivity() {
     private val measCallback = object : GnssMeasurementsEvent.Callback() {
         override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
             measText = "Neapdoroti matavimai: ${event.measurements.size}"
+            Readiness.onMeas(event.measurements.map { Triple(it.constellationType * 1000 + it.svid, it.cn0DbHz, it.state) })
             try { LiveRtk.onMeasurements(event) } catch (_: Exception) {}
             MockLoc.watchdog()
             RawRecorder.envTag = envTag()
@@ -5835,6 +5850,7 @@ class MainActivity : AppCompatActivity() {
                         (if (obsLatNow == 0.0 && obsLonNow == 0.0) "" else SpaceOrientation.report(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()), obsLatNow)) +
                         (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" else "") +
                         NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" +
+                        (Readiness.knowledge()?.let { "Lusto žinios: ${it.text}\n" } ?: "") +
                         "Pasiruošimas: " + Readiness.state(LiveRtk.enabled, LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc).text + "\n" +
                         (if (::skyDome.isInitialized) skyDome.fpsText() + "\n" else "")
                     report += "Eksportuota: " + names.joinToString(", ") + "\n"

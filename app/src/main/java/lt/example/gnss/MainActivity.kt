@@ -5804,6 +5804,13 @@ class MainActivity : AppCompatActivity() {
             else -> "3D: plytelės 10 m kupole (5°×5°), baltas kontūras – kliūčių sienų kraštai; vilkite pirštu – sukasi"
         } }
         left.addView(cv, LinearLayout.LayoutParams((240 * resources.displayMetrics.density).toInt(), ww))
+        cv.loadRoom(this)
+        left.addView(Button(this).apply {
+            fun lab() { text = "3D forma: " + if (cv.shape == 1) "patalpa (%.1f×%.1f×%.1f m)".format(java.util.Locale.US, cv.roomW, cv.roomL, cv.roomH) else "kupolas 10 m" }
+            lab()
+            setOnClickListener { cv.shape = 1 - cv.shape; cv.saveRoom(this@MainActivity); lab(); cv.invalidate() }
+        }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(Button(this).apply { text = "Patalpos (kabinos) matmenys…"; setOnClickListener { showRoomDialog(cv) } }, LinearLayout.LayoutParams(mw, ww))
         left.addView(CheckBox(this).apply {
             text = "Mokytis kabinos žemėlapio"; isChecked = CabinMap.learn
             setOnCheckedChangeListener { _, on -> CabinMap.learn = on; cabPrefs.edit().putBoolean("learn", on).apply() }
@@ -6607,6 +6614,37 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Atšaukti", null)
             .show()
         st.text = NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text()
+    }
+
+    /** Patalpos (kabinos) matmenys 3D žemėlapiui: dydis ir kur planšetė joje stovi (planšetės kryptimi). */
+    private fun showRoomDialog(cv: CabinMapView) {
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad / 2, pad, 0) }
+        val num = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+        fun field(label: String, v: Double): EditText {
+            box.addView(TextView(this).apply { text = label; textSize = 13f })
+            return EditText(this).apply { setText("%.2f".format(java.util.Locale.US, v)); inputType = num; isSingleLine = true; box.addView(this) }
+        }
+        box.addView(TextView(this).apply { text = "Kryptys – planšetės atžvilgiu: „priekis“ – kur atsukta planšetė, „dešinė“ – jos dešinėje."; textSize = 12f })
+        val w = field("Plotis (kairė–dešinė), m", cv.roomW)
+        val l = field("Ilgis (priekis–galas), m", cv.roomL)
+        val h = field("Aukštis (grindys–lubos), m", cv.roomH)
+        val dx = field("Planšetės poslinkis nuo centro į dešinę, m (kairėn – minusas)", cv.roomDx)
+        val dy = field("Planšetės poslinkis nuo centro į priekį, m (atgal – minusas)", cv.roomDy)
+        val z = field("Planšetės aukštis nuo grindų, m", cv.roomZ)
+        fun num(e: EditText, def: Double) = e.text.toString().trim().replace(',', '.').toDoubleOrNull() ?: def
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Patalpos matmenys")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Išsaugoti") { _, _ ->
+                cv.roomW = num(w, cv.roomW).coerceIn(0.5, 100.0); cv.roomL = num(l, cv.roomL).coerceIn(0.5, 100.0); cv.roomH = num(h, cv.roomH).coerceIn(0.5, 50.0)
+                cv.roomDx = num(dx, cv.roomDx).coerceIn(-cv.roomW / 2 + 0.05, cv.roomW / 2 - 0.05)
+                cv.roomDy = num(dy, cv.roomDy).coerceIn(-cv.roomL / 2 + 0.05, cv.roomL / 2 - 0.05)
+                cv.roomZ = num(z, cv.roomZ).coerceIn(0.05, cv.roomH - 0.05)
+                cv.shape = 1; cv.saveRoom(this); cv.invalidate()
+            }
+            .setNegativeButton("Atšaukti", null)
+            .show()
     }
 
     /** Krano apribojimas: bokšto ašies koordinatės, spindulys iki planšetės, aukštis (nebūtinas). */

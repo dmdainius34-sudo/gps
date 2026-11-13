@@ -45,7 +45,8 @@ object SunCal {
      */
     fun moonAzEl(ms: Long, lat: Double, lon: Double): Pair<Double, Double> {
         val t = Astro.daysJ2000(ms) / 36525.0
-        fun sd(a: Double) = kotlin.math.sin(Math.toRadians(a)); fun cd(a: Double) = kotlin.math.cos(Math.toRadians(a))
+        fun sd(a: Double) = kotlin.math.sin(Math.toRadians(a))
+        fun cd(a: Double) = kotlin.math.cos(Math.toRadians(a))
         val lam = 218.32 + 481267.881 * t + 6.29 * sd(135.0 + 477198.87 * t) - 1.27 * sd(259.3 - 413335.36 * t) +
             0.66 * sd(235.7 + 890534.22 * t) + 0.21 * sd(269.9 + 954397.74 * t) - 0.19 * sd(357.5 + 35999.05 * t) - 0.11 * sd(186.5 + 966404.03 * t)
         val bet = 5.13 * sd(93.3 + 483202.02 * t) + 0.28 * sd(228.2 + 960400.89 * t) - 0.28 * sd(318.3 + 6003.15 * t) - 0.17 * sd(217.6 - 407332.21 * t)

@@ -337,7 +337,7 @@ class CabinMapView(ctx: Context) : View(ctx) {
         for (k in 1..3) c.drawCircle(cx, cy, r * k / 3f, p)
         c.drawLine(cx, cy - r, cx, cy + r, p); c.drawLine(cx - r, cy, cx + r, cy, p)
         p.style = Paint.Style.FILL; p.color = Color.WHITE; p.textSize = r * 0.11f; p.textAlign = Paint.Align.CENTER
-        c.drawText(when (mode) { 0 -> "▲ prietaisas · KABINA"; 1 -> "Š · APLINKA"; else -> "Š · RADARAS (20/40/60 m)" }, cx, cy - r - 6, p)
+        c.drawText(when (mode) { 0 -> "▲ prietaisas · KABINA"; 1 -> "Š · APLINKA"; else -> "Š · RADARAS (20/40/60 m) · KRYPTIS IŠ SIGNALŲ" }, cx, cy - r - 6, p)
         // prietaiso kryptis aplinkos ir radaro vaizde
         if (mode != 0 && h != null) {
             p.color = 0xFF38BDF8.toInt(); p.strokeWidth = 4f; p.style = Paint.Style.STROKE
@@ -464,5 +464,47 @@ class CabinMapView(ctx: Context) : View(ctx) {
         }
         p.color = 0x88FFFFFF.toInt(); p.textSize = r * 0.08f; p.textAlign = Paint.Align.LEFT
         for (k in 1..3) c.drawText("${k * 20} m", cx + 4, cy - r * k / 3f + r * 0.09f, p)
+        drawSignalHeading(c, cx, cy, r)
+    }
+
+    /**
+     * Krypties iš signalų indikatorius (radaro vaizde, viršus – šiaurė): sutapimo kreivė per 360° (kuo toliau nuo centro –
+     * tuo geriau kabinos žemėlapis sutampa su signalais, jei prietaisas atsuktas ta kryptimi), įverčių pėdsakas
+     * (2 min., ryškėja – nauji) ir rodyklė: žalia – patikima, oranžinė – vidutinė, pilka – nepatikima. Mėlyna – vaizdo kryptis.
+     */
+    private fun drawSignalHeading(c: Canvas, cx: Float, cy: Float, r: Float) {
+        val e = SignalHeading.last
+        val sc = e?.scores
+        if (sc != null && sc.size == 180) {
+            val path = android.graphics.Path(); var first = true
+            for (k in 0..180) {
+                val v = sc[k % 180]; val rr = r * (0.15 + 0.8 * ((v.coerceIn(-1.0, 1.0) + 1) / 2)).toFloat()
+                val a = Math.toRadians(k * 2.0)
+                val x = cx + (rr * sin(a)).toFloat(); val y = cy - (rr * cos(a)).toFloat()
+                if (first) { path.moveTo(x, y); first = false } else path.lineTo(x, y)
+            }
+            p.style = Paint.Style.FILL; p.color = 0x3322D3EE; c.drawPath(path, p)
+            p.style = Paint.Style.STROKE; p.strokeWidth = 2.5f; p.color = 0xCC22D3EE.toInt(); c.drawPath(path, p)
+        }
+        // pėdsakas: paskutinių įverčių taškai ant išorinio žiedo
+        val now = System.currentTimeMillis()
+        p.style = Paint.Style.FILL
+        for (q in SignalHeading.recent()) {
+            val age = ((now - q.ms) / 120_000.0).coerceIn(0.0, 1.0)
+            val a = Math.toRadians(q.deg); val rr = r * 0.97f
+            p.color = (((1 - age) * 200 + 30).toInt() shl 24) or (if (q.corr >= 0.6) 0x22C55E else 0xF59E0B)
+            c.drawCircle(cx + (rr * sin(a)).toFloat(), cy - (rr * cos(a)).toFloat(), r * 0.025f, p)
+        }
+        if (e != null) {
+            val col = when { e.corr >= 0.6 && e.margin >= 0.15 -> 0xFF22C55E.toInt(); e.corr >= 0.4 -> 0xFFF59E0B.toInt(); else -> 0xFF9CA3AF.toInt() }
+            val a = Math.toRadians(e.deg)
+            p.color = col; p.strokeWidth = 6f; p.style = Paint.Style.STROKE
+            c.drawLine(cx, cy, cx + (r * 0.9f * sin(a)).toFloat(), cy - (r * 0.9f * cos(a)).toFloat(), p)
+            p.style = Paint.Style.FILL; p.textSize = r * 0.09f; p.textAlign = Paint.Align.CENTER
+            c.drawText("signalai %.0f° · r %.2f".format(Locale.US, e.deg, e.corr), cx, cy + r + r * 0.12f, p)
+        } else {
+            p.style = Paint.Style.FILL; p.color = 0xAAFFFFFF.toInt(); p.textSize = r * 0.08f; p.textAlign = Paint.Align.CENTER
+            c.drawText("kryptis iš signalų: mokomasi…", cx, cy + r + r * 0.12f, p)
+        }
     }
 }

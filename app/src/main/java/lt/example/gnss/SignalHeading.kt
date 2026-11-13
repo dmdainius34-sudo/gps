@@ -14,7 +14,7 @@ import kotlin.math.sqrt
  * nuokrypį nuo mokymosi meto; absoliuti tik tada, kai žemėlapis mokytas po kalibravimo (Saulė, Polaris).
  */
 object SignalHeading {
-    class Est(val ms: Long, val deg: Double, val corr: Double, val margin: Double, val n: Int)
+    class Est(val ms: Long, val deg: Double, val corr: Double, val margin: Double, val n: Int, val scores: DoubleArray = DoubleArray(0))
     @Volatile var last: Est? = null
         private set
     private val hist = ArrayDeque<Pair<Est, Double>>()          // (įvertis, vaizdo kryptis)
@@ -57,7 +57,7 @@ object SignalHeading {
         if (scores[best] <= -1.5) return null
         // antras geriausias pikas ne arčiau kaip 30° – dviprasmiškumo matas
         val second = scores.indices.filter { val d = kotlin.math.abs(((it - best) * 2 + 540) % 360 - 180); d >= 30 }.maxOfOrNull { scores[it] } ?: -1.0
-        return Est(System.currentTimeMillis(), best * 2.0, scores[best], scores[best] - second, counts[best])
+        return Est(System.currentTimeMillis(), best * 2.0, scores[best], scores[best] - second, counts[best], scores)
     }
 
     /** Kas sekundę: įvertis, istorija (2 min.) ir (pasirinktinai) šiaurės pataisa, kai įvertis ilgai stabilus ir patikimas. */
@@ -77,6 +77,9 @@ object SignalHeading {
         lastFixMs = e.ms; lastFixDeg = mean; hist.clear()
         applyFix(mean)
     }
+
+    /** Paskutinių 2 min. įverčiai (radaro indikatoriui). */
+    @Synchronized fun recent(): List<Est> = hist.map { it.first }
 
     private fun wrap(a: Double): Double { var x = (a + 540.0) % 360.0; if (x < 0) x += 360.0; return x - 180.0 }
 

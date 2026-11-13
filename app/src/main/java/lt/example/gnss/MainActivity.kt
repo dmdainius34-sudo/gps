@@ -7211,11 +7211,17 @@ class MainActivity : AppCompatActivity() {
         return SunCal.wrap(view - tr) to e
     }
 
+    private fun isCharging(): Boolean = try {
+        (getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager).isCharging
+    } catch (_: Exception) { false }
+
     private fun northFromLogTick() {
         val (d, e) = headingVsLog() ?: return
         // magnetometro klaida priklauso nuo krypties (geležis, magnetai): automatiškai taisoma tik ±30° nuo kalibravimo krypties
         val view = if (::skyDome.isInitialized) skyDome.headingDeg() else null
         if (view == null || e.sunAz.isNaN() || kotlin.math.abs(SunCal.wrap(view - d - e.sunAz)) > 30.0) return
+        // stipriai iškraipytas magnetometras (pvz. kabinos plienas) arba įkraunama (laido srovė keičia lauką) – netaisoma
+        if (e.magDistorted || isCharging()) return
         SunCal.watch(System.currentTimeMillis(), d) { fix -> runOnUiThread { if (::skyDome.isInitialized) skyDome.nudgeNorth(fix) } }
     }
 
@@ -7225,7 +7231,7 @@ class MainActivity : AppCompatActivity() {
         val fmt = java.text.SimpleDateFormat("MM-dd HH:mm", Locale.US)
         val items = list.map { e ->
             val dist = kotlin.math.hypot((e.lat - obsLatNow) * 111_320.0, (e.lon - obsLonNow) * 111_320.0 * cos(Math.toRadians(obsLatNow)))
-            (if (e.good) "✓ " else "⚠ ") + "%s · pataisa %+.1f° · magnetometras %+.1f° · kampai %.0f°/%.0f° · %s".format(Locale.US,
+            (if (e.good && !e.magDistorted) "✓ " else if (e.good) "✓ (magnetometras iškraipytas) " else "⚠ ") + "%s · pataisa %+.1f° · magnetometras %+.1f° · kampai %.0f°/%.0f° · %s".format(Locale.US,
                 fmt.format(java.util.Date(e.ms)), e.corr, e.magDiff, e.devEl, e.sunEl, if (dist < 1000) "%.0f m".format(Locale.US, dist) else "%.1f km".format(Locale.US, dist / 1000))
         }.toTypedArray()
         val checked = BooleanArray(items.size) { !list[it].good }      // abejotini pažymėti iš anksto

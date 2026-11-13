@@ -19,6 +19,8 @@ object SunCal {
     const val HEADER = "utc,platuma,ilguma,aukstis_elips_m,fikso_tikslumas_m,saules_az_deg,saules_aukstis_deg,prietaiso_az_deg,prietaiso_aukstis_deg," +
         "pataisa_deg,magnetometro_az_deg,deklinacija_deg,saules_vs_magnetometro_siaure_deg,pitch_deg,roll_deg,modelis\n"
     const val MIN_EL = 0.0; const val MAX_EL = 70.0; const val WARN_DEL = 10.0
+    /** Didesnė magnetometro klaida rodo stiprų iškraipymą – jo klaida nepastovi, automatinis taisymas išjungiamas. */
+    const val MAG_MAX = 25.0
 
     /** Atmosferos refrakcija (Saemundsson), ° – pridedama prie geometrinio aukščio. */
     fun refraction(elDeg: Double): Double {
@@ -67,7 +69,9 @@ object SunCal {
     @Synchronized fun log(ctx: Context, r: Rec) {
         val f = file(ctx)
         if (!f.exists() || f.length() == 0L) f.writeText(HEADER)
-        f.appendText(r.line())
+        val ln = r.line()
+        if (lastLine(ctx)?.trim() == ln.trim()) return            // dvigubas paspaudimas – ta pati eilutė neįrašoma
+        f.appendText(ln)
     }
 
     /** Žurnalo įrašas, nuskaitytas iš CSV (eilutės numeris – trynimui). */
@@ -75,6 +79,9 @@ object SunCal {
                 val corr: Double, val magAz: Double, val magDiff: Double, val raw: String, val sunAz: Double = Double.NaN) {
         /** Geras: prietaiso kampas sutapo su Saulės (≤ 10°), nugarėlė ne per stačiai (−Z azimutas patikimas), magnetometras buvo. */
         val good get() = kotlin.math.abs(devEl - sunEl) <= WARN_DEL && kotlin.math.abs(devEl) < 60.0 && !magDiff.isNaN()
+        /** Magnetometras stipriai iškraipytas (geležis, įkrovimo srovė) – automatiniam taisymui netinka. */
+        val magDistorted get() = !magDiff.isNaN() && kotlin.math.abs(magDiff) > MAG_MAX
+
     }
 
     @Synchronized fun entries(ctx: Context): List<Entry> = try {

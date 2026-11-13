@@ -31,7 +31,13 @@ object KnownHeight {
         agl = d("agl")?.takeIf { it in -100.0..1000.0 }; msl = d("msl")?.takeIf { it in -500.0..9000.0 }
     }
 
-    val active get() = msl != null || (agl != null && !ground.isNaN())
+    /**
+     * Copernicus DEM yra paviršiaus modelis (su pastatais, medžiais) – gali būti klaidingas keliolika metrų.
+     * Jei ilgas vidurkis stovint (≥ 300 fiksų) rodo, kad GNSS aukštis nuo DEM etalono skiriasi > 10 m, DEM etalonas nenaudojamas.
+     */
+    @Volatile var demSuspect = false
+        private set
+    val active get() = msl != null || (agl != null && !ground.isNaN() && !demSuspect)
 
     /** Prietaiso aukštis virš jūros, m. */
     fun deviceMsl(): Double? = msl ?: agl?.let { a -> if (ground.isNaN()) null else ground + a }
@@ -96,6 +102,7 @@ object KnownHeight {
         n++; sw += w; sLat += w * lat; sLon += w * lon; sLat2 += w * lat * lat; sLon2 += w * lon * lon
         val h0 = h0(lat, lon)
         if (hEll != null && h0 != null) { dhSum += hEll - h0; dhN++ }
+        if (msl == null && dhN >= 300) demSuspect = abs(dhSum / dhN) > 10.0
     }
 
     @Synchronized fun reset() { n = 0; sw = 0.0; sLat = 0.0; sLon = 0.0; sLat2 = 0.0; sLon2 = 0.0; dhSum = 0.0; dhN = 0 }
@@ -109,7 +116,11 @@ object KnownHeight {
         if (dm != null) append("; prietaisas %.2f m virš jūros (σ %.1f m)".format(Locale.US, dm, sigma()))
         if (!lastLat.isNaN()) h0(lastLat, lastLon)?.let { append(", elipsoidinis %.2f m".format(Locale.US, it)) }
         if (demStatus.isNotEmpty() && msl == null) append("; $demStatus")
-        append(if (active) "; naudojamas RTK filtre" else "; dar nenaudojamas (laukiama žemės aukščio)")
+        append(when {
+            active -> "; naudojamas RTK filtre"
+            demSuspect -> "; NENAUDOJAMAS: GNSS aukštis nuo DEM etalono skiriasi > 10 m (DEM su pastatais ar netikslus, arba neteisingas aukštis virš žemės) – įveskite aukštį virš jūros"
+            else -> "; dar nenaudojamas (laukiama žemės aukščio)"
+        })
         if (n >= 5) {
             val mLat = sLat / sw; val mLon = sLon / sw
             val vLat = (sLat2 / sw - mLat * mLat).coerceAtLeast(0.0); val vLon = (sLon2 / sw - mLon * mLon).coerceAtLeast(0.0)

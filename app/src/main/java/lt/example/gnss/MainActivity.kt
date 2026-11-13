@@ -1229,8 +1229,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         val ms = calPrefs.getLong("sun_cal_ms", 0L)
         if (ms == 0L) return "Kalibravimas pagal Saulę: neatliktas"
         val pol = calPrefs.getString("cal_src", "sun") == "polaris"
-        return (if (pol) "Kalibravimas pagal Šiaurinę žvaigždę: %s, Polaris azimutas %.1f°" else "Kalibravimas pagal Saulę: %s, Saulės azimutas %.1f°") +
-            ", kompaso pataisa %+.1f°; bendras šiaurės poslinkis %.1f°".format(
+        return ((if (pol) "Kalibravimas pagal Šiaurinę žvaigždę: %s, Polaris azimutas %.1f°" else "Kalibravimas pagal Saulę: %s, Saulės azimutas %.1f°") +
+            ", kompaso pataisa %+.1f°; bendras šiaurės poslinkis %.1f°").format(
             java.util.Locale.US, java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(ms)),
             calPrefs.getFloat("sun_cal_az", 0f), calPrefs.getFloat("sun_cal_deg", 0f), offsetDeg)
     }

@@ -61,3 +61,11 @@ class SunCalLogTest {
         assertEquals(false, bad.good)
     }
 }
+
+class FormatPrecedenceTest {
+    /** Kotlin: "a" + "b".format(...) formatuoja tik "b" – todėl abi dalys skliaustuose. */
+    @Test fun wholeStringFormatted() {
+        val t = (("Kalibravimas: %s, azimutas %.1f°") + ", pataisa %+.1f°").format(java.util.Locale.US, "2026-11-13", 179.2, 4.4)
+        assertEquals("Kalibravimas: 2026-11-13, azimutas 179.2°, pataisa +4.4°", t)
+    }
+}

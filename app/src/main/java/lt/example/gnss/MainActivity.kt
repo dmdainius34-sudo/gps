@@ -4947,18 +4947,18 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     float src = 2.3 + (rho - uIn) / (uOut - uIn) * 3.5;
                     vec2 uv = 0.5 + vec2(q.x, -q.y) / ql * src / (2.0 * uHalf);
                     // skaistis normalizuotas pagal kadro foną ir šviesiausius taškus (0 – fonas, 1 – ryškiausi srautai)
-                    vec3 w3 = vec3(0.5, 0.4, 0.1);
+                    vec3 w3 = vec3(0.3333, 0.3333, 0.3334);           // filtruotas pilkas vaizdas
                     float la = clamp((dot(texture2D(uTex, uv).rgb, w3) - uLvA.x) * uLvA.y, 0.0, 1.0);
                     float lb = clamp((dot(texture2D(uTex2, uv).rgb, w3) - uLvB.x) * uLvB.y, 0.0, 1.0);
                     float t = mix(la, lb, uMix);
-                    t = t * t;                                        // silpnas fonas dar blankesnis
+                    t = t * t * t;                                    // lieka tik ryškiausi srautai ir išmetimai
                     float beta = asin(clamp(dot(p, uD) / rho, -1.0, 1.0));   // kampas nuo dangaus plokštumos
                     float w = exp(-(beta * beta) / 0.5);
                     float fw = 0.06 * (uOut - uIn) / 0.8;
                     float m = smoothstep(uIn, uIn + fw, rho) * (1.0 - smoothstep(uOut - 1.6 * fw, uOut, rho));
                     acc += vec3(t * w * m);
                 }
-                float v = 1.0 - exp(-acc.x * (dt / uRs) * 1.6 * 0.8 / (uOut - uIn));   // švelnus prisotinimas – ne vientisa geltona
+                float v = 1.0 - exp(-acc.x * (dt / uRs) * 2.5 * 0.8 / (uOut - uIn));   // švelnus prisotinimas – ne vientisa geltona
                 // spalva pagal ryškumą: silpni srautai – raudoni, ryškūs išmetimai – geltoni
                 vec3 col = mix(vec3(0.95, 0.18, 0.04), vec3(1.0, 0.82, 0.25), clamp(v * 1.6, 0.0, 1.0));
                 gl_FragColor = vec4(col * v * 0.85, 1.0);

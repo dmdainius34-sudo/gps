@@ -265,6 +265,45 @@ object Lasco {
     @Volatile var stats: List<FloatArray> = emptyList()
         private set
 
+    /**
+     * Radialinis filtras (kaip koronografų vaizdams): kiekvienam atstumui nuo Saulės (0,1 R žiedai) atimama to žiedo mediana
+     * ir dalinama iš (99-as procentilis − mediana). Lieka tik tai, kas šviesiau už įprastą foną tame atstume – srautai ir išmetimai.
+     * Grąžinamas pilkas vaizdas (0 – fonas ir tamsiau, 255 – ryškiausi), užtvaras ir kampai – 0.
+     */
+    fun radialFilter(b: Bitmap): Bitmap {
+        val w = b.width; val h = b.height; val cx = w / 2.0; val cy = h / 2.0
+        val pxPerR = w / 2.0 / HALF_RSUN
+        val nb = 45                                               // 2,0–6,5 R kas 0,1 R
+        val hist = Array(nb) { IntArray(256) }
+        val lum = IntArray(w * h); val bin = IntArray(w * h) { -1 }
+        val row = IntArray(w)
+        for (y in 0 until h) {
+            b.getPixels(row, 0, w, 0, y, w, 1)
+            for (x in 0 until w) {
+                val p = row[x]; val l = ((p shr 16 and 255) * 5 + (p shr 8 and 255) * 4 + (p and 255)) / 10
+                val r = kotlin.math.hypot(x - cx, y - cy) / pxPerR
+                val k = ((r - 2.0) / 0.1).toInt()
+                lum[y * w + x] = l
+                if (k in 0 until nb) { bin[y * w + x] = k; hist[k][l]++ }
+            }
+        }
+        val med = FloatArray(nb); val hi = FloatArray(nb)
+        for (k in 0 until nb) {
+            val n = hist[k].sum(); if (n < 20) { med[k] = 255f; hi[k] = 256f; continue }
+            var c = 0; var m = -1; var q = -1
+            for (i in 0..255) { c += hist[k][i]; if (m < 0 && c >= n / 2) m = i; if (q < 0 && c >= (n * 0.99).toInt()) { q = i; break } }
+            med[k] = m.toFloat(); hi[k] = maxOf(q.toFloat(), m + 8f)
+        }
+        val out = IntArray(w * h)
+        for (i in 0 until w * h) {
+            val k = bin[i]; if (k < 0) { out[i] = 0xFF000000.toInt(); continue }
+            val v = ((lum[i] - med[k]) / (hi[k] - med[k])).coerceIn(0f, 1f)
+            val g = (v * 255).toInt()
+            out[i] = (0xFF shl 24) or (g shl 16) or (g shl 8) or g
+        }
+        return Bitmap.createBitmap(out, w, h, Bitmap.Config.ARGB_8888)
+    }
+
     /** Fono (20-as procentilis) ir šviesiausių (99,5) skaistis žiede 2,5–5,5 Saulės spindulio. */
     fun levels(b: Bitmap): FloatArray {
         val w = b.width; val h = b.height; val cx = w / 2.0; val cy = h / 2.0
@@ -347,8 +386,10 @@ object Lasco {
                 if (out.isEmpty()) { status = "Saulės išmetimai (LASCO C2): nepavyko –$dirErr, realaus laiko HTTP ${c.responseCode}"; return@Thread }
                 out.sortBy { it.first }
                 synchronized(cache) { val keep = pick.map { it.first }.toSet(); cache.keys.retainAll(keep) }
-                stats = out.map { levels(it.second) }
-                frames = out.map { it.second }; frameMs = out.map { it.first }; imageMs = out.last().first; version++
+                // radialinis filtras: lieka tik srautai ir išmetimai (be ryškaus fono prie Saulės)
+                val filt = out.map { radialFilter(it.second) }
+                stats = filt.map { floatArrayOf(0f, 1f) }
+                frames = filt; frameMs = out.map { it.first }; imageMs = out.last().first; version++
                 val f = java.text.SimpleDateFormat("MM-dd HH:mm", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
                 status = "Saulės išmetimai: SOHO LASCO C2, animacija %d kadr. %s–%s UTC%s".format(Locale.US, out.size,
                     f.format(java.util.Date(out.first().first)), f.format(java.util.Date(out.last().first)), if (out.size == 1) " (tik naujausias:$dirErr)" else "")

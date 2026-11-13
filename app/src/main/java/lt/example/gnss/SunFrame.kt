@@ -372,6 +372,11 @@ object Donki {
         private set
     @Volatile private var at = 0L
     @Volatile private var busy = false
+    @Volatile private var ok = false
+    @Volatile private var loaded = false
+    @Volatile var savedMs = 0L
+        private set
+    private const val FILE = "donki_cme.json"
 
     fun parse(json: String): List<Cme> {
         val a = org.json.JSONArray(json); val out = ArrayList<Cme>()
@@ -388,7 +393,12 @@ object Donki {
 
     fun refresh(ctx: Context) {
         val now = System.currentTimeMillis()
-        if (!Lasco.enabled || busy || now - at < (if (list.isEmpty()) 5 * 60_000L else 30 * 60_000L)) return
+        // išsaugotas sąrašas – kūgiai matomi iškart po paleidimo ir be interneto
+        if (!loaded) { loaded = true
+            try { val fl = java.io.File(ctx.applicationContext.filesDir, FILE)
+                if (fl.exists()) { list = parse(fl.readText()); savedMs = fl.lastModified(); status = "NASA DONKI: išsaugotas sąrašas" } } catch (_: Exception) {} }
+        // pavykus – kas 2 val. (NASA DEMO_KEY: ≤ 50 užklausų per parą), nepavykus – po 20 min.
+        if (!Lasco.enabled || busy || now - at < (if (ok) 2 * 3_600_000L else 20 * 60_000L)) return
         busy = true; at = now
         Thread {
             try {
@@ -400,13 +410,16 @@ object Donki {
                 for (url in listOf("https://kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get/$q", "https://api.nasa.gov/DONKI/$q&api_key=DEMO_KEY")) {
                     try {
                         val c = (URL(url).openConnection() as HttpURLConnection).apply {
-                            connectTimeout = 20_000; readTimeout = 60_000; setRequestProperty("User-Agent", "Mozilla/5.0 (Android) GnssApp") }
+                            connectTimeout = 30_000; readTimeout = 90_000; setRequestProperty("User-Agent", "Mozilla/5.0 (Android) GnssApp") }
                         if (c.responseCode == 200) { txt = c.inputStream.bufferedReader().readText().trim(); status = "NASA DONKI (${URL(url).host}): atnaujinta"; break }
-                        err += " ${URL(url).host} HTTP ${c.responseCode}"
+                        err += " ${URL(url).host} HTTP ${c.responseCode}" + if (c.responseCode == 429) " (paros užklausų riba)" else ""
                     } catch (e: Exception) { err += " ${URL(url).host} ${e.javaClass.simpleName}" }
                 }
-                if (txt == null) { status = "NASA DONKI: nepavyko –$err"; return@Thread }
+                if (txt == null) { ok = false
+                    status = "NASA DONKI: nepavyko –$err" + if (list.isNotEmpty()) "; rodomas išsaugotas sąrašas" else ""; return@Thread }
                 list = if (txt.isEmpty()) emptyList() else parse(txt)
+                ok = true
+                try { java.io.File(ctx.applicationContext.filesDir, FILE).writeText(if (txt.isEmpty()) "[]" else txt); savedMs = now } catch (_: Exception) {}
             } catch (e: Exception) { status = "NASA DONKI: ${e.javaClass.simpleName} ${e.message ?: ""}".trim() }
             finally { busy = false }
         }.start()

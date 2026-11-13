@@ -69,3 +69,26 @@ class FormatPrecedenceTest {
         assertEquals("Kalibravimas: 2026-11-13, azimutas 179.2°, pataisa +4.4°", t)
     }
 }
+
+class TargetsTest {
+    @Test fun polarisNearNorth() {
+        val (az, el) = SunCal.targetAzEl("polaris", 1_794_600_000_000L, 54.74, 25.25)
+        val d = kotlin.math.abs(((az + 540) % 360) - 180)          // atstumas nuo 0°
+        org.junit.Assert.assertTrue("az $az", d < 1.2)
+        assertEquals(54.74, el, 1.2)
+    }
+
+    /** 2026-11-13 15:00 UTC, Vilnius: jaunas Mėnulis žemai pietvakariuose (~6°), elongacija ~49°. */
+    @Test fun moonLowSouthWest() {
+        val (az, el) = SunCal.targetAzEl("moon", 1_794_582_000_000L, 54.74, 25.25)
+        org.junit.Assert.assertTrue("az $az", az in 200.0..260.0)
+        org.junit.Assert.assertTrue("el $el", el in 2.0..10.0)
+    }
+
+    @Test fun betelgeuseRisesEast() {
+        // 2026-11-13 20:00 UTC: Betelgeizė rytuose, ~10–25° virš horizonto
+        val (az, el) = SunCal.targetAzEl("betelgeuse", 1_794_600_000_000L, 54.74, 25.25)
+        org.junit.Assert.assertTrue("az $az", az in 80.0..130.0)
+        org.junit.Assert.assertTrue("el $el", el in 5.0..30.0)
+    }
+}

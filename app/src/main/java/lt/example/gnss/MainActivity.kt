@@ -1188,6 +1188,19 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         return SunCalResult(az, alt, r.third, dev.first, dev.second)
     }
 
+    /** Prietaiso nugarėlės kryptis (azimutas, aukštis, ašis) – taikikliui. */
+    fun deviceAim(): Triple<Double, Double, String> = SunCal.deviceAzEl(lastRaw)
+
+    /** Kalibravimas pagal orientyrą (Saulė, Mėnulis, Polaris, Oriono žvaigždės). */
+    fun calibrateTarget(key: String, lat: Double, lon: Double): SunCalResult? {
+        val now = System.currentTimeMillis()
+        val (az, alt) = SunCal.targetAzEl(key, now, lat, lon)
+        if (alt < SunCal.MIN_EL || alt > SunCal.MAX_EL) return null
+        val dev = SunCal.deviceAzEl(lastRaw)
+        val r = calibrateTo(az, alt, now, SunCal.target(key).name)
+        return SunCalResult(az, alt, r.third, dev.first, dev.second)
+    }
+
     /** Kalibravimas pagal Šiaurinę žvaigždę (naktį planšetės nugarėlė nukreipiama į Polaris). */
     fun calibratePolaris(lat: Double, lon: Double): Triple<Double, Double, Double>? {
         val now = System.currentTimeMillis()
@@ -1228,8 +1241,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun sunCalText(): String {
         val ms = calPrefs.getLong("sun_cal_ms", 0L)
         if (ms == 0L) return "Kalibravimas pagal Saulę: neatliktas"
-        val pol = calPrefs.getString("cal_src", "sun") == "polaris"
-        return ((if (pol) "Kalibravimas pagal Šiaurinę žvaigždę: %s, Polaris azimutas %.1f°" else "Kalibravimas pagal Saulę: %s, Saulės azimutas %.1f°") +
+        val src = when (val c = calPrefs.getString("cal_src", "sun") ?: "sun") { "sun" -> "Saulė"; "polaris" -> "Šiaurinė žvaigždė (Polaris)"; else -> c }
+        return ("Kalibravimas pagal orientyrą „" + src.replace("%", "") + "“: %s, orientyro azimutas %.1f°" +
             ", kompaso pataisa %+.1f°; bendras šiaurės poslinkis %.1f°").format(
             java.util.Locale.US, java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(ms)),
             calPrefs.getFloat("sun_cal_az", 0f), calPrefs.getFloat("sun_cal_deg", 0f), offsetDeg)
@@ -6497,27 +6510,10 @@ class MainActivity : AppCompatActivity() {
         left.addView(btnSaveN, LinearLayout.LayoutParams(mw, ww))
         val btnSun = Button(this).apply {
             text = "Kalibruoti pagal Saulę (nukreipkite planšetę į Saulę)"
-            setOnClickListener {
-                if (!::skyDome.isInitialized) return@setOnClickListener
-                val fixAge = System.currentTimeMillis() - lastFixWallMs
-                if ((obsLatNow == 0.0 && obsLonNow == 0.0) || lastFixWallMs == 0L || fixAge > 30_000L || lastFixAcc.isNaN() || lastFixAcc > 50.0) {
-                    Toast.makeText(this@MainActivity, "Kalibruoti negalima: nėra galiojančio GNSS fikso (naujesnio nei 30 s, tikslumas ≤ 50 m)", Toast.LENGTH_LONG).show(); return@setOnClickListener }
-                val (sun, dev) = skyDome.sunCheck(obsLatNow, obsLonNow)
-                if (sun.second < SunCal.MIN_EL) { Toast.makeText(this@MainActivity, "Kalibruoti negalima: Saulė po horizontu (aukštis %.1f°)".format(java.util.Locale.US, sun.second), Toast.LENGTH_LONG).show(); return@setOnClickListener }
-                if (sun.second > SunCal.MAX_EL) { Toast.makeText(this@MainActivity, "Kalibruoti negalima: Saulė per aukštai (%.1f° > 70°) – azimutas netikslus".format(java.util.Locale.US, sun.second), Toast.LENGTH_LONG).show(); return@setOnClickListener }
-                val magAz = devAxisZ?.first ?: Double.NaN; val decl = skyDome.declinationDeg()
-                val r = skyDome.calibrateSun(obsLatNow, obsLonNow) ?: return@setOnClickListener
-                try { SunCal.log(this@MainActivity, SunCal.Rec(System.currentTimeMillis(), obsLatNow, obsLonNow, obsHNow, lastFixAcc, r.sunAz, r.sunEl,
-                    r.devAz, r.devEl, r.corr, magAz, decl, devPitch, devRoll, Build.MANUFACTURER + " " + Build.MODEL)); calCache = 0L to null } catch (e: Exception) { logError("Saulės kalibravimo žurnalas: ${e.message}") }
-                val warn = if (kotlin.math.abs(r.devEl - r.sunEl) > SunCal.WARN_DEL)
-                    "\nĮSPĖJIMAS: prietaiso aukštis %.0f°, Saulės %.0f° – skirtumas > 10°, tikriausiai nenukreipta į Saulę".format(java.util.Locale.US, r.devEl, r.sunEl) else ""
-                Toast.makeText(this@MainActivity,
-                    "Saulė: az %.1f°, aukštis %.1f°; kompaso pataisa %+.1f°".format(java.util.Locale.US, r.sunAz, r.sunEl, r.corr) + warn,
-                    Toast.LENGTH_LONG).show()
-            }
+            setOnClickListener { showAimDialog("sun") }
         }
         left.addView(btnSun, LinearLayout.LayoutParams(mw, ww))
-        left.addView(Button(this).apply { text = "Saulės kalibravimų žurnalas…"; setOnClickListener { showSunLogDialog() } }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(Button(this).apply { text = "Kalibravimų žurnalas (Saulė, Mėnulis, žvaigždės)…"; setOnClickListener { showSunLogDialog() } }, LinearLayout.LayoutParams(mw, ww))
         SunCal.autoFix = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_log_fix", true)
         left.addView(CheckBox(this).apply {
             text = "Šiaurės pataisa pagal Saulės žurnalą ir magnetometrą (kai nuokrypis > 5° ir 2 min. stabilus)"
@@ -6526,16 +6522,8 @@ class MainActivity : AppCompatActivity() {
                 getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_log_fix", on).apply() }
         }, LinearLayout.LayoutParams(mw, ww))
         left.addView(Button(this).apply {
-            text = "Kalibruoti pagal Šiaurinę žvaigždę (naktį nukreipkite planšetę į Polaris)"
-            setOnClickListener {
-                if (!::skyDome.isInitialized) return@setOnClickListener
-                if (obsLatNow == 0.0 && obsLonNow == 0.0) { Toast.makeText(this@MainActivity, "Nėra GNSS vietos", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
-                val r = skyDome.calibratePolaris(obsLatNow, obsLonNow)
-                Toast.makeText(this@MainActivity,
-                    if (r == null) "Polaris po horizontu – kalibruoti negalima"
-                    else "Polaris: az %.1f°, aukštis %.1f°; kompaso pataisa %+.1f°".format(java.util.Locale.US, r.first, r.second, r.third),
-                    Toast.LENGTH_LONG).show()
-            }
+            text = "Kalibruoti pagal kitą orientyrą (Mėnulis, Šiaurinė žvaigždė, Orionas)…"
+            setOnClickListener { showTargetChooser() }
         }, LinearLayout.LayoutParams(mw, ww))
         val btnNtrip = Button(this).apply { text = "NTRIP pataisos (RTCM)…"; setOnClickListener { showNtripDialog() } }
         left.addView(btnNtrip, LinearLayout.LayoutParams(mw, ww))
@@ -7244,6 +7232,78 @@ class MainActivity : AppCompatActivity() {
         return SunCal.wrap(view - tr) to e
     }
 
+    /** Orientyrų sąrašas su dabartine padėtimi; pasirinkus – taikiklis. */
+    private fun showTargetChooser() {
+        val now = System.currentTimeMillis()
+        val ts = SunCal.targets
+        val items = ts.map { t ->
+            val (az, el) = SunCal.targetAzEl(t.key, now, obsLatNow, obsLonNow)
+            t.name + " – " + when {
+                el < SunCal.MIN_EL -> "po horizontu (%.0f°)".format(Locale.US, el)
+                el > SunCal.MAX_EL -> "per aukštai (%.0f°)".format(Locale.US, el)
+                else -> "az %.0f° (%s), aukštis %.0f°".format(Locale.US, az, compass(az), el)
+            }
+        }.toTypedArray()
+        android.app.AlertDialog.Builder(this).setTitle("Į kurį orientyrą taikysite?")
+            .setItems(items) { _, i -> showAimDialog(ts[i].key) }.setNegativeButton("Atšaukti", null).show()
+    }
+
+    private fun compass(az: Double): String = arrayOf("Š", "ŠR", "R", "PR", "P", "PV", "V", "ŠV")[(((az + 22.5) % 360) / 45).toInt().coerceIn(0, 7)]
+
+    /**
+     * Taikiklis: orientyro aukštis ir planšetės nugarėlės aukštis (gravitacija – nepriklauso nuo kompaso), kas 0,2 s.
+     * Kryptį į šonus naudotojas nustato akimis į tikrą orientyrą; paspaudus „Kalibruoti“ – pataisa ir įrašas žurnale.
+     */
+    private fun showAimDialog(key: String) {
+        if (!::skyDome.isInitialized) return
+        val t = SunCal.target(key)
+        val tv = TextView(this).apply { setPadding(48, 24, 48, 8); textSize = 17f }
+        val dlg = android.app.AlertDialog.Builder(this).setTitle("Taikiklis: ${t.name}").setView(tv)
+            .setPositiveButton("Kalibruoti", null).setNegativeButton("Atšaukti", null).create()
+        val h = android.os.Handler(mainLooper)
+        val tick = object : Runnable { override fun run() {
+            val now = System.currentTimeMillis()
+            val (az, el) = SunCal.targetAzEl(key, now, obsLatNow, obsLonNow)
+            val dev = skyDome.deviceAim()
+            val dEl = el - dev.second
+            val ok = kotlin.math.abs(dEl) <= 2.0
+            tv.text = "${t.name}: %s, aukštis %.1f° virš horizonto\nPlanšetės nugarėlė: %.1f°\n%s\n\nKryptį į šonus nustatykite akimis – žiūrėdami į tikrą ${t.name.substringBefore(" (")}. Ekranas į save, nugarėlė į orientyrą.".format(Locale.US,
+                if (el < SunCal.MIN_EL) "po horizontu" else "azimutas %.0f° (%s)".format(Locale.US, az, compass(az)), el, dev.second,
+                when { el < SunCal.MIN_EL -> "Orientyras po horizontu – kalibruoti negalima"
+                    el > SunCal.MAX_EL -> "Per aukštai (> 70°) – azimutas būtų netikslus"
+                    ok -> "✓ Aukštis sutampa – galima kalibruoti"
+                    dEl > 0 -> "↑ Pakelkite nugarėlę %.1f°".format(Locale.US, dEl)
+                    else -> "↓ Nuleiskite nugarėlę %.1f°".format(Locale.US, -dEl) })
+            tv.setTextColor(if (ok) 0xFF16A34A.toInt() else 0xFF111827.toInt())
+            h.postDelayed(this, 200L)
+        } }
+        dlg.setOnShowListener {
+            dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener { if (calibrateWith(key)) dlg.dismiss() }
+            h.post(tick)
+        }
+        dlg.setOnDismissListener { h.removeCallbacks(tick) }
+        dlg.show()
+    }
+
+    /** Kalibravimas pagal orientyrą su apsaugomis ir įrašu žurnale. Grąžina true, jei pritaikyta. */
+    private fun calibrateWith(key: String): Boolean {
+        val t = SunCal.target(key)
+        val fixAge = System.currentTimeMillis() - lastFixWallMs
+        if ((obsLatNow == 0.0 && obsLonNow == 0.0) || lastFixWallMs == 0L || fixAge > 30_000L || lastFixAcc.isNaN() || lastFixAcc > 50.0) {
+            Toast.makeText(this, "Kalibruoti negalima: nėra galiojančio GNSS fikso (naujesnio nei 30 s, tikslumas ≤ 50 m)", Toast.LENGTH_LONG).show(); return false }
+        val (_, el) = SunCal.targetAzEl(key, System.currentTimeMillis(), obsLatNow, obsLonNow)
+        if (el < SunCal.MIN_EL) { Toast.makeText(this, "Kalibruoti negalima: ${t.name} po horizontu (aukštis %.1f°)".format(Locale.US, el), Toast.LENGTH_LONG).show(); return false }
+        if (el > SunCal.MAX_EL) { Toast.makeText(this, "Kalibruoti negalima: ${t.name} per aukštai (%.1f° > 70°) – azimutas netikslus".format(Locale.US, el), Toast.LENGTH_LONG).show(); return false }
+        val magAz = devAxisZ?.first ?: Double.NaN; val decl = skyDome.declinationDeg()
+        val r = skyDome.calibrateTarget(key, obsLatNow, obsLonNow) ?: return false
+        try { SunCal.log(this, SunCal.Rec(System.currentTimeMillis(), obsLatNow, obsLonNow, obsHNow, lastFixAcc, r.sunAz, r.sunEl,
+            r.devAz, r.devEl, r.corr, magAz, decl, devPitch, devRoll, Build.MANUFACTURER + " " + Build.MODEL, t.name)); calCache = 0L to null } catch (e: Exception) { logError("Kalibravimų žurnalas: ${e.message}") }
+        val warn = if (kotlin.math.abs(r.devEl - r.sunEl) > SunCal.WARN_DEL)
+            "\nĮSPĖJIMAS: nugarėlės aukštis %.0f°, orientyro %.0f° – skirtumas > 10°, tikriausiai nenukreipta".format(Locale.US, r.devEl, r.sunEl) else ""
+        Toast.makeText(this, "${t.name}: az %.1f°, aukštis %.1f°; kompaso pataisa %+.1f°".format(Locale.US, r.sunAz, r.sunEl, r.corr) + warn, Toast.LENGTH_LONG).show()
+        return true
+    }
+
     private var magStableAt: Pair<Long, Boolean> = 0L to false
     private fun now() = System.currentTimeMillis()
 
@@ -7269,7 +7329,7 @@ class MainActivity : AppCompatActivity() {
         val fmt = java.text.SimpleDateFormat("MM-dd HH:mm", Locale.US)
         val items = list.map { e ->
             val dist = kotlin.math.hypot((e.lat - obsLatNow) * 111_320.0, (e.lon - obsLonNow) * 111_320.0 * cos(Math.toRadians(obsLatNow)))
-            (if (e.good && !e.magDistorted) "✓ " else if (e.good) "✓ (magnetometras iškraipytas) " else "⚠ ") + "%s · pataisa %+.1f° · magnetometras %+.1f° · kampai %.0f°/%.0f° · %s".format(Locale.US,
+            (if (e.good && !e.magDistorted) "✓ " else if (e.good) "✓ (magnetometras iškraipytas) " else "⚠ ") + e.target.substringBefore(" (") + " · " + "%s · pataisa %+.1f° · magnetometras %+.1f° · kampai %.0f°/%.0f° · %s".format(Locale.US,
                 fmt.format(java.util.Date(e.ms)), e.corr, e.magDiff, e.devEl, e.sunEl, if (dist < 1000) "%.0f m".format(Locale.US, dist) else "%.1f km".format(Locale.US, dist / 1000))
         }.toTypedArray()
         val checked = BooleanArray(items.size) { !list[it].good }      // abejotini pažymėti iš anksto

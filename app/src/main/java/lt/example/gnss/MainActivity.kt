@@ -6798,7 +6798,7 @@ class MainActivity : AppCompatActivity() {
                     report += sunReport() + Sp3Live.text() + "\n" +
                         (if (obsLatNow == 0.0 && obsLonNow == 0.0) "" else SpaceOrientation.report(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()), obsLatNow)) +
                         (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" + skyDome.northText(devAzimuth) + "\n" else "") +
-                        (headingVsLog()?.let { "Kryptis pagal Saulės žurnalą + magnetometrą: vaizdo kryptis skiriasi %+.1f° (įrašas %s)".format(Locale.US, it.first,
+                        (runCatching { headingVsLog() }.getOrNull()?.let { "Kryptis pagal Saulės žurnalą + magnetometrą: vaizdo kryptis skiriasi %+.1f° (įrašas %s)".format(Locale.US, it.first,
                             java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(java.util.Date(it.second.ms))) +
                             (if (SunCal.lastFixMs > 0) "; paskutinė automatinė pataisa %+.1f°".format(Locale.US, -SunCal.lastFixDeg) else "") + "\n" } ?: "") +
                         (SunCal.lastLine(this@MainActivity)?.let { "Paskutinis kalibravimas pagal Saulę (${SunCal.FILE}): ${SunCal.HEADER.trim()}\n$it\n" } ?: "Kalibravimų pagal Saulę žurnale nėra\n") +
@@ -6834,6 +6834,9 @@ class MainActivity : AppCompatActivity() {
                             uris.add(FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", cf)) } } catch (e: Exception) { logError("${SunCal.FILE}: ${e.message}") }
                     // GPS pozicijos skaičiuoklė (1 žingsnis) – fone, rezultatas gnss_solver.csv
                     offerSp3PickerOnce { Thread {
+                      // bet kokia skaičiuoklės klaida neturi sustabdyti eksporto: matavimų failai ir ataskaita išsiunčiami visada
+                      val extra = ArrayList<Uri>()
+                      try {
                         val (bad, total) = SessionFiles.badLines(File(cacheDir, SessionFiles.RAW))
                         val (badF, totalF) = SessionFiles.badLines(File(cacheDir, SessionFiles.FIX))
                         val (badN, totalN) = SessionFiles.badLines(File(cacheDir, NavRecorder.FILE))
@@ -6861,7 +6864,14 @@ class MainActivity : AppCompatActivity() {
                             }
                         } catch (_: Exception) { null }
                         val d = solverDiagUri()
-                        runOnUiThread { u?.let { uris.add(it) }; s?.let { uris.add(it) }; s2?.let { uris.add(it) }; s3?.let { uris.add(it) }; s4?.let { uris.add(it) }; s5?.let { uris.add(it) }; s6?.let { uris.add(it) }; sd?.let { uris.add(it) }; rk?.let { uris.add(it) }; rl?.let { uris.add(it) }; orb?.let { uris.add(it) }; brd?.let { uris.add(it) }; d?.let { uris.add(it) }; send() }
+                        listOf(u, s, s2, s3, s4, s5, s6, sd, rk, rl, orb, brd, d).forEach { it?.let { x -> extra.add(x) } }
+                      } catch (e: Throwable) {
+                        report += "SKAIČIUOKLĖS KLAIDA (matavimai eksportuoti be jos rezultatų): ${e.javaClass.simpleName}: ${e.message}\n"
+                        logError("Eksporto skaičiuoklė: ${e.javaClass.simpleName}: ${e.message}")
+                      } finally {
+                        runOnUiThread { uris.addAll(extra); try { send() } catch (e: Throwable) { logError("Eksportas: ${e.message}")
+                            Toast.makeText(this@MainActivity, "Eksporto klaida: ${e.message}", Toast.LENGTH_LONG).show() } }
+                      }
                     }.start() }
                 } else send()
             }
@@ -7114,9 +7124,10 @@ class MainActivity : AppCompatActivity() {
                 val dir = File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), "GNSS")
                 dir.mkdirs(); out.copyTo(File(dir, name), overwrite = true)
             }
-        } catch (e: Exception) { runOnUiThread { logError("ZIP į Download/GNSS neįrašytas: ${e.message}") } }
+        } catch (e: Exception) { runOnUiThread { logError("ZIP į Download/GNSS neįrašytas: ${e.message}")
+            Toast.makeText(this, "ZIP į Download/GNSS neįrašytas: ${e.message}", Toast.LENGTH_LONG).show() } }
         FileProvider.getUriForFile(this, "$packageName.fileprovider", out)
-    } catch (e: Exception) { runOnUiThread { logError("ZIP nepavyko: ${e.message}") }; null }
+    } catch (e: Exception) { runOnUiThread { logError("ZIP nepavyko: ${e.message}"); Toast.makeText(this, "ZIP nepavyko: ${e.message}", Toast.LENGTH_LONG).show() }; null }
 
     private fun onLocation(loc: Location) {
         @Suppress("DEPRECATION")

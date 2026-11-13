@@ -1218,6 +1218,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             calPrefs.getFloat("sun_cal_az", 0f), calPrefs.getFloat("sun_cal_deg", 0f), offsetDeg)
     }
     fun setFollowDevice(on: Boolean) { renderer.followDevice = on; renderer.resetUser() }
+    fun setLevelHorizon(on: Boolean) { renderer.levelHorizon = on; calPrefs.edit().putBoolean("level_horizon", on).apply() }
     fun setFreeView(on: Boolean) { renderer.freeView = on; renderer.resetUser() }
     fun setOcean(on: Boolean) { renderer.oceanOn = on; if (on) renderer.oceanLevel = 2 }
     fun fpsText(): String = renderer.fpsText()
@@ -1280,6 +1281,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.obstacleMode = calPrefs.getInt("obst_mode", 1)
         // atidarius – visada stebėtojo vaizdas: horizontas pagal žemę ir prietaisą, kryptis – pagal šiaurę
         renderer.followDevice = false; renderer.freeView = false
+        renderer.levelHorizon = calPrefs.getBoolean("level_horizon", true)
         calPrefs.edit().putBoolean("follow_device", false).putBoolean("free_view", false).apply()
         renderer.oceanOn = calPrefs.getBoolean("ocean_anim", true)
         setRenderer(renderer)
@@ -3183,6 +3185,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Kameros padėtis sideralinėje erdvėje (Saulės ir švytėjimo šešėliuoklėms). */
     private var camPos = floatArrayOf(0f, 0f, 3f)
     private var headingSm = Double.NaN
+    private var rollSm = Double.NaN
+    /** Horizontas lygus su tikru, sukant prietaisą apie žiūrėjimo ašį (ekrano kryptis užrakinta). */
+    @Volatile var levelHorizon = true
 
     private fun observerView() = !followDevice && !freeView && focus == 0
 
@@ -3348,6 +3353,23 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         Matrix.setLookAtM(lookV, 0, eye[0], eye[1], eye[2],
             (eye[0] + f[0]).toFloat(), (eye[1] + f[1]).toFloat(), (eye[2] + f[2]).toFloat(),
             up[0].toFloat(), up[1].toFloat(), up[2].toFloat())
+        // sklandus sukimas 360°: ekranas neapsiverčia, vaizdas sukasi priešinga kryptimi – horizontas lieka lygus su tikru
+        if (levelHorizon) {
+            val gx = r[6].toDouble(); val gy = r[7].toDouble()            // tikras „aukštyn“ ekrano koordinatėmis
+            if (kotlin.math.hypot(gx, gy) > 0.25) {
+                val tr = kotlin.math.atan2(gx, gy)
+                rollSm = if (rollSm.isNaN()) tr else {
+                    var d = tr - rollSm
+                    while (d > Math.PI) d -= 2 * Math.PI
+                    while (d < -Math.PI) d += 2 * Math.PI
+                    rollSm + 0.25 * d
+                }
+            }
+            if (!rollSm.isNaN()) {
+                val rz = FloatArray(16); Matrix.setRotateM(rz, 0, Math.toDegrees(-rollSm).toFloat(), 0f, 0f, 1f)
+                val lv2 = FloatArray(16); Matrix.multiplyMM(lv2, 0, rz, 0, lookV, 0); lv2.copyInto(lookV)
+            }
+        } else rollSm = Double.NaN
         Matrix.multiplyMM(mvpI, 0, proj, 0, lookV, 0)
     }
     /** Kameros kryptis sideralinėje erdvėje: pradžioje – virš stebėtojo, toliau keičiama tik vilkimu (userR). */
@@ -6285,6 +6307,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // sklandus sukimas: ekrano kryptis užrakinama (be persidėliojimo 90° šuoliais), vaizdas sukasi pats
+        if (getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("level_horizon", true))
+            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED
         // Geoidas pradedamas krauti iš karto (fone), kol kuriamas vaizdas ir laukiama fikso.
         // render() įvykdomas per runOnUiThread, t. y. tik pasibaigus onCreate.
         Geoid.select(applicationContext, GeoidMode.LIT20G) { runOnUiThread { render() } }
@@ -6517,6 +6542,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbFollow, LinearLayout.LayoutParams(mw, ww))
+        left.addView(CheckBox(this).apply {
+            text = "Sklandus sukimas 360° (ekranas neapsiverčia, horizontas lieka lygus)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("level_horizon", true)
+            setOnCheckedChangeListener { _, on ->
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("level_horizon", on).apply()
+                if (::skyDome.isInitialized) skyDome.setLevelHorizon(on)
+                requestedOrientation = if (on) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
+        }, LinearLayout.LayoutParams(mw, ww))
         val cbFree = CheckBox(this).apply {
             text = "Laisvas vaizdas iš viršaus"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("free_view", false)

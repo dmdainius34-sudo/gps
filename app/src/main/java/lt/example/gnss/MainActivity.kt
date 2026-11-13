@@ -6229,6 +6229,8 @@ class MainActivity : AppCompatActivity() {
             CabinMap.load(this@MainActivity)
             val hd = if (::skyDome.isInitialized) skyDome.headingDeg() else null
             LiveRtk.heading = hd
+            // kryptis iš magnetometro + Saulės kalibravimų žurnalo (nuokrypio stebėjimas ir taisymas)
+            try { northFromLogTick() } catch (_: Exception) {}
             // kryptis iš signalų stiprumo (prieš mokymąsi – kad dabartinis mėginys netaptų savo paties įrodymu)
             try { SignalHeading.update(list, hd) { d -> if (::skyDome.isInitialized) runOnUiThread { skyDome.nudgeNorth(d) } } } catch (_: Exception) {}
             CabinMap.learnStatus(hd, list)
@@ -6482,6 +6484,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(btnSun, LinearLayout.LayoutParams(mw, ww))
+        left.addView(Button(this).apply { text = "Saulės kalibravimų žurnalas…"; setOnClickListener { showSunLogDialog() } }, LinearLayout.LayoutParams(mw, ww))
+        SunCal.autoFix = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_log_fix", true)
+        left.addView(CheckBox(this).apply {
+            text = "Šiaurės pataisa pagal Saulės žurnalą ir magnetometrą (kai nuokrypis > 5° ir 2 min. stabilus)"
+            isChecked = SunCal.autoFix
+            setOnCheckedChangeListener { _, on -> SunCal.autoFix = on
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_log_fix", on).apply() }
+        }, LinearLayout.LayoutParams(mw, ww))
         left.addView(Button(this).apply {
             text = "Kalibruoti pagal Šiaurinę žvaigždę (naktį nukreipkite planšetę į Polaris)"
             setOnClickListener {
@@ -6778,6 +6788,9 @@ class MainActivity : AppCompatActivity() {
                     report += sunReport() + Sp3Live.text() + "\n" +
                         (if (obsLatNow == 0.0 && obsLonNow == 0.0) "" else SpaceOrientation.report(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()), obsLatNow)) +
                         (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" + skyDome.northText(devAzimuth) + "\n" else "") +
+                        (headingVsLog()?.let { "Kryptis pagal Saulės žurnalą + magnetometrą: vaizdo kryptis skiriasi %+.1f° (įrašas %s)".format(Locale.US, it.first,
+                            java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(java.util.Date(it.second.ms))) +
+                            (if (SunCal.lastFixMs > 0) "; paskutinė automatinė pataisa %+.1f°".format(Locale.US, -SunCal.lastFixDeg) else "") + "\n" } ?: "") +
                         (SunCal.lastLine(this@MainActivity)?.let { "Paskutinis kalibravimas pagal Saulę (${SunCal.FILE}): ${SunCal.HEADER.trim()}\n$it\n" } ?: "Kalibravimų pagal Saulę žurnale nėra\n") +
                         (if (Uvi.enabled) Uvi.text() + "\n" else "") + SunFrame.text() + "\n" +
                         NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + CabinMap.text() + "\n" +
@@ -7156,6 +7169,64 @@ class MainActivity : AppCompatActivity() {
         sb.append("\n\n=== NEAPDOROTI MATAVIMAI (paskutinis GNSS ciklas) ===\n")
         sb.append(measText)
         info.text = sb
+    }
+
+    /** Žurnalo įrašai kešuojami (failas skaitomas ne dažniau kaip kas 30 s). */
+    private var calCache: Pair<Long, SunCal.Entry?> = 0L to null
+    private fun nearCal(): SunCal.Entry? {
+        val now = System.currentTimeMillis()
+        if (now - calCache.first > 30_000L) calCache = now to SunCal.nearestGood(this, obsLatNow, obsLonNow)
+        return calCache.second
+    }
+
+    /** Vaizdo kryptis − tikra kryptis (magnetometras + žurnalas), ° arba null. */
+    private fun headingVsLog(): Pair<Double, SunCal.Entry>? {
+        if (!::skyDome.isInitialized || (obsLatNow == 0.0 && obsLonNow == 0.0)) return null
+        val e = nearCal() ?: return null
+        val mag = devAxisZ ?: return null
+        if (kotlin.math.abs(mag.second) > 60.0) return null                // gulint −Z azimutas nepatikimas
+        val view = skyDome.headingDeg() ?: return null
+        val tr = SunCal.trueFromMag(e, mag.first, skyDome.declinationDeg())
+        return SunCal.wrap(view - tr) to e
+    }
+
+    private fun northFromLogTick() {
+        val (d, _) = headingVsLog() ?: return
+        SunCal.watch(System.currentTimeMillis(), d) { fix -> runOnUiThread { if (::skyDome.isInitialized) skyDome.nudgeNorth(fix) } }
+    }
+
+    /** Žurnalo langas: įrašai (✓ geras / ⚠ abejotinas), pažymėtų trynimas, šiaurės atkūrimas. */
+    private fun showSunLogDialog() {
+        val list = SunCal.entries(this).sortedByDescending { it.ms }
+        val fmt = java.text.SimpleDateFormat("MM-dd HH:mm", Locale.US)
+        val items = list.map { e ->
+            val dist = kotlin.math.hypot((e.lat - obsLatNow) * 111_320.0, (e.lon - obsLonNow) * 111_320.0 * cos(Math.toRadians(obsLatNow)))
+            (if (e.good) "✓ " else "⚠ ") + "%s · pataisa %+.1f° · magnetometras %+.1f° · kampai %.0f°/%.0f° · %s".format(Locale.US,
+                fmt.format(java.util.Date(e.ms)), e.corr, e.magDiff, e.devEl, e.sunEl, if (dist < 1000) "%.0f m".format(Locale.US, dist) else "%.1f km".format(Locale.US, dist / 1000))
+        }.toTypedArray()
+        val checked = BooleanArray(items.size) { !list[it].good }      // abejotini pažymėti iš anksto
+        val near = headingVsLog()
+        val msg = "Failas: ${SunCal.FILE} (programos vidinė atmintis; kopija – kiekviename ZIP). ✓ – planšetės kampas sutapo su Saulės (≤ 10°). " +
+            "Pažymėti įrašai bus ištrinti." + (near?.let { "\nDabar: vaizdo kryptis nuo žurnalo + magnetometro skiriasi %+.1f°".format(Locale.US, it.first) } ?: "\nArti (≤ 100 m) gero įrašo nėra")
+        val b = android.app.AlertDialog.Builder(this).setTitle("Saulės kalibravimų žurnalas (${items.size})")
+        if (items.isEmpty()) b.setMessage("Įrašų dar nėra – paspauskite „Kalibruoti pagal Saulę“.")
+        else b.setMultiChoiceItems(items, checked) { _, i, on -> checked[i] = on }
+        b.setPositiveButton("Ištrinti pažymėtus") { _, _ ->
+            val del = list.indices.filter { checked[it] }.map { list[it].line }.toSet()
+            if (del.isNotEmpty()) { SunCal.delete(this, del); calCache = 0L to null
+                Toast.makeText(this, "Ištrinta įrašų: ${del.size}", Toast.LENGTH_SHORT).show() }
+        }
+        b.setNeutralButton("Atkurti šiaurę") { _, _ ->
+            val h = headingVsLog()
+            if (h == null) Toast.makeText(this, "Atkurti negalima: arti nėra gero kalibravimo įrašo arba planšetė guli (laikykite stačiau)", Toast.LENGTH_LONG).show()
+            else { skyDome.nudgeNorth(h.first)
+                Toast.makeText(this, "Šiaurė atkurta iš žurnalo: pataisa %+.1f°".format(Locale.US, h.first), Toast.LENGTH_LONG).show() }
+        }
+        b.setNegativeButton("Uždaryti", null)
+        // antraštė su paaiškinimu (kartu su sąrašu žinutės rodyti negalima)
+        if (items.isNotEmpty()) b.setCustomTitle(android.widget.TextView(this).apply {
+            text = "Saulės kalibravimų žurnalas (${items.size})\n$msg"; setPadding(48, 32, 48, 8); textSize = 14f })
+        b.create().show()
     }
 
     private fun logError(msg: String) {

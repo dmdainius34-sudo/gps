@@ -48,3 +48,16 @@ class SunCalTest {
         assertEquals(4.8, r.magDiff, 1e-9)                      // 175 + 9 − 179,2
     }
 }
+
+class SunCalLogTest {
+    @Test fun trueHeadingFromMagnetometerAndLog() {
+        // kalibruojant: magnetinis 175°, deklinacija 9°, Saulė 179,2° → klaida +4,8°
+        val r = SunCal.Rec(0L, 54.74, 25.25, 190.0, 3.0, 179.2, 17.3, 181.0, 18.0, 1.8, 175.0, 9.0, 30.0, 0.0, "x")
+        val e = SunCal.Entry(1, 0L, 54.74, 25.25, 17.3, 18.0, 1.8, 175.0, r.magDiff, "")
+        assertEquals(true, e.good)
+        // vėliau magnetometras rodo 85° → tikra kryptis 85 + 9 − 4,8 = 89,2°
+        assertEquals(89.2, SunCal.trueFromMag(e, 85.0, 9.0), 1e-9)
+        val bad = SunCal.Entry(2, 0L, 54.74, 25.25, 17.0, -20.0, 4.4, 170.0, 3.0, "")
+        assertEquals(false, bad.good)
+    }
+}

@@ -7,6 +7,8 @@ import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.tan
+import kotlin.math.sin
+import kotlin.math.cos
 
 /**
  * Kalibravimas pagal Saulę: Saulės padėtis (Astro.sunEq + refrakcija), prietaiso kryptis iš sukimo matricos
@@ -66,6 +68,66 @@ object SunCal {
         val f = file(ctx)
         if (!f.exists() || f.length() == 0L) f.writeText(HEADER)
         f.appendText(r.line())
+    }
+
+    /** Žurnalo įrašas, nuskaitytas iš CSV (eilutės numeris – trynimui). */
+    class Entry(val line: Int, val ms: Long, val lat: Double, val lon: Double, val sunEl: Double, val devEl: Double,
+                val corr: Double, val magAz: Double, val magDiff: Double, val raw: String) {
+        /** Geras: prietaiso kampas sutapo su Saulės (≤ 10°), nugarėlė ne per stačiai (−Z azimutas patikimas), magnetometras buvo. */
+        val good get() = kotlin.math.abs(devEl - sunEl) <= WARN_DEL && kotlin.math.abs(devEl) < 60.0 && !magDiff.isNaN()
+    }
+
+    @Synchronized fun entries(ctx: Context): List<Entry> = try {
+        val f = file(ctx); if (!f.exists()) emptyList() else {
+            val fmt = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+            f.readLines().mapIndexedNotNull { i, l ->
+                if (l.isBlank() || l.startsWith("utc,")) return@mapIndexedNotNull null
+                val c = l.split(","); if (c.size < 16) return@mapIndexedNotNull null
+                fun d(k: Int) = c[k].toDoubleOrNull() ?: Double.NaN
+                Entry(i, try { fmt.parse(c[0])!!.time } catch (_: Exception) { 0L }, d(1), d(2), d(6), d(8), d(9), d(10), d(12), l)
+            }
+        }
+    } catch (_: Exception) { emptyList() }
+
+    /** Pažymėtų eilučių trynimas (pagal eilutės numerį faile). */
+    @Synchronized fun delete(ctx: Context, lines: Set<Int>) {
+        val f = file(ctx); if (!f.exists()) return
+        val keep = f.readLines().filterIndexed { i, l -> i !in lines && l.isNotBlank() }
+        f.writeText(keep.joinToString("\n") + "\n")
+    }
+
+    /** Paskutinis geras kalibravimas iki 100 m nuo (lat, lon) arba null. */
+    fun nearestGood(ctx: Context, lat: Double, lon: Double): Entry? = entries(ctx).filter { it.good &&
+        kotlin.math.hypot((it.lat - lat) * 111_320.0, (it.lon - lon) * 111_320.0 * kotlin.math.cos(Math.toRadians(lat))) <= 100.0 }.maxByOrNull { it.ms }
+
+    /**
+     * Tikra prietaiso (−Z) kryptis iš magnetometro, pataisyta magnetometro klaida iš žurnalo:
+     * tikrasis az = magnetinis az + deklinacija − (klaida kalibruojant). Grąžina null, jei nėra gero įrašo.
+     */
+    fun trueFromMag(e: Entry, magAz: Double, decl: Double): Double = ((magAz + decl - e.magDiff) % 360.0 + 360.0) % 360.0
+
+    // ---- automatinis taisymas: nuokrypis tarp vaizdo krypties ir magnetometro + žurnalo, stebimas 2 min. ----
+    private val hist = ArrayDeque<Pair<Long, Double>>()
+    @Volatile var autoFix = true
+    @Volatile var lastFixMs = 0L
+        private set
+    @Volatile var lastFixDeg = 0.0
+        private set
+    @Volatile var lastDiff = Double.NaN
+        private set
+
+    /** Kas sekundę: d = vaizdo kryptis − tikra kryptis (iš magnetometro ir žurnalo). Pataisa – kai 2 min. stabilu (sklaida < 4°) ir |d| > 5°. */
+    @Synchronized fun watch(ms: Long, d: Double, apply: (Double) -> Unit) {
+        lastDiff = d
+        hist.addLast(ms to d)
+        while (hist.isNotEmpty() && ms - hist.first().first > 120_000L) hist.removeFirst()
+        if (!autoFix || hist.size < 60 || ms - lastFixMs < 300_000L) return
+        val r = hist.map { Math.toRadians(it.second) }
+        val sx = r.sumOf { sin(it) }; val cx = r.sumOf { cos(it) }
+        val mean = Math.toDegrees(atan2(sx, cx)); val rl = kotlin.math.sqrt(sx * sx + cx * cx) / r.size
+        if (rl < 0.9976 || kotlin.math.abs(mean) < 5.0) return             // 0,9976 ≈ sklaida 4°
+        lastFixMs = ms; lastFixDeg = mean; hist.clear()
+        apply(mean)
     }
 
     fun lastLine(ctx: Context): String? = try {

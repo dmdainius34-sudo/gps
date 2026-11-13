@@ -6880,6 +6880,8 @@ class MainActivity : AppCompatActivity() {
                 appendLine("Aukštis (elipsoidas): ${fx(loc.altitude)} m")
                 appendLine("Geoidas: ${Geoid.mode.label}")
                 val n = Geoid.undulation(loc.latitude, loc.longitude)
+                try { KnownHeight.onFix(this@MainActivity, loc.latitude, loc.longitude, loc.altitude, if (loc.hasSpeed()) loc.speed.toDouble() else 0.0,
+                    if (loc.hasAccuracy()) loc.accuracy.toDouble() else 5.0, loc.time) } catch (_: Exception) {}
                 when {
                     n != null -> {
                         appendLine("Geoido unduliacija (N): ${fx(n, 2)} m")
@@ -7353,6 +7355,7 @@ class MainActivity : AppCompatActivity() {
                 if (refN > 0) appendLine("GNSS aukščio paklaida: vidutinė ${fx(refHSum / refN, 2)} m, vid. absoliuti ${fx(refHAbs / refN, 2)} m (${refN} fiksų)")
                 if (refPN > 0) appendLine("Horizontali paklaida: vidutinė ${fx(refDSum / refPN, 2)} m, didžiausia ${fx(refDMax, 2)} m (${refPN} fiksų)")
                 if (kAgl != null && kMsl != null) appendLine("Žemės aukštis virš jūros (iš etalonų): ${fx(kMsl - kAgl, 2)} m")
+                appendLine(KnownHeight.text())
             }
             appendLine("Planšetės padėtis: pitch ${fx(devPitch, 0)}°, roll ${fx(devRoll, 0)}°, ekrano azimutas ${fx(devAzimuth, 0)}°, judėjimas ${fx(motionLevel, 2)} m/s²")
             devAxisZ?.let { appendLine("Žiūrėjimo pro ekraną kryptis: azimutas ${fx(it.first, 0)}°, ${fx(it.second, 0)}° nuo horizontalės") }

@@ -118,6 +118,7 @@ class NavRecordService : Service() {
         super.onCreate()
         GapLog.event(this, "paslauga onCreate")
         try { BroadcastEph.load(filesDir) } catch (e: Exception) { Log.w("GnssApp", "BroadcastEph.load: ${e.message}") }
+        try { KnownHeight.load(this) } catch (_: Exception) {}
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {

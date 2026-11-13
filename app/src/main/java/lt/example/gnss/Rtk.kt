@@ -152,6 +152,8 @@ object Rtk {
             private set
         /** Krano apskritimo apribojimas (Crane) – gyvai ir po įrašo. */
         var useCrane = true
+        /** Žinomo aukščio apribojimas (KnownHeight). */
+        var useKnownH = true
         /** Sveikųjų dviprasmybių sprendimas (LAMBDA). */
         var ambRes = true
         var lastFix = false
@@ -288,7 +290,10 @@ object Rtk {
         }
         if (keep.isEmpty()) return null
         // krano apribojimas: atstumas iki bokšto ašies ir aukštis (nepriklausomi pseudo-matavimai)
-        val cr = if (useCrane) Crane.pseudo(doubleArrayOf(ff.x[0], ff.x[1], ff.x[2])) else emptyList()
+        val cr0 = if (useCrane) Crane.pseudo(doubleArrayOf(ff.x[0], ff.x[1], ff.x[2])) else emptyList()
+        // žinomas prietaiso aukštis (jei krano aukštis neįvestas – kitaip dvigubintųsi)
+        val kh = if (useKnownH && !(useCrane && Crane.valid && !Crane.height.isNaN())) KnownHeight.pseudo(doubleArrayOf(ff.x[0], ff.x[1], ff.x[2])) else null
+        val cr = if (kh != null) cr0 + kh else cr0
         val m0 = keep.size; val m = m0 + cr.size
         val H = Array(m) { i -> if (i < m0) keep[i].h else DoubleArray(n).also { r -> for (k in 0..2) r[k] = cr[i - m0].first[k] } }
         val R = Array(m) { i -> DoubleArray(m) { k ->

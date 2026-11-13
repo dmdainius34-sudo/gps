@@ -39,6 +39,7 @@ object SunCal {
         Target("bellatrix", "Belatriksė (Orionas)", 81.28276, 6.34970),
         Target("alnilam", "Alnilamas (Oriono juostos vidurys)", 84.05339, -1.20192))
     fun target(key: String) = targets.firstOrNull { it.key == key } ?: targets[0]
+    fun isStar(key: String) = key != "sun" && key != "moon"
 
     /**
      * Mėnulis (Astronomical Almanac mažo tikslumo formulės, ~0,3°) su topocentrine paralakse (iki 1°): (azimutas, aukštis su refrakcija).

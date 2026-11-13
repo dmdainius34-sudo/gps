@@ -1216,6 +1216,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         while (d > 180) d -= 360.0
         while (d <= -180) d += 360.0
         offsetDeg += d.toFloat()
+        HeadingTrust.set(true, "kalibruota pagal orientyrą")
         calPrefs.edit().putFloat("offset", offsetDeg).putFloat("decl0", declDeg).putBoolean("north_saved", true)
             .putFloat("sun_cal_deg", d.toFloat()).putLong("sun_cal_ms", now).putFloat("sun_cal_az", az.toFloat()).putString("cal_src", src).apply()
         manual = false
@@ -1387,6 +1388,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         }
         val d = SunCal.wrap(h - e.deg)
         if (kotlin.math.abs(d) > 5.0) nudgeNorth(d)
+        HeadingTrust.set(true, "pataisyta pagal signalų kryptį")
     } }
 
     fun stop() {
@@ -1421,6 +1423,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         if (!fInit) {                                  // pradinė orientacija (vienintelis kartas, kai naudojamas magnetometras)
             for (i in 0..8) fR[i] = rv[i].toDouble()
             fInit = true
+            HeadingTrust.set(false, "kryptis iš magnetometro (paleidus)")
             publish()
             return
         }
@@ -6279,7 +6282,7 @@ class MainActivity : AppCompatActivity() {
             try { northFromLogTick() } catch (_: Exception) {}
             // kryptis iš signalų stiprumo (prieš mokymąsi – kad dabartinis mėginys netaptų savo paties įrodymu)
             try { SignalHeading.update(list, hd) { d -> if (::skyDome.isInitialized) runOnUiThread { skyDome.nudgeNorth(d) } } } catch (_: Exception) {}
-            CabinMap.learnStatus(hd, list)
+            CabinMap.learnStatus(if (HeadingTrust.trusted) hd else null, list)
             cabinView?.let { it.heading = hd; it.sats = list; it.invalidate() }
             lastSats = list
             satMap.clear()
@@ -7240,6 +7243,7 @@ class MainActivity : AppCompatActivity() {
             val (az, el) = SunCal.targetAzEl(t.key, now, obsLatNow, obsLonNow)
             t.name + " – " + when {
                 el < SunCal.MIN_EL -> "po horizontu (%.0f°)".format(Locale.US, el)
+                SunCal.isStar(t.key) && SunCal.sunAzEl(now, obsLatNow, obsLonNow).second > -6.0 -> "dar per šviesu (laukite sutemų)"
                 el > SunCal.MAX_EL -> "per aukštai (%.0f°)".format(Locale.US, el)
                 else -> "az %.0f° (%s), aukštis %.0f°".format(Locale.US, az, compass(az), el)
             }
@@ -7271,6 +7275,7 @@ class MainActivity : AppCompatActivity() {
                 if (el < SunCal.MIN_EL) "po horizontu" else "azimutas %.0f° (%s)".format(Locale.US, az, compass(az)), el, dev.second,
                 when { el < SunCal.MIN_EL -> "Orientyras po horizontu – kalibruoti negalima"
                     el > SunCal.MAX_EL -> "Per aukštai (> 70°) – azimutas būtų netikslus"
+                    ok && el > 45.0 -> "✓ Aukštis sutampa. Orientyras aukštai – šoninė kryptis jautresnė (×%.1f), taikykite ypač tiksliai".format(Locale.US, 1 / kotlin.math.cos(Math.toRadians(el)))
                     ok -> "✓ Aukštis sutampa – galima kalibruoti"
                     dEl > 0 -> "↑ Pakelkite nugarėlę %.1f°".format(Locale.US, dEl)
                     else -> "↓ Nuleiskite nugarėlę %.1f°".format(Locale.US, -dEl) })
@@ -7292,6 +7297,8 @@ class MainActivity : AppCompatActivity() {
         if ((obsLatNow == 0.0 && obsLonNow == 0.0) || lastFixWallMs == 0L || fixAge > 30_000L || lastFixAcc.isNaN() || lastFixAcc > 50.0) {
             Toast.makeText(this, "Kalibruoti negalima: nėra galiojančio GNSS fikso (naujesnio nei 30 s, tikslumas ≤ 50 m)", Toast.LENGTH_LONG).show(); return false }
         val (_, el) = SunCal.targetAzEl(key, System.currentTimeMillis(), obsLatNow, obsLonNow)
+        if (SunCal.isStar(key) && SunCal.sunAzEl(System.currentTimeMillis(), obsLatNow, obsLonNow).second > -6.0) {
+            Toast.makeText(this, "Kalibruoti negalima: dar per šviesu – žvaigždė ryškiai matoma tik Saulei nusileidus > 6° po horizontu", Toast.LENGTH_LONG).show(); return false }
         if (el < SunCal.MIN_EL) { Toast.makeText(this, "Kalibruoti negalima: ${t.name} po horizontu (aukštis %.1f°)".format(Locale.US, el), Toast.LENGTH_LONG).show(); return false }
         if (el > SunCal.MAX_EL) { Toast.makeText(this, "Kalibruoti negalima: ${t.name} per aukštai (%.1f° > 70°) – azimutas netikslus".format(Locale.US, el), Toast.LENGTH_LONG).show(); return false }
         val magAz = devAxisZ?.first ?: Double.NaN; val decl = skyDome.declinationDeg()
@@ -7301,6 +7308,12 @@ class MainActivity : AppCompatActivity() {
         val warn = if (kotlin.math.abs(r.devEl - r.sunEl) > SunCal.WARN_DEL)
             "\nĮSPĖJIMAS: nugarėlės aukštis %.0f°, orientyro %.0f° – skirtumas > 10°, tikriausiai nenukreipta".format(Locale.US, r.devEl, r.sunEl) else ""
         Toast.makeText(this, "${t.name}: az %.1f°, aukštis %.1f°; kompaso pataisa %+.1f°".format(Locale.US, r.sunAz, r.sunEl, r.corr) + warn, Toast.LENGTH_LONG).show()
+        if (kotlin.math.abs(r.corr) > 15.0 && CabinMap.cabin.samples > 0)
+            android.app.AlertDialog.Builder(this).setTitle("Išvalyti kabinos žemėlapį?")
+                .setMessage("Prieš kalibravimą kryptis buvo klaidinga %+.0f°. Kabinos žemėlapis (kryptys planšetės atžvilgiu) galėjo būti mokytas su klaidinga kryptimi – tada kryptis iš signalų stiprumo klaidina. Išvalius jis išmoks iš naujo su teisinga kryptimi.".format(Locale.US, r.corr))
+                .setPositiveButton("Išvalyti") { _, _ -> CabinMap.cabin.clear(); CabinMap.save(true); cabinView?.invalidate()
+                    Toast.makeText(this, "Kabinos žemėlapis išvalytas", Toast.LENGTH_SHORT).show() }
+                .setNegativeButton("Palikti", null).show()
         return true
     }
 
@@ -7800,6 +7813,7 @@ class MainActivity : AppCompatActivity() {
             devAxisZ?.let { appendLine("Žiūrėjimo pro ekraną kryptis: azimutas ${fx(it.first, 0)}°, ${fx(it.second, 0)}° nuo horizontalės") }
             appendLine(Orient.check.text(1.5))
             appendLine(SignalHeading.text(if (::skyDome.isInitialized) skyDome.headingDeg() else null))
+            appendLine(HeadingTrust.text())
             appendLine()
         }
         if ("fiksas" in sections) { appendLine("=== FIKSAS ==="); appendLine(posText); appendLine() }

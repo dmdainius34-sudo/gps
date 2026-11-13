@@ -93,3 +93,20 @@ object SignalHeading {
             "; automatinis taisymas ${if (autoFix) "įjungtas" else "išjungtas"}"
     }
 }
+
+/**
+ * Ar dabartine vaizdo kryptimi galima pasitikėti: taip – po kalibravimo pagal orientyrą arba pataisos pagal signalus;
+ * ne – kai kryptis paimta iš magnetometro (paleidus programą). Kabinos žemėlapis (prietaiso atžvilgiu) mokomas tik kai patikima,
+ * kitaip jis „išsitepa“ per klaidingas kryptis ir kryptis iš signalų tampa nepatikima.
+ */
+object HeadingTrust {
+    @Volatile var trusted = false
+        private set
+    @Volatile var since = 0L
+        private set
+    @Volatile var why = "kryptis iš magnetometro (paleidus)"
+        private set
+    fun set(on: Boolean, reason: String) { trusted = on; since = System.currentTimeMillis(); why = reason }
+    fun text(): String = "Krypties patikimumas: " + (if (trusted) "patikima" else "NEPATIKIMA – kabinos žemėlapis nemokomas") +
+        " (%s, nuo %s)".format(java.util.Locale.US, why, java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date(since)))
+}

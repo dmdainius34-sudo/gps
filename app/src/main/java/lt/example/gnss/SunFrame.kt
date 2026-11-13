@@ -261,6 +261,32 @@ object Lasco {
     @Volatile var frameMs: List<Long> = emptyList()
         private set
     val image: Bitmap? get() = frames.lastOrNull()
+    /** Kiekvieno kadro (fonas, ryškiausi 0,5 %) skaisčio lygiai 0..1 koronografo lauke 2,5–5,5 R – normalizavimui. */
+    @Volatile var stats: List<FloatArray> = emptyList()
+        private set
+
+    /** Fono (20-as procentilis) ir šviesiausių (99,5) skaistis žiede 2,5–5,5 Saulės spindulio. */
+    fun levels(b: Bitmap): FloatArray {
+        val w = b.width; val h = b.height; val cx = w / 2.0; val cy = h / 2.0
+        val pxPerR = w / 2.0 / HALF_RSUN
+        val hist = IntArray(256); var n = 0
+        val row = IntArray(w)
+        var y = 0
+        while (y < h) {
+            b.getPixels(row, 0, w, 0, y, w, 1)
+            var x = 0
+            while (x < w) {
+                val r = kotlin.math.hypot(x - cx, y - cy) / pxPerR
+                if (r in 2.5..5.5) { val p = row[x]; hist[((p shr 16 and 255) * 5 + (p shr 8 and 255) * 4 + (p and 255)) / 10]++; n++ }
+                x += 2
+            }
+            y += 2
+        }
+        if (n < 100) return floatArrayOf(0.1f, 1f)
+        fun pct(q: Double): Float { var c = 0; val lim = (n * q).toInt(); for (i in 0..255) { c += hist[i]; if (c >= lim) return i / 255f }; return 1f }
+        val bg = pct(0.20); val hi = pct(0.995)
+        return floatArrayOf(bg, maxOf(hi, bg + 0.05f))
+    }
     @Volatile var version = 0
         private set
     @Volatile var imageMs = 0L
@@ -321,6 +347,7 @@ object Lasco {
                 if (out.isEmpty()) { status = "Saulės išmetimai (LASCO C2): nepavyko –$dirErr, realaus laiko HTTP ${c.responseCode}"; return@Thread }
                 out.sortBy { it.first }
                 synchronized(cache) { val keep = pick.map { it.first }.toSet(); cache.keys.retainAll(keep) }
+                stats = out.map { levels(it.second) }
                 frames = out.map { it.second }; frameMs = out.map { it.first }; imageMs = out.last().first; version++
                 val f = java.text.SimpleDateFormat("MM-dd HH:mm", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
                 status = "Saulės išmetimai: SOHO LASCO C2, animacija %d kadr. %s–%s UTC%s".format(Locale.US, out.size,

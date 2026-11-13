@@ -1917,6 +1917,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             eyeI = floatArrayOf(mvU[2], mvU[6], mvU[10])
             camPos = floatArrayOf(eyeI[0] * zoom, eyeI[1] * zoom, eyeI[2] * zoom)
         }
+        updateCamBasis()
         // Kameros kryptis pasaulio koordinatėse (planšetės +Z)
         val eye = floatArrayOf(
             (fE[0] * eyeI[0] + fE[1] * eyeI[1] + fE[2] * eyeI[2]).toFloat(),
@@ -4179,6 +4180,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Plokštuma, kuri visada atsisuka į kamerą (centras c, pusplotis w, pusaukštis h). */
     private fun billboard(c: FloatArray, eye: FloatArray, w: Float, h: Float, tex: Int, cr: Float, cg: Float, cb: Float, ca: Float) {
         if (tex == 0) return   // tekstūra dar nesukurta – nepiešiame (be juodų kvadratų)
+        if (camBasisOk) { billboardQuad(c, camRightW, camUpW, w, h, tex, cr, cg, cb, ca); return }
         var nx = eye[0] - c[0]; var ny = eye[1] - c[1]; var nz = eye[2] - c[2]
         val nl = sqrt(nx * nx + ny * ny + nz * nz).coerceAtLeast(1e-6f)
         nx /= nl; ny /= nl; nz /= nl
@@ -4196,6 +4198,24 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val ux = ny * rz - nz * ry
         val uy = nz * rx - nx * rz
         val uz = nx * ry - ny * rx
+        billboardQuad(c, floatArrayOf(rx, ry, rz), floatArrayOf(ux, uy, uz), w, h, tex, cr, cg, cb, ca)
+    }
+
+    /** Kameros ekrano ašys pasaulio koordinatėmis (atnaujinamos kas kadrą) – užrašai visada skaitomi, ne veidrodiniai. */
+    private var camRightW = floatArrayOf(1f, 0f, 0f)
+    private var camUpW = floatArrayOf(0f, 0f, 1f)
+    private var camBasisOk = false
+    private fun updateCamBasis() {
+        val inv = FloatArray(16); if (!Matrix.invertM(inv, 0, proj, 0)) { camBasisOk = false; return }
+        val vm = FloatArray(16); Matrix.multiplyMM(vm, 0, inv, 0, mvpI, 0)
+        val r = floatArrayOf(vm[0], vm[4], vm[8]); val u = floatArrayOf(vm[1], vm[5], vm[9])
+        val rl = sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]); val ul = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2])
+        if (rl < 1e-6f || ul < 1e-6f) { camBasisOk = false; return }
+        camRightW = floatArrayOf(r[0] / rl, r[1] / rl, r[2] / rl); camUpW = floatArrayOf(u[0] / ul, u[1] / ul, u[2] / ul); camBasisOk = true
+    }
+
+    private fun billboardQuad(c: FloatArray, rv: FloatArray, uvv: FloatArray, w: Float, h: Float, tex: Int, cr: Float, cg: Float, cb: Float, ca: Float) {
+        val rx = rv[0]; val ry = rv[1]; val rz = rv[2]; val ux = uvv[0]; val uy = uvv[1]; val uz = uvv[2]
         val pos = FloatArray(12)
         val cs = arrayOf(floatArrayOf(-1f, -1f), floatArrayOf(1f, -1f), floatArrayOf(-1f, 1f), floatArrayOf(1f, 1f))
         for (i in 0..3) {
@@ -4422,6 +4442,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texA)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(lascoProg, "uTex"), 0)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uMix"), mixF)
+        val st = Lasco.stats
+        val sA = st.getOrNull(fi) ?: floatArrayOf(0.1f, 1f); val sB = st.getOrNull((fi + 1).coerceAtMost(nF - 1)) ?: sA
+        GLES20.glUniform2f(GLES20.glGetUniformLocation(lascoProg, "uLvA"), sA[0], 1f / (sA[1] - sA[0]))
+        GLES20.glUniform2f(GLES20.glGetUniformLocation(lascoProg, "uLvB"), sB[0], 1f / (sB[1] - sB[0]))
         resetAttribs()
         val lp = GLES20.glGetAttribLocation(lascoProg, "aPos")
         GLES20.glEnableVertexAttribArray(lp)
@@ -4855,6 +4879,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform sampler2D uTex;
             uniform sampler2D uTex2;
             uniform float uMix;
+            uniform vec2 uLvA;
+            uniform vec2 uLvB;
             uniform vec3 uCam;
             uniform vec3 uCenter;
             uniform vec3 uD;
@@ -4892,17 +4918,21 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     // atstumas nuo Saulės → koronografo laukas 2,3–5,8 R (suspausta į 1,0–uOut R)
                     float src = 2.3 + (rho - 1.0) / (uOut - 1.0) * 3.5;
                     vec2 uv = 0.5 + vec2(q.x, -q.y) / ql * src / (2.0 * uHalf);
-                    vec3 t = max(mix(texture2D(uTex, uv).rgb, texture2D(uTex2, uv).rgb, uMix) - vec3(0.10), vec3(0.0));
+                    // skaistis normalizuotas pagal kadro foną ir šviesiausius taškus (0 – fonas, 1 – ryškiausi srautai)
+                    vec3 w3 = vec3(0.5, 0.4, 0.1);
+                    float la = clamp((dot(texture2D(uTex, uv).rgb, w3) - uLvA.x) * uLvA.y, 0.0, 1.0);
+                    float lb = clamp((dot(texture2D(uTex2, uv).rgb, w3) - uLvB.x) * uLvB.y, 0.0, 1.0);
+                    float t = mix(la, lb, uMix);
+                    t = t * t;                                        // silpnas fonas dar blankesnis
                     float beta = asin(clamp(dot(p, uD) / rho, -1.0, 1.0));   // kampas nuo dangaus plokštumos
                     float w = exp(-(beta * beta) / 0.5);
                     float m = smoothstep(1.0, 1.06, rho) * (1.0 - smoothstep(uOut - 0.1, uOut, rho));
-                    acc += t * w * m;
+                    acc += vec3(t * w * m);
                 }
-                float lum = dot(acc, vec3(0.5, 0.35, 0.15));
-                float v = lum * (dt / uRs) * 3.0;
+                float v = 1.0 - exp(-acc.x * (dt / uRs) * 1.6);   // švelnus prisotinimas – ne vientisa geltona
                 // spalva pagal ryškumą: silpni srautai – raudoni, ryškūs išmetimai – geltoni
                 vec3 col = mix(vec3(0.95, 0.18, 0.04), vec3(1.0, 0.82, 0.25), clamp(v * 1.6, 0.0, 1.0));
-                gl_FragColor = vec4(col * v * 1.2, 1.0);
+                gl_FragColor = vec4(col * v * 0.85, 1.0);
             }
         """
         private const val GLOW_VS = """

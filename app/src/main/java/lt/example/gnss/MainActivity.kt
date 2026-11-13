@@ -1351,7 +1351,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         val alive = fInit && lastGyroNs != 0L && android.os.SystemClock.elapsedRealtimeNanos() - lastGyroNs < 3_000_000_000L
         if (!alive) {
             fInit = false; lastGyroNs = 0L; gValid = false
-            handler.removeCallbacks(reanchor); handler.postDelayed(reanchor, 5_000L)
+            reanchorTries = 0; handler.removeCallbacks(reanchor); handler.postDelayed(reanchor, 5_000L)
         }
         if (!listening) {
             rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
@@ -1364,13 +1364,17 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private var listening = false
 
     /** Po pradinės krypties iš magnetometro: pataisa pagal patikimą kryptį iš signalų (jei ji šviežia). */
-    private val reanchor = Runnable {
-        val e = SignalHeading.last ?: return@Runnable
-        val h = headingDeg() ?: return@Runnable
-        if (System.currentTimeMillis() - e.ms > 10_000L || e.corr < 0.6 || e.margin < 0.15) return@Runnable
+    private var reanchorTries = 0
+    /** Bandoma kas 5 s iki 2 min., kol atsiranda patikima kryptis iš signalų (paleidus GNSS jos dar nėra). */
+    private val reanchor: Runnable = object : Runnable { override fun run() {
+        val e = SignalHeading.last; val h = headingDeg()
+        if (e == null || h == null || System.currentTimeMillis() - e.ms > 10_000L || e.corr < 0.6 || e.margin < 0.15) {
+            if (++reanchorTries < 24) handler.postDelayed(this, 5_000L)
+            return
+        }
         val d = SunCal.wrap(h - e.deg)
         if (kotlin.math.abs(d) > 5.0) nudgeNorth(d)
-    }
+    } }
 
     fun stop() {
         running = false

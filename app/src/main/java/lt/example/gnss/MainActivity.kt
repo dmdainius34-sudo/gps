@@ -7240,6 +7240,9 @@ class MainActivity : AppCompatActivity() {
         return SunCal.wrap(view - tr) to e
     }
 
+    private var magStableAt: Pair<Long, Boolean> = 0L to false
+    private fun now() = System.currentTimeMillis()
+
     private fun isCharging(): Boolean = try {
         (getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager).isCharging
     } catch (_: Exception) { false }
@@ -7251,6 +7254,8 @@ class MainActivity : AppCompatActivity() {
         if (view == null || e.sunAz.isNaN() || kotlin.math.abs(SunCal.wrap(view - d - e.sunAz)) > 30.0) return
         // stipriai iškraipytas magnetometras (pvz. kabinos plienas) arba įkraunama (laido srovė keičia lauką) – netaisoma
         if (e.magDistorted || isCharging()) return
+        if (now() - magStableAt.first > 30_000L) magStableAt = now() to SunCal.magStable(this, obsLatNow, obsLonNow)
+        if (!magStableAt.second) return
         SunCal.watch(System.currentTimeMillis(), d) { fix -> runOnUiThread { if (::skyDome.isInitialized) skyDome.nudgeNorth(fix) } }
     }
 

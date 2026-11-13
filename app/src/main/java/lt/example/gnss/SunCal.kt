@@ -107,6 +107,18 @@ object SunCal {
     fun nearestGood(ctx: Context, lat: Double, lon: Double): Entry? = entries(ctx).filter { it.good &&
         kotlin.math.hypot((it.lat - lat) * 111_320.0, (it.lon - lon) * 111_320.0 * kotlin.math.cos(Math.toRadians(lat))) <= 100.0 }.maxByOrNull { it.ms }
 
+    /**
+     * Ar magnetometro klaida šioje vietoje pastovi: ≥ 2 geri įrašai iki 100 m ir jų klaidų sklaida ≤ 8°.
+     * Kabinoje su plienu ar įkraunant ji per minutę gali pasikeisti 20°+ – tada automatinis taisymas pagal magnetometrą žalingas.
+     */
+    fun magStable(ctx: Context, lat: Double, lon: Double): Boolean {
+        val g = entries(ctx).filter { it.good && !it.magDistorted &&
+            kotlin.math.hypot((it.lat - lat) * 111_320.0, (it.lon - lon) * 111_320.0 * kotlin.math.cos(Math.toRadians(lat))) <= 100.0 }
+        if (g.size < 2) return false
+        val m = g.map { it.magDiff }
+        return m.max() - m.min() <= 8.0
+    }
+
     /** Paskutinis bet koks (ir ⚠) įrašas iki 100 m, kurio azimutas tinkamas (nugarėlė ne per stačiai, magnetometras buvo). */
     fun nearestAny(ctx: Context, lat: Double, lon: Double): Entry? = entries(ctx).filter { kotlin.math.abs(it.devEl) < 60.0 && !it.magDiff.isNaN() &&
         kotlin.math.hypot((it.lat - lat) * 111_320.0, (it.lon - lon) * 111_320.0 * kotlin.math.cos(Math.toRadians(lat))) <= 100.0 }.maxByOrNull { it.ms }

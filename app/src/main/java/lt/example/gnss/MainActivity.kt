@@ -2861,6 +2861,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val box = obstacleMode == 2
         val boxRot = Math.toRadians(heading ?: 0.0)            // dėžė pasukta kaip kabina (planšetė)
         val r = 0.07; val half = 0.06; val hgt = 0.05
+        // kamera kupolo viduje (stebėtojo vaizdas): langeliai užpildytų visą ekraną – nepiešiama (2D žemėlapis lieka)
+        val dc = kotlin.math.sqrt((0..2).sumOf { (camPos[it] - o[it]).let { d -> d * d } })
+        if (dc < r * 1.6) return
         fun pt(azDeg: Double, elDeg: Double): FloatArray {
             val a = Math.toRadians(azDeg); val el = Math.toRadians(elDeg)
             var de = kotlin.math.cos(el) * sin(a); var dn = kotlin.math.cos(el) * cos(a); val du = sin(el)

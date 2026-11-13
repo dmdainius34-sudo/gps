@@ -3160,6 +3160,20 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val sd = sunDir(); val r = sunDistScene()
         val sp = floatArrayOf((fP[0] + sd[0] * r).toFloat(), (fP[1] + sd[1] * r).toFloat(), (fP[2] + sd[2] * r).toFloat())
         if (sunTex != 0) drawSun3D(sp, t)
+        // „Realybėje“ Saulė tolimame sluoksnyje – trikampio linijos į ją piešiamos čia (ta pati projekcija)
+        if (showSunGrid) {
+            val ln = ArrayList<Float>()
+            fun seg(a: FloatArray, b: FloatArray) { a.forEach { ln.add(it) }; b.forEach { ln.add(it) } }
+            seg(floatArrayOf(0f, 0f, 0f), sp)
+            moonPosLast?.let { m -> seg(floatArrayOf(m[0].toFloat(), m[1].toFloat(), m[2].toFloat()), sp) }
+            GLES20.glUseProgram(colorProg)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+            GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+            GLES20.glLineWidth(1.5f * density)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 0.9f, 0.5f, 0.45f)
+            bindPos(colorProg, floatBuf(ln.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, ln.size / 3)
+            GLES20.glLineWidth(1f); GLES20.glDepthMask(true)
+        }
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         val (tex, asp) = wideLabel("Saulė (%.2f mln. km)".format(java.util.Locale.US, sunDistKm() / 1e6))
         val k = labelK(sp)

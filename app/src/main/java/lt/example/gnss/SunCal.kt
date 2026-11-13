@@ -72,7 +72,7 @@ object SunCal {
 
     /** Žurnalo įrašas, nuskaitytas iš CSV (eilutės numeris – trynimui). */
     class Entry(val line: Int, val ms: Long, val lat: Double, val lon: Double, val sunEl: Double, val devEl: Double,
-                val corr: Double, val magAz: Double, val magDiff: Double, val raw: String) {
+                val corr: Double, val magAz: Double, val magDiff: Double, val raw: String, val sunAz: Double = Double.NaN) {
         /** Geras: prietaiso kampas sutapo su Saulės (≤ 10°), nugarėlė ne per stačiai (−Z azimutas patikimas), magnetometras buvo. */
         val good get() = kotlin.math.abs(devEl - sunEl) <= WARN_DEL && kotlin.math.abs(devEl) < 60.0 && !magDiff.isNaN()
     }
@@ -84,7 +84,7 @@ object SunCal {
                 if (l.isBlank() || l.startsWith("utc,")) return@mapIndexedNotNull null
                 val c = l.split(","); if (c.size < 16) return@mapIndexedNotNull null
                 fun d(k: Int) = c[k].toDoubleOrNull() ?: Double.NaN
-                Entry(i, try { fmt.parse(c[0])!!.time } catch (_: Exception) { 0L }, d(1), d(2), d(6), d(8), d(9), d(10), d(12), l)
+                Entry(i, try { fmt.parse(c[0])!!.time } catch (_: Exception) { 0L }, d(1), d(2), d(6), d(8), d(9), d(10), d(12), l, d(5))
             }
         }
     } catch (_: Exception) { emptyList() }

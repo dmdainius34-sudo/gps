@@ -7212,7 +7212,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun northFromLogTick() {
-        val (d, _) = headingVsLog() ?: return
+        val (d, e) = headingVsLog() ?: return
+        // magnetometro klaida priklauso nuo krypties (geležis, magnetai): automatiškai taisoma tik ±30° nuo kalibravimo krypties
+        val view = if (::skyDome.isInitialized) skyDome.headingDeg() else null
+        if (view == null || e.sunAz.isNaN() || kotlin.math.abs(SunCal.wrap(view - d - e.sunAz)) > 30.0) return
         SunCal.watch(System.currentTimeMillis(), d) { fix -> runOnUiThread { if (::skyDome.isInitialized) skyDome.nudgeNorth(fix) } }
     }
 

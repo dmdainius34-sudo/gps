@@ -6480,7 +6480,7 @@ class MainActivity : AppCompatActivity() {
                 val magAz = devAxisZ?.first ?: Double.NaN; val decl = skyDome.declinationDeg()
                 val r = skyDome.calibrateSun(obsLatNow, obsLonNow) ?: return@setOnClickListener
                 try { SunCal.log(this@MainActivity, SunCal.Rec(System.currentTimeMillis(), obsLatNow, obsLonNow, obsHNow, lastFixAcc, r.sunAz, r.sunEl,
-                    r.devAz, r.devEl, r.corr, magAz, decl, devPitch, devRoll, Build.MANUFACTURER + " " + Build.MODEL)) } catch (e: Exception) { logError("Saulės kalibravimo žurnalas: ${e.message}") }
+                    r.devAz, r.devEl, r.corr, magAz, decl, devPitch, devRoll, Build.MANUFACTURER + " " + Build.MODEL)); calCache = 0L to null } catch (e: Exception) { logError("Saulės kalibravimo žurnalas: ${e.message}") }
                 val warn = if (kotlin.math.abs(r.devEl - r.sunEl) > SunCal.WARN_DEL)
                     "\nĮSPĖJIMAS: prietaiso aukštis %.0f°, Saulės %.0f° – skirtumas > 10°, tikriausiai nenukreipta į Saulę".format(java.util.Locale.US, r.devEl, r.sunEl) else ""
                 Toast.makeText(this@MainActivity,
@@ -7226,9 +7226,15 @@ class MainActivity : AppCompatActivity() {
                 fmt.format(java.util.Date(e.ms)), e.corr, e.magDiff, e.devEl, e.sunEl, if (dist < 1000) "%.0f m".format(Locale.US, dist) else "%.1f km".format(Locale.US, dist / 1000))
         }.toTypedArray()
         val checked = BooleanArray(items.size) { !list[it].good }      // abejotini pažymėti iš anksto
+        calCache = 0L to null
         val near = headingVsLog()
+        val goodNear = SunCal.nearestGood(this, obsLatNow, obsLonNow)
+        val flat = devAxisZ?.let { kotlin.math.abs(it.second) > 60.0 } ?: true
         val msg = "Failas: ${SunCal.FILE} (programos vidinė atmintis; kopija – kiekviename ZIP). ✓ – planšetės kampas sutapo su Saulės (≤ 10°). " +
-            "Pažymėti įrašai bus ištrinti." + (near?.let { "\nDabar: vaizdo kryptis nuo žurnalo + magnetometro skiriasi %+.1f°".format(Locale.US, it.first) } ?: "\nArti (≤ 100 m) gero įrašo nėra")
+            "Pažymėti įrašai bus ištrinti." + (near?.let { "\nDabar: vaizdo kryptis nuo žurnalo + magnetometro skiriasi %+.1f°".format(Locale.US, it.first) }
+                ?: if (goodNear != null && flat) "\nGeras įrašas yra, bet planšetė guli – palyginimui laikykite ją stačiau (nugarėle į horizontą)"
+                else if (goodNear != null) "\nGeras įrašas yra, bet magnetometro duomenų dar nėra"
+                else "\nArti (≤ 100 m) gero įrašo nėra")
         val b = android.app.AlertDialog.Builder(this).setTitle("Saulės kalibravimų žurnalas (${items.size})")
         if (items.isEmpty()) b.setMessage("Įrašų dar nėra – paspauskite „Kalibruoti pagal Saulę“.")
         else b.setMultiChoiceItems(items, checked) { _, i, on -> checked[i] = on }

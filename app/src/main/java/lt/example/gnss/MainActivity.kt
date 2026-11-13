@@ -1337,7 +1337,10 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         fInit = false          // pradinė kryptis bus vėl paimta iš rotation vector
         renderer.resetUser()
         manual = false
+        onNorthReset?.invoke()
     }
+    /** Po šiaurės atstatymo – atkūrimas iš Saulės žurnalo (jei yra įrašas netoliese). */
+    var onNorthReset: (() -> Unit)? = null
 
     fun start() {
         if (running) return
@@ -1534,7 +1537,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 handler.removeCallbacks(resumeSensors)
-                manual = true
+                // stebėtojo vaizde vilkimas kryptį nekeičia – jutikliai neužšaldomi (kitaip kryptis „sustingsta“ 60 s)
+                manual = !renderer.isObserverView()
                 renderer.setDragging(true)
                 prevArc = arcMap(e.x, e.y)
                 parent?.requestDisallowInterceptTouchEvent(true)
@@ -1580,7 +1584,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 renderer.setDragging(false)
                 handler.removeCallbacks(resumeSensors)
-                handler.postDelayed(resumeSensors, 60_000L)
+                if (manual) handler.postDelayed(resumeSensors, 60_000L)
                 return true
             }
         }
@@ -3225,6 +3229,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile var levelHorizon = true
 
     private fun observerView() = !followDevice && !freeView && focus == 0
+    fun isObserverView() = observerView()
 
     // ---- Fokusas: kamera prie Saulės (1) ar Mėnulio (2), sukama aplink jų centrą; 0 – įprastai ----
     @Volatile var focus = 0
@@ -6676,6 +6681,11 @@ class MainActivity : AppCompatActivity() {
         val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         right.addView(skyView, LinearLayout.LayoutParams(skySide, skySide))
         skyDome = SkyDomeGL(this)
+        skyDome.onNorthReset = {
+            // „Atstatyti šiaurę“ – iškart grąžinama Saulės kalibravimo kryptis (magnetometras + žurnalas), jei jis yra netoliese
+            skyDome.postDelayed({ headingVsLog(allowWarn = true)?.let { h -> skyDome.nudgeNorth(h.first)
+                Toast.makeText(this, "Šiaurė atkurta iš Saulės žurnalo (%+.1f°)".format(Locale.US, h.first), Toast.LENGTH_LONG).show() } }, 1500L)
+        }
         skyHolder = FrameLayout(this).apply { visibility = View.GONE }
         skyHolder.addView(skyDome, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         satCountView = TextView(this).apply {
@@ -7180,9 +7190,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Vaizdo kryptis − tikra kryptis (magnetometras + žurnalas), ° arba null. */
-    private fun headingVsLog(): Pair<Double, SunCal.Entry>? {
+    private fun headingVsLog(allowWarn: Boolean = false): Pair<Double, SunCal.Entry>? {
         if (!::skyDome.isInitialized || (obsLatNow == 0.0 && obsLonNow == 0.0)) return null
-        val e = nearCal() ?: return null
+        val e = nearCal() ?: (if (allowWarn) SunCal.nearestAny(this, obsLatNow, obsLonNow) else null) ?: return null
         val mag = devAxisZ ?: return null
         if (kotlin.math.abs(mag.second) > 60.0) return null                // gulint −Z azimutas nepatikimas
         val view = skyDome.headingDeg() ?: return null
@@ -7217,7 +7227,7 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Ištrinta įrašų: ${del.size}", Toast.LENGTH_SHORT).show() }
         }
         b.setNeutralButton("Atkurti šiaurę") { _, _ ->
-            val h = headingVsLog()
+            val h = headingVsLog(allowWarn = true)
             if (h == null) Toast.makeText(this, "Atkurti negalima: arti nėra gero kalibravimo įrašo arba planšetė guli (laikykite stačiau)", Toast.LENGTH_LONG).show()
             else { skyDome.nudgeNorth(h.first)
                 Toast.makeText(this, "Šiaurė atkurta iš žurnalo: pataisa %+.1f°".format(Locale.US, h.first), Toast.LENGTH_LONG).show() }

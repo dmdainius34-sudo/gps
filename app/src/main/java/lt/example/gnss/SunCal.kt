@@ -100,6 +100,10 @@ object SunCal {
     fun nearestGood(ctx: Context, lat: Double, lon: Double): Entry? = entries(ctx).filter { it.good &&
         kotlin.math.hypot((it.lat - lat) * 111_320.0, (it.lon - lon) * 111_320.0 * kotlin.math.cos(Math.toRadians(lat))) <= 100.0 }.maxByOrNull { it.ms }
 
+    /** Paskutinis bet koks (ir ⚠) įrašas iki 100 m, kurio azimutas tinkamas (nugarėlė ne per stačiai, magnetometras buvo). */
+    fun nearestAny(ctx: Context, lat: Double, lon: Double): Entry? = entries(ctx).filter { kotlin.math.abs(it.devEl) < 60.0 && !it.magDiff.isNaN() &&
+        kotlin.math.hypot((it.lat - lat) * 111_320.0, (it.lon - lon) * 111_320.0 * kotlin.math.cos(Math.toRadians(lat))) <= 100.0 }.maxByOrNull { it.ms }
+
     /**
      * Tikra prietaiso (−Z) kryptis iš magnetometro, pataisyta magnetometro klaida iš žurnalo:
      * tikrasis az = magnetinis az + deklinacija − (klaida kalibruojant). Grąžina null, jei nėra gero įrašo.

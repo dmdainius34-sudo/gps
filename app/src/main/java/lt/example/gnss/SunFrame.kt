@@ -225,6 +225,15 @@ object MoonFrame {
     }
 
     /** Į Žemę atsuktas taškas (selenografinė ilguma, platuma – optinė libracija), °; moonDir – kryptis Žemė -> Mėnulis. */
+    /** Taškas Mėnulyje, kuriame Saulė zenite: (ilguma, platuma) °. Kryptys geocentrinės, atstumai km. */
+    fun subSolar(ms: Long, moonDir: DoubleArray, moonKm: Double, sunDir: DoubleArray, sunKm: Double): DoubleArray {
+        val (x, y, z) = axes(ms)
+        val v = DoubleArray(3) { sunDir[it] * sunKm - moonDir[it] * moonKm }
+        val l = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); val s = DoubleArray(3) { v[it] / l }
+        fun dot(a: DoubleArray, b: DoubleArray) = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+        return doubleArrayOf(Math.toDegrees(atan2(dot(s, y), dot(s, x))), Math.toDegrees(asin(dot(s, z).coerceIn(-1.0, 1.0))))
+    }
+
     fun subEarth(ms: Long, moonDir: DoubleArray): DoubleArray {
         val (x, y, z) = axes(ms)
         val s = DoubleArray(3) { -moonDir[it] }

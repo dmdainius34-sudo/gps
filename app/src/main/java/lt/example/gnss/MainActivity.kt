@@ -1174,6 +1174,19 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         val now = System.currentTimeMillis()
         val (az, alt) = Astro.altAz(Astro.sunEq(now), lat, lon, now)
         if (alt < -0.5) return null
+        return calibrateTo(az, alt, now, "sun")
+    }
+
+    /** Kalibravimas pagal Šiaurinę žvaigždę (naktį planšetės nugarėlė nukreipiama į Polaris). */
+    fun calibratePolaris(lat: Double, lon: Double): Triple<Double, Double, Double>? {
+        val now = System.currentTimeMillis()
+        val (ra, dec) = Astro.polaris(now)
+        val (az, alt) = Astro.altAzRaDec(ra, dec, lat, lon, now)
+        if (alt < 2.0) return null
+        return calibrateTo(az, alt, now, "polaris")
+    }
+
+    private fun calibrateTo(az: Double, alt: Double, now: Long, src: String): Triple<Double, Double, Double> {
         val r = lastRaw
         var e = -r[2].toDouble(); var n = -r[5].toDouble()
         if (kotlin.math.hypot(e, n) < 0.3) { e = r[1].toDouble(); n = r[4].toDouble() }
@@ -1183,7 +1196,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         while (d <= -180) d += 360.0
         offsetDeg += d.toFloat()
         calPrefs.edit().putFloat("offset", offsetDeg).putFloat("decl0", declDeg).putBoolean("north_saved", true)
-            .putFloat("sun_cal_deg", d.toFloat()).putLong("sun_cal_ms", now).putFloat("sun_cal_az", az.toFloat()).apply()
+            .putFloat("sun_cal_deg", d.toFloat()).putLong("sun_cal_ms", now).putFloat("sun_cal_az", az.toFloat()).putString("cal_src", src).apply()
         manual = false
         handler.removeCallbacks(resumeSensors)
         renderer.resetUser()
@@ -1198,7 +1211,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun sunCalText(): String {
         val ms = calPrefs.getLong("sun_cal_ms", 0L)
         if (ms == 0L) return "Kalibravimas pagal Saulę: neatliktas"
-        return "Kalibravimas pagal Saulę: %s, Saulės azimutas %.1f°, kompaso pataisa %+.1f°; bendras šiaurės poslinkis %.1f°".format(
+        val pol = calPrefs.getString("cal_src", "sun") == "polaris"
+        return (if (pol) "Kalibravimas pagal Šiaurinę žvaigždę: %s, Polaris azimutas %.1f°" else "Kalibravimas pagal Saulę: %s, Saulės azimutas %.1f°") +
+            ", kompaso pataisa %+.1f°; bendras šiaurės poslinkis %.1f°".format(
             java.util.Locale.US, java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(ms)),
             calPrefs.getFloat("sun_cal_az", 0f), calPrefs.getFloat("sun_cal_deg", 0f), offsetDeg)
     }
@@ -1263,8 +1278,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.showSunGrid = calPrefs.getBoolean("sun_grid", true)
         renderer.showLasco = calPrefs.getBoolean("sun_lasco", true)
         renderer.obstacleMode = calPrefs.getInt("obst_mode", 1)
-        renderer.followDevice = calPrefs.getBoolean("follow_device", false)
-        renderer.freeView = calPrefs.getBoolean("free_view", false)
+        // atidarius – visada stebėtojo vaizdas: horizontas pagal žemę ir prietaisą, kryptis – pagal šiaurę
+        renderer.followDevice = false; renderer.freeView = false
+        calPrefs.edit().putBoolean("follow_device", false).putBoolean("free_view", false).apply()
         renderer.oceanOn = calPrefs.getBoolean("ocean_anim", true)
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
@@ -3909,7 +3925,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (showSunGrid && moonMvp[15] != 0f) {
             val se = MoonFrame.subEarth(System.currentTimeMillis(), moonDir())
             drawBodyGrid(moonMvp, se[0], se[1], 0.25 * 1.03, floatArrayOf(0.85f, 0.9f, 1f))
+            val ss = MoonFrame.subSolar(System.currentTimeMillis(), moonDir(), moonDistKm(), sunDir(), sunDistKm())
+            drawModelCross(moonMvp, ss[0], ss[1], 0.25 * 1.035, 9.0, floatArrayOf(1f, 0.85f, 0.2f))
         }
+        if (showSunGrid) drawCentersTriangle()
         val d = jdDays()
         val node = Math.toRadians(125.04 - 0.0529539 * d)
         val inc = Math.toRadians(5.145)
@@ -3933,6 +3952,81 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val mk = labelK(floatArrayOf(m[0].toFloat(), m[1].toFloat(), m[2].toFloat()))
             billboard(floatArrayOf(m[0].toFloat(), m[1].toFloat(), (m[2] + 0.2 * mk).toFloat()), eyeI, 0.12f * asp * mk, 0.12f * mk, tex, 0.9f, 0.9f, 0.95f, 0.9f)
         }
+    }
+
+    /** Kryžius kūno modelio erdvėje (ilguma, platuma °; spindulys r; dydis °). */
+    private fun drawModelCross(mvpM: FloatArray, lonDeg: Double, latDeg: Double, r: Double, size: Double, col: FloatArray) {
+        fun pt(la: Double, lo: Double) = floatArrayOf((r * cos(Math.toRadians(la)) * cos(Math.toRadians(lo))).toFloat(),
+            (r * cos(Math.toRadians(la)) * sin(Math.toRadians(lo))).toFloat(), (r * sin(Math.toRadians(la))).toFloat())
+        val seg = ArrayList<Float>()
+        for ((a, b) in listOf(pt(latDeg - size, lonDeg) to pt(latDeg + size, lonDeg), pt(latDeg, lonDeg - size) to pt(latDeg, lonDeg + size)))
+            { a.forEach { seg.add(it) }; b.forEach { seg.add(it) } }
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpM, 0)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        GLES20.glLineWidth(4f * density)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 1f)
+        bindPos(colorProg, floatBuf(seg.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, seg.size / 3)
+        GLES20.glLineWidth(1f); GLES20.glDepthMask(true)
+    }
+
+    /**
+     * Trijų kūnų centrų trikampis: Žemėje – Saulės ir Mėnulio zenito taškai, Mėnulyje – Saulės zenito taškas (skaičiuojamas iš
+     * tikrų krypčių ir atstumų), Saulėje – į Žemę atsuktas taškas (tinklelyje). Linijos tarp centrų ir tikri kampai.
+     * Vietiniame mastelyje atstumai suspausti – linijų kryptys schematiškos, kampai užrašuose tikri.
+     */
+    private fun drawCentersTriangle() {
+        if (earthMatLast[10] == 0f) return
+        val now = System.currentTimeMillis()
+        val sd = sunDir(); val md = moonDir(); val sKm = sunDistKm(); val mKm = moonDistKm()
+        fun ll(v: DoubleArray): Pair<Double, Double> {
+            val la = Math.toDegrees(kotlin.math.asin(v[2].coerceIn(-1.0, 1.0)))
+            val lo = ((Math.toDegrees(kotlin.math.atan2(v[1], v[0])) - Astro.gmstDeg(now) + 540.0) % 360.0) - 180.0
+            return la to lo
+        }
+        fun sc(la: Double, lo: Double, k: Double = 1.012): FloatArray {
+            val e = PositionSolver.llhToEcef(Math.toRadians(la), Math.toRadians(lo), 0.0)
+            return ecefToScene(doubleArrayOf(e[0] / 1000 * k, e[1] / 1000 * k, e[2] / 1000 * k))
+        }
+        fun crossEarth(la: Double, lo: Double, col: FloatArray) {
+            val seg = ArrayList<Float>()
+            for ((a, b) in listOf(sc(la - 5, lo) to sc(la + 5, lo), sc(la, lo - 5) to sc(la, lo + 5))) { a.forEach { seg.add(it) }; b.forEach { seg.add(it) } }
+            GLES20.glLineWidth(4f * density)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 1f)
+            bindPos(colorProg, floatBuf(seg.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, seg.size / 3)
+        }
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false); GLES20.glDisable(GLES20.GL_CULL_FACE)
+        val (sLa, sLo) = ll(sd); val (mLa, mLo) = ll(md)
+        crossEarth(sLa, sLo, floatArrayOf(1f, 0.85f, 0.2f))          // Saulė zenite
+        crossEarth(mLa, mLo, floatArrayOf(0.8f, 0.85f, 0.95f))       // Mėnulis zenite
+        // linijos tarp centrų (Žemės centras – scenos pradžia)
+        val m = moonPosLast
+        val sp = if (realScale) null else floatArrayOf((fP[0] + sd[0] * SUN_DIST).toFloat(), (fP[1] + sd[1] * SUN_DIST).toFloat(), (fP[2] + sd[2] * SUN_DIST).toFloat())
+        val lines = ArrayList<Float>()
+        fun ln(a: FloatArray, b: FloatArray) { a.forEach { lines.add(it) }; b.forEach { lines.add(it) } }
+        val o = floatArrayOf(0f, 0f, 0f)
+        val mf = m?.let { floatArrayOf(it[0].toFloat(), it[1].toFloat(), it[2].toFloat()) }
+        if (sp != null) ln(o, sp)
+        if (mf != null) ln(o, mf)
+        if (sp != null && mf != null) ln(mf, sp)
+        GLES20.glLineWidth(1.5f * density)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 0.9f, 0.5f, 0.45f)
+        if (lines.isNotEmpty()) { bindPos(colorProg, floatBuf(lines.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, lines.size / 3) }
+        GLES20.glLineWidth(1f); GLES20.glDepthMask(true); GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        // tikri kampai: elongacija (Saulė–Mėnulis danguje) ir fazės kampas (Saulė–Mėnulis–Žemė)
+        val cosE = (sd[0] * md[0] + sd[1] * md[1] + sd[2] * md[2]).coerceIn(-1.0, 1.0)
+        val e = kotlin.math.acos(cosE)
+        val ph = kotlin.math.atan2(sKm * sin(e), mKm - sKm * cos(e))
+        val illum = (1 + cos(ph)) / 2 * 100
+        if (mf != null) {
+            val (tx, ta) = wideLabel("Mėnulis: fazės kampas %.0f°, apšviesta %.0f %%".format(java.util.Locale.US, Math.toDegrees(ph), illum))
+            val k = labelK(mf)
+            billboard(floatArrayOf(mf[0], mf[1], mf[2] - 0.2f * k), eyeI, 0.09f * ta * k, 0.09f * k, tx, 1f, 0.9f, 0.6f, 0.9f)
+        }
+        val (tx, ta) = wideLabel("Saulė–Mėnulis danguje %.0f°".format(java.util.Locale.US, Math.toDegrees(e)))
+        billboard(floatArrayOf(0f, 0f, -EARTH_R * 1.5f), eyeI, 0.06f * ta, 0.06f, tx, 1f, 0.9f, 0.6f, 0.9f)
     }
 
     /** Mėnulio kryptis (apytikslė, ~1°). */
@@ -6283,6 +6377,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(btnSun, LinearLayout.LayoutParams(mw, ww))
+        left.addView(Button(this).apply {
+            text = "Kalibruoti pagal Šiaurinę žvaigždę (naktį nukreipkite planšetę į Polaris)"
+            setOnClickListener {
+                if (!::skyDome.isInitialized) return@setOnClickListener
+                if (obsLatNow == 0.0 && obsLonNow == 0.0) { Toast.makeText(this@MainActivity, "Nėra GNSS vietos", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+                val r = skyDome.calibratePolaris(obsLatNow, obsLonNow)
+                Toast.makeText(this@MainActivity,
+                    if (r == null) "Polaris po horizontu – kalibruoti negalima"
+                    else "Polaris: az %.1f°, aukštis %.1f°; kompaso pataisa %+.1f°".format(java.util.Locale.US, r.first, r.second, r.third),
+                    Toast.LENGTH_LONG).show()
+            }
+        }, LinearLayout.LayoutParams(mw, ww))
         val btnNtrip = Button(this).apply { text = "NTRIP pataisos (RTCM)…"; setOnClickListener { showNtripDialog() } }
         left.addView(btnNtrip, LinearLayout.LayoutParams(mw, ww))
         Crane.load(this)

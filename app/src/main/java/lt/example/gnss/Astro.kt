@@ -68,6 +68,24 @@ object Astro {
         return h
     }
 
+    /** Precesija J2000 → data (IAU 1976): (RA, Dec) laipsniais. */
+    fun precess(ra0Deg: Double, dec0Deg: Double, ms: Long): Pair<Double, Double> {
+        val t = daysJ2000(ms) / 36525.0
+        val sec = Math.PI / 180.0 / 3600.0
+        val zeta = (2306.2181 * t + 0.30188 * t * t + 0.017998 * t * t * t) * sec
+        val z = (2306.2181 * t + 1.09468 * t * t + 0.018203 * t * t * t) * sec
+        val th = (2004.3109 * t - 0.42665 * t * t - 0.041833 * t * t * t) * sec
+        val r0 = Math.toRadians(ra0Deg); val d0 = Math.toRadians(dec0Deg)
+        val a = cos(d0) * sin(r0 + zeta)
+        val b = cos(th) * cos(d0) * cos(r0 + zeta) - sin(th) * sin(d0)
+        val c = sin(th) * cos(d0) * cos(r0 + zeta) + cos(th) * sin(d0)
+        var ra = Math.toDegrees(atan2(a, b) + z); ra = ((ra % 360.0) + 360.0) % 360.0
+        return ra to Math.toDegrees(atan2(c, sqrt(a * a + b * b)))
+    }
+
+    /** Šiaurinė žvaigždė (Polaris, α UMi) – J2000 RA 37,95456°, Dec 89,26411°. */
+    fun polaris(ms: Long): Pair<Double, Double> = precess(37.95456, 89.26411, ms)
+
     fun raDeg(v: DoubleArray): Double { var r = Math.toDegrees(atan2(v[1], v[0])); if (r < 0) r += 360.0; return r }
 }
 

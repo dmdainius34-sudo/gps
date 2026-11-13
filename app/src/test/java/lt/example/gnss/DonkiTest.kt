@@ -25,3 +25,12 @@ class DonkiTest {
         assertEquals(1.0, n[1], 1e-9)
     }
 }
+
+class PolarisTest {
+    @org.junit.Test fun precession2025() {
+        // 2025-06-01: Polaris Dec ≈ +89°22′ (89,37°), RA ≈ 3 h (≈ 45°)
+        val (ra, dec) = Astro.polaris(1_748_736_000_000L)
+        org.junit.Assert.assertEquals(89.37, dec, 0.03)
+        org.junit.Assert.assertTrue(ra in 35.0..55.0)
+    }
+}

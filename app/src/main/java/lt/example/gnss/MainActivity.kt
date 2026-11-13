@@ -1170,11 +1170,22 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
      * Pataisa = dabartinė vaizdo kryptis − Saulės azimutas; pridedama prie šiaurės poslinkio ir įrašoma.
      * Grąžina (Saulės azimutas, aukštis, pataisa °) arba null, jei Saulė po horizontu.
      */
-    fun calibrateSun(lat: Double, lon: Double): Triple<Double, Double, Double>? {
+    /** Kalibravimo pagal Saulę rezultatas: (Saulės az, aukštis su refrakcija, pataisa, prietaiso az, prietaiso aukštis). */
+    class SunCalResult(val sunAz: Double, val sunEl: Double, val corr: Double, val devAz: Double, val devEl: Double)
+
+    /** Saulės aukštis ir prietaiso kryptis be kalibravimo (apsaugoms prieš taikant). */
+    fun sunCheck(lat: Double, lon: Double): Pair<Pair<Double, Double>, Triple<Double, Double, String>> {
         val now = System.currentTimeMillis()
-        val (az, alt) = Astro.altAz(Astro.sunEq(now), lat, lon, now)
-        if (alt < -0.5) return null
-        return calibrateTo(az, alt, now, "sun")
+        return SunCal.sunAzEl(now, lat, lon) to SunCal.deviceAzEl(lastRaw)
+    }
+
+    fun calibrateSun(lat: Double, lon: Double): SunCalResult? {
+        val now = System.currentTimeMillis()
+        val (az, alt) = SunCal.sunAzEl(now, lat, lon)
+        if (alt < SunCal.MIN_EL || alt > SunCal.MAX_EL) return null
+        val dev = SunCal.deviceAzEl(lastRaw)
+        val r = calibrateTo(az, alt, now, "sun")
+        return SunCalResult(az, alt, r.third, dev.first, dev.second)
     }
 
     /** Kalibravimas pagal Šiaurinę žvaigždę (naktį planšetės nugarėlė nukreipiama į Polaris). */
@@ -1187,10 +1198,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     }
 
     private fun calibrateTo(az: Double, alt: Double, now: Long, src: String): Triple<Double, Double, Double> {
-        val r = lastRaw
-        var e = -r[2].toDouble(); var n = -r[5].toDouble()
-        if (kotlin.math.hypot(e, n) < 0.3) { e = r[1].toDouble(); n = r[4].toDouble() }
-        val heading = (Math.toDegrees(kotlin.math.atan2(e, n)) + 360.0) % 360.0
+        val heading = SunCal.deviceAzEl(lastRaw).first        // −Z projekcija į horizontalią plokštumą (gulint – +Y)
         var d = heading - az
         while (d > 180) d -= 360.0
         while (d <= -180) d += 360.0
@@ -1206,6 +1214,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     /** Krypties diagnostika ataskaitai: iš ko sudaryta dabartinė kryptis. */
     /** Šiaurės pataisa d° (vaizdo kryptis − tikra kryptis), kaip kalibruojant pagal Saulę. */
+    fun declinationDeg(): Double = declDeg.toDouble()
+
     fun nudgeNorth(d: Double) {
         offsetDeg += d.toFloat()
         calPrefs.edit().putFloat("offset", offsetDeg).putBoolean("north_saved", true).apply()
@@ -6454,11 +6464,20 @@ class MainActivity : AppCompatActivity() {
             text = "Kalibruoti pagal Saulę (nukreipkite planšetę į Saulę)"
             setOnClickListener {
                 if (!::skyDome.isInitialized) return@setOnClickListener
-                if (obsLatNow == 0.0 && obsLonNow == 0.0) { Toast.makeText(this@MainActivity, "Nėra GNSS vietos", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
-                val r = skyDome.calibrateSun(obsLatNow, obsLonNow)
+                val fixAge = System.currentTimeMillis() - lastFixWallMs
+                if ((obsLatNow == 0.0 && obsLonNow == 0.0) || lastFixWallMs == 0L || fixAge > 30_000L || lastFixAcc.isNaN() || lastFixAcc > 50.0) {
+                    Toast.makeText(this@MainActivity, "Kalibruoti negalima: nėra galiojančio GNSS fikso (naujesnio nei 30 s, tikslumas ≤ 50 m)", Toast.LENGTH_LONG).show(); return@setOnClickListener }
+                val (sun, dev) = skyDome.sunCheck(obsLatNow, obsLonNow)
+                if (sun.second < SunCal.MIN_EL) { Toast.makeText(this@MainActivity, "Kalibruoti negalima: Saulė po horizontu (aukštis %.1f°)".format(java.util.Locale.US, sun.second), Toast.LENGTH_LONG).show(); return@setOnClickListener }
+                if (sun.second > SunCal.MAX_EL) { Toast.makeText(this@MainActivity, "Kalibruoti negalima: Saulė per aukštai (%.1f° > 70°) – azimutas netikslus".format(java.util.Locale.US, sun.second), Toast.LENGTH_LONG).show(); return@setOnClickListener }
+                val magAz = devAxisZ?.first ?: Double.NaN; val decl = skyDome.declinationDeg()
+                val r = skyDome.calibrateSun(obsLatNow, obsLonNow) ?: return@setOnClickListener
+                try { SunCal.log(this@MainActivity, SunCal.Rec(System.currentTimeMillis(), obsLatNow, obsLonNow, obsHNow, lastFixAcc, r.sunAz, r.sunEl,
+                    r.devAz, r.devEl, r.corr, magAz, decl, devPitch, devRoll, Build.MANUFACTURER + " " + Build.MODEL)) } catch (e: Exception) { logError("Saulės kalibravimo žurnalas: ${e.message}") }
+                val warn = if (kotlin.math.abs(r.devEl - r.sunEl) > SunCal.WARN_DEL)
+                    "\nĮSPĖJIMAS: prietaiso aukštis %.0f°, Saulės %.0f° – skirtumas > 10°, tikriausiai nenukreipta į Saulę".format(java.util.Locale.US, r.devEl, r.sunEl) else ""
                 Toast.makeText(this@MainActivity,
-                    if (r == null) "Saulė po horizontu – kalibruoti negalima"
-                    else "Saulė: az %.1f°, aukštis %.1f°; kompaso pataisa %+.1f°".format(java.util.Locale.US, r.first, r.second, r.third),
+                    "Saulė: az %.1f°, aukštis %.1f°; kompaso pataisa %+.1f°".format(java.util.Locale.US, r.sunAz, r.sunEl, r.corr) + warn,
                     Toast.LENGTH_LONG).show()
             }
         }
@@ -6759,6 +6778,7 @@ class MainActivity : AppCompatActivity() {
                     report += sunReport() + Sp3Live.text() + "\n" +
                         (if (obsLatNow == 0.0 && obsLonNow == 0.0) "" else SpaceOrientation.report(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()), obsLatNow)) +
                         (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" + skyDome.northText(devAzimuth) + "\n" else "") +
+                        (SunCal.lastLine(this@MainActivity)?.let { "Paskutinis kalibravimas pagal Saulę (${SunCal.FILE}): ${SunCal.HEADER.trim()}\n$it\n" } ?: "Kalibravimų pagal Saulę žurnale nėra\n") +
                         (if (Uvi.enabled) Uvi.text() + "\n" else "") + SunFrame.text() + "\n" +
                         NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + CabinMap.text() + "\n" +
                         (Readiness.knowledge()?.let { "Lusto žinios: ${it.text}\n" } ?: "") +
@@ -6786,6 +6806,9 @@ class MainActivity : AppCompatActivity() {
                     navCsvUri()?.let { uris.add(it) }
                     rtcmCsvUri()?.let { uris.add(it) }
                     gapLogUri()?.let { uris.add(it) }
+                    try { val sf = SunCal.file(this@MainActivity)
+                        if (sf.exists()) { val cf = File(cacheDir, SunCal.FILE); sf.copyTo(cf, true)
+                            uris.add(FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", cf)) } } catch (e: Exception) { logError("${SunCal.FILE}: ${e.message}") }
                     // GPS pozicijos skaičiuoklė (1 žingsnis) – fone, rezultatas gnss_solver.csv
                     offerSp3PickerOnce { Thread {
                         val (bad, total) = SessionFiles.badLines(File(cacheDir, SessionFiles.RAW))
@@ -7031,6 +7054,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var obsHNow = 0.0
+    private var lastFixWallMs = 0L
+    private var lastFixAcc = Double.NaN
     private var obsLatNow = 54.74
     private var obsLonNow = 25.25
 
@@ -7075,6 +7100,7 @@ class MainActivity : AppCompatActivity() {
         if (loc.isFromMockProvider) return                 // mūsų pačių RTK bandomoji vieta – ne lusto fiksas
         if (loc.hasAccuracy()) Readiness.onFix(loc.accuracy.toDouble())
         obsLatNow = loc.latitude; obsLonNow = loc.longitude
+        lastFixWallMs = System.currentTimeMillis(); lastFixAcc = if (loc.hasAccuracy()) loc.accuracy.toDouble() else Double.NaN
         if (loc.hasAltitude()) obsHNow = loc.altitude
         if (loc.hasSpeed() && loc.hasBearing() && loc.speed >= 1.5f) {
             devAxisY?.let { if (it.second <= 45.0) Orient.check.add("ekrano viršus (Y)", it.first, loc.bearing.toDouble()) }

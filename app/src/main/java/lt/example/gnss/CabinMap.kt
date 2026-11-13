@@ -66,6 +66,18 @@ class SkyMap(val file: String) {
 
     @Synchronized fun clear() { cells.forEach { it.n = 0; it.cn0 = 0.0; it.nRes = 0; it.nlos = 0; it.absRes = 0.0; it.slips = 0; it.nPh = 0 }; samples = 0 }
 
+    /** Vidutinis C/N0 langelyje (jei mažai mėginių – 3×3 kaimynų vidurkis) arba null. */
+    @Synchronized fun meanCn0(az: Double, el: Double, minN: Int = 8): Double? {
+        val i = idx(az, el) ?: return null
+        val c = cells[i]; if (c.n >= minN) return c.cn0 / c.n
+        val a0 = ia(az); val e0 = ie(el); var n = 0; var sum = 0.0
+        for (de in -1..1) for (da in -1..1) {
+            val e = e0 + de; if (e < 0 || e >= CabinMap.EL) continue
+            val cc = cells[e * CabinMap.AZ + (a0 + da + CabinMap.AZ) % CabinMap.AZ]; n += cc.n; sum += cc.cn0
+        }
+        return if (n >= minN) sum / n else null
+    }
+
     @Synchronized fun addCn0(az: Double, el: Double, cn0: Double) { val i = idx(az, el) ?: return; cells[i].n++; cells[i].cn0 += cn0; samples++ }
 
     @Synchronized fun addRtk(az: Double, el: Double, res: Double, slip: Boolean) {

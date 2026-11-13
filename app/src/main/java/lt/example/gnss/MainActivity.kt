@@ -1205,6 +1205,13 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     }
 
     /** Krypties diagnostika ataskaitai: iš ko sudaryta dabartinė kryptis. */
+    /** Šiaurės pataisa d° (vaizdo kryptis − tikra kryptis), kaip kalibruojant pagal Saulę. */
+    fun nudgeNorth(d: Double) {
+        offsetDeg += d.toFloat()
+        calPrefs.edit().putFloat("offset", offsetDeg).putBoolean("north_saved", true).apply()
+        publish()
+    }
+
     fun northText(magAz: Double): String = "Kryptis: vaizdo %s°, magnetometro (be pataisų) %.0f°; šiaurės poslinkis %.1f°, deklinacija %.1f°; stabili šiaurė %s (giroskopas, kompasas tik pradžioje)".format(
         java.util.Locale.US, headingDeg()?.let { "%.0f".format(java.util.Locale.US, it) } ?: "?", magAz, offsetDeg, declDeg, if (stableNorth) "taip" else "ne")
 
@@ -6212,6 +6219,8 @@ class MainActivity : AppCompatActivity() {
             CabinMap.load(this@MainActivity)
             val hd = if (::skyDome.isInitialized) skyDome.headingDeg() else null
             LiveRtk.heading = hd
+            // kryptis iš signalų stiprumo (prieš mokymąsi – kad dabartinis mėginys netaptų savo paties įrodymu)
+            try { SignalHeading.update(list, hd) { d -> if (::skyDome.isInitialized) runOnUiThread { skyDome.nudgeNorth(d) } } } catch (_: Exception) {}
             CabinMap.learnStatus(hd, list)
             cabinView?.let { it.heading = hd; it.sats = list; it.invalidate() }
             lastSats = list
@@ -6481,6 +6490,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbStableN, LinearLayout.LayoutParams(mw, ww))
+        SignalHeading.autoFix = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sig_heading_fix", true)
+        left.addView(CheckBox(this).apply {
+            text = "Šiaurės pataisa pagal signalų stiprumą (kabinos žemėlapis, tik kai patikima)"
+            isChecked = SignalHeading.autoFix
+            setOnCheckedChangeListener { _, on -> SignalHeading.autoFix = on
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sig_heading_fix", on).apply() }
+        }, LinearLayout.LayoutParams(mw, ww))
         val cbMarkers = CheckBox(this).apply {
             text = "Rodyti orientyrus"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("markers", true)
@@ -7552,6 +7568,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("Planšetės padėtis: pitch ${fx(devPitch, 0)}°, roll ${fx(devRoll, 0)}°, ekrano azimutas ${fx(devAzimuth, 0)}°, judėjimas ${fx(motionLevel, 2)} m/s²")
             devAxisZ?.let { appendLine("Žiūrėjimo pro ekraną kryptis: azimutas ${fx(it.first, 0)}°, ${fx(it.second, 0)}° nuo horizontalės") }
             appendLine(Orient.check.text(1.5))
+            appendLine(SignalHeading.text(if (::skyDome.isInitialized) skyDome.headingDeg() else null))
             appendLine()
         }
         if ("fiksas" in sections) { appendLine("=== FIKSAS ==="); appendLine(posText); appendLine() }

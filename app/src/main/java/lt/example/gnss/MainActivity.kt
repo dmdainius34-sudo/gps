@@ -4440,7 +4440,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val mixF = if (fi >= nF - 1) 0f else ((ph - fi * 0.6) / 0.6).toFloat().coerceIn(0f, 1f)
         val texA = lascoTexs[fi]; val texB = lascoTexs[(fi + 1).coerceAtMost(nF - 1)]
         if (lascoProg == 0) lascoProg = program(GLOW_VS, LASCO_VOL_FS)
-        val ro = (LASCO_OUT * rs).toFloat()
+        // „Realybėje“ – tikras koronografo laukas 2,3–5,8 R (tarpas iki Saulės – užtvaro sritis); vietiniame – suspausta 1,0–1,8 R
+        val inR = if (realScale) 2.3 else 1.0; val outR = if (realScale) 5.8 else LASCO_OUT
+        val ro = (outR * rs).toFloat()
         val gm = FloatArray(16); val sc = ro / EARTH_R
         gm[0] = sc; gm[5] = sc; gm[10] = sc; gm[12] = sp[0]; gm[13] = sp[1]; gm[14] = sp[2]; gm[15] = 1f
         val gmvp = FloatArray(16); Matrix.multiplyMM(gmvp, 0, mvpI, 0, gm, 0)
@@ -4453,7 +4455,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         u3("uCam", camPos); u3("uCenter", sp); u3("uD", d); u3("uU", u); u3("uR", r)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uRs"), rs)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uHalf"), Lasco.HALF_RSUN.toFloat())
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uOut"), LASCO_OUT.toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uOut"), outR.toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uIn"), inR.toFloat())
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texB)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(lascoProg, "uTex2"), 1)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texA)
@@ -4906,6 +4909,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform float uRs;
             uniform float uHalf;
             uniform float uOut;
+            uniform float uIn;
             varying vec3 vW;
             void main() {
                 vec3 rd = normalize(vW - uCam);
@@ -4928,12 +4932,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 for (int i = 0; i < N; i++) {
                     vec3 p = (uCam + rd * (t0 + (float(i) + 0.5) * dt) - uCenter) / uRs;
                     float rho = length(p);
-                    if (rho < 1.0 || rho > uOut) continue;
+                    if (rho < uIn || rho > uOut) continue;
                     vec2 q = vec2(dot(p, uR), dot(p, uU));
                     float ql = length(q);
                     if (ql < 1e-4) continue;
                     // atstumas nuo Saulės → koronografo laukas 2,3–5,8 R (suspausta į 1,0–uOut R)
-                    float src = 2.3 + (rho - 1.0) / (uOut - 1.0) * 3.5;
+                    float src = 2.3 + (rho - uIn) / (uOut - uIn) * 3.5;
                     vec2 uv = 0.5 + vec2(q.x, -q.y) / ql * src / (2.0 * uHalf);
                     // skaistis normalizuotas pagal kadro foną ir šviesiausius taškus (0 – fonas, 1 – ryškiausi srautai)
                     vec3 w3 = vec3(0.5, 0.4, 0.1);
@@ -4943,10 +4947,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     t = t * t;                                        // silpnas fonas dar blankesnis
                     float beta = asin(clamp(dot(p, uD) / rho, -1.0, 1.0));   // kampas nuo dangaus plokštumos
                     float w = exp(-(beta * beta) / 0.5);
-                    float m = smoothstep(1.0, 1.06, rho) * (1.0 - smoothstep(uOut - 0.1, uOut, rho));
+                    float fw = 0.06 * (uOut - uIn) / 0.8;
+                    float m = smoothstep(uIn, uIn + fw, rho) * (1.0 - smoothstep(uOut - 1.6 * fw, uOut, rho));
                     acc += vec3(t * w * m);
                 }
-                float v = 1.0 - exp(-acc.x * (dt / uRs) * 1.6);   // švelnus prisotinimas – ne vientisa geltona
+                float v = 1.0 - exp(-acc.x * (dt / uRs) * 1.6 * 0.8 / (uOut - uIn));   // švelnus prisotinimas – ne vientisa geltona
                 // spalva pagal ryškumą: silpni srautai – raudoni, ryškūs išmetimai – geltoni
                 vec3 col = mix(vec3(0.95, 0.18, 0.04), vec3(1.0, 0.82, 0.25), clamp(v * 1.6, 0.0, 1.0));
                 gl_FragColor = vec4(col * v * 0.85, 1.0);

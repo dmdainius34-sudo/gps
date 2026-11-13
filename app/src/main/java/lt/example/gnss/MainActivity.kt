@@ -1346,19 +1346,43 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         if (running) return
         running = true
         onResume()
-        fInit = false; lastGyroNs = 0L; gValid = false
-        rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-        gyroSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-        gravSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        // Jei giroskopas veikė ir fone (stabili šiaurė) – kryptis išlaikoma. Kitaip pradinė kryptis iš magnetometro,
+        // kuris kabinoje klysta dešimtimis laipsnių, todėl po kelių sekundžių ji pataisoma pagal signalų stiprumą.
+        val alive = fInit && lastGyroNs != 0L && android.os.SystemClock.elapsedRealtimeNanos() - lastGyroNs < 3_000_000_000L
+        if (!alive) {
+            fInit = false; lastGyroNs = 0L; gValid = false
+            handler.removeCallbacks(reanchor); handler.postDelayed(reanchor, 5_000L)
+        }
+        if (!listening) {
+            rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+            gyroSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+            gravSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+            listening = true
+        }
+    }
+
+    private var listening = false
+
+    /** Po pradinės krypties iš magnetometro: pataisa pagal patikimą kryptį iš signalų (jei ji šviežia). */
+    private val reanchor = Runnable {
+        val e = SignalHeading.last ?: return@Runnable
+        val h = headingDeg() ?: return@Runnable
+        if (System.currentTimeMillis() - e.ms > 10_000L || e.corr < 0.6 || e.margin < 0.15) return@Runnable
+        val d = SunCal.wrap(h - e.deg)
+        if (kotlin.math.abs(d) > 5.0) nudgeNorth(d)
     }
 
     fun stop() {
         running = false
         manual = false
         handler.removeCallbacks(resumeSensors)
-        sm.unregisterListener(this)
+        // stabili šiaurė: jutikliai lieka įjungti ir fone (įrašymo paslauga laiko procesą) – kryptis neprarandama
+        if (!stableNorth) { sm.unregisterListener(this); listening = false }
         onPause()
     }
+
+    /** Veiklos sunaikinimas – jutikliai išjungiami visiškai. */
+    fun release() { sm.unregisterListener(this); listening = false; handler.removeCallbacks(reanchor) }
 
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
@@ -6952,6 +6976,11 @@ class MainActivity : AppCompatActivity() {
         } else {
             permLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
         }
+    }
+
+    override fun onDestroy() {
+        if (::skyDome.isInitialized) skyDome.release()
+        super.onDestroy()
     }
 
     override fun onStop() {

@@ -5683,8 +5683,8 @@ class DraggablePanel(
     }
     private fun message(): String = msgInput.text.toString().trim().ifEmpty { questionInput.text.toString().trim() }
     private val pkReport = CheckBox(context).apply { text = "Pridėti ataskaitą (koordinatės suapvalintos – saugykla vieša)"; textSize = 12f; isChecked = true }
-    private val pkBtn = Button(context).apply { text = "Siųsti į „PagrindinisKodas“ (Claude Code pokalbį)"; textSize = 12f; isAllCaps = false }
-    fun setPkBusy(busy: Boolean) { pkBtn.isEnabled = !busy; pkBtn.text = if (busy) "Laukiama atsakymo iš „PagrindinisKodas“…" else "Siųsti į „PagrindinisKodas“ (Claude Code pokalbį)" }
+    private val pkBtn = Button(context).apply { text = "Pokalbis su „PagrindinisKodas“ (Claude Code)…"; textSize = 12f; isAllCaps = false }
+    fun setPkBusy(busy: Boolean) { pkBtn.isEnabled = !busy; pkBtn.text = if (busy) "Laukiama atsakymo iš „PagrindinisKodas“…" else "Pokalbis su „PagrindinisKodas“ (Claude Code)…" }
 
     fun setClaudeAnswer(text: String, busy: Boolean = false) {
         claudeAnswer.visibility = VISIBLE; claudeAnswer.text = text; claudeBtn.isEnabled = !busy
@@ -5814,7 +5814,6 @@ class DraggablePanel(
         bodyInner.addView(pkToken)
         pkBtn.setOnClickListener {
             val q = message()
-            if (q.isEmpty()) { setClaudeAnswer("Parašykite žinutę laukelyje viršuje ir spauskite dar kartą."); return@setOnClickListener }
             onSendPk?.invoke(q, pkReport.isChecked, pkToken.text.toString().trim())
         }
         bodyInner.addView(claudeBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -6562,6 +6561,63 @@ class MainActivity : AppCompatActivity() {
 
     private var afterSp3Pick: (() -> Unit)? = null
 
+    private var pkImageCb: ((Bitmap?) -> Unit)? = null
+    private val pkImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        val cb = pkImageCb; pkImageCb = null
+        val bmp = try { uri?.let { u -> contentResolver.openInputStream(u)?.use { android.graphics.BitmapFactory.decodeStream(it) } } } catch (_: Exception) { null }
+        cb?.invoke(bmp)
+    }
+    private var pkChatHost: View? = null
+    private var pkChatDialog: android.app.Dialog? = null
+
+    /** „PagrindinisKodas“ pokalbio langas ~10×10 cm: virš kitų programų (kai NLO prisegtas) arba programoje. */
+    private fun openPkChat(prefill: String) {
+        if (pkChatHost != null || pkChatDialog != null) return
+        val dm = resources.displayMetrics
+        val w = minOf((10 / 2.54 * dm.xdpi).toInt(), (dm.widthPixels * 0.94f).toInt())
+        val h = minOf((10 / 2.54 * dm.ydpi).toInt(), (dm.heightPixels * 0.8f).toInt())
+        lateinit var chat: PkChat
+        chat = PkChat(this,
+            token = { getSharedPreferences("claude", Context.MODE_PRIVATE).getString("gh_token", "") ?: "" },
+            report = { q -> try { buildClaudeReport(q) } catch (e: Exception) { "Ataskaitos klaida: ${e.message}" } },
+            pickImage = { cb -> pkImageCb = cb; try { pkImageLauncher.launch("image/*") } catch (_: Exception) { cb(null) } },
+            saveFile = { name, bytes -> savePkFile(name, bytes) },
+            openUrl = { u -> try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {} },
+            onClose = {
+                pkChatDialog?.dismiss(); pkChatDialog = null
+                pkChatHost?.let { try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {} }; pkChatHost = null
+            })
+        chat.prefill(prefill)
+        if (overlayHost != null && Settings.canDrawOverlays(this)) {
+            val lp = WindowManager.LayoutParams(w, h,
+                if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, android.graphics.PixelFormat.TRANSLUCENT)
+            lp.gravity = Gravity.CENTER
+            (getSystemService(WINDOW_SERVICE) as WindowManager).addView(chat, lp); pkChatHost = chat
+        } else {
+            val dlg = android.app.Dialog(this)
+            dlg.setContentView(chat, ViewGroup.LayoutParams(w, h))
+            dlg.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+            dlg.window?.setLayout(w, h)
+            dlg.setOnDismissListener { pkChatDialog = null; chat.close() }
+            dlg.show(); pkChatDialog = dlg
+        }
+    }
+
+    /** Failas iš „PagrindinisKodas“ -> Download/GNSS. */
+    private fun savePkFile(name: String, bytes: ByteArray): String {
+        if (Build.VERSION.SDK_INT >= 29) {
+            val cv = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/GNSS")
+            }
+            val u = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv) ?: throw IllegalStateException("nepavyko sukurti failo")
+            contentResolver.openOutputStream(u)?.use { it.write(bytes) }
+            return "Download/GNSS/$name"
+        }
+        val f = File(getExternalFilesDir(null), name); f.writeBytes(bytes); return f.absolutePath
+    }
+
     private val sp3PickLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
             if (Sp3Storage.savePick(this, uri)) Toast.makeText(this, "SP3 aplankas pasirinktas", Toast.LENGTH_SHORT).show()
@@ -7119,30 +7175,7 @@ class MainActivity : AppCompatActivity() {
         
         container.addView(panel, params)
         panel.onPin = { pinBubble() }
-        panel.onSendPk = { q, withReport, token ->
-            if (token.isBlank()) panel.setClaudeAnswer("Įveskite GitHub raktą (github.com → Settings → Developer settings → Fine-grained tokens; saugykla dmdainius34-sudo/gps; teisė Pull requests: Read and write).")
-            else {
-                panel.setPkBusy(true); panel.setClaudeAnswer("Siunčiama į „PagrindinisKodas“…")
-                val report = if (withReport) try { buildClaudeReport(q) } catch (e: Exception) { "Ataskaitos klaida: ${e.message}" } else null
-                Thread {
-                    try {
-                        val (id, at) = PkBridge.post(token, PkBridge.format(Build.MANUFACTURER + " " + Build.MODEL, q, report))
-                        runOnUiThread { panel.setClaudeAnswer("Išsiųsta į „PagrindinisKodas“ (PR #${PkBridge.PR}). Laukiama atsakymo – rodysiu čia (iki 30 min.)…") }
-                        val t0 = System.currentTimeMillis(); var got = false
-                        while (!got && System.currentTimeMillis() - t0 < 30 * 60_000L) {
-                            Thread.sleep(20_000L)
-                            val r = try { PkBridge.replies(token, id, at) } catch (_: Exception) { emptyList() }
-                            if (r.isNotEmpty()) { got = true
-                                val txt = r.joinToString("\n\n") { it.body.substringBefore("\n---\n_Generated by").trim() }
-                                try { File(filesDir, CLAUDE_LOG).appendText("=== " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()) +
-                                    " · PagrindinisKodas ===\nKlausimas: $q\n\n$txt\n\n") } catch (_: Exception) {}
-                                runOnUiThread { panel.setClaudeAnswer("„PagrindinisKodas“ atsakė:\n\n$txt"); panel.setPkBusy(false) } }
-                        }
-                        if (!got) runOnUiThread { panel.setClaudeAnswer("Per 30 min. atsakymo nėra – jis bus Claude programėlėje, pokalbyje „PagrindinisKodas“, ir GitHub PR #${PkBridge.PR}."); panel.setPkBusy(false) }
-                    } catch (e: Exception) { runOnUiThread { panel.setClaudeAnswer("Nepavyko: ${e.message}"); panel.setPkBusy(false) } }
-                }.start()
-            }
-        }
+        panel.onSendPk = { q, _, _ -> openPkChat(q) }
         panel.onAskClaude = { q, model, key ->
             panel.setClaudeAnswer("Siunčiama Claude (${model})… ataskaita su fiksu, palydovais, kalibravimais.", busy = true)
             val report = try { buildClaudeReport(q) } catch (e: Exception) { "Ataskaitos klaida: ${e.message}" }

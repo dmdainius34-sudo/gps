@@ -92,3 +92,11 @@ class TargetsTest {
         org.junit.Assert.assertTrue("el $el", el in 5.0..30.0)
     }
 }
+
+class PkBridgeTest {
+    @Test fun redactsCoordinates() {
+        val r = PkBridge.redact("Platuma: 54.7399967\nIlguma: 25.2545317\nAukštis: 221.20 m\nTikslumas 1.4")
+        org.junit.Assert.assertTrue(r, r.contains("54.7…") && r.contains("25.3…") && !r.contains("7399967"))
+        org.junit.Assert.assertTrue(r.contains("221.20"))
+    }
+}

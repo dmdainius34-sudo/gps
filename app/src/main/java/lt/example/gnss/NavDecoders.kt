@@ -265,7 +265,7 @@ object NavBits {
             synchronized(st) {
                 if (st.n == 0) st.firstMs = tMs
                 st.n++; st.bits += m.bits.length; st.lastMs = tMs
-                if (m.eph) st.eph++ else if (m.label.contains("almanach")) st.alm++
+                when { m.eph -> st.eph++; m.label.contains("almanach") -> st.alm++; else -> {} }
             }
         }
     }

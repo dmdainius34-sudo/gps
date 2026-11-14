@@ -20,22 +20,40 @@ def small(a):  # vidurkis blokais iki ref dydžio
     k = a.shape[1] // rw
     return a[:rh * k, :rw * k].reshape(rh, k, rw, k, 3).mean((1, 3))
 s = small(img)
-lum_s = np.log1p(s.mean(-1) * 1000); lum_r = ref.mean(-1)
+def blk(a, w):  # bloko vidurkis iki pločio w (Paukščių Takas – didelės struktūros, ne pavienės žvaigždės)
+    k = a.shape[1] // w; h = a.shape[0] // k
+    return a[:h * k, :w * k].reshape(h, k, w, k).mean((1, 3))
+def rank(a):
+    r = np.empty(a.size); r[np.argsort(a.ravel())] = np.arange(a.size); return r.reshape(a.shape)
+lum_s = s.mean(-1); lum_r = ref.mean(-1)
+W0 = 512
+cs = rank(blk(lum_s, W0)); cr = rank(blk(lum_r, W0))
 best = None
 for fv in (False, True):
     for fh in (False, True):
-        a = lum_s[::-1] if fv else lum_s
+        a = cs[::-1] if fv else cs
         a = a[:, ::-1] if fh else a
-        A = np.fft.rfft(a - a.mean(), axis=1); B = np.fft.rfft(lum_r - lum_r.mean(), axis=1)
-        cc = np.fft.irfft((A * np.conj(B)).sum(0), n=rw)
-        k = int(np.argmax(cc)); sh = (-k) % rw
-        b = np.roll(a, sh, axis=1)
-        r = float(np.corrcoef(b.ravel(), lum_r.ravel())[0, 1])
-        print('flipV', fv, 'flipH', fh, 'shift', sh, 'corr', round(r, 3))
-        if best is None or r > best[0]: best = (r, fv, fh, sh)
+        for sh0 in range(W0):
+            b = np.roll(a, sh0, axis=1)
+            r = float(np.corrcoef(b.ravel(), cr.ravel())[0, 1])
+            if best is None or r > best[0]: best = (r, fv, fh, sh0)
+        print('flipV', fv, 'flipH', fh, 'geriausias iki šiol', best)
+r0, fv, fh, sh0 = best
+# patikslinimas 4k raiška (blokai 1024) aplink rastą poslinkį
+k0 = rw // W0
+a = lum_s[::-1] if fv else lum_s
+a = a[:, ::-1] if fh else a
+fa = rank(blk(a, 1024)); fr = rank(blk(lum_r, 1024))
+bb = None
+for d in range(-2 * (1024 // W0), 2 * (1024 // W0) + 1):
+    sh1 = (sh0 * (1024 // W0) + d) % 1024
+    r = float(np.corrcoef(np.roll(fa, sh1, axis=1).ravel(), fr.ravel())[0, 1])
+    if bb is None or r > bb[0]: bb = (r, sh1)
+sh = (bb[1] * (rw // 1024)) % rw
+best = (bb[0], fv, fh, sh)
 r, fv, fh, sh = best
 print('GERIAUSIA', best)
-if r < 0.5: print('per maža koreliacija – 8k nekuriamas'); sys.exit(0)
+if r < 0.6: print('per maža koreliacija – 8k nekuriamas'); sys.exit(0)
 if fv: img = img[::-1]
 if fh: img = img[:, ::-1]
 k = img.shape[1] // rw

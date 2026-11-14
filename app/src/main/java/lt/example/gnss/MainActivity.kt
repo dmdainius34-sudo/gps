@@ -1938,12 +1938,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     override fun onDrawFrame(gl: GL10?) {
         measureFps()
-        // Fonas – ta pati C/N0 spalva kaip ekrano fone ir burbule (švelniai pereinama)
-        val bgTarget = ColorUtils.blendARGB(BG_NEUTRAL, lastTint, 0.45f)
-        bgNow = ColorUtils.blendARGB(bgNow, bgTarget, 0.05f)
-        // atitolinus iki galaktikos žvaigždžių fonas užgęsta – po juo turi likti juoda erdvė, ne šviesus pagrindas
-        val clr = ColorUtils.blendARGB(bgNow, Color.BLACK, 1f - bgFade())
-        GLES20.glClearColor(Color.red(clr) / 255f, Color.green(clr) / 255f, Color.blue(clr) / 255f, 1f)
+        // Visada kosmoso juoduma (AMOLED/HDR – tikras juodas, be atspalvio), net kai žvaigždžių fonas užgęsta
+        GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
         val t = (System.nanoTime() - t0) / 1e9f
 
@@ -2023,10 +2019,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Signalo kokybė -> pulsavimo stiprumas
         val used = sats.filter { it.used }
         val avgCn0 = if (used.isNotEmpty()) used.map { it.cn0 }.average().toFloat() else 0f
-        val peakCn0 = top4Avg(sats) ?: 0f
         val beat = ((avgCn0 - 15f) / 25f).coerceIn(0.2f, 1f)
-        val tint = signalTint(if (used.isNotEmpty()) avgCn0 else null, if (used.isNotEmpty()) peakCn0 else null)
-        lastTint = tint
 
         // Žvaigždžių fonas – didelė sfera pusiaujo (RA/Dec) sistemoje, sukasi kartu su žvaigždėmis
         drawCmb()
@@ -3295,8 +3288,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile private var obsLon = 25.25
     fun setLocation(lat: Double, lon: Double) { obsLat = lat; obsLon = lon }
 
-    private var lastTint = 0xFF3B82F6.toInt()
-    private var bgNow = BG_NEUTRAL
 
     @Volatile var zoom = 3f
     /** Priartinimas pagal aukštį virš paviršiaus: arčiausiai ~0,05 vnt. (≈ 1 300 km) – Kreta ~2 cm ekrane. */
@@ -6201,13 +6192,6 @@ const val ULTRA_DB = 40f
 fun top4Avg(list: List<Sat>): Float? {
     val v = list.filter { it.used }.map { it.cn0 }.sortedDescending().take(4)
     return if (v.isEmpty()) null else v.average().toFloat()
-}
-
-fun signalTint(avg: Float?, peak: Float?): Int = when {
-    avg == null -> 0xFF3B82F6.toInt()
-    avg < 20f -> 0xFF1F2937.toInt()
-    (peak ?: 0f) >= ULTRA_DB -> 0xFFFACC15.toInt()
-    else -> signalColor(avg)
 }
 
 fun signalColor(db: Float): Int = when {

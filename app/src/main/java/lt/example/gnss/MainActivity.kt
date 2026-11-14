@@ -2133,8 +2133,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             drawSatModel(p, col, glow, usedK, sat.const)
             if (nb != null && sat.cn0 > 10f) {
                 val (lt, asp) = wideLabel(nb.label)
+                // silpnas signalas – užrašas blankesnis ir mirksi (kuo silpnesnis, tuo gilesnis mirksėjimas); stiprus – ramus
+                val q = ((sat.cn0 - 20f) / 22f).coerceIn(0f, 1f)
+                val blink = if (q >= 0.6f) 1f else (1f - (0.6f - q) * 1.4f * (0.5f + 0.5f * sin(t * 6f + sat.svid)).toFloat()).coerceIn(0.15f, 1f)
                 billboard(floatArrayOf(p[0], p[1], p[2] - 0.07f), eyeI, 0.022f * asp, 0.022f, lt,
-                    if (nb.eph) 0.6f else 0.8f, if (nb.eph) 1f else 0.8f, if (nb.eph) 0.7f else 0.8f, if (nb.eph) 0.95f else 0.6f)
+                    if (nb.eph) 0.6f else 0.8f, if (nb.eph) 1f else 0.8f, if (nb.eph) 0.7f else 0.8f, (if (nb.eph) 0.95f else 0.6f) * (0.4f + 0.6f * q) * blink)
             }
             if (sat.cn0 >= 30f) {
                 val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }

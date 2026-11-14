@@ -58,7 +58,7 @@ object Readiness {
     fun shortAcc(now: Long = System.currentTimeMillis()): String? {
         if (now - lastFixMs > 5_000 || lastAcc.isNaN()) return null
         val r = realAcc().let { if (it.isNaN()) lastAcc else maxOf(it, lastAcc) }
-        return "lustas %.1f m (%.0f m)".format(Locale.US, lastAcc, r)
+        return "%.1f m (%.0f m)".format(Locale.US, lastAcc, r)
     }
 
     class State(val ready: Boolean, val text: String)

@@ -6356,7 +6356,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fsBtn: TextView
     private lateinit var satCountView: TextView
     private var scaleBtnView: TextView? = null
-    private lateinit var orientView: TextView
     private var readyView: TextView? = null
     private var cabinView: CabinMapView? = null
     private var readyLast: Boolean? = null
@@ -6427,8 +6426,7 @@ class MainActivity : AppCompatActivity() {
             lp.setMargins(lft, top, rgt, bot); v.layoutParams = lp
         }
         if (::satCountView.isInitialized) margins(satCountView, l, t, 0, 0)
-        if (::orientView.isInitialized) margins(orientView, l, 0, 0, b)
-        readyView?.let { margins(it, 0, (78 * resources.displayMetrics.density).toInt() + t, 0, 0) }
+        readyView?.let { margins(it, 0, 0, 0, m + b) }
         margins(fsBtn, m, m + t, m + r, m)
         margins(scaleBtnView, m, fsBtn.layoutParams.height + 2 * m + t, m + r, m)
     }
@@ -6593,8 +6591,6 @@ class MainActivity : AppCompatActivity() {
             if (::satCountView.isInitialized) satCountView.text = SatCount.count(list.map { SatCount.Sig(it.const, it.svid, it.used) })
                 .let { "Palydovų ${it.satVisible} (naud. ${it.satUsed})\nSignalų ${it.sigVisible}" } +
                     (LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.let { "\nRTK %s ±%.2f m (fazė %d)%s".format(java.util.Locale.US, if (LiveRtk.fix) "FIX" else "FLOAT", it.hacc, it.sats, if (MockLoc.active) " → kitoms programoms" else "") } ?: "")
-            if (::orientView.isInitialized && orientView.visibility == View.VISIBLE && !(obsLatNow == 0.0 && obsLonNow == 0.0))
-                orientView.text = SpaceOrientation.shortText(SpaceOrientation.compute(obsLatNow, obsLonNow, System.currentTimeMillis()))
             val used = list.filter { it.used }
             val avg = if (used.isNotEmpty()) used.map { it.cn0.toDouble() }.average() else 0.0
             val max = list.maxOfOrNull { it.cn0 } ?: 0f
@@ -6920,7 +6916,6 @@ class MainActivity : AppCompatActivity() {
             setOnCheckedChangeListener { _, on ->
                 getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("orient", on).apply()
                 if (::skyDome.isInitialized) skyDome.setOrient(on)
-                if (::orientView.isInitialized) orientView.visibility = if (on) View.VISIBLE else View.GONE
             }
         }
         left.addView(cbOrient, LinearLayout.LayoutParams(mw, ww))
@@ -7073,19 +7068,10 @@ class MainActivity : AppCompatActivity() {
             textSize = 13f; text = "● Šyla"
             val pd = (10 * resources.displayMetrics.density).toInt(); setPadding(pd, pd / 2, pd, pd / 2)
         }
-        // po palydovų skaičiaus eilutėmis (kad jų neuždengtų)
-        skyHolder.addView(readyView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
-            topMargin = (78 * resources.displayMetrics.density).toInt()
+        skyHolder.addView(readyView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            bottomMargin = (10 * resources.displayMetrics.density).toInt()
         })
         readyLast = null; updateReady()
-        orientView = TextView(this).apply {
-            textSize = 12f
-            setTextColor(0xFFE8FFF0.toInt())
-            setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())
-            val pd = (8 * resources.displayMetrics.density).toInt(); setPadding(pd, pd, pd, pd)
-            visibility = if (getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("orient", true)) View.VISIBLE else View.GONE
-        }
-        skyHolder.addView(orientView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START))
         val fsSize = (44 * resources.displayMetrics.density).toInt()
         fsBtn = TextView(this).apply {
             text = "\u26F6"

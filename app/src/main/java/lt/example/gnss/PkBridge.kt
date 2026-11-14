@@ -1,0 +1,102 @@
+package lt.example.gnss
+
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.Locale
+
+/**
+ * Tiltas į Claude Code pokalbį „PagrindinisKodas“: programos klausimas (ir ataskaita) įrašomas kaip komentaras
+ * GitHub pull request #2 (dmdainius34-sudo/gps); Claude Code sesija stebi šį PR ir atsako komentaru.
+ * Raktas (GitHub fine-grained token su teise komentuoti) – tik prietaise.
+ */
+object PkBridge {
+    const val OWNER = "dmdainius34-sudo"; const val REPO = "gps"; const val PR = 2
+    const val MARK = "<!-- gnss-app -->"
+    private const val API = "https://api.github.com/repos/$OWNER/$REPO/issues/$PR/comments"
+    const val MAX_REPORT = 55_000
+
+    /** Tikslios koordinatės (≥ 4 skaitmenys po kablelio, 40–70 / 10–40) suapvalinamos iki 0,1° – saugykla vieša. */
+    fun redact(text: String): String = Regex("""(?<![\d.])(\d{2})\.(\d{4,})""").replace(text) { m ->
+        val v = m.value.toDoubleOrNull() ?: return@replace m.value
+        if (v in 10.0..70.0) "%.1f".format(Locale.US, v) + "…" else m.value
+    }
+
+    private fun conn(url: String, token: String, method: String) = (URL(url).openConnection() as HttpURLConnection).apply {
+        requestMethod = method; connectTimeout = 20_000; readTimeout = 30_000
+        setRequestProperty("Accept", "application/vnd.github+json")
+        setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+        setRequestProperty("User-Agent", "GnssApp")
+        if (token.isNotBlank()) setRequestProperty("Authorization", "Bearer ${token.trim()}")
+    }
+
+    /** Įrašo komentarą; grąžina (komentaro id, sukūrimo laikas ISO) arba meta išimtį su suprantamu tekstu. */
+    fun post(token: String, body: String): Pair<Long, String> {
+        val c = conn(API, token, "POST"); c.doOutput = true
+        c.setRequestProperty("Content-Type", "application/json")
+        c.outputStream.use { it.write(JSONObject().put("body", body).toString().toByteArray()) }
+        val code = c.responseCode
+        if (code != 201) {
+            val err = try { c.errorStream?.bufferedReader()?.readText() ?: "" } catch (_: Exception) { "" }
+            throw IllegalStateException(when (code) {
+                401 -> "GitHub raktas neteisingas arba pasibaigęs (401)"
+                403, 404 -> "GitHub raktas neturi teisės komentuoti $OWNER/$REPO ($code)"
+                else -> "GitHub klaida $code: ${err.take(200)}"
+            })
+        }
+        val o = JSONObject(c.inputStream.bufferedReader().readText())
+        return o.getLong("id") to o.getString("created_at")
+    }
+
+    class Reply(val id: Long, val user: String, val at: String, val body: String)
+
+    /** Atsakymai po nurodyto komentaro (ne iš programos). */
+    fun replies(token: String, afterId: Long, sinceIso: String): List<Reply> {
+        val c = conn("$API?since=$sinceIso&per_page=100", token, "GET")
+        if (c.responseCode != 200) return emptyList()
+        val a = JSONArray(c.inputStream.bufferedReader().readText())
+        return (0 until a.length()).map { a.getJSONObject(it) }
+            .filter { it.getLong("id") > afterId && !it.getString("body").contains(MARK) }
+            .map { Reply(it.getLong("id"), it.getJSONObject("user").getString("login"), it.getString("created_at"), it.getString("body")) }
+    }
+
+    const val IMG_MARK = "<!-- gnss-img:"
+
+    /** Visa pokalbio istorija (paskutiniai 100 komentarų). */
+    fun all(token: String): List<Reply> {
+        val c = conn("$API?per_page=100", token, "GET")
+        if (c.responseCode != 200) throw IllegalStateException("GitHub ${c.responseCode}")
+        val a = JSONArray(c.inputStream.bufferedReader().readText())
+        return (0 until a.length()).map { a.getJSONObject(it) }
+            .map { Reply(it.getLong("id"), it.getJSONObject("user").getString("login"), it.getString("created_at"), it.getString("body")) }
+    }
+
+    /** Failo (pvz. raw.githubusercontent.com) atsisiuntimas su raktu. */
+    fun download(url: String, token: String): ByteArray {
+        val c = (URL(url).openConnection() as HttpURLConnection).apply { connectTimeout = 20_000; readTimeout = 120_000
+            setRequestProperty("User-Agent", "GnssApp"); if (token.isNotBlank() && url.contains("github")) setRequestProperty("Authorization", "Bearer ${token.trim()}") }
+        if (c.responseCode != 200) throw IllegalStateException("HTTP ${c.responseCode}")
+        return c.inputStream.use { it.readBytes() }
+    }
+
+    /** Nuotrauka komentare: JPEG base64 paslėptame HTML komentare (GitHub jo nerodo, programa ir Claude Code – perskaito). */
+    fun imageBlock(jpegB64: String) = "\n$IMG_MARK$jpegB64 -->\n"
+    fun imageOf(body: String): String? = body.substringAfter(IMG_MARK, "").substringBefore(" -->", "").takeIf { it.length > 100 }
+    fun textOf(body: String): String = body.replace(MARK, "").replace(Regex("""<!-- gnss-img:[A-Za-z0-9+/=\s]+ -->"""), "")
+        .substringBefore("\n---\n_Generated by").replace(Regex("""<details>[\s\S]*?</details>"""), "(ataskaita pridėta)").trim()
+
+    fun format(model: String, question: String, report: String?): String = buildString {
+        append(MARK).append('\n')
+        append("**Iš GNSS programos** (").append(model).append(", ")
+            .append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(java.util.Date())).append(")\n\n")
+        append("**Klausimas:** ").append(question).append('\n')
+        if (report != null) {
+            val r = redact(report)
+            val cut = r.length > MAX_REPORT
+            append("\n<details><summary>Programos ataskaita (koordinatės suapvalintos")
+                .append(if (cut) "; sutrumpinta iki ${MAX_REPORT / 1000} tūkst. ženklų iš ${r.length / 1000} tūkst." else "").append(")</summary>\n\n```\n")
+            append(if (cut) r.take(MAX_REPORT) else r).append("\n```\n</details>\n")
+        }
+    }
+}

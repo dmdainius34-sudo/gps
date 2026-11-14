@@ -19,8 +19,119 @@ jobs:
         with:
           gradle-version: 8.9
 
+      - name: Unit tests (PositionSolver)
+        run: gradle testDebugUnitTest --no-daemon
+
+      - name: NASA 8k žvaigždžių fono talpykla
+        uses: actions/cache@v4
+        with:
+          path: starmap8k
+          key: starmap8k-${{ hashFiles('tools/stars8k.py') }}
+
+      - name: NASA 8k žvaigždžių fonas (EXR -> JPG, išlygintas pagal 4k)
+        continue-on-error: true
+        run: |
+          mkdir -p starmap8k
+          if [ ! -s starmap8k/stars_bg_8k.jpg ]; then
+            U=https://svs.gsfc.nasa.gov/vis/a000000/a004800/a004851/starmap_2020_8k.exr
+            curl -sSL -m 900 -o starmap8k/s.exr -w "HTTP %{http_code} %{size_download}\n" "$U"
+            pip install -q OpenEXR numpy pillow
+            python3 tools/stars8k.py starmap8k/s.exr app/src/main/assets/stars_bg.jpg starmap8k/stars_bg_8k.jpg 2>&1 | tee stars8k_log.txt
+            rm -f starmap8k/s.exr
+          fi
+          if [ -s starmap8k/stars_bg_8k.jpg ]; then cp starmap8k/stars_bg_8k.jpg app/src/main/assets/; ls -la app/src/main/assets/stars_bg_8k.jpg; fi
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
+
+      - name: AIUB SP3 check (informacija, nenukrenta)
+        continue-on-error: true
+        run: |
+          curl -sS -L -m 60 -o listing.html -w "HTTP %{http_code} galutinis URL %{url_effective}\n" https://www.aiub.unibe.ch/download/CODE/ || true
+          echo "--- sąrašo pradžia (60 eil.) ---"; head -60 listing.html; echo "--- SP3 nuorodos ---"
+          grep -oE 'href="[^"]*(SP3|sp3)[^"]*"' listing.html | head -40
+          grep -oE 'href="[^"]*/"' listing.html | head -40
+          echo "--- S3 sąrašas su prefiksu ---"
+          curl -sS -L -m 60 -o s3.xml -w "HTTP %{http_code}\n" "https://zhw-b.s3.cloud.switch.ch/aiub/?prefix=CODE/COD0OPSULT&max-keys=1000" || true
+          head -c 3000 s3.xml; echo
+          echo "--- tiesioginiai failai ---"
+          for f in COD0OPSULT.SP3 COD0OPSULT.SP3.gz; do curl -sS -L -I -m 60 "https://www.aiub.unibe.ch/download/CODE/$f" | grep -iE "^HTTP|content-length|location" | tr -d '\r'; echo "== $f"; done
+          L="$(cat listing.html) $(cat s3.xml)"
+          N=$(echo "$L" | grep -oE 'COD0OPSULT\.SP3(\.gz)?' | grep -v '\.gz$' | head -1)
+          [ -n "$N" ] || N=$(echo "$L" | grep -oE 'COD0OPSULT_[0-9]{11}_[0-9]{2}[A-Z]_[0-9]{2}[A-Z]_ORB\.SP3(\.gz)?' | sort -u | tail -1)
+          echo "AIUB failas: ${N:-nerastas}"
+          if [ -n "$N" ]; then
+            curl -sS -L -m 120 -o sp3.bin "https://www.aiub.unibe.ch/download/CODE/$N"
+            if [ "$(head -c2 sp3.bin | od -An -tx1 | tr -d ' ')" = "1f8b" ]; then zcat sp3.bin > sp3.txt; else cp sp3.bin sp3.txt; fi
+            echo "Antraštė: $(head -1 sp3.txt)"
+            echo "Pirma epocha: $(grep -m1 '^\* ' sp3.txt)"
+            echo "Paskutinė epocha: $(grep '^\* ' sp3.txt | tail -1)"
+          fi
+
+      - name: AIUB BeiDou (C) produktų patikra (informacija, nenukrenta)
+        continue-on-error: true
+        run: |
+          B="https://zhw-b.s3.cloud.switch.ch/aiub"
+          sats() { grep -E '^\+ ' "$1" | head -12 | cut -c10-60 | tr -d '\n' | grep -oE '[A-Z][0-9]{2}' | cut -c1 | sort | uniq -c | tr '\n' ' '; }
+          [ -f sp3.txt ] && echo "COD0OPSULT sistemos: $(sats sp3.txt)"
+          echo "--- aiub/ katalogai ---"
+          curl -sS -m 60 "$B/?delimiter=/&prefix=" | grep -oE '<Prefix>[^<]*</Prefix>' | head -40
+          curl -sS -m 60 "$B/?delimiter=/&prefix=CODE_MGEX/" | grep -oE '<Prefix>[^<]*</Prefix>' | head -40
+          Y=$(date -u +%Y)
+          for P in "CODE_MGEX/CODE/$Y/" "CODE/$Y/" "CODE/"; do
+            curl -sS -m 60 "$B/?prefix=$P&max-keys=1000" -o l.xml
+            while grep -q '<IsTruncated>true' l.xml && [ "$(grep -o '<Key>' l.xml | wc -l)" -lt 20000 ]; do
+              K=$(grep -oE '<Key>[^<]*</Key>' l.xml | tail -1 | sed 's/<[^>]*>//g')
+              curl -sS -m 60 "$B/?prefix=$P&max-keys=1000&marker=$K" -o l2.xml; cat l2.xml >> l.xml
+              grep -q '<IsTruncated>true' l2.xml || break; cp l2.xml l.xml.tail; done
+            F=$(grep -oE '<Key>[^<]*(MGX|MGEX)[^<]*ORB\.SP3(\.gz)?</Key>' l.xml | sed 's/<[^>]*>//g' | sort | tail -3)
+            echo "== $P: MGEX SP3 (paskutiniai): ${F:-nėra}"
+            [ -n "$F" ] && break
+          done
+          L=$(echo "$F" | tail -1)
+          if [ -n "$L" ]; then
+            curl -sS -m 180 -o m.bin "$B/$L"
+            if [ "$(head -c2 m.bin | od -An -tx1 | tr -d ' ')" = "1f8b" ]; then zcat m.bin > m.txt; else cp m.bin m.txt; fi
+            echo "MGEX failas: $L"; echo "Antraštė: $(head -1 m.txt)"
+            echo "Sistemos: $(sats m.txt)"
+            echo "Pirma epocha: $(grep -m1 '^\* ' m.txt)"; echo "Paskutinė epocha: $(grep '^\* ' m.txt | tail -1)"
+            echo "Šiandien: $(date -u '+%Y %m %d %H:%M')"
+          fi
+
+      - name: BKG BRDC patikra (informacija, nenukrenta)
+        continue-on-error: true
+        run: |
+          Y=$(date -u +%Y); D=$(date -u +%j)
+          U="https://igs.bkg.bund.de/root_ftp/IGS/BRDC/$Y/$D/"
+          curl -sS -L -m 60 -o l.html -w "HTTP %{http_code} %{url_effective}\n" "$U" || true
+          N=$(grep -oE 'BRDC00[A-Z]{3}_[A-Z]_[0-9]{11}_01D_MN\.rnx(\.gz)?' l.html | sort -u | tail -1)
+          echo "BRDC: ${N:-nerastas}"; grep -oE 'BRDC[^"<]*' l.html | sort -u | head
+          if [ -n "$N" ]; then
+            curl -sS -L -m 120 -o b.bin "$U$N"; if [ "$(head -c2 b.bin | od -An -tx1 | tr -d ' ')" = "1f8b" ]; then zcat b.bin > b.rnx; else cp b.bin b.rnx; fi
+            head -3 b.rnx; grep -c . b.rnx
+            echo "Įrašai pagal sistemą:"; grep -E '^(> EPH )?[GERCJ][0-9]{2} ' b.rnx | sed 's/^> EPH //' | cut -c1 | sort | uniq -c
+            grep -E '^> EPH' b.rnx | awk '{print $3,$4}' | cut -c1 | sort | uniq -c | head
+            grep -E '^> EPH' b.rnx | awk '{print $4}' | sort | uniq -c
+            echo "Paskutiniai C įrašai:"; grep -E '^C[0-9]{2} ' b.rnx | tail -3
+          fi
+
+      - name: SOHO LASCO ir NASA žvaigždžių fono patikra (informacija, nenukrenta)
+        continue-on-error: true
+        run: |
+          D=$(date -u +%Y%m%d); Y=$(date -u +%Y)
+          U="https://soho.nascom.nasa.gov/data/REPROCESSING/Completed/$Y/c2/$D/"
+          curl -sS -L -m 60 -o c2.html -w "HTTP %{http_code} %{url_effective}\n" "$U" || true
+          grep -oE '[0-9]{8}_[0-9]{4}_c2_(512|1024)\.jpg' c2.html | sort -u | tail -4
+          curl -sS -I -m 30 https://soho.nascom.nasa.gov/data/realtime/c2/1024/latest.jpg | grep -iE "^HTTP|last-modified|content-length" || true
+          curl -sS -L -m 60 -o svs.html -w "HTTP %{http_code} %{url_effective}\n" "https://svs.gsfc.nasa.gov/4851" || true
+          for f in $(grep -oE '/vis/a000000/a004800/a004851/[^"]*\.(jpg|tif|png)' svs.html | sort -u | grep -iE 'starmap|milkyway|hiptyc' ); do
+            L=$(curl -sSI -m 20 "https://svs.gsfc.nasa.gov$f" | grep -i content-length | tr -d '\r' | awk '{print $2}')
+            echo "$f $((${L:-0}/1048576)) MB"
+          done
+
+      - name: 8k fono santrauka
+        if: always()
+        run: cat stars8k_log.txt 2>/dev/null | tail -15; ls -la app/src/main/assets/ | grep stars || true
 
       - uses: actions/upload-artifact@v4
         with:

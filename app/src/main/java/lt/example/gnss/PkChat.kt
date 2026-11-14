@@ -42,6 +42,9 @@ class PkChat(ctx: Context, private val token: () -> String, private val report: 
     private var lastIds = ""
     private val imgCache = HashMap<String, Bitmap?>()
     private var alive = true
+    private val lamp = View(ctx).apply { background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.GRAY) } }
+
+    private fun setLamp(c: Int) { (lamp.background as GradientDrawable).setColor(c) }
 
     private fun dp(v: Int) = (v * d).toInt()
 
@@ -51,6 +54,7 @@ class PkChat(ctx: Context, private val token: () -> String, private val report: 
         elevation = 10 * d
         setPadding(dp(8), dp(8), dp(8), dp(8))
         val head = LinearLayout(ctx).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(lamp, LayoutParams(dp(12), dp(12)).apply { setMargins(0, 0, dp(6), 0) })
         head.addView(TextView(ctx).apply { text = "PagrindinisKodas · Claude Code"; textSize = 15f; setTextColor(Color.BLACK) },
             LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
         head.addView(Button(ctx).apply { text = "↻"; minWidth = 0; minimumWidth = 0; setOnClickListener { refresh() } }, LayoutParams(dp(44), dp(44)))
@@ -104,20 +108,20 @@ class PkChat(ctx: Context, private val token: () -> String, private val report: 
                 var body = PkBridge.format(android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL, q.ifEmpty { "(nuotrauka)" }, rep)
                 if (img != null) body += PkBridge.imageBlock(img)
                 PkBridge.post(t, body)
-                ui.post { input.setText(""); photo = null; photoView.visibility = GONE; status.text = "Išsiųsta. Atsakymas atsiras čia (tikrinama kas 15 s)."; refresh() }
-            } catch (e: Exception) { ui.post { status.text = "Nepavyko: ${e.message}" } }
+                ui.post { input.setText(""); photo = null; photoView.visibility = GONE; setLamp(0xFF22C55E.toInt()); status.text = "Išsiųsta. Atsakymas atsiras čia (tikrinama kas 15 s)."; refresh() }
+            } catch (e: Exception) { ui.post { setLamp(0xFFEF4444.toInt()); status.text = "Nepavyko: ${e.message}" } }
         }.start()
     }
 
     fun refresh(silent: Boolean = false) {
-        val t = token(); if (t.isBlank()) { status.text = "Įveskite GitHub raktą NLO lange."; return }
-        if (!silent) status.text = "Atnaujinama…"
+        val t = token(); if (t.isBlank()) { setLamp(Color.GRAY); status.text = "Įveskite GitHub raktą NLO lange."; return }
+        if (!silent) { status.text = "Atnaujinama…"; setLamp(0xFFEAB308.toInt()) }
         Thread {
             try {
                 val all = PkBridge.all(t).takeLast(40)
                 val ids = all.joinToString(",") { it.id.toString() }
-                ui.post { if (ids != lastIds) { lastIds = ids; render(all) }; if (!silent || status.text == "Atnaujinama…") status.text = "" }
-            } catch (e: Exception) { ui.post { status.text = "Nepavyko gauti pokalbio: ${e.message}" } }
+                ui.post { setLamp(0xFF22C55E.toInt()); if (ids != lastIds) { lastIds = ids; render(all) }; if (!silent || status.text == "Atnaujinama…") status.text = "" }
+            } catch (e: Exception) { ui.post { setLamp(0xFFEF4444.toInt()); status.text = "Nepavyko gauti pokalbio: ${e.message}" } }
         }.start()
     }
 
@@ -133,13 +137,13 @@ class PkChat(ctx: Context, private val token: () -> String, private val report: 
             box.addView(TextView(context).apply { textSize = 10f; setTextColor(Color.GRAY)
                 text = (if (mine) "Jūs (programa)" else "PagrindinisKodas") + " · " + m.at.replace('T', ' ').take(16) })
             box.addView(TextView(context).apply { textSize = 13f; setTextColor(Color.BLACK); setTextIsSelectable(true)
-                text = PkBridge.textOf(m.body).replace(Regex("""!\\[[^\\]]*\\]\\([^)]*\\)"""), "").replace(Regex("""\\[([^\\]]+)\\]\\((https?://[^)]+)\\)"""), "$1") })
+                text = PkBridge.textOf(m.body).replace(Regex("""!\[[^\]]*\]\([^)]*\)"""), "").replace(Regex("""\[([^\]]+)\]\((https?://[^)]+)\)"""), "$1") })
             // jūsų nuotrauka – maža, be atsisiuntimo
             PkBridge.imageOf(m.body)?.let { b64 -> try { val bytes = Base64.decode(b64, Base64.DEFAULT)
                 box.addView(ImageView(context).apply { adjustViewBounds = true; setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.size)) }, LayoutParams(dp(120), dp(120))) } catch (_: Exception) {} }
             // mano paveikslėliai – maži, failai – atsisiuntimo mygtukai
-            Regex("""!\\[[^\\]]*\\]\\((https?://[^)\\s]+)\\)""").findAll(m.body).forEach { addRemoteImage(box, it.groupValues[1]) }
-            Regex("""(?<!!)\\[([^\\]]+)\\]\\((https?://[^)\\s]+)\\)""").findAll(m.body).forEach { mm ->
+            Regex("""!\[[^\]]*\]\((https?://[^)\s]+)\)""").findAll(m.body).forEach { addRemoteImage(box, it.groupValues[1]) }
+            Regex("""(?<!!)\[([^\]]+)\]\((https?://[^)\s]+)\)""").findAll(m.body).forEach { mm ->
                 val name = mm.groupValues[1]; val url = mm.groupValues[2]
                 box.addView(Button(context).apply { text = "⬇ $name"; textSize = 12f; isAllCaps = false
                     setOnClickListener {

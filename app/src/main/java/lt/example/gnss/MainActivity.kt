@@ -6523,21 +6523,17 @@ class MainActivity : AppCompatActivity() {
         }
         left.addView(btnSaveN, LinearLayout.LayoutParams(mw, ww))
         val btnSun = Button(this).apply {
-            text = "Kalibruoti pagal Saulę (nukreipkite planšetę į Saulę)"
-            setOnClickListener { showAimDialog("sun") }
+            text = "Kalibruoti pagal orientyrą: Saulė, Mėnulis, Šiaurinė žvaigždė, Orionas…"
+            setOnClickListener { showTargetChooser() }
         }
         left.addView(btnSun, LinearLayout.LayoutParams(mw, ww))
-        left.addView(Button(this).apply { text = "Kalibravimų žurnalas (Saulė, Mėnulis, žvaigždės)…"; setOnClickListener { showSunLogDialog() } }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(Button(this).apply { text = "Kalibravimų žurnalas (peržiūra, trynimas, šiaurės atkūrimas)…"; setOnClickListener { showSunLogDialog() } }, LinearLayout.LayoutParams(mw, ww))
         SunCal.autoFix = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_log_fix", true)
         left.addView(CheckBox(this).apply {
             text = "Šiaurės pataisa pagal Saulės žurnalą ir magnetometrą (kai nuokrypis > 5° ir 2 min. stabilus)"
             isChecked = SunCal.autoFix
             setOnCheckedChangeListener { _, on -> SunCal.autoFix = on
                 getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_log_fix", on).apply() }
-        }, LinearLayout.LayoutParams(mw, ww))
-        left.addView(Button(this).apply {
-            text = "Kalibruoti pagal kitą orientyrą (Mėnulis, Šiaurinė žvaigždė, Orionas)…"
-            setOnClickListener { showTargetChooser() }
         }, LinearLayout.LayoutParams(mw, ww))
         val btnNtrip = Button(this).apply { text = "NTRIP pataisos (RTCM)…"; setOnClickListener { showNtripDialog() } }
         left.addView(btnNtrip, LinearLayout.LayoutParams(mw, ww))

@@ -2311,7 +2311,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val pxPerUnit = lastH / (2f * kotlin.math.tan(Math.toRadians(20.0)).toFloat())
         GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uK"), pxPerUnit * 0.02f * GAL_S)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uMax"), 4f * density)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uA"), a)
+        // toliau – ryškiau (galaktika mažėja, šviesa susikaupia), iki ×3
+        val gain = 1f + 2f * sstep(4000f, GALAXY_ZOOM, zoom)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uA"), a * gain)
         resetAttribs()
         val lp = GLES20.glGetAttribLocation(galProg, "aPos"); val lc = GLES20.glGetAttribLocation(galProg, "aCol")
         GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lc)
@@ -4870,7 +4872,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             void main() {
                 gl_Position = uMVP * vec4(aPos + uO, 1.0);
                 gl_PointSize = clamp(uK / max(gl_Position.w, 0.001), 1.0, uMax);
-                vCol = vec4(aCol.rgb, aCol.a * uA);
+                vCol = vec4(aCol.rgb, min(aCol.a * uA, 1.0));
             }
         """
         private const val GAL_FS = """

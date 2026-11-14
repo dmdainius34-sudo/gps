@@ -58,6 +58,14 @@ object Readiness {
 
     @Synchronized fun state(rtkOn: Boolean, rtkSig: Double?, now: Long = System.currentTimeMillis()): State {
         if (now - lastFixMs > 5_000) return State(false, "Šyla: laukiama fikso")
+        val st = stateCore(rtkOn, rtkSig, now)
+        if (st.text.contains("realiai")) return st
+        // realus tikslumas rodomas visada (lusto skaičius – skliaustuose)
+        val r = realAcc().let { if (it.isNaN()) lastAcc else maxOf(it, lastAcc) }
+        return if (r.isNaN()) st else State(st.ready, st.text + " · realiai ~%.0f m (lustas %.1f m)".format(Locale.US, r, lastAcc))
+    }
+
+    private fun stateCore(rtkOn: Boolean, rtkSig: Double?, now: Long): State {
         val sinceCold = now - coldStartMs
         if (coldStartMs > 0 && sinceCold < 300_000)
             return State(false, "Šyla po šalto starto: dar %d:%02d".format(Locale.US, (300_000 - sinceCold) / 60_000, (300_000 - sinceCold) / 1000 % 60))
@@ -72,7 +80,7 @@ object Readiness {
         val real = hist.map { it.real }.sorted().let { it[it.size / 2] }
         if (real > 5.0) return State(false, "Silpni ar vienpusiai signalai (patalpa?): realiai ~%.0f m (lustas rodo %.1f m)".format(Locale.US, real, accMed))
         // GPS paruoštas; RTK būsena – atskirai (jis suartėja vėliau ir pasiruošimo nestabdo)
-        return State(true, "Paruošta matavimui: palydovų ~${used.last()}, tikslumas %.1f m".format(Locale.US, maxOf(accMed, real)) +
+        return State(true, "Paruošta matavimui" +
             (if (!rtkOn) "" else if (rtkSig == null) "; RTK laukiama" else if (rtkSig < 0.5) "; RTK ±%.2f m".format(Locale.US, rtkSig)
              else "; RTK dar suartėja ±%.2f m".format(Locale.US, rtkSig)))
     }

@@ -7535,7 +7535,7 @@ class MainActivity : AppCompatActivity() {
         val aim = AimView(this)
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 16, 24, 0)
             addView(aim, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)); addView(tv) }
-        val dlg = android.app.AlertDialog.Builder(this).setTitle("Taikiklis: ${t.name}").setView(android.widget.ScrollView(this).apply { addView(box) })
+        val dlg = android.app.AlertDialog.Builder(this).setTitle("Kalibravimas: ${t.name}").setView(android.widget.ScrollView(this).apply { addView(box) })
             .setPositiveButton("Kalibruoti", null).setNegativeButton("Atšaukti", null).create()
         skyDome.sensorsOn()
         AimDiag.start(t.name)
@@ -7555,7 +7555,7 @@ class MainActivity : AppCompatActivity() {
                 lastTry = now
                 if (calibrateWith(key)) { dlg.dismiss(); return }
             }
-            tv.text ="${t.name}: %s, aukštis %.1f° virš horizonto\nPlanšetės nugarėlė: %.1f°\n%s\n\nTaikinys: geltonas taškas – ${t.name.substringBefore(" (")}, kryželis – kur rodo planšetės nugarėlė. Aukštyn–žemyn rodoma tiksliai. Į šonus – pagal dabartinį kompasą, kurį kalibravimas ištaisys, todėl į šonus taikykite akimis į tikrą orientyrą. Ekranas į save, nugarėlė į orientyrą.".format(Locale.US,
+            tv.text ="${t.name}: %s, aukštis %.1f° virš horizonto\nPlanšetės nugarėlė: %.1f°\n%s\n\nLaikykite planšetę ekranu į save, nugarėlę – į ${t.name.substringBefore(" (")}. Aukštį tikrina jutikliai; šonus nustatykite akimis į tikrą orientyrą. Kai aukštis sutampa, išlaikykite 2 s – kalibracija išsisaugos automatiškai.".format(Locale.US,
                 if (el < SunCal.MIN_EL) "po horizontu" else "azimutas %.0f° (%s)".format(Locale.US, az, compass(az)), el, dev.second,
                 when { el < SunCal.MIN_EL -> "Orientyras po horizontu – kalibruoti negalima"
                     dev.second < -75.0 -> "Prietaisas guli ekranu į viršų – nugarėlė į žemę. Pakelkite jį stačiai, ekranu į save"
@@ -7566,10 +7566,10 @@ class MainActivity : AppCompatActivity() {
                     dEl > 0 -> "↑ Pakelkite nugarėlę %.1f°".format(Locale.US, dEl)
                     else -> "↓ Nuleiskite nugarėlę %.1f°".format(Locale.US, -dEl) })
             tv.setTextColor(if (ok) 0xFF16A34A.toInt() else 0xFF111827.toInt())
-            aim.dAz = SunCal.wrap(dev.first - az); aim.dEl = dev.second - el; aim.ok = ok
+            aim.ok = ok
             aim.label = if (ok) "✓ aukštis sutampa" else "aukštyn/žemyn %+.1f°".format(Locale.US, -dEl)
             if (!skyDome.aimReady()) aim.label = "laukiama jutiklių…"
-            try { AimDiag.frame(System.currentTimeMillis(), skyDome.aimDiag(), dev.first, dev.second, az, el, aim.dAz, aim.dEl, aim.crossPx, aim.centerPx) } catch (_: Exception) {}
+            try { AimDiag.frame(System.currentTimeMillis(), skyDome.aimDiag(), dev.first, dev.second, az, el, SunCal.wrap(dev.first - az), -dEl, FloatArray(2), FloatArray(2)) } catch (_: Exception) {}
             aim.invalidate()
             ch.postFrameCallback(this)                                    // kas ekrano kadrą (~60 k/s)
         } }

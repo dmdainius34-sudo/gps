@@ -2005,6 +2005,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             // tikra kameros vieta su poslinkiu dviem pirštais (kitaip korona ir šešėliai „atsikabina“ nuo kūno)
             val invP = FloatArray(16); val vmF = FloatArray(16); val vmInv = FloatArray(16)
             if (Matrix.invertM(invP, 0, proj, 0)) { Matrix.multiplyMM(vmF, 0, invP, 0, mvpI, 0)
+                vmF[3] = 0f; vmF[7] = 0f; vmF[11] = 0f; vmF[15] = 1f
                 if (Matrix.invertM(vmInv, 0, vmF, 0)) camPos = floatArrayOf(vmInv[12], vmInv[13], vmInv[14]) }
         } else {
             eyeI = floatArrayOf(mvU[2], mvU[6], mvU[10])
@@ -2159,11 +2160,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         pFar[10] = -(f + n) / (f - n); pFar[14] = -2f * f * n / (f - n)
         val k = 50f / EARTH_R                                     // Žemės rutulio tinklelis (0,25) -> 50
         java.util.Arrays.fill(cmbModel, 0f)
-        cmbModel[0] = k; cmbModel[5] = k; cmbModel[10] = k
-        // Sfera kameros centre – be paralakso (kamera sideralinėje erdvėje = vm⁻¹ · (0, 0, 0, 1))
-        val vmInv = FloatArray(16)
-        val cam = if (Matrix.invertM(vmInv, 0, vm, 0)) floatArrayOf(vmInv[12], vmInv[13], vmInv[14]) else floatArrayOf(fP[0], fP[1], fP[2])
-        cmbModel[12] = cam[0]; cmbModel[13] = cam[1]; cmbModel[14] = cam[2]; cmbModel[15] = 1f
+        cmbModel[0] = k; cmbModel[5] = k; cmbModel[10] = k; cmbModel[15] = 1f
+        // Sfera kameros centre – be paralakso: tik vaizdo sukimas. Poslinkio ir w eilutės iš inv(proj)·mvpI netiksli
+        // (atitolinus dešimtis tūkst. vnt. kameros vieta „šokinėja“ už sferos ir matosi išvalymo spalva – mirga fonas).
+        vm[3] = 0f; vm[7] = 0f; vm[11] = 0f; vm[12] = 0f; vm[13] = 0f; vm[14] = 0f; vm[15] = 1f
         val tmp = FloatArray(16)
         Matrix.multiplyMM(tmp, 0, vm, 0, cmbModel, 0)
         Matrix.multiplyMM(cmbMvp, 0, pFar, 0, tmp, 0)

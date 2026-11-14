@@ -1330,12 +1330,23 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private fun showSatInfo(s: Sat) {
         val (title, rows) = try { renderer.satInfo(s) } catch (e: Exception) { (s.const + " " + s.svid) to listOf("Klaida" to (e.message ?: e.javaClass.simpleName)) }
         val dp = resources.displayMetrics.density
-        val table = android.widget.TableLayout(context).apply { setPadding((20 * dp).toInt(), (8 * dp).toInt(), (20 * dp).toInt(), 0); isStretchAllColumns = false; setColumnShrinkable(1, true) }
-        for ((k, v) in rows) {
-            val tr = android.widget.TableRow(context)
-            tr.addView(android.widget.TextView(context).apply { text = k; setTypeface(typeface, android.graphics.Typeface.BOLD); setPadding(0, (4 * dp).toInt(), (12 * dp).toInt(), (4 * dp).toInt()); setTextIsSelectable(true) })
-            tr.addView(android.widget.TextView(context).apply { text = v; setPadding(0, (4 * dp).toInt(), 0, (4 * dp).toInt()); setTextIsSelectable(true) })
-            table.addView(tr)
+        // siaurame ekrane (telefone) – pavadinimas virš reikšmės, kad ilgi tekstai nesiskaidytų po žodį; plačiame – dviem stulpeliais
+        val narrow = resources.configuration.screenWidthDp < 600
+        val table: android.view.ViewGroup = if (narrow) android.widget.LinearLayout(context).apply {
+            orientation = android.widget.LinearLayout.VERTICAL; setPadding((16 * dp).toInt(), (4 * dp).toInt(), (16 * dp).toInt(), 0)
+            for ((k, v) in rows) {
+                addView(android.widget.TextView(context).apply { text = k; textSize = 12f; setTextColor(0xFF6B7280.toInt())
+                    setTypeface(typeface, android.graphics.Typeface.BOLD); setPadding(0, (6 * dp).toInt(), 0, 0); setTextIsSelectable(true) })
+                addView(android.widget.TextView(context).apply { text = v; textSize = 14f; setTextIsSelectable(true) })
+            }
+        } else android.widget.TableLayout(context).apply {
+            setPadding((20 * dp).toInt(), (8 * dp).toInt(), (20 * dp).toInt(), 0); isStretchAllColumns = false; setColumnShrinkable(1, true)
+            for ((k, v) in rows) {
+                val tr = android.widget.TableRow(context)
+                tr.addView(android.widget.TextView(context).apply { text = k; setTypeface(typeface, android.graphics.Typeface.BOLD); setPadding(0, (4 * dp).toInt(), (12 * dp).toInt(), (4 * dp).toInt()); setTextIsSelectable(true) })
+                tr.addView(android.widget.TextView(context).apply { text = v; setPadding(0, (4 * dp).toInt(), 0, (4 * dp).toInt()); setTextIsSelectable(true) })
+                addView(tr)
+            }
         }
         android.app.AlertDialog.Builder(context).setTitle(title)
             .setView(android.widget.ScrollView(context).apply { addView(table) })

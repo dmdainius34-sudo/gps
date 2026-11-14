@@ -1215,6 +1215,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         var d = heading - az
         while (d > 180) d -= 360.0
         while (d <= -180) d += 360.0
+        headingEvent("kalibravimas pagal „%s“ %+.1f°".format(java.util.Locale.US, src, -d))
         offsetDeg += d.toFloat()
         HeadingTrust.set(true, "kalibruota pagal orientyrą")
         calPrefs.edit().putFloat("offset", offsetDeg).putFloat("decl0", declDeg).putBoolean("north_saved", true)
@@ -1230,7 +1231,13 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     /** Šiaurės pataisa d° (vaizdo kryptis − tikra kryptis), kaip kalibruojant pagal Saulę. */
     fun declinationDeg(): Double = declDeg.toDouble()
 
-    fun nudgeNorth(d: Double) {
+    /** Krypties pakeitimai į gap_log.txt – kad ataskaitoje matytųsi, kas ir kada pasuko vaizdą. */
+    fun headingEvent(what: String) {
+        try { GapLog.event(context, "KRYPTIS " + what + " (vaizdo kryptis " + (headingDeg()?.let { "%.0f°".format(java.util.Locale.US, it) } ?: "?") + ")") } catch (_: Exception) {}
+    }
+
+    fun nudgeNorth(d: Double, src: String = "pataisa") {
+        headingEvent("%s %+.1f°".format(java.util.Locale.US, src, -d))
         offsetDeg += d.toFloat()
         calPrefs.edit().putFloat("offset", offsetDeg).putBoolean("north_saved", true).apply()
         publish()
@@ -1337,6 +1344,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     }
 
     fun saveNorth() {
+        headingEvent("šiaurė įrašyta ranka %+.1f°".format(java.util.Locale.US, -Math.toDegrees(renderer.northDeltaRad())))
         offsetDeg += Math.toDegrees(renderer.northDeltaRad()).toFloat()
         // Įrašytas kampas ir deklinacija lieka – magnetometras jų nebeatnaujina
         calPrefs.edit().putFloat("offset", offsetDeg).putFloat("decl0", declDeg).putBoolean("north_saved", true).apply()
@@ -1346,6 +1354,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     }
 
     fun resetNorth() {
+        headingEvent("šiaurė atstatyta (mygtukas)")
         offsetDeg = 0f
         calPrefs.edit().putFloat("offset", 0f).remove("decl0").remove("north_saved").apply()
         fInit = false          // pradinė kryptis bus vėl paimta iš rotation vector
@@ -1386,8 +1395,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             if (++reanchorTries < 24) handler.postDelayed(this, 5_000L)
             return
         }
+        if (!SignalHeading.mapClean) return
         val d = SunCal.wrap(h - e.deg)
-        if (kotlin.math.abs(d) > 5.0) nudgeNorth(d)
+        if (kotlin.math.abs(d) > 5.0) nudgeNorth(d, "po paleidimo pagal signalus")
         HeadingTrust.set(true, "pataisyta pagal signalų kryptį")
     } }
 
@@ -1424,6 +1434,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             for (i in 0..8) fR[i] = rv[i].toDouble()
             fInit = true
             HeadingTrust.set(false, "kryptis iš magnetometro (paleidus)")
+            headingEvent("pradinė kryptis iš magnetometro (giroskopo būsena neišliko)")
             publish()
             return
         }
@@ -6281,7 +6292,7 @@ class MainActivity : AppCompatActivity() {
             // kryptis iš magnetometro + Saulės kalibravimų žurnalo (nuokrypio stebėjimas ir taisymas)
             try { northFromLogTick() } catch (_: Exception) {}
             // kryptis iš signalų stiprumo (prieš mokymąsi – kad dabartinis mėginys netaptų savo paties įrodymu)
-            try { SignalHeading.update(list, hd) { d -> if (::skyDome.isInitialized) runOnUiThread { skyDome.nudgeNorth(d) } } } catch (_: Exception) {}
+            try { SignalHeading.update(list, hd) { d -> if (::skyDome.isInitialized) runOnUiThread { skyDome.nudgeNorth(d, "automatinė pagal signalus") } } } catch (_: Exception) {}
             CabinMap.learnStatus(if (HeadingTrust.trusted) hd else null, list)
             cabinView?.let { it.heading = hd; it.sats = list; it.invalidate() }
             lastSats = list
@@ -6544,6 +6555,7 @@ class MainActivity : AppCompatActivity() {
         }
         left.addView(cbStableN, LinearLayout.LayoutParams(mw, ww))
         SignalHeading.autoFix = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sig_heading_fix", true)
+        SignalHeading.mapClean = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("cabin_clean_v2", false)
         left.addView(CheckBox(this).apply {
             text = "Šiaurės pataisa pagal signalų stiprumą (kabinos žemėlapis, tik kai patikima)"
             isChecked = SignalHeading.autoFix
@@ -6652,7 +6664,7 @@ class MainActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(mw, ww))
         left.addView(Button(this).apply {
             text = "Išvalyti kabinos žemėlapį"
-            setOnClickListener { CabinMap.clear(); cv.invalidate(); Toast.makeText(this@MainActivity, "Žemėlapis išvalytas", Toast.LENGTH_SHORT).show() }
+            setOnClickListener { CabinMap.clear(); markCabinClean(); cv.invalidate(); Toast.makeText(this@MainActivity, "Žemėlapis išvalytas", Toast.LENGTH_SHORT).show() }
         }, LinearLayout.LayoutParams(mw, ww))
         val cbFollow = CheckBox(this).apply {
             text = "Sukti visatą su planšete"
@@ -6702,7 +6714,7 @@ class MainActivity : AppCompatActivity() {
         skyDome = SkyDomeGL(this)
         skyDome.onNorthReset = {
             // „Atstatyti šiaurę“ – iškart grąžinama Saulės kalibravimo kryptis (magnetometras + žurnalas), jei jis yra netoliese
-            skyDome.postDelayed({ headingVsLog(allowWarn = true)?.let { h -> skyDome.nudgeNorth(h.first)
+            skyDome.postDelayed({ headingVsLog(allowWarn = true)?.let { h -> skyDome.nudgeNorth(h.first, "atkūrimas iš žurnalo po atstatymo")
                 Toast.makeText(this, "Šiaurė atkurta iš Saulės žurnalo (%+.1f°)".format(Locale.US, h.first), Toast.LENGTH_LONG).show() } }, 1500L)
         }
         skyHolder = FrameLayout(this).apply { visibility = View.GONE }
@@ -7311,10 +7323,15 @@ class MainActivity : AppCompatActivity() {
         if (kotlin.math.abs(r.corr) > 15.0 && CabinMap.cabin.samples > 0)
             android.app.AlertDialog.Builder(this).setTitle("Išvalyti kabinos žemėlapį?")
                 .setMessage("Prieš kalibravimą kryptis buvo klaidinga %+.0f°. Kabinos žemėlapis (kryptys planšetės atžvilgiu) galėjo būti mokytas su klaidinga kryptimi – tada kryptis iš signalų stiprumo klaidina. Išvalius jis išmoks iš naujo su teisinga kryptimi.".format(Locale.US, r.corr))
-                .setPositiveButton("Išvalyti") { _, _ -> CabinMap.cabin.clear(); CabinMap.save(true); cabinView?.invalidate()
+                .setPositiveButton("Išvalyti") { _, _ -> CabinMap.cabin.clear(); CabinMap.save(true); markCabinClean(); cabinView?.invalidate()
                     Toast.makeText(this, "Kabinos žemėlapis išvalytas", Toast.LENGTH_SHORT).show() }
                 .setNegativeButton("Palikti", null).show()
         return true
+    }
+
+    private fun markCabinClean() {
+        SignalHeading.mapClean = true
+        getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("cabin_clean_v2", true).apply()
     }
 
     private var magStableAt: Pair<Long, Boolean> = 0L to false
@@ -7333,7 +7350,7 @@ class MainActivity : AppCompatActivity() {
         if (e.magDistorted || isCharging()) return
         if (now() - magStableAt.first > 30_000L) magStableAt = now() to SunCal.magStable(this, obsLatNow, obsLonNow)
         if (!magStableAt.second) return
-        SunCal.watch(System.currentTimeMillis(), d) { fix -> runOnUiThread { if (::skyDome.isInitialized) skyDome.nudgeNorth(fix) } }
+        SunCal.watch(System.currentTimeMillis(), d) { fix -> runOnUiThread { if (::skyDome.isInitialized) skyDome.nudgeNorth(fix, "automatinė pagal žurnalą+magnetometrą") } }
     }
 
     /** Žurnalo langas: įrašai (✓ geras / ⚠ abejotinas), pažymėtų trynimas, šiaurės atkūrimas. */
@@ -7366,7 +7383,7 @@ class MainActivity : AppCompatActivity() {
         b.setNeutralButton("Atkurti šiaurę") { _, _ ->
             val h = headingVsLog(allowWarn = true)
             if (h == null) Toast.makeText(this, "Atkurti negalima: arti nėra gero kalibravimo įrašo arba planšetė guli (laikykite stačiau)", Toast.LENGTH_LONG).show()
-            else { skyDome.nudgeNorth(h.first)
+            else { skyDome.nudgeNorth(h.first, "atkūrimas iš žurnalo (mygtukas)")
                 Toast.makeText(this, "Šiaurė atkurta iš žurnalo: pataisa %+.1f°".format(Locale.US, h.first), Toast.LENGTH_LONG).show() }
         }
         b.setNegativeButton("Uždaryti", null)

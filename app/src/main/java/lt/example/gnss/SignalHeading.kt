@@ -19,6 +19,8 @@ object SignalHeading {
         private set
     private val hist = ArrayDeque<Pair<Est, Double>>()          // (įvertis, vaizdo kryptis)
     @Volatile var autoFix = true
+    /** Kabinos žemėlapis išvalytas po krypties patikimumo įvedimo (mokytas tik patikima kryptimi) – tik tada pataisos pagal signalus leidžiamos. */
+    @Volatile var mapClean = false
     @Volatile var lastFixMs = 0L
         private set
     @Volatile var lastFixDeg = 0.0
@@ -68,7 +70,7 @@ object SignalHeading {
         hist.addLast(e to viewHeading)
         while (hist.isNotEmpty() && e.ms - hist.first().first.ms > 120_000L) hist.removeFirst()
         val good = hist.filter { it.first.corr >= 0.6 && it.first.margin >= 0.15 }
-        if (!autoFix || good.size < 60 || e.ms - lastFixMs < 300_000L) return
+        if (!autoFix || !mapClean || good.size < 60 || e.ms - lastFixMs < 300_000L) return
         // skirtumas „vaizdo kryptis − signalų kryptis“: vidurkis ir sklaida
         val d = good.map { Math.toRadians(wrap(it.second - it.first.deg)) }
         val sx = d.sumOf { sin(it) }; val cx = d.sumOf { cos(it) }
@@ -90,7 +92,7 @@ object SignalHeading {
             (viewHeading?.let { "; vaizdo kryptis %.0f°, skirtumas %+.0f°".format(Locale.US, it, wrap(it - e.deg)) } ?: "") +
             (if (lastFixMs > 0) "; paskutinė automatinė šiaurės pataisa %+.1f° %s".format(Locale.US, -lastFixDeg,
                 java.text.SimpleDateFormat("HH:mm", Locale.US).format(java.util.Date(lastFixMs))) else "") +
-            "; automatinis taisymas ${if (autoFix) "įjungtas" else "išjungtas"}"
+            "; automatinis taisymas ${if (!autoFix) "išjungtas" else if (!mapClean) "SUSTABDYTAS – kabinos žemėlapis mokytas ir su klaidinga kryptimi, išvalykite jį" else "įjungtas"}"
     }
 }
 

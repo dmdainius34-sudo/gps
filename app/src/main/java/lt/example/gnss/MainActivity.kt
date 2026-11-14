@@ -5632,6 +5632,40 @@ class DraggablePanel(
     private val dragSlop = 10f * resources.displayMetrics.density
     private val cancelBtn = smallButton("\u2715", 44)     // ✕ (ir atšaukti, ir sumažinti)
 
+    // ---- Claude programoje: klausimas iš „?“ laukelio + ataskaita -> atsakymas čia pat ----
+    /** (klausimas, modelis, API raktas) – kviečiama veiklos (ataskaitą surenka ji). */
+    var onAskClaude: ((String, String, String) -> Unit)? = null
+    private val claudePrefs = context.getSharedPreferences("claude", Context.MODE_PRIVATE)
+    private val claudeKey = EditText(context).apply {
+        hint = "Anthropic API raktas (sk-ant-…), saugomas tik šiame prietaise"
+        textSize = 12f; setSingleLine()
+        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        setText(claudePrefs.getString("api_key", "") ?: "")
+        addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) { claudePrefs.edit().putString("api_key", s?.toString()?.trim() ?: "").apply() }
+        })
+    }
+    private val claudeModel = android.widget.Spinner(context).apply {
+        adapter = android.widget.ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, ClaudeAsk.MODELS.map { it[1] })
+        setSelection(ClaudeAsk.MODELS.indexOfFirst { it[0] == claudePrefs.getString("model", ClaudeAsk.MODELS[0][0]) }.coerceAtLeast(0))
+        onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) { claudePrefs.edit().putString("model", ClaudeAsk.MODELS[pos][0]).apply() }
+            override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
+        }
+    }
+    private val claudeBtn = Button(context).apply { text = "Klausti Claude (klausimas – laukelyje „?“ apačioje)"; textSize = 12f; isAllCaps = false }
+    private val claudeAnswer = TextView(context).apply {
+        textSize = 13f; setTextColor(Color.BLACK); setTextIsSelectable(true)
+        setPadding((4 * resources.displayMetrics.density).toInt(), (4 * resources.displayMetrics.density).toInt(), 0, (8 * resources.displayMetrics.density).toInt())
+        visibility = GONE
+    }
+    fun setClaudeAnswer(text: String, busy: Boolean = false) {
+        claudeAnswer.visibility = VISIBLE; claudeAnswer.text = text; claudeBtn.isEnabled = !busy
+        claudeBtn.text = if (busy) "Claude galvoja…" else "Klausti Claude (klausimas – laukelyje „?“ apačioje)"
+    }
+
     /** „Baigti įrašą“ / „Tęsti įrašą“ – kviečiama veiklos. */
     var onEndRecord: (() -> Unit)? = null
     private val endRecBtn = Button(context).apply {
@@ -5749,6 +5783,15 @@ class DraggablePanel(
         panel.addView(recRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         panel.addView(inputRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         panel.addView(sp3Status, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        bodyInner.addView(claudeBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        bodyInner.addView(claudeAnswer)
+        bodyInner.addView(claudeModel)
+        bodyInner.addView(claudeKey)
+        claudeBtn.setOnClickListener {
+            val q = questionInput.text.toString().trim()
+            if (q.isEmpty()) { setClaudeAnswer("Parašykite klausimą laukelyje „?“ apačioje ir spauskite dar kartą."); return@setOnClickListener }
+            onAskClaude?.invoke(q, ClaudeAsk.MODELS[claudeModel.selectedItemPosition.coerceAtLeast(0)][0], claudeKey.text.toString().trim())
+        }
         bodyInner.addView(optionsLayout)
         bodyInner.addView(rawRow)
         bodyInner.addView(alphaLabel)
@@ -6167,6 +6210,7 @@ class GradientBackground(context: Context) : View(context) {
 // ============================================================
 
 private const val REPORT_FILE = "ataskaita.txt"
+private const val CLAUDE_LOG = "claude_atsakymai.txt"
 
 class MainActivity : AppCompatActivity() {
     private lateinit var lm: LocationManager
@@ -6967,6 +7011,9 @@ class MainActivity : AppCompatActivity() {
                     navCsvUri()?.let { uris.add(it) }
                     rtcmCsvUri()?.let { uris.add(it) }
                     gapLogUri()?.let { uris.add(it) }
+                    try { val cl = File(filesDir, CLAUDE_LOG)
+                        if (cl.exists()) { val cf = File(cacheDir, CLAUDE_LOG); cl.copyTo(cf, true)
+                            uris.add(FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", cf)) } } catch (_: Exception) {}
                     try { val af = AimDiag.file(this@MainActivity)
                         if (af.exists()) { val cf = File(cacheDir, AimDiag.FILE); af.copyTo(cf, true)
                             uris.add(FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", cf)) } } catch (_: Exception) {}
@@ -7038,6 +7085,16 @@ class MainActivity : AppCompatActivity() {
         
         container.addView(panel, params)
         panel.onPin = { pinBubble() }
+        panel.onAskClaude = { q, model, key ->
+            panel.setClaudeAnswer("Siunčiama Claude (${model})… ataskaita su fiksu, palydovais, kalibravimais.", busy = true)
+            val report = try { buildClaudeReport(q) } catch (e: Exception) { "Ataskaitos klaida: ${e.message}" }
+            Thread {
+                val ans = ClaudeAsk.ask(key, model, q, report)
+                try { File(filesDir, CLAUDE_LOG).appendText("=== " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()) +
+                    " · $model ===\nKlausimas: $q\n\n$ans\n\n") } catch (_: Exception) {}
+                runOnUiThread { panel.setClaudeAnswer(ans) }
+            }.start()
+        }
         panel.onEndRecord = { toggleRecording() }
         panel.onColdStart = { askColdStart() }
         panel.onPickSp3 = { launchSp3Picker() }
@@ -7926,6 +7983,18 @@ class MainActivity : AppCompatActivity() {
             null
         }
     }
+
+    /** Claude ataskaita: tos pačios dalys kaip ZIP ataskaitoje (be CSV) + krypties ir kalibravimų būsena. */
+    private fun buildClaudeReport(q: String): String =
+        buildReport(setOf("irenginys", "fiksas", "geoidas", "baro", "palydovai", "klaidos"), q) +
+            "\n=== ĮRAŠYMO PERTRAUKOS IR KRYPTIES ĮVYKIAI ===\n" + GapLog.report(this) +
+            (try { GapLog.file(this).readLines().filter { "KRYPTIS" in it }.takeLast(30).joinToString("\n") } catch (_: Exception) { "" }) + "\n" +
+            sunReport() +
+            (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" + skyDome.northText(devAzimuth) + "\n" else "") +
+            (AimDiag.lastSummary(this).takeIf { it.isNotEmpty() }?.let { it + "\n" } ?: "") +
+            "Kalibravimų žurnalas (paskutiniai 10):\n" + (try { SunCal.file(this).readLines().takeLast(11).joinToString("\n") } catch (_: Exception) { "nėra" }) + "\n" +
+            SunFrame.text() + "\n" + CabinMap.text() + "\n" + KnownHeight.text() + "\n" +
+            NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n"
 
     private fun buildReport(sections: Set<String>, question: String): String = buildString {
         appendLine("GNSS App ataskaita")

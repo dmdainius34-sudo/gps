@@ -2274,11 +2274,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     @Volatile var showMarkers = true
-    /** Orientyrai: Polaris užrašas (galaktikos centro kryptį rodo pats 3D galaktikos modelis). */
-    private fun drawMarkers(pos: Map<String, FloatArray>) {
-        if (polarisTex == 0) polarisTex = makeTextureW("Polaris", 0xFFFFF3C0.toInt(), 64, 4)
-        pos["Polaris"]?.let { p -> billboard(floatArrayOf(p[0], p[1], p[2] + 0.1f), eyeI, 0.32f, 0.08f, polarisTex, 1f, 1f, 1f, 0.9f) }
-    }
 
     /** Kiekvieną kadrą: Saulė turi gulėti ant ekliptikos, Mėnulis – ±5° (5,3° su paklaida). */
     private fun checkEcliptic() {
@@ -2474,28 +2469,19 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val axis = ArrayList<Float>()
         seg(DoubleArray(3) { c[it] - ax[it] * r * 1.5 }, DoubleArray(3) { c[it] + ax[it] * starR * 0.92 }, axis)
         drawLines(axis.toFloatArray(), 1f, 0.92f, 0.45f, 0.85f)
-        // 2) Stebėtojo žvilgsnis į Polaris – lygiagretus ašiai, brūkšninis
         val pin = pinWorld()
         val obs = DoubleArray(3) { c[it] + (pin[it] - c[it]) / 1.35 }
+        // 2) Pratęsimas iki fono Polaris (punktyras, blankus): fonas – sfera R = 50 aplink kamerą, todėl žvaigždė fone yra kamera + 50 · kryptis
         val pol = starCatalog.first { it.name == "Polaris" }.dir
         val pd = doubleArrayOf(pol[0].toDouble(), pol[1].toDouble(), pol[2].toDouble())
-        val dash = ArrayList<Float>()
-        val n = 40; val len = starR * 0.9
-        for (i in 0 until n step 2) seg(DoubleArray(3) { obs[it] + pd[it] * len * i / n }, DoubleArray(3) { obs[it] + pd[it] * len * (i + 1) / n }, dash)
-        drawLines(dash.toFloatArray(), 1f, 0.97f, 0.75f, 0.7f)
-        // 2b) Pratęsimas iki fono Polaris: fonas – sfera R = 50 aplink kamerą, todėl žvaigždė fone yra kamera + 50 · kryptis.
-        // Ašis ir žvilgsnis lygiagretūs, todėl abu susikerta toje pačioje fono žvaigždėje (begalybėje).
         val fade = 1f - galFade()
         if (fade > 0.01f) {
             val bg = DoubleArray(3) { camPos[it] + pd[it] * 50.0 }
+            val a0 = DoubleArray(3) { c[it] + ax[it] * starR * 0.92 }
             val ext = ArrayList<Float>()
-            seg(DoubleArray(3) { c[it] + ax[it] * starR * 0.92 }, bg, ext)
-            drawLines(ext.toFloatArray(), 1f, 0.92f, 0.45f, 0.45f * fade)
-            val dash2 = ArrayList<Float>()
-            val o2 = DoubleArray(3) { obs[it] + pd[it] * len }
-            val m2 = 120
-            for (i in 0 until m2 step 2) seg(DoubleArray(3) { o2[it] + (bg[it] - o2[it]) * i / m2 }, DoubleArray(3) { o2[it] + (bg[it] - o2[it]) * (i + 1) / m2 }, dash2)
-            drawLines(dash2.toFloatArray(), 1f, 0.97f, 0.75f, 0.4f * fade)
+            val m2 = 160
+            for (i in 0 until m2 step 2) seg(DoubleArray(3) { a0[it] + (bg[it] - a0[it]) * i / m2 }, DoubleArray(3) { a0[it] + (bg[it] - a0[it]) * (i + 1) / m2 }, ext)
+            drawLines(ext.toFloatArray(), 1f, 0.92f, 0.45f, 0.25f * fade)
         }
         // 3) Stebėtojo horizontas – plokštuma per stebėtoją, statmena vietiniam zenitui (žiedas ir kryžius Š–P, R–V)
         val up = DoubleArray(3) { obs[it] - c[it] }.let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); DoubleArray(3) { v[it] / l } }
@@ -2533,23 +2519,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawEarthOrbit()
         if (showOrient) drawOrientation()
 
-        // Orientyrai (nustatymas „Rodyti orientyrus“): Polaris ir galaktikos plokštuma
-        val pos = HashMap<String, FloatArray>()
-        for (st in starCatalog) pos[st.name] = skyPt(st.dir, starR)
-        if (showMarkers) { drawMarkers(pos); drawGalacticPlane() }
+        // Orientyrai (nustatymas „Rodyti orientyrus“): galaktikos plokštuma; Polaris – tik fono žvaigždė
+        if (showMarkers) drawGalacticPlane()
         GLES20.glLineWidth(1f)
-
-        // Žvaigždės: dydis ir ryškumas pagal regimąjį ryškį (mažesnis – ryškesnė)
-        if (starTex == 0) return
-        for (st in starCatalog) {
-            val p = pos[st.name]!!
-            val above = aboveHorizon(p)
-            val k = ((2.5f - st.mag) / 2.4f).coerceIn(0f, 1f)          // 0..1
-            val size = (0.035f + 0.05f * k) * (if (above) 1f else 0.7f) * (starR / 1.5).toFloat()   // toliau – didesnės, kad regimas dydis nesikeistų
-            val alpha = (0.55f + 0.45f * k) * (if (above) 1f else 0.3f)   // po horizontu – blanki
-            billboard(p, eyeI, size, size, starTex, st.rgb[0], st.rgb[1], st.rgb[2], alpha)
-            billboard(p, eyeI, size * 0.45f, size * 0.45f, starTex, 1f, 1f, 1f, alpha)
-        }
     }
 
     // ---------------- PALYDOVŲ 3D MODELIAI (korpusas, sekančios Saulę baterijos, antenos, variklis) ----------------
@@ -4616,7 +4588,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     private var noSp3Tex = 0
-    private var polarisTex = 0
 
     /** Platus užrašas: plotis = aukštis × wRatio. */
     private fun makeTextureW(text: String, color: Int, sizePx: Int, wRatio: Int): Int {

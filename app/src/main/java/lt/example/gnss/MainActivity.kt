@@ -3495,6 +3495,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         rows.add("Naudojamas padėčiai" to if (s.used) "taip" else "ne")
         rows.add("Kryptis (lustas)" to "azimutas %.0f°, aukštis %.0f°".format(L, s.az, s.elev))
         rows.add("Lustas žino" to (if (s.eph) "efemeridė yra" else "efemeridės nėra") + ", " + (if (s.alm) "almanachas yra" else "almanacho nėra"))
+        rows.add("Efemeridės šaltinis" to when {
+            !s.eph -> "dar nėra – lustas laukia (iš palydovo ~30 s, iš interneto – sekundės)"
+            (NavBits.stat(s.const + s.svid)?.eph ?: 0) > 0 -> "iš paties palydovo (ir galbūt iš interneto)"
+            else -> "iš interneto ar atminties (A-GNSS) – laukti palydovo nereikia"
+        })
         rows.add("Iš šio palydovo gauta" to (NavBits.stat(s.const + s.svid)?.let { st ->
             val min = ((st.lastMs - st.firstMs) / 60_000.0)
             "%d žinučių, %.1f kbit per %.0f min.: efemeridės dalių %d, almanacho %d, kitų %d".format(L, st.n, st.bits / 1000.0, min, st.eph, st.alm, st.n - st.eph - st.alm)

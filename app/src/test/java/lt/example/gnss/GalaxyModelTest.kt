@@ -41,3 +41,16 @@ class NearStarsTest {
         for (s in l) assertEquals(1.0, kotlin.math.sqrt((s.dir[0] * s.dir[0] + s.dir[1] * s.dir[1] + s.dir[2] * s.dir[2]).toDouble()), 1e-5)
     }
 }
+
+class RealAccTest {
+    @Test fun openSkyIsGoodOneSidedWeakIsBad() {
+        val az = doubleArrayOf(0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0)
+        val el = doubleArrayOf(30.0, 60.0, 25.0, 50.0, 35.0, 70.0, 20.0, 45.0)
+        val open = RealAcc.horizontal(az, el, DoubleArray(8) { 42.0 })
+        org.junit.Assert.assertTrue("atviras dangus $open m", open < 3.0)
+        val waz = doubleArrayOf(200.0, 230.0, 250.0, 270.0, 290.0, 310.0)
+        val wel = doubleArrayOf(30.0, 60.0, 40.0, 75.0, 25.0, 50.0)
+        val roof = RealAcc.horizontal(waz, wel, DoubleArray(6) { 26.0 })
+        org.junit.Assert.assertTrue("po stogu iš vakarų $roof m", roof > 10.0)
+    }
+}

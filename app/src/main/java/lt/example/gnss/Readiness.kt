@@ -9,7 +9,7 @@ import java.util.Locale
  */
 object Readiness {
     @Volatile var coldStartMs = 0L
-    private class S(val ms: Long, val used: Int, val acc: Double)
+    private class S(val ms: Long, val used: Int, val acc: Double, val real: Double)
     private val hist = ArrayDeque<S>()
     @Volatile private var lastFixMs = 0L
     @Volatile private var lastAcc = Double.NaN
@@ -22,7 +22,7 @@ object Readiness {
 
     @Synchronized fun onStatus(used: Int, now: Long = System.currentTimeMillis()) {
         if (now - lastFixMs > 5_000 || lastAcc.isNaN()) { hist.clear(); return }
-        hist.addLast(S(now, used, lastAcc))
+        hist.addLast(S(now, used, lastAcc, realAcc().let { if (it.isNaN()) lastAcc else maxOf(it, lastAcc) }))
         while (hist.isNotEmpty() && now - hist.first().ms > 60_000) hist.removeFirst()
     }
 
@@ -47,6 +47,13 @@ object Readiness {
         return Knowledge((0.6 * eph + 0.2 * tow + 0.2 * alm).toInt(), eph, tow, alm, vis.size)
     }
 
+    /** Realus tikslumas iš naudojamų palydovų išsidėstymo ir stiprumo (RealAcc), m; NaN – per mažai palydovų. */
+    fun realAcc(): Double {
+        val u = sats.filter { it.used }.groupBy { it.const to it.svid }.map { (_, v) -> v.maxBy { it.cn0 } }
+        return RealAcc.horizontal(DoubleArray(u.size) { u[it].az.toDouble() }, DoubleArray(u.size) { u[it].elev.toDouble() },
+            DoubleArray(u.size) { u[it].cn0.toDouble() })
+    }
+
     class State(val ready: Boolean, val text: String)
 
     @Synchronized fun state(rtkOn: Boolean, rtkSig: Double?, now: Long = System.currentTimeMillis()): State {
@@ -61,8 +68,11 @@ object Readiness {
         val accMed = acc[acc.size / 2]; val dAcc = acc.last() - acc.first()
         if (dUsed > 3) return State(false, "Šyla: palydovų skaičius dar kinta (${used.min()}–${used.max()})")
         if (accMed > 3.0 || dAcc > 1.5) return State(false, "Šyla: tikslumas dar kinta (%.1f–%.1f m)".format(Locale.US, acc.first(), acc.last()))
+        // lustas mano, kad tikslu, bet signalai silpni ar tik iš vienos pusės (patalpa, po stogu) – rodomas realus tikslumas
+        val real = hist.map { it.real }.sorted().let { it[it.size / 2] }
+        if (real > 5.0) return State(false, "Silpni ar vienpusiai signalai (patalpa?): realiai ~%.0f m (lustas rodo %.1f m)".format(Locale.US, real, accMed))
         // GPS paruoštas; RTK būsena – atskirai (jis suartėja vėliau ir pasiruošimo nestabdo)
-        return State(true, "Paruošta matavimui: palydovų ~${used.last()}, tikslumas %.1f m".format(Locale.US, accMed) +
+        return State(true, "Paruošta matavimui: palydovų ~${used.last()}, tikslumas %.1f m".format(Locale.US, maxOf(accMed, real)) +
             (if (!rtkOn) "" else if (rtkSig == null) "; RTK laukiama" else if (rtkSig < 0.5) "; RTK ±%.2f m".format(Locale.US, rtkSig)
              else "; RTK dar suartėja ±%.2f m".format(Locale.US, rtkSig)))
     }

@@ -1189,14 +1189,14 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     }
 
     /** Prietaiso nugarėlės kryptis (azimutas, aukštis, ašis) – taikikliui. */
-    fun deviceAim(): Triple<Double, Double, String> = SunCal.deviceAzEl(lastRaw)
+    fun deviceAim(): Triple<Double, Double, String> = SunCal.deviceAzEl(lastRaw, backOnly = true)
 
     /** Kalibravimas pagal orientyrą (Saulė, Mėnulis, Polaris, Oriono žvaigždės). */
     fun calibrateTarget(key: String, lat: Double, lon: Double): SunCalResult? {
         val now = System.currentTimeMillis()
         val (az, alt) = SunCal.targetAzEl(key, now, lat, lon)
         if (alt < SunCal.MIN_EL || alt > SunCal.MAX_EL) return null
-        val dev = SunCal.deviceAzEl(lastRaw)
+        val dev = SunCal.deviceAzEl(lastRaw, backOnly = true)
         val r = calibrateTo(az, alt, now, SunCal.target(key).name)
         return SunCalResult(az, alt, r.third, dev.first, dev.second)
     }
@@ -1211,7 +1211,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     }
 
     private fun calibrateTo(az: Double, alt: Double, now: Long, src: String): Triple<Double, Double, Double> {
-        val heading = SunCal.deviceAzEl(lastRaw).first        // −Z projekcija į horizontalią plokštumą (gulint – +Y)
+        val heading = SunCal.deviceAzEl(lastRaw, backOnly = true).first   // nugarėlės (−Z) projekcija į horizontalią plokštumą
         var d = heading - az
         while (d > 180) d -= 360.0
         while (d <= -180) d += 360.0
@@ -5314,6 +5314,8 @@ object OverlayBus {
     @Volatile var peak: Float? = null
     @Volatile var recording = false
     @Volatile var onUnpin: (() -> Unit)? = null
+    /** Vienas bakstelėjimas prisegtam burbului – grįžus į programą atidaryti NLO pranešimų langą. */
+    @Volatile var openPanel = false
 }
 
 class BubbleOverlayService : Service() {
@@ -5369,6 +5371,8 @@ class BubbleOverlayService : Service() {
         val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean { keyHaptic(view); return true }
             override fun onDoubleTap(e: MotionEvent): Boolean { unpin(); return true }
+            // vienas bakstelėjimas – grįžti į programą ir atidaryti NLO pranešimų langą
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean { OverlayBus.openPanel = true; unpin(); return true }
         })
         view.setOnTouchListener { _, ev ->
             gd.onTouchEvent(ev)
@@ -5766,6 +5770,9 @@ class DraggablePanel(
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean { bubbleAction?.invoke(); return true }
         override fun onDoubleTap(e: MotionEvent): Boolean { onPin?.invoke(); return true }
     })
+
+    /** Atidaryti NLO pranešimų langą (pvz. bakstelėjus prisegtą burbulą). */
+    fun open() = expandBubble()
 
     private fun expandBubble() {
             try {
@@ -6264,7 +6271,8 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
             return
         }
-        OverlayBus.onUnpin = { runOnUiThread { sharePanel?.visibility = View.VISIBLE } }
+        OverlayBus.onUnpin = { runOnUiThread { sharePanel?.visibility = View.VISIBLE
+            if (OverlayBus.openPanel) { OverlayBus.openPanel = false; sharePanel?.postDelayed({ sharePanel?.open() }, 400L) } } }
         sharePanel?.visibility = View.GONE
         try {
             startForegroundService(Intent(this, BubbleOverlayService::class.java))
@@ -7306,10 +7314,12 @@ class MainActivity : AppCompatActivity() {
             val (az, el) = SunCal.targetAzEl(key, now, obsLatNow, obsLonNow)
             val dev = skyDome.deviceAim()
             val dEl = el - dev.second
-            val ok = kotlin.math.abs(dEl) <= 2.0
+            val ok = kotlin.math.abs(dEl) <= 2.0 && kotlin.math.abs(dev.second) < 75.0
             tv.text = "${t.name}: %s, aukštis %.1f° virš horizonto\nPlanšetės nugarėlė: %.1f°\n%s\n\nTaikinys: geltonas taškas – ${t.name.substringBefore(" (")}, kryželis – kur rodo planšetės nugarėlė. Aukštyn–žemyn rodoma tiksliai. Į šonus – pagal dabartinį kompasą, kurį kalibravimas ištaisys, todėl į šonus taikykite akimis į tikrą orientyrą. Ekranas į save, nugarėlė į orientyrą.".format(Locale.US,
                 if (el < SunCal.MIN_EL) "po horizontu" else "azimutas %.0f° (%s)".format(Locale.US, az, compass(az)), el, dev.second,
                 when { el < SunCal.MIN_EL -> "Orientyras po horizontu – kalibruoti negalima"
+                    dev.second < -75.0 -> "Prietaisas guli ekranu į viršų – nugarėlė į žemę. Pakelkite jį stačiai, ekranu į save"
+                    dev.second > 75.0 -> "Nugarėlė į zenitą – nuleiskite prietaisą, kad nugarėlė žiūrėtų į orientyrą"
                     el > SunCal.MAX_EL -> "Per aukštai (> 70°) – azimutas būtų netikslus"
                     ok && el > 45.0 -> "✓ Aukštis sutampa. Orientyras aukštai – šoninė kryptis jautresnė (×%.1f), taikykite ypač tiksliai".format(Locale.US, 1 / kotlin.math.cos(Math.toRadians(el)))
                     ok -> "✓ Aukštis sutampa – galima kalibruoti"
@@ -7342,6 +7352,7 @@ class MainActivity : AppCompatActivity() {
         if (el < SunCal.MIN_EL) { Toast.makeText(this, "Kalibruoti negalima: ${t.name} po horizontu (aukštis %.1f°)".format(Locale.US, el), Toast.LENGTH_LONG).show(); return false }
         if (el > SunCal.MAX_EL) { Toast.makeText(this, "Kalibruoti negalima: ${t.name} per aukštai (%.1f° > 70°) – azimutas netikslus".format(Locale.US, el), Toast.LENGTH_LONG).show(); return false }
         if (!skyDome.aimReady()) { Toast.makeText(this, "Kalibruoti negalima: krypties jutikliai dar neparuošti – palaukite sekundę", Toast.LENGTH_LONG).show(); return false }
+        if (kotlin.math.abs(skyDome.deviceAim().second) > 75.0) { Toast.makeText(this, "Kalibruoti negalima: prietaisas guli – nugarėlė turi žiūrėti į orientyrą (ekranas į save)", Toast.LENGTH_LONG).show(); return false }
         val magAz = devAxisZ?.first ?: Double.NaN; val decl = skyDome.declinationDeg()
         val r = skyDome.calibrateTarget(key, obsLatNow, obsLonNow) ?: return false
         try { SunCal.log(this, SunCal.Rec(System.currentTimeMillis(), obsLatNow, obsLonNow, obsHNow, lastFixAcc, r.sunAz, r.sunEl,

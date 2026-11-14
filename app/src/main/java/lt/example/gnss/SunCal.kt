@@ -81,9 +81,9 @@ object SunCal {
      * (vertikalė – iš gravitacijos), aukštis – kampas virš horizonto. Gulint (horizontali dalis < 0,3) – viršutinis kraštas +Y.
      * Grąžina (azimutas, aukštis, ašis).
      */
-    fun deviceAzEl(r: FloatArray): Triple<Double, Double, String> {
+    fun deviceAzEl(r: FloatArray, backOnly: Boolean = false): Triple<Double, Double, String> {
         var e = -r[2].toDouble(); var n = -r[5].toDouble(); var u = -r[8].toDouble(); var axis = "-Z"
-        if (hypot(e, n) < 0.3) { e = r[1].toDouble(); n = r[4].toDouble(); u = r[7].toDouble(); axis = "+Y" }
+        if (!backOnly && hypot(e, n) < 0.3) { e = r[1].toDouble(); n = r[4].toDouble(); u = r[7].toDouble(); axis = "+Y" }
         val az = (Math.toDegrees(atan2(e, n)) + 360.0) % 360.0
         val el = Math.toDegrees(asin((u / kotlin.math.sqrt(e * e + n * n + u * u)).coerceIn(-1.0, 1.0)))
         return Triple(az, el, axis)

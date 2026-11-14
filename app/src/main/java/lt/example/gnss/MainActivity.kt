@@ -1410,6 +1410,19 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         onPause()
     }
 
+    /** Jutikliai kalibravimui ir be 3D vaizdo (telefone 3D gali būti išjungtas). */
+    fun sensorsOn() {
+        if (listening) return
+        fInit = false; lastGyroNs = 0L; gValid = false
+        rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        gyroSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        gravSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        listening = true
+    }
+    /** Ar orientacija šviežia (paskutinis atnaujinimas < 1 s). */
+    fun aimReady(): Boolean = fInit && android.os.SystemClock.elapsedRealtime() - lastPublishMs < 1000L
+    private var lastPublishMs = 0L
+
     /** Veiklos sunaikinimas – jutikliai išjungiami visiškai. */
     fun release() { sm.unregisterListener(this); listening = false; handler.removeCallbacks(reanchor) }
 
@@ -1558,6 +1571,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         val c = cos(total).toFloat(); val sn = sin(total).toFloat()
         val fixed = mul3(floatArrayOf(c, -sn, 0f, sn, c, 0f, 0f, 0f, 1f), out)
         lastRaw = fixed
+        lastPublishMs = android.os.SystemClock.elapsedRealtime()
         if (!manual) renderer.setRotation(fixed)
     }
 
@@ -7283,8 +7297,11 @@ class MainActivity : AppCompatActivity() {
             addView(aim, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)); addView(tv) }
         val dlg = android.app.AlertDialog.Builder(this).setTitle("Taikiklis: ${t.name}").setView(android.widget.ScrollView(this).apply { addView(box) })
             .setPositiveButton("Kalibruoti", null).setNegativeButton("Atšaukti", null).create()
-        val h = android.os.Handler(mainLooper)
-        val tick = object : Runnable { override fun run() {
+        skyDome.sensorsOn()
+        val ch = android.view.Choreographer.getInstance()
+        var alive = true
+        val tick = object : android.view.Choreographer.FrameCallback { override fun doFrame(frameNs: Long) { if (!alive) return; run() }
+            fun run() {
             val now = System.currentTimeMillis()
             val (az, el) = SunCal.targetAzEl(key, now, obsLatNow, obsLonNow)
             val dev = skyDome.deviceAim()
@@ -7301,14 +7318,15 @@ class MainActivity : AppCompatActivity() {
             tv.setTextColor(if (ok) 0xFF16A34A.toInt() else 0xFF111827.toInt())
             aim.dAz = SunCal.wrap(dev.first - az); aim.dEl = dev.second - el; aim.ok = ok
             aim.label = if (ok) "✓ aukštis sutampa" else "aukštyn/žemyn %+.1f°".format(Locale.US, -dEl)
+            if (!skyDome.aimReady()) aim.label = "laukiama jutiklių…"
             aim.invalidate()
-            h.postDelayed(this, 200L)
+            ch.postFrameCallback(this)                                    // kas ekrano kadrą (~60 k/s)
         } }
         dlg.setOnShowListener {
             dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener { if (calibrateWith(key)) dlg.dismiss() }
-            h.post(tick)
+            ch.postFrameCallback(tick)
         }
-        dlg.setOnDismissListener { h.removeCallbacks(tick) }
+        dlg.setOnDismissListener { alive = false; ch.removeFrameCallback(tick) }
         dlg.show()
     }
 
@@ -7323,6 +7341,7 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Kalibruoti negalima: dar per šviesu – žvaigždė ryškiai matoma tik Saulei nusileidus > 6° po horizontu", Toast.LENGTH_LONG).show(); return false }
         if (el < SunCal.MIN_EL) { Toast.makeText(this, "Kalibruoti negalima: ${t.name} po horizontu (aukštis %.1f°)".format(Locale.US, el), Toast.LENGTH_LONG).show(); return false }
         if (el > SunCal.MAX_EL) { Toast.makeText(this, "Kalibruoti negalima: ${t.name} per aukštai (%.1f° > 70°) – azimutas netikslus".format(Locale.US, el), Toast.LENGTH_LONG).show(); return false }
+        if (!skyDome.aimReady()) { Toast.makeText(this, "Kalibruoti negalima: krypties jutikliai dar neparuošti – palaukite sekundę", Toast.LENGTH_LONG).show(); return false }
         val magAz = devAxisZ?.first ?: Double.NaN; val decl = skyDome.declinationDeg()
         val r = skyDome.calibrateTarget(key, obsLatNow, obsLonNow) ?: return false
         try { SunCal.log(this, SunCal.Rec(System.currentTimeMillis(), obsLatNow, obsLonNow, obsHNow, lastFixAcc, r.sunAz, r.sunEl,

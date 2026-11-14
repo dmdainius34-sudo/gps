@@ -2128,7 +2128,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             // Švytėjimas: 0 ties 20 dB-Hz, didžiausias ties 45 dB-Hz
             val glow = ((sat.cn0 - 20f) / 25f).coerceIn(0f, 1f)
             val nb = if (showNavBits) NavBits.get(sat.const + sat.svid)?.takeIf { System.currentTimeMillis() - it.tMs < 8_000L } else null
-            if (nb != null && sat.cn0 > 10f) drawNavBits(p, pin, sat.const + sat.svid, nb, col)
+            if (nb != null && sat.cn0 > 10f) drawNavBits(p, pin, sat.const + sat.svid, nb, col, sat.cn0)
             else drawLaser(p, pin, sat.cn0, sat.svid, t)
             drawSatModel(p, col, glow, usedK, sat.const)
             if (nb != null && sat.cn0 > 10f) {
@@ -2968,7 +2968,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         return bt
     }
 
-    private fun drawNavBits(sp: FloatArray, pin: FloatArray, key: String, m: NavBits.Msg, col: FloatArray) {
+    /**
+     * Bitų juosta tikru perdavimo greičiu; signalo kokybė (C/N0) – ryškumu ir trūkiais: silpnas signalas – blanki juosta su tarpais
+     * (bitų grupės, kurios silpname signale dažniau prarandamos), stiprus – ryški ir vientisa.
+     */
+    private fun drawNavBits(sp: FloatArray, pin: FloatArray, key: String, m: NavBits.Msg, col: FloatArray, cn0: Float) {
+        val q = ((cn0 - 20f) / 22f).coerceIn(0f, 1f)
         val bt = bitTexture(key, m)
         if (bt.tex == 0 || bt.n <= BIT_WINDOW) return
         // silpnas spindulys
@@ -2985,24 +2990,39 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         sx = sx / sl * w; sy = sy / sl * w; sz = sz / sl * w
         val span = bt.n - BIT_WINDOW
         val k = BIT_WINDOW + (((System.currentTimeMillis() - m.tMs) / 1000.0 * m.rate) % span).toFloat()
-        val u0 = k / bt.n; val u1 = (k - BIT_WINDOW) / bt.n
-        val pos = floatArrayOf(
-            sp[0] - sx, sp[1] - sy, sp[2] - sz, sp[0] + sx, sp[1] + sy, sp[2] + sz,
-            pin[0] - sx, pin[1] - sy, pin[2] - sz, pin[0] + sx, pin[1] + sy, pin[2] + sz)
-        val uv = floatArrayOf(u0, 1f, u0, 0f, u1, 1f, u1, 0f)
+        // juosta dalimis: kiekviena dalis – bitų grupė; tarpas, jei grupė „prarasta“ (tikimybė auga silpnėjant signalui)
+        val segs = 16; val pGap = (1f - q) * 0.55f
+        val per = BIT_WINDOW.toFloat() / segs
+        val pos = ArrayList<Float>(); val uv = ArrayList<Float>()
+        val salt = key.hashCode()
+        for (j in 0 until segs) {
+            val bitA = k - j * per; val bitB = k - (j + 1) * per
+            val grp = kotlin.math.floor(bitA / per).toInt()
+            val h = ((grp * 1103515245 + salt * 12345) ushr 8) and 0xFFFF
+            if (h / 65535f < pGap) continue
+            val fa = j.toFloat() / segs; val fb = (j + 1).toFloat() / segs
+            fun pt(f: Float, sgn: Float) = floatArrayOf(sp[0] + dx * f + sgn * sx, sp[1] + dy * f + sgn * sy, sp[2] + dz * f + sgn * sz)
+            val a0 = pt(fa, -1f); val a1 = pt(fa, 1f); val b0 = pt(fb, -1f); val b1 = pt(fb, 1f)
+            val ua = bitA / bt.n; val ub = bitB / bt.n
+            for ((v, t) in listOf(a0 to floatArrayOf(ua, 1f), a1 to floatArrayOf(ua, 0f), b0 to floatArrayOf(ub, 1f),
+                                  a1 to floatArrayOf(ua, 0f), b1 to floatArrayOf(ub, 0f), b0 to floatArrayOf(ub, 1f))) {
+                v.forEach { pos.add(it) }; t.forEach { uv.add(it) }
+            }
+        }
+        if (pos.isEmpty()) return
         GLES20.glUseProgram(texProg)
         setMat(texProg, "uMVP", mvp)
         val lift = 0.35f
-        setVec4(texProg, "uColor", col[0] + (1 - col[0]) * lift, col[1] + (1 - col[1]) * lift, col[2] + (1 - col[2]) * lift, 1f)
+        setVec4(texProg, "uColor", col[0] + (1 - col[0]) * lift, col[1] + (1 - col[1]) * lift, col[2] + (1 - col[2]) * lift, 0.3f + 0.7f * q)
         resetAttribs()
         val lp = GLES20.glGetAttribLocation(texProg, "aPos"); val lu = GLES20.glGetAttribLocation(texProg, "aUV")
         GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lu)
-        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, floatBuf(pos))
-        GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, floatBuf(uv))
+        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, floatBuf(pos.toFloatArray()))
+        GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, floatBuf(uv.toFloatArray()))
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bt.tex)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(texProg, "uTex"), 0)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, pos.size / 3)
     }
 
     /**

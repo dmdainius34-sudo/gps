@@ -3488,7 +3488,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         rows.add("Signalo stiprumas" to "%.1f dB-Hz".format(L, s.cn0) + when { s.cn0 >= 40 -> " (stiprus)"; s.cn0 >= 30 -> " (vidutinis)"; else -> " (silpnas)" })
         rows.add("Naudojamas padėčiai" to if (s.used) "taip" else "ne")
         rows.add("Kryptis (lustas)" to "azimutas %.0f°, aukštis %.0f°".format(L, s.az, s.elev))
-        rows.add("Lusto žinios" to (if (s.eph) "efemeridė yra" else "efemeridės nėra") + ", " + (if (s.alm) "almanachas yra" else "almanacho nėra"))
+        rows.add("Lustas žino" to (if (s.eph) "efemeridė yra" else "efemeridės nėra") + ", " + (if (s.alm) "almanachas yra" else "almanacho nėra"))
+        rows.add("Iš šio palydovo gauta" to (NavBits.stat(s.const + s.svid)?.let { st ->
+            val min = ((st.lastMs - st.firstMs) / 60_000.0)
+            "%d žinučių, %.1f kbit per %.0f min.: efemeridės dalių %d, almanacho %d, kitų %d".format(L, st.n, st.bits / 1000.0, min, st.eph, st.alm, st.n - st.eph - st.alm)
+        } ?: "navigacinių žinučių dar negauta"))
         val t = Sp3Live.gpsNow()
         val p0 = id?.let { Sp3Live.ecefKm(it, t) }
         if (id == null || p0 == null) {

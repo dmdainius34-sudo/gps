@@ -252,9 +252,22 @@ object NavBits {
 
     fun get(key: String): Msg? = last[key]
 
+    /** Kiek žinučių iš palydovo gavo lustas nuo programos paleidimo. */
+    class Stat { var n = 0; var bits = 0L; var eph = 0; var alm = 0; var firstMs = 0L; var lastMs = 0L }
+    private val stats = java.util.concurrent.ConcurrentHashMap<String, Stat>()
+    fun stat(key: String): Stat? = stats[key]
+
     /** type – GnssNavigationMessage tipas; key – „GPS22“, „GAL9“, „GLO3“ (kaip Sat.const + svid). */
     fun put(type: Int, svid: Int, data: ByteArray, tMs: Long = System.currentTimeMillis()) {
-        describe(type, data, tMs)?.let { last[it.first + svid] = it.second }
+        describe(type, data, tMs)?.let { (c, m) ->
+            last[c + svid] = m
+            val st = stats.getOrPut(c + svid) { Stat() }
+            synchronized(st) {
+                if (st.n == 0) st.firstMs = tMs
+                st.n++; st.bits += m.bits.length; st.lastMs = tMs
+                if (m.eph) st.eph++ else if (m.label.contains("almanach")) st.alm++
+            }
+        }
     }
 
     fun describe(type: Int, data: ByteArray, tMs: Long): Pair<String, Msg>? = when (type) {

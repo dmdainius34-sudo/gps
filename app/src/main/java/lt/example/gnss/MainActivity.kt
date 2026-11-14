@@ -1333,12 +1333,18 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         val table = android.widget.TableLayout(context).apply { setPadding((20 * dp).toInt(), (8 * dp).toInt(), (20 * dp).toInt(), 0); isStretchAllColumns = false; setColumnShrinkable(1, true) }
         for ((k, v) in rows) {
             val tr = android.widget.TableRow(context)
-            tr.addView(android.widget.TextView(context).apply { text = k; setTypeface(typeface, android.graphics.Typeface.BOLD); setPadding(0, (4 * dp).toInt(), (12 * dp).toInt(), (4 * dp).toInt()) })
-            tr.addView(android.widget.TextView(context).apply { text = v; setPadding(0, (4 * dp).toInt(), 0, (4 * dp).toInt()) })
+            tr.addView(android.widget.TextView(context).apply { text = k; setTypeface(typeface, android.graphics.Typeface.BOLD); setPadding(0, (4 * dp).toInt(), (12 * dp).toInt(), (4 * dp).toInt()); setTextIsSelectable(true) })
+            tr.addView(android.widget.TextView(context).apply { text = v; setPadding(0, (4 * dp).toInt(), 0, (4 * dp).toInt()); setTextIsSelectable(true) })
             table.addView(tr)
         }
         android.app.AlertDialog.Builder(context).setTitle(title)
             .setView(android.widget.ScrollView(context).apply { addView(table) })
+            .setNeutralButton("Kopijuoti viską") { _, _ ->
+                val txt = title + "\n" + rows.joinToString("\n") { "${it.first}: ${it.second}" }
+                (context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                    .setPrimaryClip(android.content.ClipData.newPlainText(title, txt))
+                Toast.makeText(context, "Nukopijuota", Toast.LENGTH_SHORT).show()
+            }
             .setPositiveButton("Gerai", null).show()
     }
     private var prevArc = doubleArrayOf(0.0, 0.0, 1.0)

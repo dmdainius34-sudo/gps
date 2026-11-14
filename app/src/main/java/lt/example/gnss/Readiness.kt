@@ -74,7 +74,7 @@ object Readiness {
         val used = hist.map { it.used }; val acc = hist.map { it.acc }.sorted()
         val dUsed = used.max() - used.min()
         val accMed = acc[acc.size / 2]; val dAcc = acc.last() - acc.first()
-        if (dUsed > 3) return State(false, "Šyla: palydovų skaičius dar kinta (${used.min()}–${used.max()})")
+        if (dUsed > 3) return State(false, "Šyla: dar nusistovi")
         if (accMed > 3.0 || dAcc > 1.5) return State(false, "Šyla: tikslumas dar kinta (%.1f–%.1f m)".format(Locale.US, acc.first(), acc.last()))
         // lustas mano, kad tikslu, bet signalai silpni ar tik iš vienos pusės (patalpa, po stogu) – rodomas realus tikslumas
         val real = hist.map { it.real }.sorted().let { it[it.size / 2] }

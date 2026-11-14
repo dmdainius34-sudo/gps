@@ -7541,6 +7541,8 @@ class MainActivity : AppCompatActivity() {
         AimDiag.start(t.name)
         val ch = android.view.Choreographer.getInstance()
         var alive = true
+        var okSince = 0L; var lastTry = 0L
+        val holdMs = 2_000L
         val tick = object : android.view.Choreographer.FrameCallback { override fun doFrame(frameNs: Long) { if (!alive) return; run() }
             fun run() {
             val now = System.currentTimeMillis()
@@ -7548,14 +7550,19 @@ class MainActivity : AppCompatActivity() {
             val dev = skyDome.deviceAim()
             val dEl = el - dev.second
             val ok = kotlin.math.abs(dEl) <= 2.0 && kotlin.math.abs(dev.second) < 75.0
-            tv.text = "${t.name}: %s, aukštis %.1f° virš horizonto\nPlanšetės nugarėlė: %.1f°\n%s\n\nTaikinys: geltonas taškas – ${t.name.substringBefore(" (")}, kryželis – kur rodo planšetės nugarėlė. Aukštyn–žemyn rodoma tiksliai. Į šonus – pagal dabartinį kompasą, kurį kalibravimas ištaisys, todėl į šonus taikykite akimis į tikrą orientyrą. Ekranas į save, nugarėlė į orientyrą.".format(Locale.US,
+            if (!ok) okSince = 0L else if (okSince == 0L) okSince = now
+            if (ok && okSince > 0L && now - okSince >= holdMs && now - lastTry >= 5_000L && skyDome.aimReady()) {
+                lastTry = now
+                if (calibrateWith(key)) { dlg.dismiss(); return }
+            }
+            tv.text ="${t.name}: %s, aukštis %.1f° virš horizonto\nPlanšetės nugarėlė: %.1f°\n%s\n\nTaikinys: geltonas taškas – ${t.name.substringBefore(" (")}, kryželis – kur rodo planšetės nugarėlė. Aukštyn–žemyn rodoma tiksliai. Į šonus – pagal dabartinį kompasą, kurį kalibravimas ištaisys, todėl į šonus taikykite akimis į tikrą orientyrą. Ekranas į save, nugarėlė į orientyrą.".format(Locale.US,
                 if (el < SunCal.MIN_EL) "po horizontu" else "azimutas %.0f° (%s)".format(Locale.US, az, compass(az)), el, dev.second,
                 when { el < SunCal.MIN_EL -> "Orientyras po horizontu – kalibruoti negalima"
                     dev.second < -75.0 -> "Prietaisas guli ekranu į viršų – nugarėlė į žemę. Pakelkite jį stačiai, ekranu į save"
                     dev.second > 75.0 -> "Nugarėlė į zenitą – nuleiskite prietaisą, kad nugarėlė žiūrėtų į orientyrą"
                     el > SunCal.MAX_EL -> "Per aukštai (> 70°) – azimutas būtų netikslus"
                     ok && el > 45.0 -> "✓ Aukštis sutampa. Orientyras aukštai – šoninė kryptis jautresnė (×%.1f), taikykite ypač tiksliai".format(Locale.US, 1 / kotlin.math.cos(Math.toRadians(el)))
-                    ok -> "✓ Aukštis sutampa – galima kalibruoti"
+                    ok -> "✓ Aukštis sutampa – išlaikykite 2 s, kalibracija išsisaugos automatiškai"
                     dEl > 0 -> "↑ Pakelkite nugarėlę %.1f°".format(Locale.US, dEl)
                     else -> "↓ Nuleiskite nugarėlę %.1f°".format(Locale.US, -dEl) })
             tv.setTextColor(if (ok) 0xFF16A34A.toInt() else 0xFF111827.toInt())

@@ -1938,6 +1938,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     override fun onDrawFrame(gl: GL10?) {
         measureFps()
+        updateGalFade()
         // Visada kosmoso juoduma (AMOLED/HDR – tikras juodas, be atspalvio), net kai žvaigždžių fonas užgęsta
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
@@ -2221,7 +2222,24 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun bgFade(): Float = 1f - sstep(0f, 0.5f, collapse())
     /** Visos žvaigždės jau taške (iki 0,8) – kartu užgęsta, tada iš to taško išryškėja galaktika. */
     private fun starsGone(): Float = sstep(0.8f, 0.88f, collapse())
-    private fun galFade(): Float = sstep(0.85f, 1f, collapse())
+    private var galA = 0f
+    private var galNs = 0L
+    private fun galFade(): Float = galA
+    /**
+     * Galaktikos ryškumas: nuo kolapso 0,85 iki 75 % likusio atitolinimo (logaritmiškai) – iš labai blankaus (u²) iki pilno,
+     * dar sušvelninta laike (~0,35 s), kad net greitai suspaudus pirštais išryškėtų tolygiai.
+     */
+    private fun updateGalFade() {
+        val z0 = EARTH_R + SOLAR_ZOOM
+        val zs = z0 * Math.pow((COLLAPSE_Z / z0).toDouble(), 0.85).toFloat()
+        val u = if (zoom <= zs) 0f else ((kotlin.math.ln(zoom / zs) / kotlin.math.ln(GALAXY_ZOOM / zs)) / 0.75f).coerceIn(0f, 1f)
+        val target = u * u * (3 - 2 * u)
+        val now = System.nanoTime()
+        val dt = if (galNs == 0L) 1.0 else (now - galNs) / 1e9
+        galNs = now
+        galA += (target - galA) * (1 - kotlin.math.exp(-dt / 0.35)).toFloat()
+        if (kotlin.math.abs(target - galA) < 0.002f) galA = target
+    }
 
     private var coverTex = 0
     /** Juodas minkštas diskas – uždengia fono žvaigždę, kurią „paėmė“ kolapsas. */

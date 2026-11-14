@@ -1096,9 +1096,53 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
  * Gaublys sukasi kartu su planšete (rotacijos vektoriaus jutiklis).
  */
 /** EGL konfigūracija su 4x MSAA (lygūs kraštai); jei nepalaikoma – be jos. */
+/** HDR: 16 bitų slankiojo kablelio paviršius + scRGB (ne tiesinė) spalvų erdvė – reikšmės > 1 šviečia ryškiau už įprastą baltą. */
+object Hdr {
+    @Volatile var wanted = false
+    @Volatile var on = false
+    private const val EGL_COLOR_COMPONENT_TYPE_EXT = 0x3339
+    private const val EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT = 0x333B
+    const val EGL_GL_COLORSPACE_KHR = 0x309D
+    const val EGL_GL_COLORSPACE_SCRGB_EXT = 0x3351
+
+    fun floatConfig(egl: javax.microedition.khronos.egl.EGL10, display: javax.microedition.khronos.egl.EGLDisplay): EGLConfig? {
+        if (!wanted || Build.VERSION.SDK_INT < 26) return null
+        val ext = egl.eglQueryString(display, javax.microedition.khronos.egl.EGL10.EGL_EXTENSIONS) ?: return null
+        if (!ext.contains("EGL_EXT_pixel_format_float") || !ext.contains("EGL_EXT_gl_colorspace_scrgb")) return null
+        val E = javax.microedition.khronos.egl.EGL10.EGL_NONE
+        for (ms in intArrayOf(4, 0)) {
+            val a = mutableListOf(EGL_COLOR_COMPONENT_TYPE_EXT, EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT,
+                0x3024, 16, 0x3023, 16, 0x3022, 16, 0x3021, 16, 0x3025, 16, 0x3040, 4)
+            if (ms > 0) a.addAll(listOf(0x3032, 1, 0x3031, ms))
+            a.add(E)
+            val num = IntArray(1); val cfg = arrayOfNulls<EGLConfig>(1)
+            if (egl.eglChooseConfig(display, a.toIntArray(), cfg, 1, num) && num[0] > 0 && cfg[0] != null) return cfg[0]
+        }
+        return null
+    }
+}
+
+/** Langų paviršius: HDR konfigūracijai – scRGB spalvų erdvė; nepavykus – paprastas (ir HDR išjungiamas kitam kartui). */
+class HdrSurfaceFactory(private val onFail: () -> Unit) : GLSurfaceView.EGLWindowSurfaceFactory {
+    override fun createWindowSurface(egl: javax.microedition.khronos.egl.EGL10, display: javax.microedition.khronos.egl.EGLDisplay,
+                                     config: EGLConfig, nativeWindow: Any?): javax.microedition.khronos.egl.EGLSurface? {
+        if (Hdr.on) {
+            val s = try { egl.eglCreateWindowSurface(display, config, nativeWindow,
+                intArrayOf(Hdr.EGL_GL_COLORSPACE_KHR, Hdr.EGL_GL_COLORSPACE_SCRGB_EXT, javax.microedition.khronos.egl.EGL10.EGL_NONE)) } catch (_: Exception) { null }
+            if (s != null && s != javax.microedition.khronos.egl.EGL10.EGL_NO_SURFACE) return s
+            Hdr.on = false; onFail()
+        }
+        return try { egl.eglCreateWindowSurface(display, config, nativeWindow, null) } catch (_: Exception) { null }
+    }
+    override fun destroySurface(egl: javax.microedition.khronos.egl.EGL10, display: javax.microedition.khronos.egl.EGLDisplay,
+                                surface: javax.microedition.khronos.egl.EGLSurface) { egl.eglDestroySurface(display, surface) }
+}
+
 class MsaaConfigChooser : GLSurfaceView.EGLConfigChooser {
     override fun chooseConfig(egl: javax.microedition.khronos.egl.EGL10,
                               display: javax.microedition.khronos.egl.EGLDisplay): EGLConfig {
+        Hdr.floatConfig(egl, display)?.let { Hdr.on = true; return it }
+        Hdr.on = false
         val E = javax.microedition.khronos.egl.EGL10.EGL_NONE
         val ms = intArrayOf(0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3021, 8, 0x3025, 16,
             0x3040, 4, 0x3032, 1, 0x3031, 4, E)          // RGBA8, depth16, ES2, sample buffers=1, samples=4
@@ -1304,7 +1348,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     init {
         setEGLContextClientVersion(2)
+        Hdr.wanted = calPrefs.getBoolean("hdr", true)
         setEGLConfigChooser(MsaaConfigChooser())
+        setEGLWindowSurfaceFactory(HdrSurfaceFactory { calPrefs.edit().putBoolean("hdr", false).apply() })
         preserveEGLContextOnPause = true
         renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
         renderer.showMarkers = calPrefs.getBoolean("markers", true)
@@ -2313,7 +2359,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uMax"), 4f * density)
         // toliau – ryškiau (galaktika mažėja, šviesa susikaupia), iki ×3
         val gain = 1f + 2f * sstep(4000f, GALAXY_ZOOM, zoom)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uA"), a * gain)
+        // HDR: šviesa virš įprasto balto (rgb > 1); be HDR – tik permatomumas iki 1
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uA"), if (Hdr.on) a else a * gain)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uHdr"), if (Hdr.on) gain * 2f else 1f)
         resetAttribs()
         val lp = GLES20.glGetAttribLocation(galProg, "aPos"); val lc = GLES20.glGetAttribLocation(galProg, "aCol")
         GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lc)
@@ -4878,11 +4926,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         private const val GAL_FS = """
             precision mediump float;
             varying vec4 vCol;
+            uniform float uHdr;
             void main() {
                 vec2 d = gl_PointCoord - 0.5;
                 float r = dot(d, d) * 4.0;
                 if (r > 1.0) discard;
-                gl_FragColor = vec4(vCol.rgb, vCol.a * (1.0 - r));
+                gl_FragColor = vec4(vCol.rgb * uHdr, vCol.a * (1.0 - r));
             }
         """
         private const val COLOR_VS = """
@@ -6731,6 +6780,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // HDR: langas prašo HDR ryškumo atsargos (ekranas leidžia taškams šviesti ryškiau už įprastą baltą)
+        if (Build.VERSION.SDK_INT >= 26 && getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("hdr", true))
+            window.colorMode = android.content.pm.ActivityInfo.COLOR_MODE_HDR
         // sklandus sukimas: ekrano kryptis užrakinama (be persidėliojimo 90° šuoliais), vaizdas sukasi pats
         if (getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("level_horizon", true))
             requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED
@@ -6867,6 +6919,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbOrient, LinearLayout.LayoutParams(mw, ww))
+        left.addView(CheckBox(this).apply {
+            text = "HDR galaktika (ryškiau už baltą; įsigalioja atidarius iš naujo)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("hdr", true)
+            setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("hdr", on).apply() }
+        }, LinearLayout.LayoutParams(mw, ww))
         left.addView(CheckBox(this).apply {
             text = "Koordinačių tinklelis ant gaublio (kas 15°, atogrąžos)"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("grid", true)

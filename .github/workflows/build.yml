@@ -36,7 +36,7 @@ jobs:
             U=https://svs.gsfc.nasa.gov/vis/a000000/a004800/a004851/starmap_2020_8k.exr
             curl -sSL -m 900 -o starmap8k/s.exr -w "HTTP %{http_code} %{size_download}\n" "$U"
             pip install -q OpenEXR numpy pillow
-            python3 tools/stars8k.py starmap8k/s.exr app/src/main/assets/stars_bg.jpg starmap8k/stars_bg_8k.jpg
+            python3 tools/stars8k.py starmap8k/s.exr app/src/main/assets/stars_bg.jpg starmap8k/stars_bg_8k.jpg 2>&1 | tee stars8k_log.txt
             rm -f starmap8k/s.exr
           fi
           if [ -s starmap8k/stars_bg_8k.jpg ]; then cp starmap8k/stars_bg_8k.jpg app/src/main/assets/; ls -la app/src/main/assets/stars_bg_8k.jpg; fi
@@ -128,6 +128,10 @@ jobs:
             L=$(curl -sSI -m 20 "https://svs.gsfc.nasa.gov$f" | grep -i content-length | tr -d '\r' | awk '{print $2}')
             echo "$f $((${L:-0}/1048576)) MB"
           done
+
+      - name: 8k fono santrauka
+        if: always()
+        run: cat stars8k_log.txt 2>/dev/null | tail -15; ls -la app/src/main/assets/ | grep stars || true
 
       - uses: actions/upload-artifact@v4
         with:

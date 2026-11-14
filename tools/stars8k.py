@@ -68,3 +68,4 @@ for c in range(3):
     outimg[..., c] = np.clip(np.interp(img[..., c], src, dst) * 255 + 0.5, 0, 255).astype(np.uint8)
 Image.fromarray(outimg).save(out, quality=90, optimize=True)
 print('įrašyta', out, outimg.shape)
+# v3

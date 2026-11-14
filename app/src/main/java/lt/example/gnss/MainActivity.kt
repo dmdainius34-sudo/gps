@@ -6366,7 +6366,7 @@ class MainActivity : AppCompatActivity() {
         val sig = LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc
         val st = Readiness.state(live, sig)
         val k = Readiness.knowledge()
-        v.text = "● " + (if (k != null) "Lustas %d %% · ".format(java.util.Locale.US, k.total) else "") + st.text
+        v.text = "● " + (if (k != null) "Lustas %d %% · ".format(java.util.Locale.US, k.total) else "") + (Readiness.shortAcc() ?: st.text)
         val lvl = ((k?.total ?: 0) * 100).coerceIn(0, 10000)
         if (readyLast == st.ready) (v.background as? android.graphics.drawable.LayerDrawable)?.getDrawable(1)?.level = if (st.ready) 10000 else lvl
         if (readyLast != st.ready) {

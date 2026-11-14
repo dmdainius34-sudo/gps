@@ -54,6 +54,13 @@ object Readiness {
             DoubleArray(u.size) { u[it].cn0.toDouble() })
     }
 
+    /** Trumpai indikatoriui: „lustas 1.7 m (10 m)“ – lusto įvertis ir skliaustuose realus; null – fikso nėra. */
+    fun shortAcc(now: Long = System.currentTimeMillis()): String? {
+        if (now - lastFixMs > 5_000 || lastAcc.isNaN()) return null
+        val r = realAcc().let { if (it.isNaN()) lastAcc else maxOf(it, lastAcc) }
+        return "lustas %.1f m (%.0f m)".format(Locale.US, lastAcc, r)
+    }
+
     class State(val ready: Boolean, val text: String)
 
     @Synchronized fun state(rtkOn: Boolean, rtkSig: Double?, now: Long = System.currentTimeMillis()): State {

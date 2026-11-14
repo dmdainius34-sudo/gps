@@ -7515,6 +7515,19 @@ class MainActivity : AppCompatActivity() {
         obsLatNow = loc.latitude; obsLonNow = loc.longitude
         lastFixWallMs = System.currentTimeMillis(); lastFixAcc = if (loc.hasAccuracy()) loc.accuracy.toDouble() else Double.NaN
         if (loc.hasAltitude()) obsHNow = loc.altitude
+        if (loc.hasSpeed() && loc.hasBearing() && loc.speed >= CourseHeading.MIN_SPEED &&
+            !(Build.VERSION.SDK_INT >= 26 && loc.hasBearingAccuracy() && loc.bearingAccuracyDegrees > 10f) && ::skyDome.isInitialized) {
+            skyDome.headingDeg()?.let { shown ->
+                val sp = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
+                if (CourseHeading.mountDeg.isNaN() && sp.contains("course_mount")) CourseHeading.mountDeg = sp.getFloat("course_mount", 0f).toDouble()
+                val trust = if (HeadingTrust.trusted) HeadingTrust.since else null
+                val learned = CourseHeading.onMove(System.currentTimeMillis(), loc.bearing.toDouble(), shown, trust) { d ->
+                    skyDome.nudgeNorth(d, "pagal GNSS kursą")
+                    if (!CourseHeading.mountDeg.isNaN()) HeadingTrust.set(true, "pataisyta pagal GNSS kursą")
+                }
+                if (learned) sp.edit().putFloat("course_mount", CourseHeading.mountDeg.toFloat()).apply()
+            }
+        }
         if (loc.hasSpeed() && loc.hasBearing() && loc.speed >= 1.5f) {
             devAxisY?.let { if (it.second <= 45.0) Orient.check.add("ekrano viršus (Y)", it.first, loc.bearing.toDouble()) }
             devAxisZ?.let { if (it.second <= 45.0) Orient.check.add("žiūrėjimas pro ekraną (−Z)", it.first, loc.bearing.toDouble()) }

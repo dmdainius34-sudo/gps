@@ -54,3 +54,17 @@ class RealAccTest {
         org.junit.Assert.assertTrue("po stogu iš vakarų $roof m", roof > 10.0)
     }
 }
+
+class CourseHeadingTest {
+    @Test fun learnsMountThenCorrectsDrift() {
+        CourseHeading.mountDeg = Double.NaN
+        var t = 1_000_000L
+        // ką tik kalibruota: planšetė pasukta 30° į kairę nuo važiavimo krypties (kursas 100°, rodoma 70°)
+        repeat(40) { CourseHeading.onMove(t, 100.0, 70.0, t - 1000) { }; t += 1000 }
+        assertEquals(30.0, CourseHeading.mountDeg, 0.5)
+        // vėliau giroskopas nudrifavo +8°: rodoma 78°, tikra 70°
+        var fix = Double.NaN
+        repeat(40) { CourseHeading.onMove(t, 100.0, 78.0, null) { fix = it }; t += 1000 }
+        assertEquals(8.0, fix, 0.5)
+    }
+}

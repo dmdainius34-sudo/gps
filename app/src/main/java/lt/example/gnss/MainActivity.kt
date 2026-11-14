@@ -2483,6 +2483,20 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val n = 40; val len = starR * 0.9
         for (i in 0 until n step 2) seg(DoubleArray(3) { obs[it] + pd[it] * len * i / n }, DoubleArray(3) { obs[it] + pd[it] * len * (i + 1) / n }, dash)
         drawLines(dash.toFloatArray(), 1f, 0.97f, 0.75f, 0.7f)
+        // 2b) Pratęsimas iki fono Polaris: fonas – sfera R = 50 aplink kamerą, todėl žvaigždė fone yra kamera + 50 · kryptis.
+        // Ašis ir žvilgsnis lygiagretūs, todėl abu susikerta toje pačioje fono žvaigždėje (begalybėje).
+        val fade = 1f - galFade()
+        if (fade > 0.01f) {
+            val bg = DoubleArray(3) { camPos[it] + pd[it] * 50.0 }
+            val ext = ArrayList<Float>()
+            seg(DoubleArray(3) { c[it] + ax[it] * starR * 0.92 }, bg, ext)
+            drawLines(ext.toFloatArray(), 1f, 0.92f, 0.45f, 0.45f * fade)
+            val dash2 = ArrayList<Float>()
+            val o2 = DoubleArray(3) { obs[it] + pd[it] * len }
+            val m2 = 120
+            for (i in 0 until m2 step 2) seg(DoubleArray(3) { o2[it] + (bg[it] - o2[it]) * i / m2 }, DoubleArray(3) { o2[it] + (bg[it] - o2[it]) * (i + 1) / m2 }, dash2)
+            drawLines(dash2.toFloatArray(), 1f, 0.97f, 0.75f, 0.4f * fade)
+        }
         // 3) Stebėtojo horizontas – plokštuma per stebėtoją, statmena vietiniam zenitui (žiedas ir kryžius Š–P, R–V)
         val up = DoubleArray(3) { obs[it] - c[it] }.let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); DoubleArray(3) { v[it] / l } }
         var e = doubleArrayOf(ax[1] * up[2] - ax[2] * up[1], ax[2] * up[0] - ax[0] * up[2], ax[0] * up[1] - ax[1] * up[0])

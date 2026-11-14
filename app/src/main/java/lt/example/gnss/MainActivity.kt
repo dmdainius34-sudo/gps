@@ -2308,6 +2308,34 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun aboveHorizon(p: FloatArray): Boolean =
         (p[0] - fP[0]) * fU[0] + (p[1] - fP[1]) * fU[1] + (p[2] - fP[2]) * fU[2] > 0.0
 
+    /**
+     * Galaktikos pusiaujas (Paukščių Tako disko plokštuma) kaip didysis dangaus apskritimas ir linija iš stebėtojo į centrą (Sgr A*):
+     * virš horizonto – ryškiai, po horizontu – blankiai. Rodo, kaip diskas pasviręs horizonto atžvilgiu dabar.
+     */
+    private fun drawGalacticPlane() {
+        val g = GalaxyModel.frame()
+        val n = 180
+        val pts = (0 until n).map { i ->
+            val t = 2 * Math.PI * i / n
+            floatArrayOf(((g[0] * cos(t) + g[3] * sin(t))).toFloat(), ((g[1] * cos(t) + g[4] * sin(t))).toFloat(), ((g[2] * cos(t) + g[5] * sin(t))).toFloat())
+                .let { skyPt(it, starR) }
+        }
+        val up = ArrayList<Float>(); val dn = ArrayList<Float>()
+        for (i in 0 until n) {
+            val a = pts[i]; val b = pts[(i + 1) % n]
+            val dst = if (aboveHorizon(a) && aboveHorizon(b)) up else dn
+            dst.add(a[0]); dst.add(a[1]); dst.add(a[2]); dst.add(b[0]); dst.add(b[1]); dst.add(b[2])
+        }
+        GLES20.glLineWidth(2f * density)
+        drawLines(dn.toFloatArray(), 0.85f, 0.7f, 1f, 0.18f)
+        drawLines(up.toFloatArray(), 0.85f, 0.7f, 1f, 0.6f)
+        val o = skyPt(floatArrayOf(0f, 0f, 0f), 0.0)
+        val c = skyPt(floatArrayOf(g[0].toFloat(), g[1].toFloat(), g[2].toFloat()), starR)
+        val toC = floatArrayOf(o[0], o[1], o[2], c[0], c[1], c[2])
+        drawLines(toC, 1f, 0.6f, 0.6f, if (aboveHorizon(c)) 0.7f else 0.3f)
+        GLES20.glLineWidth(1.5f * density)
+    }
+
     /** Segmentai tarp gretimų taškų, abu virš horizonto. */
     private fun visibleSegments(pts: List<FloatArray>, closed: Boolean): FloatArray {
         val out = ArrayList<Float>()
@@ -2523,6 +2551,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         drawLines(segDim.toFloatArray(), 0.7f, 0.8f, 1f, 0.15f)
         drawLines(seg.toFloatArray(), 0.7f, 0.8f, 1f, 0.5f)
+        drawGalacticPlane()
         }
         GLES20.glLineWidth(1f)
 

@@ -3504,23 +3504,22 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val rows = ArrayList<Pair<String, String>>()
         rows.add("Signalo stiprumas" to "%.1f dB-Hz".format(L, s.cn0) + when { s.cn0 >= 40 -> " (stiprus)"; s.cn0 >= 30 -> " (vidutinis)"; else -> " (silpnas)" })
         rows.add("Naudojamas padėčiai" to if (s.used) "taip" else "ne")
-        rows.add("Kryptis (lustas)" to "azimutas %.0f°, aukštis %.0f°".format(L, s.az, s.elev))
-        rows.add("Lustas žino" to (if (s.eph) "efemeridė yra" else "efemeridės nėra") + ", " + (if (s.alm) "almanachas yra" else "almanacho nėra"))
-        rows.add("Efemeridės šaltinis" to when {
-            !s.eph -> "dar nėra – lustas laukia (iš palydovo ~30 s, iš interneto – sekundės)"
-            (NavBits.stat(s.const + s.svid)?.eph ?: 0) > 0 -> "iš paties palydovo (ir galbūt iš interneto)"
-            else -> "iš interneto ar atminties (A-GNSS) – laukti palydovo nereikia"
-        })
-        rows.add("Iš šio palydovo gauta" to (NavBits.stat(s.const + s.svid)?.let { st ->
-            val min = ((st.lastMs - st.firstMs) / 60_000.0)
-            "%d žinučių, %.1f kbit per %.0f min.: efemeridės dalių %d, almanacho %d, kitų %d".format(L, st.n, st.bits / 1000.0, min, st.eph, st.alm, st.n - st.eph - st.alm)
-        } ?: "navigacinių žinučių dar negauta"))
+        val st = NavBits.stat(s.const + s.svid)
+        rows.add("Lustas žino" to (when {
+            !s.eph -> "efemeridės dar nėra (iš palydovo ~30 s, iš interneto – sekundės)"
+            (st?.eph ?: 0) > 0 -> "efemeridė yra (iš paties palydovo)"
+            else -> "efemeridė yra (iš interneto ar atminties – laukti palydovo nereikia)"
+        }) + ", " + (if (s.alm) "almanachas yra" else "almanacho nėra"))
+        if (st != null) rows.add("Iš palydovo gauta" to
+            "%d žinučių, %.1f kbit per %.0f min.: efemeridės dalių %d, almanacho %d, kitų %d".format(L, st.n, st.bits / 1000.0,
+                (st.lastMs - st.firstMs) / 60_000.0, st.eph, st.alm, st.n - st.eph - st.alm))
         val t = Sp3Live.gpsNow()
         val p0 = id?.let { Sp3Live.ecefKm(it, t) }
         if (id == null || p0 == null) {
             rows.add("Orbita" to "nežinoma – palydovas padėtas apytiksliai pagal lusto azimutą ir aukštį")
+            rows.add("Kryptis (lustas)" to "azimutas %.0f°, aukštis %.0f°".format(L, s.az, s.elev))
         } else {
-            rows.add("Orbitos šaltinis" to when {
+            rows.add("Programos orbita" to when {
                 Sp3Live.covers(t) -> "SP3 tikslios orbitos (AIUB CODE)"
                 BroadcastEph.ecefKm(id, t) != null -> "navigacinės žinutės, gautos iš paties palydovo"
                 else -> "BRDC efemeridės iš interneto"
@@ -3547,7 +3546,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 rows.add("Radialinis greitis" to "%+.2f km/s (%s), Doplerio poslinkis L1 %+.0f Hz".format(L, rr, if (rr < 0) "artėja" else "tolsta", -rr / 299_792.458 * 1575.42e6))
             }
             val (az, el) = Sp3Live.azEl(p0, obsLat, obsLon, 0.0)
-            rows.add("Kryptis (orbita)" to "azimutas %.1f°, aukštis %.1f°; skirtumas nuo lusto %.2f°".format(L, az, el, Sp3Live.angSep(az, el, s.az.toDouble(), s.elev.toDouble())))
+            rows.add("Kryptis" to "azimutas %.1f°, aukštis %.1f° (lustas %.0f°/%.0f°, skirtumas %.2f°)".format(L, az, el, s.az, s.elev, Sp3Live.angSep(az, el, s.az.toDouble(), s.elev.toDouble())))
             // kyla ar leidžiasi; kada nusileis
             Sp3Live.ecefKm(id, t + 600.0)?.let { p10 ->
                 val e10 = Sp3Live.azEl(p10, obsLat, obsLon, 0.0).second

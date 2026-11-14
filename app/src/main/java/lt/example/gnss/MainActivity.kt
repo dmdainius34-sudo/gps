@@ -1870,6 +1870,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         monthTex.clear()
         labelTex.clear()
         wideLabels.clear()
+        galProg = 0; galBuf = null
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
         glowProg = 0
@@ -1950,7 +1951,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Zoom: kameros atstumas kiekvieną kadrą; artima riba mažėja priartinus (kad Žemė nebūtų nukirpta)
         val near = ((zoom - EARTH_R) * 0.3f).coerceIn(0.003f, 0.1f)
         Matrix.perspectiveM(proj, 0, 40f, aspectNow, if (realScale) ((zoom - EARTH_R) * 0.3f).coerceIn(0.003f, 50f) else near,
-            if (realScale) (zoom + 60f).coerceAtLeast(60f) else 60f)
+            if (realScale) (zoom + 60f).coerceAtLeast(60f) else maxOf(60f, zoom + GALAXY_DEPTH))
         proj[9] = if (observerView()) 0f else 0.3f                 // stebėtojo režime horizontas – ekrano viduryje
         Matrix.setIdentityM(view, 0)
         Matrix.translateM(view, 0, 0f, 0f, -zoom)
@@ -2030,7 +2031,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // Žvaigždžių fonas – didelė sfera pusiaujo (RA/Dec) sistemoje, sukasi kartu su žvaigždėmis
         drawCmb()
-        if (realScale) drawFarLayer(t)
+        if (realScale) drawFarLayer(t) else drawGalaxy3d()
 
         // Dangaus skliauto kupolas (viršutinis ir apatinis) nebepiešiamas
         GLES20.glDepthMask(true)
@@ -2190,6 +2191,62 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDisableVertexAttribArray(lu)
         GLES20.glDepthMask(true)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    // ---------------- 3D PAUKŠČIŲ TAKAS (trečioji stadija) ----------------
+    private var galProg = 0
+    private var galBuf: FloatBuffer? = null
+    private var galN = 0
+    /** Scenos vienetų kpc (Saulė–centras 8,2 kpc ≈ 80 vnt.). */
+    private val GAL_S = 9.76f
+
+    /** Taškai pusiaujo (sideralinėje) erdvėje, Saulė – koordinačių pradžioje; stebėtojo poslinkis (fP) pridedamas šešėliuoklyje. */
+    private fun buildGalaxy() {
+        val g = GalaxyModel.frame()
+        val src = GalaxyModel.points()
+        galN = src.size / 7
+        val dst = FloatArray(src.size)
+        for (i in 0 until galN) {
+            val o = i * 7
+            val x = (src[o] + GalaxyModel.R_SUN).toFloat() * GAL_S; val y = src[o + 1] * GAL_S; val z = src[o + 2] * GAL_S
+            for (k in 0..2) dst[o + k] = (g[k] * x + g[3 + k] * y + g[6 + k] * z).toFloat()
+            for (k in 3..6) dst[o + k] = src[o + k]
+        }
+        galBuf = floatBuf(dst)
+    }
+
+    /** Galaktika išnyra atitolinus už Saulės sistemos (zoom > SOLAR_ZOOM) – tikru pasvirimu Žemės, ašies ir horizonto atžvilgiu. */
+    private fun drawGalaxy3d() {
+        val a = ((zoom - SOLAR_ZOOM - EARTH_R) / 30f).coerceIn(0f, 1f).let { it * it * (3 - 2 * it) }
+        if (a < 0.01f) return
+        if (galProg == 0) galProg = program(GAL_VS, GAL_FS)
+        if (galBuf == null) buildGalaxy()
+        val buf = galBuf ?: return
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        GLES20.glUseProgram(galProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(galProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(galProg, "uO"), fP[0].toFloat(), fP[1].toFloat(), fP[2].toFloat())
+        val pxPerUnit = lastH / (2f * kotlin.math.tan(Math.toRadians(20.0)).toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uK"), pxPerUnit * 0.35f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uMax"), 4f * density)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uA"), a)
+        resetAttribs()
+        val lp = GLES20.glGetAttribLocation(galProg, "aPos"); val lc = GLES20.glGetAttribLocation(galProg, "aCol")
+        GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lc)
+        buf.position(0); GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 28, buf)
+        buf.position(3); GLES20.glVertexAttribPointer(lc, 4, GLES20.GL_FLOAT, false, 28, buf)
+        GLES20.glDrawArrays(GLES20.GL_POINTS, 0, galN)
+        GLES20.glDisableVertexAttribArray(lc)
+        buf.position(0)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        // Saulė (ir visa Saulės sistema) – vienas taškas: „jūs čia“
+        if (starTex != 0) {
+            System.arraycopy(mvpI, 0, mvp, 0, 16)
+            val sz = zoom * 0.012f
+            billboard(floatArrayOf(fP[0].toFloat(), fP[1].toFloat(), fP[2].toFloat()), eyeI, sz, sz, starTex, 1f, 0.9f, 0.3f, a)
+        }
+        GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 
     // ---------------- ŽVAIGŽDŽIŲ KATALOGAS, PUSIAUJAS, EKLIPTIKA ----------------
@@ -3244,14 +3301,18 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     fun zoomBy(factor: Float) {
         if (focus != 0) { val r = bodyRadius(focus).toFloat(); focusZoom = (focusZoom / factor).coerceIn(r * 1.3f, r * 2000f); return }
         // „Realybėje“ diapazonas ~1:300 000 – žingsnis spartesnis
-        val f = if (realScale) Math.pow(factor.toDouble(), 2.0).toFloat() else factor
+        val f = if (realScale || zoom > EARTH_R + SOLAR_ZOOM) Math.pow(factor.toDouble(), 2.0).toFloat() else factor
         zoom = EARTH_R + ((zoom - EARTH_R) / f).coerceIn(0.05f, maxZoomOut())
     }
 
     /** „Realybė“: Saulė tikru dydžiu ir atstumu (Žemės spindulys 6371 km = EARTH_R); „Mastelis“ – schema. */
     @Volatile var realScale = false
-        set(v) { field = v; if (!v) zoom = zoom.coerceAtMost(EARTH_R + 9f) }
-    private fun maxZoomOut(): Float = if (realScale) (sunDistScene() * 2.6).toFloat() else 9f
+        set(v) { field = v; if (!v) zoom = zoom.coerceAtMost(EARTH_R + GALAXY_ZOOM) }
+    /** Mastelio režimo stadijos: Žemė (iki ~3), Saulės sistema (iki SOLAR_ZOOM), galaktika (iki GALAXY_ZOOM). */
+    private val SOLAR_ZOOM = 9f
+    private val GALAXY_ZOOM = 700f
+    private val GALAXY_DEPTH = 400f
+    private fun maxZoomOut(): Float = if (realScale) (sunDistScene() * 2.6).toFloat() else GALAXY_ZOOM
 
     /** Atstumas Žemė–Saulė (km) pagal Saulės vidutinę anomaliją. */
     private fun sunDistKm(): Double {
@@ -4840,6 +4901,31 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 float fres = pow(1.0 - abs(dot(n, normalize(uEye))), 2.0);
                 float nz = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
                 gl_FragColor = vec4(uColor.rgb + (nz - 0.5) / 128.0, uColor.a * (0.6 + 0.4 * fres));
+            }
+        """
+        private const val GAL_VS = """
+            attribute vec3 aPos;
+            attribute vec4 aCol;
+            uniform mat4 uMVP;
+            uniform vec3 uO;
+            uniform float uK;
+            uniform float uMax;
+            uniform float uA;
+            varying vec4 vCol;
+            void main() {
+                gl_Position = uMVP * vec4(aPos + uO, 1.0);
+                gl_PointSize = clamp(uK / max(gl_Position.w, 0.001), 1.0, uMax);
+                vCol = vec4(aCol.rgb, aCol.a * uA);
+            }
+        """
+        private const val GAL_FS = """
+            precision mediump float;
+            varying vec4 vCol;
+            void main() {
+                vec2 d = gl_PointCoord - 0.5;
+                float r = dot(d, d) * 4.0;
+                if (r > 1.0) discard;
+                gl_FragColor = vec4(vCol.rgb, vCol.a * (1.0 - r));
             }
         """
         private const val COLOR_VS = """

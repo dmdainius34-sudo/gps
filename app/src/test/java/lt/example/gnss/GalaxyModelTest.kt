@@ -15,3 +15,14 @@ class GalaxyModelTest {
         assertEquals(318.004, yr, 0.05); assertEquals(48.330, yd, 0.05)    // l = 90°, b = 0°
     }
 }
+
+class GalaxyPointsTest {
+    @Test fun sunSitsBetweenSagittariusAndPerseus() {
+        org.junit.Assert.assertTrue(GalaxyModel.ARM_R[1] < GalaxyModel.R_SUN && GalaxyModel.R_SUN < GalaxyModel.ARM_R[2])
+        val p = GalaxyModel.points(5000)
+        for (i in 0 until 5000) {
+            val r = kotlin.math.sqrt(p[i * 7] * p[i * 7] + p[i * 7 + 1] * p[i * 7 + 1])
+            org.junit.Assert.assertTrue("taškas $i už galaktikos ribų: $r kpc", r.isFinite() && r < 25f)
+        }
+    }
+}

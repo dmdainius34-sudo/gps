@@ -6587,7 +6587,7 @@ class MainActivity : AppCompatActivity() {
             Readiness.onStatus(SatCount.count(list.map { SatCount.Sig(it.const, it.svid, it.used) }).satUsed)
             updateReady()
             if (::satCountView.isInitialized) satCountView.text = SatCount.count(list.map { SatCount.Sig(it.const, it.svid, it.used) })
-                .let { "Palydovų ${it.satVisible} (naud. ${it.satUsed})\nSignalų ${it.sigVisible}" } +
+                .let { "Palydovų ${it.satVisible} (naud. ${it.satUsed})" } +
                     (LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.let { "\nRTK %s ±%.2f m (fazė %d)%s".format(java.util.Locale.US, if (LiveRtk.fix) "FIX" else "FLOAT", it.hacc, it.sats, if (MockLoc.active) " → kitoms programoms" else "") } ?: "")
             val used = list.filter { it.used }
             val avg = if (used.isNotEmpty()) used.map { it.cn0.toDouble() }.average() else 0.0

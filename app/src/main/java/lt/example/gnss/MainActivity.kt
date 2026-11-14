@@ -1867,7 +1867,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         monthTex.clear()
         labelTex.clear()
         wideLabels.clear()
-        galProg = 0; galBuf = null
+        galProg = 0; galBuf = null; coverTex = 0
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
         glowProg = 0
@@ -2028,7 +2028,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // Žvaigždžių fonas – didelė sfera pusiaujo (RA/Dec) sistemoje, sukasi kartu su žvaigždėmis
         drawCmb()
+        drawStarCollapse(covers = true)
         drawGalaxy3d()
+        drawStarCollapse(covers = false)
 
         // Dangaus skliauto kupolas (viršutinis ir apatinis) nebepiešiamas
         GLES20.glDepthMask(true)
@@ -2151,6 +2153,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Sfera R = 50 aplink stebėtoją (fP), ta pati transformacija kaip žvaigždžių (mvpI); atskira projekcija su tolima riba. */
     private fun drawCmb() {
         if (!cmbOn || cmbTex == 0 || earthPos == null || earthUv == null) return
+        val bgA = cmbAlpha * bgFade(); if (bgA < 0.01f) return
         val inv = FloatArray(16)
         if (!Matrix.invertM(inv, 0, proj, 0)) return
         val vm = FloatArray(16)
@@ -2172,7 +2175,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDisable(GLES20.GL_CULL_FACE)
         GLES20.glUseProgram(cmbProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(cmbProg, "uMVP"), 1, false, cmbMvp, 0)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(cmbProg, "uAlpha"), cmbAlpha)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(cmbProg, "uAlpha"), bgA)
         resetAttribs()
         val lp = GLES20.glGetAttribLocation(cmbProg, "aPos")
         val lu = GLES20.glGetAttribLocation(cmbProg, "aUV")
@@ -2212,7 +2215,66 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     /** Galaktika išnyra atitolinus už Saulės sistemos (zoom > SOLAR_ZOOM) – tikru pasvirimu Žemės, ašies ir horizonto atžvilgiu. */
-    private fun galFade(): Float = ((zoom - SOLAR_ZOOM - EARTH_R) / 150f).coerceIn(0f, 1f).let { it * it * (3 - 2 * it) }
+    private fun sstep(a: Float, b: Float, x: Float): Float { val t = ((x - a) / (b - a)).coerceIn(0f, 1f); return t * t * (3 - 2 * t) }
+    /** Kolapso eiga 0..1: nuo Saulės sistemos ribos iki COLLAPSE_Z (logaritmiškai pagal atitolinimą). */
+    private fun collapse(): Float {
+        val z0 = EARTH_R + SOLAR_ZOOM; if (zoom <= z0) return 0f
+        return (kotlin.math.ln(zoom / z0) / kotlin.math.ln(COLLAPSE_Z / z0)).coerceIn(0f, 1f)
+    }
+    private val COLLAPSE_Z = 3000f
+    /** Žvaigždžių fonas gęsta, kai žinomos žvaigždės jau išskrido; galaktika išryškėja paskiausiai – ant juodo fono. */
+    private fun bgFade(): Float = 1f - sstep(0.35f, 0.9f, collapse())
+    private fun galFade(): Float = sstep(0.55f, 1f, collapse())
+
+    private var coverTex = 0
+    /** Juodas minkštas diskas – uždengia fono žvaigždę, kurią „paėmė“ kolapsas. */
+    private fun makeCoverTexture(): Int {
+        val n = 64; val bmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(n / 2f, n / 2f, n / 2f, intArrayOf(0xFF000000.toInt(), 0xFF000000.toInt(), 0x00000000), floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP)
+        }
+        Canvas(bmp).drawCircle(n / 2f, n / 2f, n / 2f, p)
+        return uploadTexture(bmp)
+    }
+
+    /**
+     * Atitolinant už Saulės sistemos žinomos žvaigždės palieka savo vietą fone (ji uždengiama) ir, mirgėdamos, skrenda į tikrą
+     * 3D vietą aplink Saulę (atstumas šviesmečiais galaktikos masteliu) – artimiausios pirmiausia. Fono žvaigždė yra kamera + 50 · kryptis.
+     * covers = true – tik uždengimai (prieš galaktiką), false – pačios žvaigždės (virš galaktikos).
+     */
+    private fun drawStarCollapse(covers: Boolean) {
+        val c = collapse(); if (c <= 0f || starTex == 0) return
+        if (covers && bgFade() < 0.01f) return
+        if (coverTex == 0) coverTex = makeCoverTexture()
+        System.arraycopy(mvpI, 0, mvp, 0, 16)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        val perLy = GAL_S / 3261.56f
+        val sec = android.os.SystemClock.uptimeMillis() / 1000.0
+        for ((i, s) in NearStars.list.withIndex()) {
+            val t = sstep(0f, 1f, (c - s.start) / NearStars.SPAN)
+            if (t <= 0f) continue
+            val bg = FloatArray(3) { camPos[it] + s.dir[it] * 50f }
+            val bright = (1.5 - s.mag).toFloat().coerceIn(-2f, 3f)
+            if (covers) {
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+                val cr = 50f * (0.006f + 0.0015f * bright)
+                billboard(bg, eyeI, cr, cr, coverTex, 0f, 0f, 0f, (t * 4f).coerceAtMost(1f) * bgFade())
+                continue
+            }
+            val tp = FloatArray(3) { fP[it] + s.dir[it] * (s.ly * perLy).toFloat() }
+            val p = FloatArray(3) { bg[it] + (tp[it] - bg[it]) * t }
+            val dx = p[0] - camPos[0]; val dy = p[1] - camPos[1]; val dz = p[2] - camPos[2]
+            val dc = sqrt(dx * dx + dy * dy + dz * dz)
+            val sz = dc * (0.006f + 0.0012f * bright)
+            val tw = (0.7 + 0.3 * sin(sec * (2.5 + i % 5) + i * 1.7)).toFloat()
+            val a = (t * 4f).coerceAtMost(1f) * tw
+            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+            billboard(p, eyeI, sz, sz, starTex, s.rgb[0], s.rgb[1], s.rgb[2], a)
+            billboard(p, eyeI, sz * 0.4f, sz * 0.4f, starTex, 1f, 1f, 1f, a)
+        }
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
 
     private fun drawGalaxy3d() {
         val a = galFade()

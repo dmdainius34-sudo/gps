@@ -26,3 +26,14 @@ class GalaxyPointsTest {
         }
     }
 }
+
+class NearStarsTest {
+    @Test fun nearerStarsCollapseFirst() {
+        val l = NearStars.list
+        val start = l.associate { it.name to it.start }
+        assertEquals(0f, start["Alpha Centauri"]!!, 1e-6f)
+        assertEquals(NearStars.START_MAX, start["Deneb"]!!, 1e-6f)
+        org.junit.Assert.assertTrue(start["Sirius"]!! < start["Polaris"]!! && start["Polaris"]!! < start["Rigel"]!!)
+        for (s in l) assertEquals(1.0, kotlin.math.sqrt((s.dir[0] * s.dir[0] + s.dir[1] * s.dir[1] + s.dir[2] * s.dir[2]).toDouble()), 1e-5)
+    }
+}

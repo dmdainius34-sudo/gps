@@ -35,7 +35,7 @@ class AimView(ctx: Context) : View(ctx) {
         // orientyras centre
         p.style = Paint.Style.FILL; p.color = 0xFFFACC15.toInt(); c.drawCircle(cx, cy, r * 0.06f, p)
         // planšetės nugarėlė: aukštyn – nugarėlė per aukštai (orientyras žemiau), dešinėn – pasukta į dešinę
-        val x = cx + r * k(-dAz); val y = cy + r * k(dEl)
+        val x = cx + r * k(dAz); val y = cy - r * k(dEl)
         p.color = if (ok) 0xFF22C55E.toInt() else 0xFFEF4444.toInt()
         p.strokeWidth = 5f; p.style = Paint.Style.STROKE
         c.drawCircle(x, y, r * 0.07f, p)

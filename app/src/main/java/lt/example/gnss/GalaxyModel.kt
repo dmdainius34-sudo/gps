@@ -57,6 +57,12 @@ object GalaxyModel {
                     val th = kotlin.math.acos(2 * rnd.nextDouble() - 1); val ph = 2 * Math.PI * rnd.nextDouble()
                     put(i, r * sin(th) * cos(ph), r * sin(th) * sin(ph), 0.7 * r * cos(th), 1f, 0.78f, 0.5f, 0.12f)
                 }
+                u < 0.24 -> {                                              // vidinis žiedas aplink skersės galus („3 kpc vijos“)
+                    val phi = rnd.nextDouble() * 2 * Math.PI
+                    val ax = 4.6 + rnd.nextGaussian() * 0.35; val bx = 3.4 + rnd.nextGaussian() * 0.35   // ištemptas skersės kryptimi
+                    val t = ax * cos(phi); val w = bx * sin(phi)
+                    put(i, bux * t - buy * w, buy * t + bux * w, rnd.nextGaussian() * 0.15, 0.85f, 0.85f, 0.95f, 0.16f)
+                }
                 u < 0.70 -> {                                              // 4 vijos
                     val arm = rnd.nextInt(4)
                     val r = 3.0 * Math.pow(16.0 / 3.0, rnd.nextDouble())
@@ -71,8 +77,9 @@ object GalaxyModel {
                     val phi = Math.PI + (rnd.nextDouble() - 0.5) * 0.8; val r = R_SUN + rnd.nextGaussian() * 0.25
                     put(i, r * cos(phi) + rnd.nextGaussian() * 0.35, r * sin(phi) + rnd.nextGaussian() * 0.35, rnd.nextGaussian() * 0.12, 0.75f, 0.85f, 1f, 0.15f)
                 }
-                else -> {                                                  // plonasis diskas (senos žvaigždės)
-                    var r: Double; do { r = 1.5 - 3.0 * kotlin.math.ln(1 - rnd.nextDouble()) } while (r > 15.0)
+                else -> {                                                  // plonasis diskas (senos žvaigždės) – iki pat centro, viduje praretėjęs
+                    var r: Double
+                    do { r = -3.0 * kotlin.math.ln(1 - rnd.nextDouble()) } while (r > 15.0 || rnd.nextDouble() > 0.35 + 0.65 * (r / 3.0).coerceAtMost(1.0))
                     val phi = rnd.nextDouble() * 2 * Math.PI
                     put(i, r * cos(phi), r * sin(phi), rnd.nextGaussian() * 0.25, 1f, 0.92f, 0.8f, 0.07f)
                 }

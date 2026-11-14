@@ -2257,18 +2257,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var eclCheckMs = 0L
     private val starCatalog = listOf(
         StarCat("Polaris", hms(2, 31, 49.0), dms(89, 15, 51.0), 1.98f, floatArrayOf(1f, 0.97f, 0.85f)),
-        StarCat("Betelgeuse", hms(5, 55, 10.3), dms(7, 24, 25.0), 0.50f, floatArrayOf(1f, 0.6f, 0.35f)),
-        StarCat("Bellatrix", hms(5, 25, 7.9), dms(6, 20, 59.0), 1.64f, floatArrayOf(0.8f, 0.88f, 1f)),
-        StarCat("Mintaka", hms(5, 32, 0.4), -dms(0, 17, 57.0), 2.23f, floatArrayOf(0.8f, 0.88f, 1f)),
-        StarCat("Alnilam", hms(5, 36, 12.8), -dms(1, 12, 7.0), 1.69f, floatArrayOf(0.8f, 0.88f, 1f)),
-        StarCat("Alnitak", hms(5, 40, 45.5), -dms(1, 56, 34.0), 1.77f, floatArrayOf(0.8f, 0.88f, 1f)),
-        StarCat("Saiph", hms(5, 47, 45.4), -dms(9, 40, 11.0), 2.06f, floatArrayOf(0.8f, 0.88f, 1f)),
-        StarCat("Rigel", hms(5, 14, 32.3), -dms(8, 12, 6.0), 0.13f, floatArrayOf(0.75f, 0.85f, 1f)),
     )
-    private val orionLines = listOf(
-        "Betelgeuse" to "Bellatrix", "Bellatrix" to "Mintaka", "Mintaka" to "Alnilam", "Alnilam" to "Alnitak",
-        "Alnitak" to "Saiph", "Saiph" to "Rigel", "Rigel" to "Mintaka", "Betelgeuse" to "Alnitak")
-
     private fun hms(h: Int, m: Int, s: Double) = h + m / 60.0 + s / 3600.0
     private fun dms(d: Int, m: Int, s: Double) = d + m / 60.0 + s / 3600.0
 
@@ -2530,23 +2519,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawEarthOrbit()
         if (showOrient) drawOrientation()
 
-        // Oriono linijos (orientyrai – nustatymas „Rodyti orientyrus“)
+        // Orientyrai (nustatymas „Rodyti orientyrus“): Polaris ir galaktikos plokštuma
         val pos = HashMap<String, FloatArray>()
         for (st in starCatalog) pos[st.name] = skyPt(st.dir, starR)
-        if (showMarkers) drawMarkers(pos)
-        if (showMarkers) {
-        // Po horizontu – blankiai (orientacijai), virš – ryškiai
-        val seg = ArrayList<Float>()
-        val segDim = ArrayList<Float>()
-        for ((a, b) in orionLines) {
-            val pa = pos[a] ?: continue; val pb = pos[b] ?: continue
-            val dst = if (aboveHorizon(pa) && aboveHorizon(pb)) seg else segDim
-            dst.add(pa[0]); dst.add(pa[1]); dst.add(pa[2]); dst.add(pb[0]); dst.add(pb[1]); dst.add(pb[2])
-        }
-        drawLines(segDim.toFloatArray(), 0.7f, 0.8f, 1f, 0.15f)
-        drawLines(seg.toFloatArray(), 0.7f, 0.8f, 1f, 0.5f)
-        drawGalacticPlane()
-        }
+        if (showMarkers) { drawMarkers(pos); drawGalacticPlane() }
         GLES20.glLineWidth(1f)
 
         // Žvaigždės: dydis ir ryškumas pagal regimąjį ryškį (mažesnis – ryškesnė)

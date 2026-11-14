@@ -2219,7 +2219,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private val COLLAPSE_Z = 3000f
     /** Žvaigždžių fonas pradeda temti kartu su pirmos žvaigždės išskridimu; žinomos žvaigždės lieka matomos savo vietose, kol išskrenda. */
     private fun bgFade(): Float = 1f - sstep(0f, 0.5f, collapse())
-    private fun galFade(): Float = sstep(0.55f, 1f, collapse())
+    /** Visos žvaigždės jau taške (iki 0,8) – kartu užgęsta, tada iš to taško išryškėja galaktika. */
+    private fun starsGone(): Float = sstep(0.8f, 0.88f, collapse())
+    private fun galFade(): Float = sstep(0.85f, 1f, collapse())
 
     private var coverTex = 0
     /** Juodas minkštas diskas – uždengia fono žvaigždę, kurią „paėmė“ kolapsas. */
@@ -2233,17 +2235,18 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     /**
-     * Atitolinant už Saulės sistemos žinomos žvaigždės palieka savo vietą fone (ji uždengiama) ir, mirgėdamos, skrenda į tikrą
-     * 3D vietą aplink Saulę (atstumas šviesmečiais galaktikos masteliu) – artimiausios pirmiausia. Fono žvaigždė yra kamera + 50 · kryptis.
+     * Atitolinant už Saulės sistemos žinomos žvaigždės palieka savo vietą fone (ji uždengiama) ir, mirgėdamos, susitraukia į vieną tašką –
+     * stebėtojo vietą (artimiausios pirmiausia); kai visos taške, kartu užgęsta ir tik tada išryškėja galaktika (tikra jų vieta joje nežinoma).
+     * Fono žvaigždė yra kamera + 50 · kryptis.
      * covers = true – tik uždengimai (prieš galaktiką), false – pačios žvaigždės (virš galaktikos).
      */
     private fun drawStarCollapse(covers: Boolean) {
         val c = collapse(); if (c <= 0f || starTex == 0) return
         if (covers && bgFade() < 0.01f) return
+        val gone = starsGone(); if (!covers && gone > 0.99f) return
         if (coverTex == 0) coverTex = makeCoverTexture()
         System.arraycopy(mvpI, 0, mvp, 0, 16)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
-        val perLy = GAL_S / 3261.56f
         val sec = android.os.SystemClock.uptimeMillis() / 1000.0
         // tik stebėtojo matomos (virš jo horizonto) žvaigždės; eilė – nuo artimiausios iš jų (perskaičiuojama kas kadrą)
         val vis = NearStars.list.withIndex().filter { (_, s) -> s.dir[0] * fU[0] + s.dir[1] * fU[1] + s.dir[2] * fU[2] > 0.0 }
@@ -2262,13 +2265,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 billboard(bg, eyeI, cr, cr, coverTex, 0f, 0f, 0f, (t * 4f).coerceAtMost(1f) * bgFade())
                 continue
             }
-            val tp = FloatArray(3) { fP[it] + s.dir[it] * (s.ly * perLy).toFloat() }
-            val p = FloatArray(3) { bg[it] + (tp[it] - bg[it]) * t }
+            val p = FloatArray(3) { bg[it] + (fP[it] - bg[it]) * t }
             val dx = p[0] - camPos[0]; val dy = p[1] - camPos[1]; val dz = p[2] - camPos[2]
             val dc = sqrt(dx * dx + dy * dy + dz * dz)
             val sz = dc * (0.006f + 0.0012f * bright)
             val tw = (0.7 + 0.3 * sin(sec * (2.5 + i % 5) + i * 1.7)).toFloat()
-            val a = maxOf((t * 4f).coerceAtMost(1f), stay) * tw
+            val a = maxOf((t * 4f).coerceAtMost(1f), stay) * tw * (1f - gone)
             GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
             billboard(p, eyeI, sz, sz, starTex, s.rgb[0], s.rgb[1], s.rgb[2], a)
             billboard(p, eyeI, sz * 0.4f, sz * 0.4f, starTex, 1f, 1f, 1f, a)

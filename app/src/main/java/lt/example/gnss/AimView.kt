@@ -16,6 +16,8 @@ import kotlin.math.sqrt
  */
 class AimView(ctx: Context) : View(ctx) {
     var dAz = 0.0; var dEl = 0.0; var ok = false; var label = ""
+    /** Paskutinė kryželio ir taikinio (centro) vieta ekrane, px – diagnostikai. */
+    val crossPx = FloatArray(2); val centerPx = FloatArray(2)
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rings = doubleArrayOf(2.0, 5.0, 10.0, 20.0, 45.0)
 
@@ -36,6 +38,8 @@ class AimView(ctx: Context) : View(ctx) {
         p.style = Paint.Style.FILL; p.color = 0xFFFACC15.toInt(); c.drawCircle(cx, cy, r * 0.06f, p)
         // planšetės nugarėlė: aukštyn – nugarėlė per aukštai (orientyras žemiau), dešinėn – pasukta į dešinę
         val x = cx + r * k(dAz); val y = cy - r * k(dEl)
+        val loc = IntArray(2); getLocationOnScreen(loc)
+        crossPx[0] = loc[0] + x; crossPx[1] = loc[1] + y; centerPx[0] = loc[0] + cx; centerPx[1] = loc[1] + cy
         p.color = if (ok) 0xFF22C55E.toInt() else 0xFFEF4444.toInt()
         p.strokeWidth = 5f; p.style = Paint.Style.STROKE
         c.drawCircle(x, y, r * 0.07f, p)

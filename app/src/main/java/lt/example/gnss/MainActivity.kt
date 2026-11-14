@@ -1428,11 +1428,17 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
-            Sensor.TYPE_ROTATION_VECTOR -> onRotationVector(event)
-            Sensor.TYPE_GYROSCOPE -> onGyro(event)
-            Sensor.TYPE_GRAVITY, Sensor.TYPE_ACCELEROMETER -> onGravity(event)
+            Sensor.TYPE_ROTATION_VECTOR -> { nRv++; onRotationVector(event) }
+            Sensor.TYPE_GYROSCOPE -> { nGyro++; onGyro(event) }
+            Sensor.TYPE_GRAVITY, Sensor.TYPE_ACCELEROMETER -> { nGrav++; onGravity(event) }
         }
     }
+    @Volatile var nRv = 0L; @Volatile var nGyro = 0L; @Volatile var nGrav = 0L
+
+    /** Taikiklio diagnostikai: gravitacija prietaiso ašyse (3), orientacijos matrica (9), ekrano pasukimas, įvykių skaitikliai, amžius. */
+    fun aimDiag(): DoubleArray = doubleArrayOf(gUp[0], gUp[1], gUp[2]) + DoubleArray(9) { lastRaw[it].toDouble() } +
+        doubleArrayOf(wm.defaultDisplay.rotation * 90.0, nGyro.toDouble(), nRv.toDouble(), nGrav.toDouble(),
+            (android.os.SystemClock.elapsedRealtime() - lastPublishMs).toDouble(), if (gyroSensor == null) 0.0 else 1.0)
 
     private fun onRotationVector(event: SensorEvent) {
         val rv = FloatArray(9)
@@ -5316,6 +5322,12 @@ object OverlayBus {
     @Volatile var onUnpin: (() -> Unit)? = null
     /** Vienas bakstelėjimas prisegtam burbului – grįžus į programą atidaryti NLO pranešimų langą. */
     @Volatile var openPanel = false
+    /** Prisegtas burbulas: išskleisti NLO langą virš kitų programų (veikla lieka fone). */
+    @Volatile var onExpand: (() -> Unit)? = null
+    @Volatile var showBubble: (() -> Unit)? = null
+    @Volatile var unpinRequest: (() -> Unit)? = null
+    /** Burbulo vieta ekrane – NLO langas atidaromas šalia. */
+    @Volatile var bubbleX = 0; @Volatile var bubbleY = 0
 }
 
 class BubbleOverlayService : Service() {
@@ -5372,7 +5384,12 @@ class BubbleOverlayService : Service() {
             override fun onDown(e: MotionEvent): Boolean { keyHaptic(view); return true }
             override fun onDoubleTap(e: MotionEvent): Boolean { unpin(); return true }
             // vienas bakstelėjimas – grįžti į programą ir atidaryti NLO pranešimų langą
-            override fun onSingleTapConfirmed(e: MotionEvent): Boolean { OverlayBus.openPanel = true; unpin(); return true }
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                val ex = OverlayBus.onExpand
+                if (ex != null) { OverlayBus.bubbleX = lp.x; OverlayBus.bubbleY = lp.y; view.visibility = View.INVISIBLE; ex() }
+                else { OverlayBus.openPanel = true; unpin() }
+                return true
+            }
         })
         view.setOnTouchListener { _, ev ->
             gd.onTouchEvent(ev)
@@ -5390,6 +5407,8 @@ class BubbleOverlayService : Service() {
             true
         }
         manager.addView(view, lp)
+        OverlayBus.showBubble = { handler.post { view.visibility = View.VISIBLE } }
+        OverlayBus.unpinRequest = { handler.post { unpin() } }
         handler.post(pollSignal)
     }
 
@@ -5426,6 +5445,7 @@ class BubbleOverlayService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        OverlayBus.showBubble = null; OverlayBus.unpinRequest = null
         try { bubble?.let { wm?.removeView(it) } } catch (_: Exception) {}
         bubble = null
         super.onDestroy()
@@ -5954,11 +5974,17 @@ class DraggablePanel(
         layoutParams = lp
     }
 
+    /** Kviečiama suskleidus panelę (NLO langas virš kitų programų grąžinamas į burbulą). */
+    var onMinimized: (() -> Unit)? = null
+    /** Virš kitų programų: didžiausias aukštis, px (0 – pagal tėvą). */
+    var overlayMaxH = 0
+
     private fun minimize() {
         setOwnWidth(FrameLayout.LayoutParams.WRAP_CONTENT)
         panel.visibility = GONE
         bubble.visibility = VISIBLE
         post { constrainPosition() }
+        onMinimized?.invoke()
     }
 
     private fun maximize() {
@@ -5974,7 +6000,7 @@ class DraggablePanel(
 
     /** Jei turinys netelpa ekrane (telefone), slenkama dalis apribojama ir tampa slenkama. */
     private fun limitBodyHeight() {
-        val parentH = (parent as? View)?.height ?: return
+        val parentH = if (overlayMaxH > 0) overlayMaxH else (parent as? View)?.height ?: return
         val w = body.width.takeIf { it > 0 } ?: (width - panel.paddingLeft - panel.paddingRight)
         bodyInner.measure(MeasureSpec.makeMeasureSpec(w.coerceAtLeast(1), MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
@@ -5991,6 +6017,7 @@ class DraggablePanel(
     }
 
     private fun adjustPositionOnExpand() {
+        if (overlayMaxH > 0) { translationX = 0f; translationY = 0f; return }
         val parentW = (parent as? View)?.width?.toFloat() ?: return
         val parentH = (parent as? View)?.height?.toFloat() ?: return
 
@@ -6264,6 +6291,55 @@ class MainActivity : AppCompatActivity() {
         sharePanel?.bringToFront()
     }
 
+    private var overlayHost: FrameLayout? = null
+    private var panelHomeParams: ViewGroup.LayoutParams? = null
+
+    /** NLO langas (ta pati panelė su visais mygtukais) perkeliamas į langą virš kitų programų; veikla lieka fone. */
+    private fun expandPanelOverlay() {
+        val p = sharePanel ?: return
+        if (overlayHost != null) { p.open(); return }
+        try {
+            val wmm = getSystemService(WINDOW_SERVICE) as WindowManager
+            panelHomeParams = p.layoutParams
+            (p.parent as? ViewGroup)?.removeView(p)
+            val host = FrameLayout(this)
+            p.translationX = 0f; p.translationY = 0f; p.visibility = View.VISIBLE
+            val dm = resources.displayMetrics
+            p.overlayMaxH = (dm.heightPixels * 0.85f).toInt()
+            host.addView(p, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+            val lp = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, android.graphics.PixelFormat.TRANSLUCENT)
+            lp.gravity = Gravity.TOP or Gravity.START
+            val w = (270 * dm.density).toInt()
+            lp.x = OverlayBus.bubbleX.coerceIn(0, (dm.widthPixels - w).coerceAtLeast(0))
+            lp.y = OverlayBus.bubbleY.coerceIn(0, (dm.heightPixels * 0.15f).toInt().coerceAtLeast(OverlayBus.bubbleY.coerceAtMost(dm.heightPixels / 3)))
+            wmm.addView(host, lp)
+            overlayHost = host
+            p.onMinimized = { collapsePanelOverlay(true) }
+            p.onPin = { collapsePanelOverlay(false); OverlayBus.unpinRequest?.invoke() }
+            p.post { p.open() }
+        } catch (e: Exception) {
+            android.util.Log.e("GnssApp", "NLO langas virš programų nepavyko", e)
+            collapsePanelOverlay(true)
+            Toast.makeText(this, "NLO langas virš programų nepavyko: ${e.javaClass.simpleName}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Panelė grąžinama į programą; showBubble – vėl parodyti plūduriuojantį burbulą virš kitų programų. */
+    private fun collapsePanelOverlay(showBubble: Boolean) {
+        val host = overlayHost ?: run { if (showBubble) OverlayBus.showBubble?.invoke(); return }
+        val p = sharePanel
+        overlayHost = null
+        try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(host) } catch (_: Exception) {}
+        if (p != null) {
+            host.removeView(p); p.overlayMaxH = 0; p.onMinimized = null; p.onPin = { pinBubble() }
+            p.visibility = View.GONE
+            container.addView(p, panelHomeParams ?: FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        }
+        if (showBubble) OverlayBus.showBubble?.invoke()
+    }
+
     /** Prisegti burbulą prie ekrano (veikia ir kitose programose). */
     private fun pinBubble() {
         if (!Settings.canDrawOverlays(this)) {
@@ -6271,7 +6347,8 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
             return
         }
-        OverlayBus.onUnpin = { runOnUiThread { sharePanel?.visibility = View.VISIBLE
+        OverlayBus.onExpand = { runOnUiThread { expandPanelOverlay() } }
+        OverlayBus.onUnpin = { runOnUiThread { collapsePanelOverlay(false); OverlayBus.onExpand = null; sharePanel?.visibility = View.VISIBLE
             if (OverlayBus.openPanel) { OverlayBus.openPanel = false; sharePanel?.postDelayed({ sharePanel?.open() }, 400L) } } }
         sharePanel?.visibility = View.GONE
         try {
@@ -6858,6 +6935,7 @@ class MainActivity : AppCompatActivity() {
                         (runCatching { headingVsLog() }.getOrNull()?.let { "Kryptis pagal Saulės žurnalą + magnetometrą: vaizdo kryptis skiriasi %+.1f° (įrašas %s)".format(Locale.US, it.first,
                             java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(java.util.Date(it.second.ms))) +
                             (if (SunCal.lastFixMs > 0) "; paskutinė automatinė pataisa %+.1f°".format(Locale.US, -SunCal.lastFixDeg) else "") + "\n" } ?: "") +
+                        (AimDiag.lastSummary(this@MainActivity).takeIf { it.isNotEmpty() }?.let { it + "\n" } ?: "") +
                         (SunCal.lastLine(this@MainActivity)?.let { "Paskutinis kalibravimas pagal Saulę (${SunCal.FILE}): ${SunCal.HEADER.trim()}\n$it\n" } ?: "Kalibravimų pagal Saulę žurnale nėra\n") +
                         (if (Uvi.enabled) Uvi.text() + "\n" else "") + SunFrame.text() + "\n" +
                         NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + CabinMap.text() + "\n" +
@@ -6886,6 +6964,9 @@ class MainActivity : AppCompatActivity() {
                     navCsvUri()?.let { uris.add(it) }
                     rtcmCsvUri()?.let { uris.add(it) }
                     gapLogUri()?.let { uris.add(it) }
+                    try { val af = AimDiag.file(this@MainActivity)
+                        if (af.exists()) { val cf = File(cacheDir, AimDiag.FILE); af.copyTo(cf, true)
+                            uris.add(FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", cf)) } } catch (_: Exception) {}
                     try { val sf = SunCal.file(this@MainActivity)
                         if (sf.exists()) { val cf = File(cacheDir, SunCal.FILE); sf.copyTo(cf, true)
                             uris.add(FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", cf)) } } catch (e: Exception) { logError("${SunCal.FILE}: ${e.message}") }
@@ -7306,6 +7387,7 @@ class MainActivity : AppCompatActivity() {
         val dlg = android.app.AlertDialog.Builder(this).setTitle("Taikiklis: ${t.name}").setView(android.widget.ScrollView(this).apply { addView(box) })
             .setPositiveButton("Kalibruoti", null).setNegativeButton("Atšaukti", null).create()
         skyDome.sensorsOn()
+        AimDiag.start(t.name)
         val ch = android.view.Choreographer.getInstance()
         var alive = true
         val tick = object : android.view.Choreographer.FrameCallback { override fun doFrame(frameNs: Long) { if (!alive) return; run() }
@@ -7329,6 +7411,7 @@ class MainActivity : AppCompatActivity() {
             aim.dAz = SunCal.wrap(dev.first - az); aim.dEl = dev.second - el; aim.ok = ok
             aim.label = if (ok) "✓ aukštis sutampa" else "aukštyn/žemyn %+.1f°".format(Locale.US, -dEl)
             if (!skyDome.aimReady()) aim.label = "laukiama jutiklių…"
+            try { AimDiag.frame(System.currentTimeMillis(), skyDome.aimDiag(), dev.first, dev.second, az, el, aim.dAz, aim.dEl, aim.crossPx, aim.centerPx) } catch (_: Exception) {}
             aim.invalidate()
             ch.postFrameCallback(this)                                    // kas ekrano kadrą (~60 k/s)
         } }
@@ -7336,7 +7419,8 @@ class MainActivity : AppCompatActivity() {
             dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener { if (calibrateWith(key)) dlg.dismiss() }
             ch.postFrameCallback(tick)
         }
-        dlg.setOnDismissListener { alive = false; ch.removeFrameCallback(tick) }
+        dlg.setOnDismissListener { alive = false; ch.removeFrameCallback(tick)
+            try { val d = skyDome.aimDiag(); AimDiag.stop(this, d[13], d[14]) } catch (_: Exception) {} }
         dlg.show()
     }
 

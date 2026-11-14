@@ -5655,7 +5655,7 @@ class DraggablePanel(
             override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
         }
     }
-    private val claudeBtn = Button(context).apply { text = "Klausti Claude (klausimas – laukelyje „?“ apačioje)"; textSize = 12f; isAllCaps = false }
+    private val claudeBtn = Button(context).apply { text = "Klausti Claude (atskiras, be šio pokalbio)"; textSize = 12f; isAllCaps = false }
     private val claudeAnswer = TextView(context).apply {
         textSize = 13f; setTextColor(Color.BLACK); setTextIsSelectable(true)
         setPadding((4 * resources.displayMetrics.density).toInt(), (4 * resources.displayMetrics.density).toInt(), 0, (8 * resources.displayMetrics.density).toInt())
@@ -5674,13 +5674,21 @@ class DraggablePanel(
             override fun afterTextChanged(s: android.text.Editable?) { claudePrefs.edit().putString("gh_token", s?.toString()?.trim() ?: "").apply() }
         })
     }
+    /** Žinutė Claude – didelis laukelis viršuje (abiem mygtukams). */
+    private val msgInput = EditText(context).apply {
+        hint = "Rašykite čia žinutę Claude…"
+        textSize = 15f; minLines = 3; maxLines = 8
+        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        gravity = Gravity.TOP or Gravity.START
+    }
+    private fun message(): String = msgInput.text.toString().trim().ifEmpty { questionInput.text.toString().trim() }
     private val pkReport = CheckBox(context).apply { text = "Pridėti ataskaitą (koordinatės suapvalintos – saugykla vieša)"; textSize = 12f; isChecked = true }
     private val pkBtn = Button(context).apply { text = "Siųsti į „PagrindinisKodas“ (Claude Code pokalbį)"; textSize = 12f; isAllCaps = false }
     fun setPkBusy(busy: Boolean) { pkBtn.isEnabled = !busy; pkBtn.text = if (busy) "Laukiama atsakymo iš „PagrindinisKodas“…" else "Siųsti į „PagrindinisKodas“ (Claude Code pokalbį)" }
 
     fun setClaudeAnswer(text: String, busy: Boolean = false) {
         claudeAnswer.visibility = VISIBLE; claudeAnswer.text = text; claudeBtn.isEnabled = !busy
-        claudeBtn.text = if (busy) "Claude galvoja…" else "Klausti Claude (klausimas – laukelyje „?“ apačioje)"
+        claudeBtn.text = if (busy) "Claude galvoja…" else "Klausti Claude (atskiras, be šio pokalbio)"
     }
 
     /** „Baigti įrašą“ / „Tęsti įrašą“ – kviečiama veiklos. */
@@ -5800,12 +5808,13 @@ class DraggablePanel(
         panel.addView(recRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         panel.addView(inputRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         panel.addView(sp3Status, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        bodyInner.addView(msgInput, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(pkBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(pkReport)
         bodyInner.addView(pkToken)
         pkBtn.setOnClickListener {
-            val q = questionInput.text.toString().trim()
-            if (q.isEmpty()) { setClaudeAnswer("Parašykite žinutę laukelyje „?“ apačioje ir spauskite dar kartą."); return@setOnClickListener }
+            val q = message()
+            if (q.isEmpty()) { setClaudeAnswer("Parašykite žinutę laukelyje viršuje ir spauskite dar kartą."); return@setOnClickListener }
             onSendPk?.invoke(q, pkReport.isChecked, pkToken.text.toString().trim())
         }
         bodyInner.addView(claudeBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -5813,8 +5822,8 @@ class DraggablePanel(
         bodyInner.addView(claudeModel)
         bodyInner.addView(claudeKey)
         claudeBtn.setOnClickListener {
-            val q = questionInput.text.toString().trim()
-            if (q.isEmpty()) { setClaudeAnswer("Parašykite klausimą laukelyje „?“ apačioje ir spauskite dar kartą."); return@setOnClickListener }
+            val q = message()
+            if (q.isEmpty()) { setClaudeAnswer("Parašykite žinutę laukelyje viršuje ir spauskite dar kartą."); return@setOnClickListener }
             onAskClaude?.invoke(q, ClaudeAsk.MODELS[claudeModel.selectedItemPosition.coerceAtLeast(0)][0], claudeKey.text.toString().trim())
         }
         bodyInner.addView(optionsLayout)

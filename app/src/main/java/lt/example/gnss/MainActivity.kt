@@ -2246,13 +2246,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawMarkers(pos: Map<String, FloatArray>) {
         if (sgrTex == 0) sgrTex = makeTextureW("Sgr A* (Galaktikos centras)", 0xFFFF9A9A.toInt(), 64, 8)
         if (polarisTex == 0) polarisTex = makeTextureW("Polaris", 0xFFFFF3C0.toInt(), 64, 4)
-        if (beltTex == 0) beltTex = makeTextureW("Oriono juosta", 0xFFC8DCFF.toInt(), 64, 6)
         val sg = skyPt(sgrDir, starR)
         val a = if (aboveHorizon(sg)) 1f else 0.4f
         if (starTex != 0) billboard(sg, eyeI, 0.12f, 0.12f, starTex, 1f, 0.45f, 0.45f, a)
         billboard(floatArrayOf(sg[0], sg[1], sg[2] - 0.12f), eyeI, 0.64f, 0.08f, sgrTex, 1f, 1f, 1f, a)
         pos["Polaris"]?.let { p -> billboard(floatArrayOf(p[0], p[1], p[2] + 0.1f), eyeI, 0.32f, 0.08f, polarisTex, 1f, 1f, 1f, 0.9f) }
-        pos["Alnilam"]?.let { p -> billboard(floatArrayOf(p[0], p[1], p[2] - 0.12f), eyeI, 0.48f, 0.08f, beltTex, 1f, 1f, 1f, 0.8f) }
     }
 
     /** Kiekvieną kadrą: Saulė turi gulėti ant ekliptikos, Mėnulis – ±5° (5,3° su paklaida). */
@@ -2461,11 +2459,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         seg(tip, DoubleArray(3) { tip[it] - mv[it] * r * 0.3 - side[it] * r * 0.15 }, arrow)
         drawLines(arrow.toFloatArray(), 0.5f, 1f, 0.55f, 0.95f)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
-        labelAt(DoubleArray(3) { c[it] + ax[it] * r * 2.0 }, "Žemės ašis → Polaris", 1f, 0.92f, 0.5f)
-        labelAt(DoubleArray(3) { obs[it] + pd[it] * len * 0.35 + up[it] * 0.04 }, "jūsų žvilgsnis į Polaris (lygiagretus ašiai)", 1f, 0.97f, 0.8f, 0.04f)
         labelAt(DoubleArray(3) { obs[it] + nn[it] * hr * 1.08 }, "Š", 0.6f, 1f, 1f, 0.04f)
-        labelAt(DoubleArray(3) { obs[it] + up[it] * 0.02 + e[it] * hr * 1.1 }, "jūsų horizontas", 0.6f, 1f, 1f, 0.04f)
-        labelAt(DoubleArray(3) { tip[it] + mv[it] * r * 0.25 }, "Žemės kelias orbitoje 29,8 km/s", 0.6f, 1f, 0.65f)
     }
 
     private fun drawSky() {
@@ -3279,9 +3273,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glLineWidth(1f); GLES20.glDepthMask(true)
         }
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
-        val (tex, asp) = wideLabel("Saulė (%.2f mln. km)".format(java.util.Locale.US, sunDistKm() / 1e6))
-        val k = labelK(sp)
-        billboard(floatArrayOf(sp[0], sp[1], sp[2] + 40f), eyeI, 0.06f * k * asp, 0.06f * k, tex, 1f, 0.9f, 0.5f, 0.95f)
         if (camD > 30f) {                                  // Žemė jau mažesnė už pikselį – žyma
             val (te, ae) = wideLabel("Žemė")
             val ke = labelK(floatArrayOf(0f, 0f, 0f))
@@ -4092,11 +4083,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
         drawLines(pts.toFloatArray(), 0.8f, 0.8f, 0.85f, 0.35f)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
-        moonPosLast?.let { m ->
-            val (tex, asp) = wideLabel("Mėnulis %.0f km".format(java.util.Locale.US, moonDistKm()))
-            val mk = labelK(floatArrayOf(m[0].toFloat(), m[1].toFloat(), m[2].toFloat()))
-            billboard(floatArrayOf(m[0].toFloat(), m[1].toFloat(), (m[2] + 0.2 * mk).toFloat()), eyeI, 0.12f * asp * mk, 0.12f * mk, tex, 0.9f, 0.9f, 0.95f, 0.9f)
-        }
     }
 
     /** Kryžius kūno modelio erdvėje (ilguma, platuma °; spindulys r; dydis °). */
@@ -4123,7 +4109,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawCentersTriangle() {
         if (earthMatLast[10] == 0f) return
         val now = System.currentTimeMillis()
-        val sd = sunDir(); val md = moonDir(); val sKm = sunDistKm(); val mKm = moonDistKm()
+        val sd = sunDir(); val md = moonDir()
         fun ll(v: DoubleArray): Pair<Double, Double> {
             val la = Math.toDegrees(kotlin.math.asin(v[2].coerceIn(-1.0, 1.0)))
             val lo = ((Math.toDegrees(kotlin.math.atan2(v[1], v[0])) - Astro.gmstDeg(now) + 540.0) % 360.0) - 180.0
@@ -4160,18 +4146,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 0.9f, 0.5f, 0.45f)
         if (lines.isNotEmpty()) { bindPos(colorProg, floatBuf(lines.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, lines.size / 3) }
         GLES20.glLineWidth(1f); GLES20.glDepthMask(true); GLES20.glDisable(GLES20.GL_DEPTH_TEST)
-        // tikri kampai: elongacija (Saulė–Mėnulis danguje) ir fazės kampas (Saulė–Mėnulis–Žemė)
-        val cosE = (sd[0] * md[0] + sd[1] * md[1] + sd[2] * md[2]).coerceIn(-1.0, 1.0)
-        val e = kotlin.math.acos(cosE)
-        val ph = kotlin.math.atan2(sKm * sin(e), mKm - sKm * cos(e))
-        val illum = (1 + cos(ph)) / 2 * 100
-        if (mf != null) {
-            val (tx, ta) = wideLabel("Mėnulis: fazės kampas %.0f°, apšviesta %.0f %%".format(java.util.Locale.US, Math.toDegrees(ph), illum))
-            val k = labelK(mf)
-            billboard(floatArrayOf(mf[0], mf[1], mf[2] - 0.2f * k), eyeI, 0.09f * ta * k, 0.09f * k, tx, 1f, 0.9f, 0.6f, 0.9f)
-        }
-        val (tx, ta) = wideLabel("Saulė–Mėnulis danguje %.0f°".format(java.util.Locale.US, Math.toDegrees(e)))
-        billboard(floatArrayOf(0f, 0f, -EARTH_R * 1.5f), eyeI, 0.06f * ta, 0.06f, tx, 1f, 0.9f, 0.6f, 0.9f)
     }
 
     /** Mėnulio kryptis (apytikslė, ~1°). */
@@ -4650,7 +4624,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var noSp3Tex = 0
     private var sgrTex = 0
     private var polarisTex = 0
-    private var beltTex = 0
 
     /** Platus užrašas: plotis = aukštis × wRatio. */
     private fun makeTextureW(text: String, color: Int, sizePx: Int, wRatio: Int): Int {

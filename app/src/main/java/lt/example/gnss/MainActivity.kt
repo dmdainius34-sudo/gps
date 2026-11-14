@@ -1941,7 +1941,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Fonas – ta pati C/N0 spalva kaip ekrano fone ir burbule (švelniai pereinama)
         val bgTarget = ColorUtils.blendARGB(BG_NEUTRAL, lastTint, 0.45f)
         bgNow = ColorUtils.blendARGB(bgNow, bgTarget, 0.05f)
-        GLES20.glClearColor(Color.red(bgNow) / 255f, Color.green(bgNow) / 255f, Color.blue(bgNow) / 255f, 1f)
+        // atitolinus iki galaktikos žvaigždžių fonas užgęsta – po juo turi likti juoda erdvė, ne šviesus pagrindas
+        val clr = ColorUtils.blendARGB(bgNow, Color.BLACK, 1f - bgFade())
+        GLES20.glClearColor(Color.red(clr) / 255f, Color.green(clr) / 255f, Color.blue(clr) / 255f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
         val t = (System.nanoTime() - t0) / 1e9f
 

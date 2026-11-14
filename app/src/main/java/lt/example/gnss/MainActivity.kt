@@ -5989,7 +5989,8 @@ class DraggablePanel(
 
     private fun maximize() {
         // Mažesnė panelė: iki 70 % ekrano pločio ir ne daugiau kaip 260 dp
-        val parentW = (parent as? View)?.width ?: 0
+        // virš kitų programų tėvas – tik apgaubiantis langas (burbulo dydžio), todėl plotis pagal ekraną
+        val parentW = if (overlayMaxH > 0) resources.displayMetrics.widthPixels else (parent as? View)?.width ?: 0
         val maxW = (260 * density).toInt()
         val target = if (parentW > 0) min((parentW * 0.7f).toInt(), maxW) else maxW
         setOwnWidth(target)
@@ -6302,7 +6303,9 @@ class MainActivity : AppCompatActivity() {
             val wmm = getSystemService(WINDOW_SERVICE) as WindowManager
             panelHomeParams = p.layoutParams
             (p.parent as? ViewGroup)?.removeView(p)
-            val host = FrameLayout(this)
+            // permatomas langas su paraštėmis – kad panelės užapvalinti kampai ir šešėlis nebūtų nukirpti stačiakampiu
+            val host = FrameLayout(this).apply { val pd = (12 * resources.displayMetrics.density).toInt(); setPadding(pd, pd, pd, pd)
+                clipToPadding = false; clipChildren = false; setBackgroundColor(android.graphics.Color.TRANSPARENT) }
             p.translationX = 0f; p.translationY = 0f; p.visibility = View.VISIBLE
             val dm = resources.displayMetrics
             p.overlayMaxH = (dm.heightPixels * 0.85f).toInt()

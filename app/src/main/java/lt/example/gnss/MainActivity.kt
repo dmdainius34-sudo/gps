@@ -7277,8 +7277,11 @@ class MainActivity : AppCompatActivity() {
     private fun showAimDialog(key: String) {
         if (!::skyDome.isInitialized) return
         val t = SunCal.target(key)
-        val tv = TextView(this).apply { setPadding(48, 24, 48, 8); textSize = 17f }
-        val dlg = android.app.AlertDialog.Builder(this).setTitle("Taikiklis: ${t.name}").setView(tv)
+        val tv = TextView(this).apply { setPadding(48, 8, 48, 8); textSize = 15f }
+        val aim = AimView(this)
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 16, 24, 0)
+            addView(aim, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)); addView(tv) }
+        val dlg = android.app.AlertDialog.Builder(this).setTitle("Taikiklis: ${t.name}").setView(android.widget.ScrollView(this).apply { addView(box) })
             .setPositiveButton("Kalibruoti", null).setNegativeButton("Atšaukti", null).create()
         val h = android.os.Handler(mainLooper)
         val tick = object : Runnable { override fun run() {
@@ -7287,7 +7290,7 @@ class MainActivity : AppCompatActivity() {
             val dev = skyDome.deviceAim()
             val dEl = el - dev.second
             val ok = kotlin.math.abs(dEl) <= 2.0
-            tv.text = "${t.name}: %s, aukštis %.1f° virš horizonto\nPlanšetės nugarėlė: %.1f°\n%s\n\nKryptį į šonus nustatykite akimis – žiūrėdami į tikrą ${t.name.substringBefore(" (")}. Ekranas į save, nugarėlė į orientyrą.".format(Locale.US,
+            tv.text = "${t.name}: %s, aukštis %.1f° virš horizonto\nPlanšetės nugarėlė: %.1f°\n%s\n\nTaikinys: geltonas taškas – ${t.name.substringBefore(" (")}, kryželis – kur rodo planšetės nugarėlė. Aukštyn–žemyn rodoma tiksliai. Į šonus – pagal dabartinį kompasą, kurį kalibravimas ištaisys, todėl į šonus taikykite akimis į tikrą orientyrą. Ekranas į save, nugarėlė į orientyrą.".format(Locale.US,
                 if (el < SunCal.MIN_EL) "po horizontu" else "azimutas %.0f° (%s)".format(Locale.US, az, compass(az)), el, dev.second,
                 when { el < SunCal.MIN_EL -> "Orientyras po horizontu – kalibruoti negalima"
                     el > SunCal.MAX_EL -> "Per aukštai (> 70°) – azimutas būtų netikslus"
@@ -7296,6 +7299,9 @@ class MainActivity : AppCompatActivity() {
                     dEl > 0 -> "↑ Pakelkite nugarėlę %.1f°".format(Locale.US, dEl)
                     else -> "↓ Nuleiskite nugarėlę %.1f°".format(Locale.US, -dEl) })
             tv.setTextColor(if (ok) 0xFF16A34A.toInt() else 0xFF111827.toInt())
+            aim.dAz = SunCal.wrap(dev.first - az); aim.dEl = dev.second - el; aim.ok = ok
+            aim.label = if (ok) "✓ aukštis sutampa" else "aukštyn/žemyn %+.1f°".format(Locale.US, -dEl)
+            aim.invalidate()
             h.postDelayed(this, 200L)
         } }
         dlg.setOnShowListener {

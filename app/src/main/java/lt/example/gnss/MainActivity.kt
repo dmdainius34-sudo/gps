@@ -1259,7 +1259,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setLevelHorizon(on: Boolean) { renderer.levelHorizon = on; calPrefs.edit().putBoolean("level_horizon", on).apply() }
     fun setFreeView(on: Boolean) { renderer.freeView = on; renderer.resetUser() }
     fun setOcean(on: Boolean) { renderer.oceanOn = on; if (on) renderer.oceanLevel = 2 }
-    fun fpsText(): String = renderer.fpsText()
+    fun fpsText(): String = renderer.fpsText() + "; žvaigždžių fonas: " + renderer.cmbName
 
     fun setStableNorth(on: Boolean) {
         stableNorth = on
@@ -2106,14 +2106,22 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private val cmbMvp = FloatArray(16)
 
     /** assets/stars_bg.jpg – lygiakampė projekcija RA/Dec (u: RA −180°..180°, v: Dec +90°..−90°), perskaičiuota iš galaktinių koordinačių. */
+    @Volatile var cmbName = ""
     private fun loadCmb() {
         cmbTex = 0
         cmbProg = program(CMB_VS, CMB_FS)
         try {
-            appCtx.assets.open("stars_bg.jpg").use { ins ->
-                val bmp = android.graphics.BitmapFactory.decodeStream(ins)
+            // ultra raiška: NASA 8k fonas, jei grafika leidžia 8192 px tekstūras ir jis yra APK (kitaip – 4k)
+            val big = GlCaps.maxTex >= 8192 && try { appCtx.assets.open("stars_bg_8k.jpg").close(); true } catch (_: Exception) { false }
+            cmbName = if (big) "NASA SVS 2020, 8192×4096" else "NASA SVS 2020, 4096×2048"
+            appCtx.assets.open(if (big) "stars_bg_8k.jpg" else "stars_bg.jpg").use { ins ->
+                val opts = android.graphics.BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
+                val bmp = android.graphics.BitmapFactory.decodeStream(ins, null, opts)
                 if (bmp != null) {
                     cmbTex = uploadTexture(bmp)
+                    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cmbTex)
+                    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR)
+                    GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
                     android.util.Log.i("GnssApp", "Žvaigždžių fonas įkeltas: ${bmp.width}x${bmp.height}")
                 } else android.util.Log.w("GnssApp", "stars_bg.jpg neskaitomas – naudojamas paprastas fonas")
             }

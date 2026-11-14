@@ -22,6 +22,25 @@ jobs:
       - name: Unit tests (PositionSolver)
         run: gradle testDebugUnitTest --no-daemon
 
+      - name: NASA 8k žvaigždžių fono talpykla
+        uses: actions/cache@v4
+        with:
+          path: starmap8k
+          key: starmap8k-${{ hashFiles('tools/stars8k.py') }}
+
+      - name: NASA 8k žvaigždžių fonas (EXR -> JPG, išlygintas pagal 4k)
+        continue-on-error: true
+        run: |
+          mkdir -p starmap8k
+          if [ ! -s starmap8k/stars_bg_8k.jpg ]; then
+            U=https://svs.gsfc.nasa.gov/vis/a000000/a004800/a004851/starmap_2020_8k.exr
+            curl -sSL -m 900 -o starmap8k/s.exr -w "HTTP %{http_code} %{size_download}\n" "$U"
+            pip install -q OpenEXR numpy pillow
+            python3 tools/stars8k.py starmap8k/s.exr app/src/main/assets/stars_bg.jpg starmap8k/stars_bg_8k.jpg
+            rm -f starmap8k/s.exr
+          fi
+          if [ -s starmap8k/stars_bg_8k.jpg ]; then cp starmap8k/stars_bg_8k.jpg app/src/main/assets/; ls -la app/src/main/assets/stars_bg_8k.jpg; fi
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
 

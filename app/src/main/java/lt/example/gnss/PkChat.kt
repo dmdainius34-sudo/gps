@@ -44,6 +44,10 @@ class PkChat(ctx: Context, private val token: () -> String, private val report: 
     private var alive = true
     private val lamp = View(ctx).apply { background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.GRAY) } }
 
+    /** Virš kitų programų: tempimas už antraštės perstumia langą. */
+    var onDragBy: ((Float, Float) -> Unit)? = null
+    private var dragX = 0f; private var dragY = 0f
+
     private fun setLamp(c: Int) { (lamp.background as GradientDrawable).setColor(c) }
 
     private fun dp(v: Int) = (v * d).toInt()
@@ -59,6 +63,13 @@ class PkChat(ctx: Context, private val token: () -> String, private val report: 
             LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
         head.addView(Button(ctx).apply { text = "↻"; minWidth = 0; minimumWidth = 0; setOnClickListener { refresh() } }, LayoutParams(dp(44), dp(44)))
         head.addView(Button(ctx).apply { text = "✕"; minWidth = 0; minimumWidth = 0; setOnClickListener { close() } }, LayoutParams(dp(44), dp(44)))
+        head.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> { dragX = e.rawX; dragY = e.rawY; true }
+                android.view.MotionEvent.ACTION_MOVE -> { onDragBy?.invoke(e.rawX - dragX, e.rawY - dragY); dragX = e.rawX; dragY = e.rawY; true }
+                else -> true
+            }
+        }
         addView(head)
         addView(scroll, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
         addView(photoView, LayoutParams(dp(90), dp(90)))

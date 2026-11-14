@@ -6026,10 +6026,12 @@ class DraggablePanel(
                 if (isDragging) {
                     val dx = event.rawX - lastX
                     val dy = event.rawY - lastY
-                    translationX += dx
-                    translationY += dy
                     lastX = event.rawX
                     lastY = event.rawY
+                    val mv = onDragBy
+                    if (mv != null) { mv(dx, dy); return true }
+                    translationX += dx
+                    translationY += dy
                     constrainPosition()
                     return true
                 }
@@ -6052,6 +6054,8 @@ class DraggablePanel(
 
     /** Kviečiama suskleidus panelę (NLO langas virš kitų programų grąžinamas į burbulą). */
     var onMinimized: (() -> Unit)? = null
+    /** Virš kitų programų: tempiamas visas langas ekrane, ne panelė jo viduje. */
+    var onDragBy: ((Float, Float) -> Unit)? = null
     /** Virš kitų programų: didžiausias aukštis, px (0 – pagal tėvą). */
     var overlayMaxH = 0
 
@@ -6397,6 +6401,7 @@ class MainActivity : AppCompatActivity() {
             wmm.addView(host, lp)
             overlayHost = host
             p.onMinimized = { collapsePanelOverlay(true) }
+            p.onDragBy = { dx, dy -> moveOverlay(host, lp, dx, dy) }
             p.onPin = { collapsePanelOverlay(false); OverlayBus.unpinRequest?.invoke() }
             p.post { p.open() }
         } catch (e: Exception) {
@@ -6406,6 +6411,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Langas virš programų perstumiamas; bent 48 dp lieka ekrane, kad būtų už ko paimti. */
+    private fun moveOverlay(v: View, lp: WindowManager.LayoutParams, dx: Float, dy: Float) {
+        val dm = resources.displayMetrics; val keep = (48 * dm.density).toInt()
+        lp.x = (lp.x + dx.toInt()).coerceIn(keep - v.width, dm.widthPixels - keep)
+        lp.y = (lp.y + dy.toInt()).coerceIn(0, dm.heightPixels - keep)
+        try { (getSystemService(WINDOW_SERVICE) as WindowManager).updateViewLayout(v, lp) } catch (_: Exception) {}
+    }
+
     /** Panelė grąžinama į programą; showBubble – vėl parodyti plūduriuojantį burbulą virš kitų programų. */
     private fun collapsePanelOverlay(showBubble: Boolean) {
         val host = overlayHost ?: run { if (showBubble) OverlayBus.showBubble?.invoke(); return }
@@ -6413,7 +6426,7 @@ class MainActivity : AppCompatActivity() {
         overlayHost = null
         try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(host) } catch (_: Exception) {}
         if (p != null) {
-            host.removeView(p); p.overlayMaxH = 0; p.onMinimized = null; p.onPin = { pinBubble() }
+            host.removeView(p); p.overlayMaxH = 0; p.onMinimized = null; p.onDragBy = null; p.onPin = { pinBubble() }
             p.visibility = View.GONE
             container.addView(p, panelHomeParams ?: FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
         }
@@ -6592,7 +6605,9 @@ class MainActivity : AppCompatActivity() {
             val lp = WindowManager.LayoutParams(w, h,
                 if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, android.graphics.PixelFormat.TRANSLUCENT)
-            lp.gravity = Gravity.CENTER
+            lp.gravity = Gravity.TOP or Gravity.START
+            lp.x = (dm.widthPixels - w) / 2; lp.y = (dm.heightPixels - h) / 3
+            chat.onDragBy = { dx, dy -> moveOverlay(chat, lp, dx, dy) }
             (getSystemService(WINDOW_SERVICE) as WindowManager).addView(chat, lp); pkChatHost = chat
         } else {
             val dlg = android.app.Dialog(this)

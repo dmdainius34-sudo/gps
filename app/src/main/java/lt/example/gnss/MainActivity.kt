@@ -1147,8 +1147,6 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     fun setMarkers(on: Boolean) { renderer.showMarkers = on }
     fun setOrient(on: Boolean) { renderer.showOrient = on }
-    fun setRealScale(on: Boolean) { renderer.realScale = on; calPrefs.edit().putBoolean("real_scale", on).apply() }
-    val realScale get() = renderer.realScale
     fun setNavBits(on: Boolean) { renderer.showNavBits = on }
     fun setGrid(on: Boolean) { renderer.showGrid = on; calPrefs.edit().putBoolean("grid", on).apply() }
     fun setSunGrid(on: Boolean) { renderer.showSunGrid = on; calPrefs.edit().putBoolean("sun_grid", on).apply() }
@@ -1311,7 +1309,6 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
         renderer.showMarkers = calPrefs.getBoolean("markers", true)
         renderer.showOrient = calPrefs.getBoolean("orient", true)
-        renderer.realScale = calPrefs.getBoolean("real_scale", false)
         renderer.showNavBits = calPrefs.getBoolean("nav_bits", true)
         renderer.showGrid = calPrefs.getBoolean("grid", true)
         renderer.showSunGrid = calPrefs.getBoolean("sun_grid", true)
@@ -1950,8 +1947,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // Zoom: kameros atstumas kiekvieną kadrą; artima riba mažėja priartinus (kad Žemė nebūtų nukirpta)
         val near = ((zoom - EARTH_R) * 0.3f).coerceIn(0.003f, 0.1f)
-        Matrix.perspectiveM(proj, 0, 40f, aspectNow, if (realScale) ((zoom - EARTH_R) * 0.3f).coerceIn(0.003f, 50f) else near,
-            if (realScale) (zoom + 60f).coerceAtLeast(60f) else maxOf(60f, zoom + GALAXY_DEPTH))
+        Matrix.perspectiveM(proj, 0, 40f, aspectNow, near, if (zoom > EARTH_R + SOLAR_ZOOM) zoom + GALAXY_DEPTH else 60f)
         proj[9] = if (observerView()) 0f else 0.3f                 // stebėtojo režime horizontas – ekrano viduryje
         Matrix.setIdentityM(view, 0)
         Matrix.translateM(view, 0, 0f, 0f, -zoom)
@@ -2031,7 +2027,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // Žvaigždžių fonas – didelė sfera pusiaujo (RA/Dec) sistemoje, sukasi kartu su žvaigždėmis
         drawCmb()
-        if (realScale) drawFarLayer(t) else drawGalaxy3d()
+        drawGalaxy3d()
 
         // Dangaus skliauto kupolas (viršutinis ir apatinis) nebepiešiamas
         GLES20.glDepthMask(true)
@@ -2063,8 +2059,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Žvaigždės, Oriono linijos, dangaus pusiaujas ir ekliptika (I erdvė, tik virš horizonto)
         drawSky()
 
-        // Saulė tikroje dangaus kryptyje nuo stebėtojo (švytintis diskas); „Realybėje“ – tolimame sluoksnyje
-        if (!realScale) run {
+        // Saulė tikroje dangaus kryptyje nuo stebėtojo (švytintis diskas)
+        run {
             val sd = sunDir()
             val sp = floatArrayOf(
                 (fP[0] + sd[0] * SUN_DIST).toFloat(), (fP[1] + sd[1] * SUN_DIST).toFloat(), (fP[2] + sd[2] * SUN_DIST).toFloat())
@@ -2197,8 +2193,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var galProg = 0
     private var galBuf: FloatBuffer? = null
     private var galN = 0
-    /** Scenos vienetų kpc (Saulė–centras 8,2 kpc ≈ 80 vnt.). */
-    private val GAL_S = 9.76f
+    /** Scenos vienetų kpc: Saulė–centras ≈ 4 100 vnt., artimiausi galaktikos taškai ~10 vnt. – Saulės sistema (Saulė 3,6 vnt.) tampa viena iš žvaigždžių. */
+    private val GAL_S = 500f
 
     /** Taškai pusiaujo (sideralinėje) erdvėje, Saulė – koordinačių pradžioje; stebėtojo poslinkis (fP) pridedamas šešėliuoklyje. */
     private fun buildGalaxy() {
@@ -2217,7 +2213,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Galaktika išnyra atitolinus už Saulės sistemos (zoom > SOLAR_ZOOM) – tikru pasvirimu Žemės, ašies ir horizonto atžvilgiu. */
     private fun drawGalaxy3d() {
-        val a = ((zoom - SOLAR_ZOOM - EARTH_R) / 30f).coerceIn(0f, 1f).let { it * it * (3 - 2 * it) }
+        val a = ((zoom - SOLAR_ZOOM - EARTH_R) / 150f).coerceIn(0f, 1f).let { it * it * (3 - 2 * it) }
         if (a < 0.01f) return
         if (galProg == 0) galProg = program(GAL_VS, GAL_FS)
         if (galBuf == null) buildGalaxy()
@@ -2228,7 +2224,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(galProg, "uMVP"), 1, false, mvpI, 0)
         GLES20.glUniform3f(GLES20.glGetUniformLocation(galProg, "uO"), fP[0].toFloat(), fP[1].toFloat(), fP[2].toFloat())
         val pxPerUnit = lastH / (2f * kotlin.math.tan(Math.toRadians(20.0)).toFloat())
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uK"), pxPerUnit * 0.35f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uK"), pxPerUnit * 0.02f * GAL_S)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uMax"), 4f * density)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uA"), a)
         resetAttribs()
@@ -2293,20 +2289,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     @Volatile var showMarkers = true
-    /** Sgr A* (RA 266,417°, Dec −29,008°) – fono žemėlapio centre (Galaktikos centras). */
-    private val sgrDir: FloatArray = run {
-        val ra = Math.toRadians(266.417); val dec = Math.toRadians(-29.008)
-        floatArrayOf((cos(dec) * cos(ra)).toFloat(), (cos(dec) * sin(ra)).toFloat(), sin(dec).toFloat())
-    }
-
-    /** Orientyrai: Sgr A*, Polaris ir Oriono juostos užrašai. */
+    /** Orientyrai: Polaris užrašas (galaktikos centro kryptį rodo pats 3D galaktikos modelis). */
     private fun drawMarkers(pos: Map<String, FloatArray>) {
-        if (sgrTex == 0) sgrTex = makeTextureW("Sgr A* (Galaktikos centras)", 0xFFFF9A9A.toInt(), 64, 8)
         if (polarisTex == 0) polarisTex = makeTextureW("Polaris", 0xFFFFF3C0.toInt(), 64, 4)
-        val sg = skyPt(sgrDir, starR)
-        val a = if (aboveHorizon(sg)) 1f else 0.4f
-        if (starTex != 0) billboard(sg, eyeI, 0.12f, 0.12f, starTex, 1f, 0.45f, 0.45f, a)
-        billboard(floatArrayOf(sg[0], sg[1], sg[2] - 0.12f), eyeI, 0.64f, 0.08f, sgrTex, 1f, 1f, 1f, a)
         pos["Polaris"]?.let { p -> billboard(floatArrayOf(p[0], p[1], p[2] + 0.1f), eyeI, 0.32f, 0.08f, polarisTex, 1f, 1f, 1f, 0.9f) }
     }
 
@@ -2327,7 +2312,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         (p[0] - fP[0]) * fU[0] + (p[1] - fP[1]) * fU[1] + (p[2] - fP[2]) * fU[2] > 0.0
 
     /**
-     * Galaktikos pusiaujas (Paukščių Tako disko plokštuma) kaip didysis dangaus apskritimas ir linija iš stebėtojo į centrą (Sgr A*):
+     * Galaktikos pusiaujas (Paukščių Tako disko plokštuma) kaip didysis dangaus apskritimas:
      * virš horizonto – ryškiai, po horizontu – blankiai. Rodo, kaip diskas pasviręs horizonto atžvilgiu dabar.
      */
     private fun drawGalacticPlane() {
@@ -2347,10 +2332,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glLineWidth(2f * density)
         drawLines(dn.toFloatArray(), 0.85f, 0.7f, 1f, 0.18f)
         drawLines(up.toFloatArray(), 0.85f, 0.7f, 1f, 0.6f)
-        val o = skyPt(floatArrayOf(0f, 0f, 0f), 0.0)
-        val c = skyPt(floatArrayOf(g[0].toFloat(), g[1].toFloat(), g[2].toFloat()), starR)
-        val toC = floatArrayOf(o[0], o[1], o[2], c[0], c[1], c[2])
-        drawLines(toC, 1f, 0.6f, 0.6f, if (aboveHorizon(c)) 0.7f else 0.3f)
         GLES20.glLineWidth(1.5f * density)
     }
 
@@ -2479,8 +2460,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val tex = monthTex.getOrPut(mo) { makeTexture(MONTHS_LT[mo], 0xFFFFFFFF.toInt(), 64) }
             // einamasis mėnuo (Žemė dabar tarp šios ir kitos žymės) – ryškesnis
             val cur = mo == monthNow
-            val lk = labelK(p)
-            billboard(p, eyeI, (if (cur) 0.2f else 0.16f) * lk, (if (cur) 0.1f else 0.08f) * lk, tex, 1f, if (cur) 1f else 0.85f, if (cur) 1f else 0.45f, if (cur) 1f else 0.8f)
+            billboard(p, eyeI, if (cur) 0.2f else 0.16f, if (cur) 0.1f else 0.08f, tex, 1f, if (cur) 1f else 0.85f, if (cur) 1f else 0.45f, if (cur) 1f else 0.8f)
         }
     }
 
@@ -2551,7 +2531,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         checkEcliptic()
         // Žemės orbita aplink Saulę (dangaus pusiaujo žiedas pašalintas)
         GLES20.glLineWidth(1.5f * density)
-        if (!realScale) drawEarthOrbit()
+        drawEarthOrbit()
         if (showOrient) drawOrientation()
 
         // Oriono linijos (orientyrai – nustatymas „Rodyti orientyrus“)
@@ -3300,78 +3280,23 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Priartinimas pagal aukštį virš paviršiaus: arčiausiai ~0,05 vnt. (≈ 1 300 km) – Kreta ~2 cm ekrane. */
     fun zoomBy(factor: Float) {
         if (focus != 0) { val r = bodyRadius(focus).toFloat(); focusZoom = (focusZoom / factor).coerceIn(r * 1.3f, r * 2000f); return }
-        // „Realybėje“ diapazonas ~1:300 000 – žingsnis spartesnis
-        val f = if (realScale || zoom > EARTH_R + SOLAR_ZOOM) Math.pow(factor.toDouble(), 2.0).toFloat() else factor
+        // galaktikos stadijoje – žingsnis spartesnis
+        val f = if (zoom > EARTH_R + SOLAR_ZOOM) Math.pow(factor.toDouble(), 2.5).toFloat() else factor
         zoom = EARTH_R + ((zoom - EARTH_R) / f).coerceIn(0.05f, maxZoomOut())
     }
 
-    /** „Realybė“: Saulė tikru dydžiu ir atstumu (Žemės spindulys 6371 km = EARTH_R); „Mastelis“ – schema. */
-    @Volatile var realScale = false
-        set(v) { field = v; if (!v) zoom = zoom.coerceAtMost(EARTH_R + GALAXY_ZOOM) }
     /** Mastelio režimo stadijos: Žemė (iki ~3), Saulės sistema (iki SOLAR_ZOOM), galaktika (iki GALAXY_ZOOM). */
     private val SOLAR_ZOOM = 9f
-    private val GALAXY_ZOOM = 700f
-    private val GALAXY_DEPTH = 400f
-    private fun maxZoomOut(): Float = if (realScale) (sunDistScene() * 2.6).toFloat() else GALAXY_ZOOM
+    private val GALAXY_ZOOM = 30_000f
+    private val GALAXY_DEPTH = 20_000f
+    private fun maxZoomOut(): Float = GALAXY_ZOOM
 
     /** Atstumas Žemė–Saulė (km) pagal Saulės vidutinę anomaliją. */
     private fun sunDistKm(): Double {
         val m = Math.toRadians(357.5291 + 0.98560028 * jdDays())
         return (1.00014 - 0.01671 * cos(m) - 0.00014 * cos(2 * m)) * 149_597_870.7
     }
-    private fun sunDistScene(): Double = if (realScale) sunDistKm() / 6371.0 * EARTH_R else SUN_DIST
-    private val mvpIFar = FloatArray(16)
-    private var camW = floatArrayOf(0f, 0f, 3f)
-    /** Užrašų mastelis: tikru masteliu toli atitolus užrašai didinami, kad liktų įskaitomi. */
-    private fun labelK(p: FloatArray): Float {
-        if (!realScale) return 1f
-        val dx = p[0] - camW[0]; val dy = p[1] - camW[1]; val dz = p[2] - camW[2]
-        return (kotlin.math.sqrt(dx * dx + dy * dy + dz * dz) / 3f).coerceAtLeast(1f)
-    }
-
-    /** Tolimas sluoksnis (Saulė, Žemės orbita) „Realybės“ režime: atskira projekcija, po jo gylio buferis išvalomas. */
-    private fun drawFarLayer(t: Float) {
-        val inv = FloatArray(16); if (!Matrix.invertM(inv, 0, proj, 0)) return
-        val vm = FloatArray(16); Matrix.multiplyMM(vm, 0, inv, 0, mvpI, 0)
-        val vmInv = FloatArray(16)
-        if (Matrix.invertM(vmInv, 0, vm, 0)) camW = floatArrayOf(vmInv[12], vmInv[13], vmInv[14])
-        val camD = kotlin.math.sqrt(camW[0] * camW[0] + camW[1] * camW[1] + camW[2] * camW[2])
-        val pf = proj.copyOf()
-        val n = (camD * 0.01f).coerceAtLeast(0.05f); val f = camD + (sunDistScene() * 2.2).toFloat()
-        pf[10] = -(f + n) / (f - n); pf[14] = -2f * f * n / (f - n)
-        Matrix.multiplyMM(mvpIFar, 0, pf, 0, vm, 0)
-        val saveI = mvpI.copyOf(); val saveM = mvp.copyOf()
-        System.arraycopy(mvpIFar, 0, mvpI, 0, 16); System.arraycopy(mvpIFar, 0, mvp, 0, 16)
-        GLES20.glLineWidth(1.5f * density)
-        drawEarthOrbit()
-        GLES20.glLineWidth(1f)
-        val sd = sunDir(); val r = sunDistScene()
-        val sp = floatArrayOf((fP[0] + sd[0] * r).toFloat(), (fP[1] + sd[1] * r).toFloat(), (fP[2] + sd[2] * r).toFloat())
-        if (sunTex != 0) drawSun3D(sp, t)
-        // „Realybėje“ Saulė tolimame sluoksnyje – trikampio linijos į ją piešiamos čia (ta pati projekcija)
-        if (showSunGrid) {
-            val ln = ArrayList<Float>()
-            fun seg(a: FloatArray, b: FloatArray) { a.forEach { ln.add(it) }; b.forEach { ln.add(it) } }
-            seg(floatArrayOf(0f, 0f, 0f), sp)
-            moonPosLast?.let { m -> seg(floatArrayOf(m[0].toFloat(), m[1].toFloat(), m[2].toFloat()), sp) }
-            GLES20.glUseProgram(colorProg)
-            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
-            GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
-            GLES20.glLineWidth(1.5f * density)
-            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 0.9f, 0.5f, 0.45f)
-            bindPos(colorProg, floatBuf(ln.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, ln.size / 3)
-            GLES20.glLineWidth(1f); GLES20.glDepthMask(true)
-        }
-        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
-        if (camD > 30f) {                                  // Žemė jau mažesnė už pikselį – žyma
-            val (te, ae) = wideLabel("Žemė")
-            val ke = labelK(floatArrayOf(0f, 0f, 0f))
-            billboard(floatArrayOf(0f, 0f, 0.08f * ke), eyeI, 0.05f * ke * ae, 0.05f * ke, te, 0.6f, 0.85f, 1f, 0.95f)
-        }
-        System.arraycopy(saveI, 0, mvpI, 0, 16); System.arraycopy(saveM, 0, mvp, 0, 16)
-        GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT)
-        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
-    }
+    private fun sunDistScene(): Double = SUN_DIST
     private var aspectNow = 1f
 
     @Volatile private var userR = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
@@ -3413,8 +3338,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         else -> null
     }
     private fun bodyRadius(id: Int): Double = when (id) {
-        1 -> if (realScale) 696_000.0 / 6371.0 * EARTH_R else 0.12
-        2 -> if (realScale) 1737.4 / 6371.0 * EARTH_R else 0.10
+        1 -> 0.12
+        2 -> 0.10
         else -> EARTH_R.toDouble()
     }
 
@@ -4144,7 +4069,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         return 385000.56 - 20905.355 * cos(M) - 3699.111 * cos(2 * D - M) - 2955.968 * cos(2 * D) - 569.925 * cos(2 * M)
     }
     @Volatile private var moonPosLast: DoubleArray? = null
-    private fun moonDistScene(): Double = if (realScale) moonDistKm() / 6371.0 * EARTH_R else 1.9
+    private fun moonDistScene(): Double = 1.9
 
     /** Mėnulio orbita (silpna linija) ir užrašas su atstumu – Mėnulis tikru masteliu mažas. */
     private fun drawMoonOrbit() {
@@ -4224,14 +4149,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         crossEarth(mLa, mLo, floatArrayOf(0.8f, 0.85f, 0.95f))       // Mėnulis zenite
         // linijos tarp centrų (Žemės centras – scenos pradžia)
         val m = moonPosLast
-        val sp = if (realScale) null else floatArrayOf((fP[0] + sd[0] * SUN_DIST).toFloat(), (fP[1] + sd[1] * SUN_DIST).toFloat(), (fP[2] + sd[2] * SUN_DIST).toFloat())
+        val sp = floatArrayOf((fP[0] + sd[0] * SUN_DIST).toFloat(), (fP[1] + sd[1] * SUN_DIST).toFloat(), (fP[2] + sd[2] * SUN_DIST).toFloat())
         val lines = ArrayList<Float>()
         fun ln(a: FloatArray, b: FloatArray) { a.forEach { lines.add(it) }; b.forEach { lines.add(it) } }
         val o = floatArrayOf(0f, 0f, 0f)
         val mf = m?.let { floatArrayOf(it[0].toFloat(), it[1].toFloat(), it[2].toFloat()) }
-        if (sp != null) ln(o, sp)
-        if (mf != null) ln(o, mf)
-        if (sp != null && mf != null) ln(mf, sp)
+        ln(o, sp)
+        if (mf != null) { ln(o, mf); ln(mf, sp) }
         GLES20.glLineWidth(1.5f * density)
         GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 0.9f, 0.5f, 0.45f)
         if (lines.isNotEmpty()) { bindPos(colorProg, floatBuf(lines.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, lines.size / 3) }
@@ -4254,8 +4178,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (earthPos == null) return
         val dir = moonDir()
         // Tikras mastelis: Mėnulio spindulys 1737,4 km, atstumas realiu laiku (Žemės spindulys 6371 km = EARTH_R)
-        // „Realybė“: spindulys 1737,4 km, tikras atstumas; „Vietinis“: už GEO palydovų (~1,65), toliau nuo Saulės (3,6) nei jos korona
-        val k = if (realScale) (1737.4 / 6371.0 * EARTH_R / 0.25).toFloat() else 0.40f   // tinklelio spindulys 0,25
+        // už GEO palydovų (~1,65), toliau nuo Saulės (3,6) nei jos korona
+        val k = 0.40f   // tinklelio spindulys 0,25
         val dist = moonDistScene()
         moonPosLast = doubleArrayOf(fP[0] + dir[0] * dist, fP[1] + dir[1] * dist, fP[2] + dir[2] * dist)
         val px = fP[0] + dir[0] * dist; val py = fP[1] + dir[1] * dist; val pz = fP[2] + dir[2] * dist
@@ -4493,8 +4417,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawSun3D(sp: FloatArray, t: Float) {
         if (earthPos == null) return
         if (sunProg == 0) sunProg = program(SUN_VS, SUN_FS)
-        // Vietinis: spindulys 2× Žemės (0,5 scenos vnt.); „Realybė“: 696 000 km (109 Žemės spinduliai)
-        val k = if (realScale) (696_000.0 / 6371.0 * EARTH_R / 0.25).toFloat() else 2.0f
+        // spindulys 2× Žemės (0,5 scenos vnt.)
+        val k = 2.0f
         // tikra Saulės orientacija: IAU ašis ir Carringtono sukimasis (tinklelio u = 0,5 – nulinis dienovidinis)
         val ax = SunFrame.axes(System.currentTimeMillis())
         java.util.Arrays.fill(sunMat, 0f)
@@ -4533,13 +4457,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
         if (showSunGrid) drawSunGrid()
-        // užrašas: koks vaizdas ant Saulės
-        if (SunImage.map != null && SunImage.imageMs > 0) {
-            val lab = "NASA SDO " + java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date(SunImage.imageMs)) + " UTC"
-            val (tx, ta) = wideLabel(lab)
-            billboard(floatArrayOf(sp[0], sp[1], sp[2] + k * 0.25f * 1.4f), eyeI, k * 0.25f * 0.35f * ta, k * 0.25f * 0.35f, tx, 1f, 0.95f, 0.7f, 0.95f)
-        }
-
         // 3D korona: didesnis rutulys aplink Saulę, švyti tik prie krašto (pridėtinis maišymas)
         if (glowProg == 0) glowProg = program(GLOW_VS, SUNGLOW_FS)
         val gk = k * 2.0f
@@ -4609,8 +4526,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val mixF = if (fi >= nF - 1) 0f else ((ph - fi * 0.6) / 0.6).toFloat().coerceIn(0f, 1f)
         val texA = lascoTexs[fi]; val texB = lascoTexs[(fi + 1).coerceAtMost(nF - 1)]
         if (lascoProg == 0) lascoProg = program(GLOW_VS, LASCO_VOL_FS)
-        // „Realybėje“ – tikras koronografo laukas 2,3–5,8 R (tarpas iki Saulės – užtvaro sritis); vietiniame – suspausta 1,0–1,8 R
-        val inR = if (realScale) 2.3 else 1.0; val outR = if (realScale) 5.8 else LASCO_OUT
+        // suspausta 1,0–1,8 R (tikras koronografo laukas 2,3–5,8 R netilptų tarp Saulės ir Žemės)
+        val inR = 1.0; val outR = LASCO_OUT
         val ro = (outR * rs).toFloat()
         val gm = FloatArray(16); val sc = ro / EARTH_R
         gm[0] = sc; gm[5] = sc; gm[10] = sc; gm[12] = sp[0]; gm[13] = sp[1]; gm[14] = sp[2]; gm[15] = 1f
@@ -4682,7 +4599,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val lab = "CME %.0f km/s".format(java.util.Locale.US, c.speed) + (if (toEarth) " → Žemė" else "")
             val (tx, ta) = wideLabel(lab)
             val lp = FloatArray(3) { (sp[it] + n[it] * cd * 1.05).toFloat() }
-            val hh = (rs * 0.22f) * labelK(lp)
+            val hh = rs * 0.22f
             billboard(lp, eyeI, hh * ta, hh, tx, col[0], col[1], col[2], 0.95f)
             GLES20.glUseProgram(colorProg)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
@@ -4712,7 +4629,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     private var noSp3Tex = 0
-    private var sgrTex = 0
     private var polarisTex = 0
 
     /** Platus užrašas: plotis = aukštis × wRatio. */
@@ -6355,7 +6271,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var skyHolder: FrameLayout
     private lateinit var fsBtn: TextView
     private lateinit var satCountView: TextView
-    private var scaleBtnView: TextView? = null
     private var readyView: TextView? = null
     private var cabinView: CabinMapView? = null
     private var readyLast: Boolean? = null
@@ -6428,7 +6343,6 @@ class MainActivity : AppCompatActivity() {
         if (::satCountView.isInitialized) margins(satCountView, l, t, 0, 0)
         readyView?.let { margins(it, 0, 0, 0, m + b) }
         margins(fsBtn, m, m + t, m + r, m)
-        margins(scaleBtnView, m, fsBtn.layoutParams.height + 2 * m + t, m + r, m)
     }
 
     private fun toggleFullscreen() {
@@ -7088,26 +7002,6 @@ class MainActivity : AppCompatActivity() {
         skyHolder.addView(fsBtn, FrameLayout.LayoutParams(fsSize, fsSize, Gravity.TOP or Gravity.END).apply {
             val m = (10 * resources.displayMetrics.density).toInt()
             setMargins(m, m, m, m)
-        })
-        val scaleBtn = TextView(this).apply {
-            fun label() { text = if (skyDome.realScale) "Realybė" else "Vietinis" }
-            label()
-            textSize = 14f
-            gravity = Gravity.CENTER
-            setTextColor(0xFFFFFFFF.toInt())
-            val pd = (10 * resources.displayMetrics.density).toInt(); setPadding(pd, pd / 2, pd, pd / 2)
-            background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 40f; setColor(0x66000000) }
-            setOnClickListener {
-                skyDome.setRealScale(!skyDome.realScale); label()
-                Toast.makeText(this@MainActivity, if (skyDome.realScale)
-                    "Realybė: Saulė ir orbita tikru masteliu – atitolinkite pirštais, kad pamatytumėte visą orbitą"
-                    else "Vietinis: Saulė ir Mėnulis arti, kad matytųsi", Toast.LENGTH_SHORT).show()
-            }
-        }
-        scaleBtnView = scaleBtn
-        skyHolder.addView(scaleBtn, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
-            val m = (10 * resources.displayMetrics.density).toInt()
-            setMargins(m, fsSize + 2 * m, m, m)
         })
         skyHolderParent = right
         skyHolderLp = LinearLayout.LayoutParams(skySide, skySide)

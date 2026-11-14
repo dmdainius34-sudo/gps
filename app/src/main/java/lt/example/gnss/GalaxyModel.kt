@@ -36,12 +36,12 @@ object GalaxyModel {
      * x nuo Saulės į centrą, y – l = 90°, z – šiaurės polius; Saulė (−8,2; 0; 0). Sukimasis pagal laikrodžio rodyklę žiūrint iš poliaus,
      * todėl vijos (logaritminės, 12°) tolsta didėjant azimutui. Skersė ~4,5 kpc, artimasis galas – teigiamose ilgumose (~27°).
      */
-    fun points(n: Int = 60_000, seed: Long = 42): FloatArray {
+    fun points(n: Int = 250_000, seed: Long = 42): FloatArray {
         val rnd = java.util.Random(seed)
         val out = FloatArray(n * 7)
         fun put(i: Int, x: Double, y: Double, z: Double, r: Float, g: Float, b: Float, a: Float) {
             val o = i * 7; out[o] = x.toFloat(); out[o + 1] = y.toFloat(); out[o + 2] = z.toFloat()
-            out[o + 3] = r; out[o + 4] = g; out[o + 5] = b; out[o + 6] = a
+            out[o + 3] = r; out[o + 4] = g; out[o + 5] = b; out[o + 6] = a * 0.5f
         }
         val barA = Math.toRadians(27.0); val bux = -cos(barA); val buy = sin(barA)
         for (i in 0 until n) {
@@ -58,15 +58,15 @@ object GalaxyModel {
                     val arm = rnd.nextInt(4)
                     val r = 3.0 * Math.pow(16.0 / 3.0, rnd.nextDouble())
                     val phi = Math.PI + kotlin.math.ln(r / ARM_R[arm]) / K
-                    val sc = 0.15 + 0.02 * r
+                    val sc = 0.3 + 0.03 * r
                     val x = r * cos(phi) + rnd.nextGaussian() * sc; val y = r * sin(phi) + rnd.nextGaussian() * sc
                     val fade = (1.0 - ((r - 12.0) / 5.0).coerceIn(0.0, 1.0)).toFloat()
                     if (rnd.nextDouble() < 0.07) put(i, x, y, rnd.nextGaussian() * 0.08, 1f, 0.45f, 0.6f, 0.55f * fade)
                     else put(i, x, y, rnd.nextGaussian() * 0.12, 0.7f, 0.8f, 1f, 0.28f * fade)
                 }
-                u < 0.72 -> {                                              // Oriono atšaka – prie Saulės
-                    val phi = Math.PI + (rnd.nextDouble() - 0.6) * 0.7; val r = 8.45 + rnd.nextGaussian() * 0.2
-                    put(i, r * cos(phi) + rnd.nextGaussian() * 0.25, r * sin(phi) + rnd.nextGaussian() * 0.25, rnd.nextGaussian() * 0.1, 0.75f, 0.85f, 1f, 0.15f)
+                u < 0.72 -> {                                              // Oriono atšaka – Saulė jos viduje
+                    val phi = Math.PI + (rnd.nextDouble() - 0.5) * 0.8; val r = R_SUN + rnd.nextGaussian() * 0.25
+                    put(i, r * cos(phi) + rnd.nextGaussian() * 0.35, r * sin(phi) + rnd.nextGaussian() * 0.35, rnd.nextGaussian() * 0.12, 0.75f, 0.85f, 1f, 0.15f)
                 }
                 else -> {                                                  // plonasis diskas (senos žvaigždės)
                     var r: Double; do { r = 1.5 - 3.0 * kotlin.math.ln(1 - rnd.nextDouble()) } while (r > 15.0)

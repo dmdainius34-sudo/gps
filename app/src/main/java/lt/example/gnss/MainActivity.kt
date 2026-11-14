@@ -7071,24 +7071,29 @@ class MainActivity : AppCompatActivity() {
         }
         fun mark(v: View, on: Boolean) { v.alpha = if (on) 0.85f else 0.35f }
         fsBtn = small("\u26F6", 16f).apply { alpha = 0.6f; setOnClickListener { toggleFullscreen() } }
-        val followBtn = small("\u27F3", 16f).apply {
-            mark(this, sp.getBoolean("follow_device", false))
-            setOnClickListener {
-                val on = !sp.getBoolean("follow_device", false)
-                sp.edit().putBoolean("follow_device", on).apply(); mark(this, on)
-                if (::skyDome.isInitialized) skyDome.setFollowDevice(on)
-                Toast.makeText(this@MainActivity, if (on) "Visata sukasi su planšete" else "Visata nepriklauso nuo planšetės sukimo", Toast.LENGTH_SHORT).show()
-            }
+        // du kameros režimai vienas kitą atspaudžia: įjungus vieną, kitas išsijungia
+        val followBtn = small("\u27F3", 16f)
+        val levelBtn = small("\u2296", 16f)
+        fun setFollow(on: Boolean) {
+            sp.edit().putBoolean("follow_device", on).apply(); mark(followBtn, on)
+            if (::skyDome.isInitialized) skyDome.setFollowDevice(on)
         }
-        val levelBtn = small("\u2296", 16f).apply {
-            mark(this, sp.getBoolean("level_horizon", true))
-            setOnClickListener {
-                val on = !sp.getBoolean("level_horizon", true)
-                sp.edit().putBoolean("level_horizon", on).apply(); mark(this, on)
-                if (::skyDome.isInitialized) skyDome.setLevelHorizon(on)
-                requestedOrientation = if (on) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                Toast.makeText(this@MainActivity, if (on) "Sklandus sukimas 360°: horizontas lieka lygus" else "Sklandus sukimas išjungtas", Toast.LENGTH_SHORT).show()
-            }
+        fun setLevel(on: Boolean) {
+            sp.edit().putBoolean("level_horizon", on).apply(); mark(levelBtn, on)
+            if (::skyDome.isInitialized) skyDome.setLevelHorizon(on)
+            requestedOrientation = if (on) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        if (sp.getBoolean("follow_device", false) && sp.getBoolean("level_horizon", true)) setLevel(false)
+        mark(followBtn, sp.getBoolean("follow_device", false)); mark(levelBtn, sp.getBoolean("level_horizon", true))
+        followBtn.setOnClickListener {
+            val on = !sp.getBoolean("follow_device", false)
+            setFollow(on); if (on) setLevel(false)
+            Toast.makeText(this@MainActivity, if (on) "Visata sukasi su planšete" else "Visata nepriklauso nuo planšetės sukimo", Toast.LENGTH_SHORT).show()
+        }
+        levelBtn.setOnClickListener {
+            val on = !sp.getBoolean("level_horizon", true)
+            setLevel(on); if (on) setFollow(false)
+            Toast.makeText(this@MainActivity, if (on) "Sklandus sukimas 360°: horizontas lieka lygus" else "Sklandus sukimas išjungtas", Toast.LENGTH_SHORT).show()
         }
         val tools = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL

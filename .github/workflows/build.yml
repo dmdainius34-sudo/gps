@@ -41,17 +41,6 @@ jobs:
           fi
           if [ -s starmap8k/stars_bg_8k.jpg ]; then cp starmap8k/stars_bg_8k.jpg app/src/main/assets/; ls -la app/src/main/assets/stars_bg_8k.jpg; fi
 
-      - name: NASA/JPL Paukščių Tako vaizdas (nenukrenta; nėra – programa piešia schemą)
-        continue-on-error: true
-        run: |
-          pip install -q pillow
-          curl -sS -m 30 "https://images-api.nasa.gov/search?nasa_id=PIA10748" | grep -oE '"title": *"[^"]*"' | head -1 || true
-          for U in https://images-assets.nasa.gov/image/PIA10748/PIA10748~orig.jpg https://images-assets.nasa.gov/image/PIA10748/PIA10748~large.jpg https://photojournal.jpl.nasa.gov/jpeg/PIA10748.jpg; do
-            curl -sSL -m 300 -o mw.jpg -w "$U HTTP %{http_code} %{size_download}\n" "$U" || continue
-            python3 tools/milkyway.py mw.jpg app/src/main/assets/milkyway.jpg && break
-          done
-          ls -la app/src/main/assets/milkyway.jpg || true
-
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
 

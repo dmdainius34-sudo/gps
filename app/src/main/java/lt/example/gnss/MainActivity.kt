@@ -1870,7 +1870,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         monthTex.clear()
         labelTex.clear()
         wideLabels.clear()
-        galaxyTex = 0; galaxyTried = false
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
         glowProg = 0
@@ -2031,7 +2030,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // Žvaigždžių fonas – didelė sfera pusiaujo (RA/Dec) sistemoje, sukasi kartu su žvaigždėmis
         drawCmb()
-        if (realScale) drawFarLayer(t) else drawGalaxy()
+        if (realScale) drawFarLayer(t)
 
         // Dangaus skliauto kupolas (viršutinis ir apatinis) nebepiešiamas
         GLES20.glDepthMask(true)
@@ -2191,44 +2190,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDisableVertexAttribArray(lu)
         GLES20.glDepthMask(true)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
-    }
-
-    // ---------------- PAUKŠČIŲ TAKAS ----------------
-    private var galaxyTex = 0
-    private var galaxyTried = false
-    @Volatile var galaxyName = ""
-
-    /** assets/milkyway.jpg (NASA/JPL-Caltech/R. Hurt, vaizdas iš galaktikos šiaurės poliaus, Saulė žemiau centro); nėra – schema. */
-    private fun loadGalaxy() {
-        galaxyTried = true
-        val bmp = try {
-            appCtx.assets.open("milkyway.jpg").use { android.graphics.BitmapFactory.decodeStream(it) }?.also { galaxyName = "NASA/JPL-Caltech/R. Hurt" }
-        } catch (_: Exception) { null } ?: GalaxyModel.schematic(1024).also { galaxyName = "schema" }
-        galaxyTex = uploadTexture(bmp)
-    }
-
-    /**
-     * Galaktikos diskas tikroje plokštumoje (pusiaujo J2000 erdvėje): normalė – galaktikos šiaurės polius,
-     * centras – Sgr A* kryptimi, stebėtojas – Saulės vietoje diske. Iš stebėtojo diskas matomas briauna (Paukščių Tako juosta);
-     * nutolus kamerai – matyti jo pasvirimas Žemės, horizonto ir ekliptikos atžvilgiu.
-     */
-    private fun drawGalaxy() {
-        val a = ((zoom - 2.5f) / 5f).coerceIn(0f, 1f).let { it * it * (3 - 2 * it) } * 0.6f
-        if (a < 0.01f || observerView()) return
-        if (!galaxyTried) loadGalaxy()
-        if (galaxyTex == 0) return
-        val g = GalaxyModel.frame()
-        val r = GalaxyModel.SCENE_R
-        val d = GalaxyModel.SUN_FRAC * 2 * r
-        val c = floatArrayOf((fP[0] + g[0] * d).toFloat(), (fP[1] + g[1] * d).toFloat(), (fP[2] + g[2] * d).toFloat())
-        System.arraycopy(mvpI, 0, mvp, 0, 16)
-        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false); GLES20.glDisable(GLES20.GL_CULL_FACE)
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
-        // paveikslėlio dešinė – −y (l = 270°), viršus – į centrą (l = 0°)
-        billboardQuad(c, floatArrayOf(-g[3].toFloat(), -g[4].toFloat(), -g[5].toFloat()), floatArrayOf(g[0].toFloat(), g[1].toFloat(), g[2].toFloat()),
-            r, r, galaxyTex, 1f, 1f, 1f, a)
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-        GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 
     // ---------------- ŽVAIGŽDŽIŲ KATALOGAS, PUSIAUJAS, EKLIPTIKA ----------------

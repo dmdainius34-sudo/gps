@@ -6353,6 +6353,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var skyHolder: FrameLayout
     private lateinit var fsBtn: TextView
+    private var toolCol: View? = null
     private lateinit var satCountView: TextView
     private var readyView: TextView? = null
     private var cabinView: CabinMapView? = null
@@ -6425,7 +6426,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (::satCountView.isInitialized) margins(satCountView, l, t, 0, 0)
         readyView?.let { margins(it, 0, 0, 0, m + b) }
-        margins(fsBtn, m, m + t, m + r, m)
+        margins(toolCol, m, m + t, m + r, m)
     }
 
     private fun toggleFullscreen() {
@@ -7009,24 +7010,6 @@ class MainActivity : AppCompatActivity() {
             text = "Išvalyti kabinos žemėlapį"
             setOnClickListener { CabinMap.clear(); markCabinClean(); cv.invalidate(); Toast.makeText(this@MainActivity, "Žemėlapis išvalytas", Toast.LENGTH_SHORT).show() }
         }, LinearLayout.LayoutParams(mw, ww))
-        val cbFollow = CheckBox(this).apply {
-            text = "Sukti visatą su planšete"
-            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("follow_device", false)
-            setOnCheckedChangeListener { _, on ->
-                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("follow_device", on).apply()
-                if (::skyDome.isInitialized) skyDome.setFollowDevice(on)
-            }
-        }
-        left.addView(cbFollow, LinearLayout.LayoutParams(mw, ww))
-        left.addView(CheckBox(this).apply {
-            text = "Sklandus sukimas 360° (ekranas neapsiverčia, horizontas lieka lygus)"
-            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("level_horizon", true)
-            setOnCheckedChangeListener { _, on ->
-                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("level_horizon", on).apply()
-                if (::skyDome.isInitialized) skyDome.setLevelHorizon(on)
-                requestedOrientation = if (on) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            }
-        }, LinearLayout.LayoutParams(mw, ww))
         val cbFree = CheckBox(this).apply {
             text = "Laisvas vaizdas iš viršaus"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("free_view", false)
@@ -7077,21 +7060,44 @@ class MainActivity : AppCompatActivity() {
             bottomMargin = (10 * resources.displayMetrics.density).toInt()
         })
         readyLast = null; updateReady()
-        val fsSize = (44 * resources.displayMetrics.density).toInt()
-        fsBtn = TextView(this).apply {
-            text = "\u26F6"
-            textSize = 22f
-            gravity = Gravity.CENTER
+        // trys maži permatomi mygtukai viršuje dešinėje: viso ekrano, sukti su planšete, sklandus sukimas 360°
+        val dp = resources.displayMetrics.density
+        val bSize = (32 * dp).toInt()
+        val sp = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
+        fun small(sym: String, size: Float) = TextView(this).apply {
+            text = sym; textSize = size; gravity = Gravity.CENTER
             setTextColor(0xFFFFFFFF.toInt())
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(0x55000000)
-            }
-            alpha = 0.6f
-            setOnClickListener { toggleFullscreen() }
+            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0x44000000) }
         }
-        skyHolder.addView(fsBtn, FrameLayout.LayoutParams(fsSize, fsSize, Gravity.TOP or Gravity.END).apply {
-            val m = (10 * resources.displayMetrics.density).toInt()
+        fun mark(v: View, on: Boolean) { v.alpha = if (on) 0.85f else 0.35f }
+        fsBtn = small("\u26F6", 16f).apply { alpha = 0.6f; setOnClickListener { toggleFullscreen() } }
+        val followBtn = small("\u27F3", 16f).apply {
+            mark(this, sp.getBoolean("follow_device", false))
+            setOnClickListener {
+                val on = !sp.getBoolean("follow_device", false)
+                sp.edit().putBoolean("follow_device", on).apply(); mark(this, on)
+                if (::skyDome.isInitialized) skyDome.setFollowDevice(on)
+                Toast.makeText(this@MainActivity, if (on) "Visata sukasi su planšete" else "Visata nepriklauso nuo planšetės sukimo", Toast.LENGTH_SHORT).show()
+            }
+        }
+        val levelBtn = small("\u2296", 16f).apply {
+            mark(this, sp.getBoolean("level_horizon", true))
+            setOnClickListener {
+                val on = !sp.getBoolean("level_horizon", true)
+                sp.edit().putBoolean("level_horizon", on).apply(); mark(this, on)
+                if (::skyDome.isInitialized) skyDome.setLevelHorizon(on)
+                requestedOrientation = if (on) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                Toast.makeText(this@MainActivity, if (on) "Sklandus sukimas 360°: horizontas lieka lygus" else "Sklandus sukimas išjungtas", Toast.LENGTH_SHORT).show()
+            }
+        }
+        val tools = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val gap = (6 * dp).toInt()
+            for (b in listOf(fsBtn, followBtn, levelBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
+        }
+        toolCol = tools
+        skyHolder.addView(tools, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
+            val m = (10 * dp).toInt()
             setMargins(m, m, m, m)
         })
         skyHolderParent = right

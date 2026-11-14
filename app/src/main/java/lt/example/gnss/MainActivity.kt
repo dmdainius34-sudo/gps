@@ -2212,8 +2212,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     /** Galaktika išnyra atitolinus už Saulės sistemos (zoom > SOLAR_ZOOM) – tikru pasvirimu Žemės, ašies ir horizonto atžvilgiu. */
+    private fun galFade(): Float = ((zoom - SOLAR_ZOOM - EARTH_R) / 150f).coerceIn(0f, 1f).let { it * it * (3 - 2 * it) }
+
     private fun drawGalaxy3d() {
-        val a = ((zoom - SOLAR_ZOOM - EARTH_R) / 150f).coerceIn(0f, 1f).let { it * it * (3 - 2 * it) }
+        val a = galFade()
         if (a < 0.01f) return
         if (galProg == 0) galProg = program(GAL_VS, GAL_FS)
         if (galBuf == null) buildGalaxy()
@@ -2236,12 +2238,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDisableVertexAttribArray(lc)
         buf.position(0)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-        // Saulė (ir visa Saulės sistema) – vienas taškas: „jūs čia“
-        if (starTex != 0) {
-            System.arraycopy(mvpI, 0, mvp, 0, 16)
-            val sz = zoom * 0.012f
-            billboard(floatArrayOf(fP[0].toFloat(), fP[1].toFloat(), fP[2].toFloat()), eyeI, sz, sz, starTex, 1f, 0.9f, 0.3f, a)
-        }
         GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 
@@ -3955,7 +3951,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUseProgram(dotProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(dotProg, "uMVP"), 1, false, earthMvp, 0)
         GLES20.glUniform4f(GLES20.glGetUniformLocation(dotProg, "uColor"), 0.95f, 0.15f, 0.15f, 1f)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), 22f * density)
+        // galaktikos stadijoje – mažas kaip žvaigždė (raudona spalva pakankamai išskiria)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), (22f - 18f * galFade()) * density)
         bindPos(dotProg, floatBuf(floatArrayOf(px * 1.35f, py * 1.35f, pz * 1.35f)))
         GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
     }

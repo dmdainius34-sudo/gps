@@ -47,12 +47,15 @@ object GalaxyModel {
         for (i in 0 until n) {
             val u = rnd.nextDouble()
             when {
-                u < 0.10 -> {                                              // skersė
-                    val t = (rnd.nextGaussian() * 1.7).coerceIn(-4.5, 4.5); val w = rnd.nextGaussian() * 0.45
+                u < 0.10 -> {                                              // skersė – minkštas pailgas elipsoidas, be kietų galų
+                    var t: Double; do { t = rnd.nextGaussian() * 1.6 } while (kotlin.math.abs(t) > 5.0)
+                    val w = rnd.nextGaussian() * (0.55 - 0.06 * kotlin.math.abs(t))
                     put(i, bux * t - buy * w, buy * t + bux * w, rnd.nextGaussian() * 0.3, 1f, 0.82f, 0.55f, 0.13f)
                 }
-                u < 0.18 -> {                                              // centrinis gumulas
-                    put(i, rnd.nextGaussian() * 0.75, rnd.nextGaussian() * 0.75, rnd.nextGaussian() * 0.5, 1f, 0.78f, 0.5f, 0.12f)
+                u < 0.18 -> {                                              // centrinis gumulas – apvalus, eksponentinis kraštas
+                    val r = -0.6 * kotlin.math.ln(1 - rnd.nextDouble() * 0.995)
+                    val th = kotlin.math.acos(2 * rnd.nextDouble() - 1); val ph = 2 * Math.PI * rnd.nextDouble()
+                    put(i, r * sin(th) * cos(ph), r * sin(th) * sin(ph), 0.7 * r * cos(th), 1f, 0.78f, 0.5f, 0.12f)
                 }
                 u < 0.70 -> {                                              // 4 vijos
                     val arm = rnd.nextInt(4)

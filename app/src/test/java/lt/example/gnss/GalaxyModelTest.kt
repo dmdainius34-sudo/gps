@@ -30,10 +30,14 @@ class GalaxyPointsTest {
 class NearStarsTest {
     @Test fun nearerStarsCollapseFirst() {
         val l = NearStars.list
-        val start = l.associate { it.name to it.start }
+        val st = NearStars.starts(l)
+        val start = l.indices.associate { l[it].name to st[it] }
         assertEquals(0f, start["Alpha Centauri"]!!, 1e-6f)
         assertEquals(NearStars.START_MAX, start["Deneb"]!!, 1e-6f)
         org.junit.Assert.assertTrue(start["Sirius"]!! < start["Polaris"]!! && start["Polaris"]!! < start["Rigel"]!!)
+        // be α Kentauro (nematoma iš Lietuvos) pirmasis – Sirijus
+        val north = l.filter { it.name != "Alpha Centauri" }
+        assertEquals(0f, NearStars.starts(north)[north.indexOfFirst { it.name == "Sirius" }], 1e-6f)
         for (s in l) assertEquals(1.0, kotlin.math.sqrt((s.dir[0] * s.dir[0] + s.dir[1] * s.dir[1] + s.dir[2] * s.dir[2]).toDouble()), 1e-5)
     }
 }

@@ -6,7 +6,7 @@ import kotlin.math.sin
 
 /**
  * Gerai žinomos ryškios žvaigždės (J2000, atstumai šviesmečiais) – atitolinant vaizdą jos palieka savo vietą fone ir
- * „sutraukiamos“ į tikrą 3D vietą aplink Saulę: artimiausios pirmiausia, tolimiausios paskiausiai.
+ * „sutraukiamos“ į tikrą 3D vietą aplink Saulę: iš stebėtojui matomų (virš horizonto) – artimiausios pirmiausia, tolimiausios paskiausiai.
  */
 object NearStars {
     class Star(val name: String, raH: Double, decDeg: Double, val ly: Double, val mag: Double, val rgb: FloatArray) {
@@ -14,8 +14,6 @@ object NearStars {
             val ra = Math.toRadians(raH * 15.0); val de = Math.toRadians(decDeg)
             floatArrayOf((cos(de) * cos(ra)).toFloat(), (cos(de) * sin(ra)).toFloat(), sin(de).toFloat())
         }
-        /** Kolapso pradžia 0..START_MAX pagal log atstumą. */
-        var start = 0f
     }
 
     private fun h(h: Int, m: Int, s: Double) = h + m / 60.0 + s / 3600.0
@@ -102,8 +100,12 @@ object NearStars {
         Star("Sadr", h(20, 22, 13.7), d(1, 40, 15, 24.0), 1800.0, 2.23, Y),
         Star("Alnilam", h(5, 36, 12.8), d(-1, 1, 12, 7.0), 2000.0, 1.69, B),
         Star("Deneb", h(20, 41, 25.9), d(1, 45, 16, 49.0), 2600.0, 1.25, W),
-    ).also { l ->
-        val lo = log10(l.minOf { it.ly }); val hi = log10(l.maxOf { it.ly })
-        for (s in l) s.start = (START_MAX * (log10(s.ly) - lo) / (hi - lo)).toFloat()
+    )
+
+    /** Kolapso pradžios 0..START_MAX pagal log atstumą tarp duotų (pvz. stebėtojui matomų) žvaigždžių: artimiausia – 0, tolimiausia – START_MAX. */
+    fun starts(vis: List<Star>): FloatArray {
+        if (vis.isEmpty()) return FloatArray(0)
+        val lo = log10(vis.minOf { it.ly }); val hi = log10(vis.maxOf { it.ly })
+        return FloatArray(vis.size) { if (hi - lo < 1e-9) 0f else (START_MAX * (log10(vis[it].ly) - lo) / (hi - lo)).toFloat() }
     }
 }

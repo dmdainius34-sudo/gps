@@ -2245,8 +2245,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
         val perLy = GAL_S / 3261.56f
         val sec = android.os.SystemClock.uptimeMillis() / 1000.0
-        for ((i, s) in NearStars.list.withIndex()) {
-            val t = sstep(0f, 1f, (c - s.start) / NearStars.SPAN)
+        // tik stebėtojo matomos (virš jo horizonto) žvaigždės; eilė – nuo artimiausios iš jų (perskaičiuojama kas kadrą)
+        val vis = NearStars.list.withIndex().filter { (_, s) -> s.dir[0] * fU[0] + s.dir[1] * fU[1] + s.dir[2] * fU[2] > 0.0 }
+        if (vis.isEmpty()) return
+        val starts = NearStars.starts(vis.map { it.value })
+        for ((k, iv) in vis.withIndex()) {
+            val i = iv.index; val s = iv.value
+            val t = sstep(0f, 1f, (c - starts[k]) / NearStars.SPAN)
             val stay = 1f - bgFade()                                   // fonas temsta – dar neišskridusi žvaigždė lieka šviesti savo vietoje
             if (t <= 0f && (covers || stay < 0.01f)) continue
             val bg = FloatArray(3) { camPos[it] + s.dir[it] * 50f }

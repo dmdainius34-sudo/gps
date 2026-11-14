@@ -2217,8 +2217,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         return (kotlin.math.ln(zoom / z0) / kotlin.math.ln(COLLAPSE_Z / z0)).coerceIn(0f, 1f)
     }
     private val COLLAPSE_Z = 3000f
-    /** Žvaigždžių fonas gęsta, kai žinomos žvaigždės jau išskrido; galaktika išryškėja paskiausiai – ant juodo fono. */
-    private fun bgFade(): Float = 1f - sstep(0.35f, 0.9f, collapse())
+    /** Žvaigždžių fonas pradeda temti kartu su pirmos žvaigždės išskridimu; žinomos žvaigždės lieka matomos savo vietose, kol išskrenda. */
+    private fun bgFade(): Float = 1f - sstep(0f, 0.5f, collapse())
     private fun galFade(): Float = sstep(0.55f, 1f, collapse())
 
     private var coverTex = 0
@@ -2247,7 +2247,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val sec = android.os.SystemClock.uptimeMillis() / 1000.0
         for ((i, s) in NearStars.list.withIndex()) {
             val t = sstep(0f, 1f, (c - s.start) / NearStars.SPAN)
-            if (t <= 0f) continue
+            val stay = 1f - bgFade()                                   // fonas temsta – dar neišskridusi žvaigždė lieka šviesti savo vietoje
+            if (t <= 0f && (covers || stay < 0.01f)) continue
             val bg = FloatArray(3) { camPos[it] + s.dir[it] * 50f }
             val bright = (1.5 - s.mag).toFloat().coerceIn(-2f, 3f)
             if (covers) {
@@ -2262,7 +2263,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val dc = sqrt(dx * dx + dy * dy + dz * dz)
             val sz = dc * (0.006f + 0.0012f * bright)
             val tw = (0.7 + 0.3 * sin(sec * (2.5 + i % 5) + i * 1.7)).toFloat()
-            val a = (t * 4f).coerceAtMost(1f) * tw
+            val a = maxOf((t * 4f).coerceAtMost(1f), stay) * tw
             GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
             billboard(p, eyeI, sz, sz, starTex, s.rgb[0], s.rgb[1], s.rgb[2], a)
             billboard(p, eyeI, sz * 0.4f, sz * 0.4f, starTex, 1f, 1f, 1f, a)

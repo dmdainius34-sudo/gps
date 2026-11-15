@@ -8172,7 +8172,7 @@ class MainActivity : AppCompatActivity() {
         val pass = field("Slaptažodis", p.getString("pass", "")!!, android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val on = CheckBox(this).apply { text = "Jungtis (pataisos įrašomos į gnss_rtcm.csv)"; isChecked = p.getBoolean("on", false); box.addView(this) }
         val rtk = CheckBox(this).apply { text = "Gyvas RTK (nešlio fazė; planšetė)"; isChecked = p.getBoolean("rtk_live", false); box.addView(this) }
-        val mock = CheckBox(this).apply { text = "Perduoti RTK vietą kitoms programoms (bandomoji vieta, pvz. AlpineQuest)"; isChecked = MockLoc.armed; box.addView(this) }
+        val mock = CheckBox(this).apply { text = "Perduoti programos vietą kitoms programoms (RTK, kitaip – SP3 sprendinys su realiu tikslumu; bandomoji vieta, pvz. AlpineQuest)"; isChecked = MockLoc.armed; box.addView(this) }
         val st = TextView(this).apply { text = NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text(); textSize = 12f; box.addView(this) }
         android.app.AlertDialog.Builder(this)
             .setTitle("NTRIP pataisos (RTCM 3)")

@@ -96,13 +96,35 @@ object LiveRtk {
     @Synchronized
     fun onMeasurements(event: GnssMeasurementsEvent) {
         lastMeasMs = System.currentTimeMillis()
-        if (!enabled) return
+        if (!enabled && !MockLoc.armed) return
         if (event.clock.timeNanos == lastClockNs) return
         lastClockNs = event.clock.timeNanos
         val text = SessionFiles.RAW_HEADER + RawRecorder.lines(event).joinToString("\n") + "\n"
-        Sp3V5.readRaw(java.io.BufferedReader(java.io.StringReader(text))) { rover.addLast(it) }
+        val eps = ArrayList<Sp3V5.Ep>()
+        Sp3V5.readRaw(java.io.BufferedReader(java.io.StringReader(text))) { eps.add(it) }
+        if (MockLoc.armed) eps.lastOrNull()?.let { spp(it) }
+        if (!enabled) return
+        rover.addAll(eps)
         while (rover.size > 20) rover.removeFirst()
         process()
+    }
+
+    /** Programos sprendinys be bazės (SP3 orbitos, slenkstis CnoMask) – perduodamas kitoms programoms, kai nėra gero RTK. */
+    @Volatile var sppLast: PositionSolver.Solution? = null
+        private set
+    private fun spp(ep: Sp3V5.Ep) {
+        val now = System.currentTimeMillis()
+        if (enabled && now - lastMs < 3_000 && (last?.hacc ?: 99.0) < 0.5) return      // perduodamas RTK
+        val r = Sp3Live.reader ?: return
+        if (!Sp3Solver.inRange(r, ep.t)) return
+        val obs = ep.meas.filter { (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min }
+            .map { Sp3V5.Ob(it.sys, it.svid, it.pr, it.cn0, it.prr) }
+        if (obs.size < 5) return
+        val f = try { Sp3V5.solve(ep.week, ep.tow, obs, r, isb = true, raim = true) } catch (_: Exception) { null } ?: return
+        val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }
+        val sol = PositionSolver.Solution(f.sol.lat, f.sol.lon, f.sol.h, f.sol.sats, real, f.sol.ecef)
+        sppLast = sol
+        MockLoc.push(sol, "programa (SP3)")
     }
 
     private fun process() {
@@ -128,8 +150,7 @@ object LiveRtk {
             val ok = sol.hacc < 0.5 && sol.sats >= 4 &&
                 (prev == null || PositionSolver.horizDist(prev.lat, prev.lon, sol.lat, sol.lon) < maxOf(1.0, 4 * sol.hacc) || held >= 10)
             if (ok) { MockLoc.push(sol); pushed = sol; held = 0; pushedN++ } else { held++; heldN++ }
-            // ilgiau nei 10 s be gero sprendinio – sistemai grąžinamas lusto GPS (bandomoji vieta laikinai nuimama)
-            if (held > 10) MockLoc.suspend()
+            // be gero RTK perduodamas programos sprendinys (spp); jei ir jo nėra – sargas grąžina lusto GPS
         }
     }
 
@@ -231,13 +252,17 @@ object MockLoc {
         on = false; armed = false; active = false; lm = null; status = "bandomoji vieta $why"
     }
 
-    /** Sargas: lustas nebeteikia matavimų – išjungti. */
+    @Volatile var lastPushMs = 0L
+        private set
+    /** Sargas: lustas nebeteikia matavimų – išjungti; > 5 s be jokio sprendinio – laikinai grąžinti lusto GPS. */
     fun watchdog() {
+        if (active && System.currentTimeMillis() - since > 5_000 && System.currentTimeMillis() - lastPushMs > 5_000)
+            detach("laikinai nuimta: nėra programos sprendinio (SP3 ar RTK) – rodomas lusto GPS")
         if (active && System.currentTimeMillis() - since > 15_000 && System.currentTimeMillis() - LiveRtk.lastMeasMs > 15_000)
             disable("išjungta: GNSS lustas su bandomąja vieta nebeteikė matavimų")
     }
 
-    fun push(s: PositionSolver.Solution) {
+    fun push(s: PositionSolver.Solution, src: String = "RTK") {
         if (!armed) return
         if (!active && !attach()) return
         val m = lm ?: return
@@ -247,9 +272,10 @@ object MockLoc {
                 accuracy = s.hacc.toFloat().coerceAtLeast(0.05f)
                 time = System.currentTimeMillis(); elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                 if (android.os.Build.VERSION.SDK_INT >= 26) verticalAccuracyMeters = (s.hacc * 2).toFloat().coerceAtLeast(0.1f)
-                extras = android.os.Bundle().apply { putInt("satellites", s.sats); putString("source", "RTK") }
+                extras = android.os.Bundle().apply { putInt("satellites", s.sats); putString("source", src) }
             }
             m.setTestProviderLocation(LocationManager.GPS_PROVIDER, l)
+            lastPushMs = System.currentTimeMillis(); status = "bandomoji vieta: perduodama – $src, ±%.1f m".format(Locale.US, s.hacc)
         } catch (e: Exception) { disable("išjungta: ${e.message}") }
     }
 }

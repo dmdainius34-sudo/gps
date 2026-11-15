@@ -6603,7 +6603,12 @@ class MainActivity : AppCompatActivity() {
     private var satText: CharSequence = "Laukiama palydovų..."
     private var measText = "Laukiama matavimų..."
 
+    @Volatile private var ttffMs = -1
+    @Volatile private var adrSeenMs = 0L
+    @Volatile private var measSeenMs = 0L
+
     private val statusCallback = object : GnssStatus.Callback() {
+        override fun onFirstFix(ttffMillis: Int) { ttffMs = ttffMillis }
         override fun onSatelliteStatusChanged(status: GnssStatus) {
             val list = (0 until status.satelliteCount).map { i ->
                 Sat(
@@ -6685,6 +6690,8 @@ class MainActivity : AppCompatActivity() {
         override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
             measText = "Neapdoroti matavimai: ${event.measurements.size}"
             Readiness.onMeas(event.measurements.map { Triple(it.constellationType * 1000 + it.svid, it.cn0DbHz, it.state) })
+            measSeenMs = System.currentTimeMillis()
+            if (event.measurements.any { (it.accumulatedDeltaRangeState and android.location.GnssMeasurement.ADR_STATE_VALID) != 0 }) adrSeenMs = measSeenMs
             try { LiveRtk.onMeasurements(event) } catch (_: Exception) {}
             MockLoc.watchdog()
             RawRecorder.envTag = envTag()
@@ -7102,6 +7109,7 @@ class MainActivity : AppCompatActivity() {
         skyHolder.addView(satCountView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START))
         readyView = TextView(this).apply {
             textSize = 13f; text = "● Šyla"
+            setOnClickListener { toggleChipCard() }
             val pd = (10 * resources.displayMetrics.density).toInt(); setPadding(pd, pd / 2, pd, pd / 2)
         }
         skyHolder.addView(readyView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
@@ -7976,6 +7984,85 @@ class MainActivity : AppCompatActivity() {
         appendLine("Matyti dažniai: ${if (bandsSeen.isEmpty()) "—" else bandsSeen.joinToString(", ")}")
         val dual = bandsSeen.any { it.endsWith("L5") || it.endsWith("E5a") || it.endsWith("E5b") || it.endsWith("B2b") }
         appendLine("Dviejų dažnių priėmimas: ${if (dual) "taip" else "nematyta"}")
+    }
+
+    /** Kortelė „Lustas“: tik tai, kas svarbu GNSS darbui (kopijuojama, kad būtų galima įklijuoti ir paklausti). */
+    private fun chipCardText(): String = buildString {
+        appendLine("Įrenginys: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+        if (Build.VERSION.SDK_INT >= 28) appendLine("GNSS lustas: ${lm.gnssHardwareModelName ?: "nežinomas"}; metai: ${lm.gnssYearOfHardware}")
+        if (Build.VERSION.SDK_INT >= 31) {
+            val c = lm.gnssCapabilities
+            fun yn(b: Boolean) = if (b) "taip" else "ne"
+            appendLine("Neapdoroti matavimai: ${yn(c.hasMeasurements())}; navigaciniai pranešimai programoms: ${yn(c.hasNavigationMessages())}")
+            appendLine("Antenos info: ${yn(c.hasAntennaInfo())}; matavimų korekcijos: ${yn(c.hasMeasurementCorrections())}; palydovų blokavimas: ${yn(c.hasSatelliteBlocklist())}")
+        }
+        val now = System.currentTimeMillis()
+        appendLine("Nešlio fazė (ADR, reikia RTK): " + when {
+            now - adrSeenMs < 60_000L -> "yra"
+            now - measSeenMs < 10_000L -> "nepateikiama"
+            else -> "dar nežinoma (laukiama matavimų)"
+        })
+        val per = SatCount.count(lastSats.map { SatCount.Sig(it.const, it.svid, it.used) }).perConst
+        appendLine("Sekamos konsteliacijos: " + if (per.isEmpty()) "—" else per.entries.joinToString(", ") { "${it.key} ${it.value[0]} (naud. ${it.value[1]})" })
+        appendLine("Matyti dažniai: ${if (bandsSeen.isEmpty()) "—" else bandsSeen.joinToString(", ")}")
+        val dual = bandsSeen.any { it.endsWith("L5") || it.endsWith("E5a") || it.endsWith("E5b") || it.endsWith("B2b") || it.endsWith("B2a") }
+        appendLine("Dviejų dažnių (L1+L5): ${if (dual) "taip" else "nematyta – tik L1 juosta"}")
+        appendLine("Pirmas fiksas (TTFF): " + if (ttffMs >= 0) "%.1f s".format(Locale.US, ttffMs / 1000.0) else "nežinoma (fiksas jau buvo arba dar nėra)")
+        appendLine("Lusto žinios: ${Readiness.knowledge()?.text ?: "—"}")
+        val eph = lastSats.filter { it.eph }.distinctBy { it.const to it.svid }
+        val fromSat = eph.count { (NavBits.stat(it.const + it.svid)?.eph ?: 0) > 0 }
+        appendLine("Efemeridės: ${eph.size} palydovų; iš palydovų matyta ${fromSat}, kitos – iš interneto ar atminties (A-GNSS)")
+        Readiness.shortAcc()?.let { appendLine("Tikslumas: lustas $it (skliaustuose – realus)") }
+    }
+
+    /** Slankiojama kortelė „Lustas“ virš 3D vaizdo: tempiama už antraštės, su kopijavimu. */
+    private var chipCard: View? = null
+    private fun toggleChipCard() {
+        chipCard?.let { (it.parent as? ViewGroup)?.removeView(it); chipCard = null; return }
+        val dp = resources.displayMetrics.density
+        val body = TextView(this).apply { textSize = 13f; setTextColor(0xFF111827.toInt()); setTextIsSelectable(true); text = chipCardText() }
+        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(TextView(this).apply { text = "Lustas"; textSize = 15f; setTypeface(typeface, android.graphics.Typeface.BOLD); setTextColor(0xFF111827.toInt()) },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        head.addView(Button(this).apply { text = "Kopijuoti"; isAllCaps = false; textSize = 12f
+            setOnClickListener {
+                (getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("Lustas", "Lustas\n" + body.text))
+                Toast.makeText(this@MainActivity, "Nukopijuota", Toast.LENGTH_SHORT).show()
+            } })
+        head.addView(Button(this).apply { text = "↻"; minWidth = 0; minimumWidth = 0; setOnClickListener { body.text = chipCardText() } },
+            LinearLayout.LayoutParams((44 * dp).toInt(), (44 * dp).toInt()))
+        head.addView(Button(this).apply { text = "✕"; minWidth = 0; minimumWidth = 0; setOnClickListener { toggleChipCard() } },
+            LinearLayout.LayoutParams((44 * dp).toInt(), (44 * dp).toInt()))
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pd = (10 * dp).toInt(); setPadding(pd, pd / 2, pd, pd)
+            background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 14 * dp; setColor(0xF2FFFFFF.toInt()) }
+            elevation = 8 * dp
+            addView(head)
+            addView(android.widget.ScrollView(this@MainActivity).apply { addView(body) },
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+        var lx = 0f; var ly = 0f
+        head.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> { lx = e.rawX; ly = e.rawY; true }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    card.translationX += e.rawX - lx; card.translationY += e.rawY - ly; lx = e.rawX; ly = e.rawY
+                    val par = card.parent as? View
+                    if (par != null) {
+                        card.translationX = card.translationX.coerceIn(-card.left.toFloat(), (par.width - card.right).toFloat())
+                        card.translationY = card.translationY.coerceIn(-card.top.toFloat(), (par.height - card.bottom).toFloat())
+                    }
+                    true
+                }
+                else -> true
+            }
+        }
+        val w = minOf((360 * dp).toInt(), (skyHolder.width * 0.92f).toInt().coerceAtLeast((260 * dp).toInt()))
+        skyHolder.addView(card, FrameLayout.LayoutParams(w, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER).apply {
+            val m = (12 * dp).toInt(); setMargins(m, m, m, m) })
+        chipCard = card
     }
 
     private fun reportFileUri(text: String): Uri? = try {

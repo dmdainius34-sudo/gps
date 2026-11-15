@@ -7590,7 +7590,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun onLocation(loc: Location) {
         @Suppress("DEPRECATION")
-        if (loc.isFromMockProvider) return                 // mūsų pačių RTK bandomoji vieta – ne lusto fiksas
+        // kai perduodame vietą kitoms programoms, GPS teikėjas yra mūsų – lusto fiksų nebegauname; savo sprendinį (žymė „source“)
+        // naudojame kaip fiksą (kalibravimui, pasiruošimui), o svetimas bandomąsias vietas ignoruojame
+        if (loc.isFromMockProvider && loc.extras?.getString("source") == null) return
         if (loc.hasAccuracy()) Readiness.onFix(loc.accuracy.toDouble())
         obsLatNow = loc.latitude; obsLonNow = loc.longitude
         lastFixWallMs = System.currentTimeMillis(); lastFixAcc = if (loc.hasAccuracy()) loc.accuracy.toDouble() else Double.NaN

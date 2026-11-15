@@ -34,6 +34,7 @@ object Rtk {
         'G' -> if (sig == "1C") 0 else -1
         'E' -> when (sig) { "1C" -> 0; "1X" -> 1; "1B" -> 2; else -> -1 }
         'R' -> if (sig == "1C") 0 else -1
+        'C' -> if (sig == "2I") 0 else -1
         else -> -1
     }
 
@@ -175,7 +176,7 @@ object Rtk {
         fun step(ep: Sp3V5.Ep, e0: BEp, e1: BEp, bp: DoubleArray, prepare: (Double, List<Sp3V5.Ob>) -> List<Sp3V5.SatEp>): PositionSolver.Solution? {
         val t = ep.t
         val a = (t - e0.t) / (e1.t - e0.t)
-        val acc = ep.meas.filter { Sp3V5.accept(it) && (it.sys == 'G' || it.sys == 'E' || it.sys == 'R') }
+        val acc = ep.meas.filter { Sp3V5.accept(it) && (it.sys == 'G' || it.sys == 'E' || it.sys == 'R' || it.sys == 'C') }
         val sats = prepare(t, acc.map { Sp3V5.Ob(it.sys, it.svid, it.pr, it.cn0) })
         val byId = acc.associateBy { it.id }
         // matavimai: yP = P + c·dts − bazės liekana, yL = Φ + c·dts − bazės fazės liekana
@@ -201,8 +202,8 @@ object Rtk {
                 }
             } else slip = true
             if (adrOk) lastAdr[id] = doubleArrayOf(m.adr!!, m.prr ?: Double.NaN, t) else lastAdr.remove(id)
-            // GLONASS (FDMA, skirtingi bangų ilgiai ir imtuvų kanalų poslinkiai) – tik slankiosios dviprasmybės, be sveikųjų sprendimo
-            val arOk = s.sys != 'R' && !yL.isNaN() && (m.adrState and 8) != 0 && b0.half == 0 && b1.half == 0
+            // GLONASS (FDMA, kanalų poslinkiai) ir BeiDou (kitas bangos ilgis) – tik slankiosios dviprasmybės, be sveikųjų sprendimo
+            val arOk = s.sys != 'R' && s.sys != 'C' && !yL.isNaN() && (m.adrState and 8) != 0 && b0.half == 0 && b1.half == 0
             obs.add(Ob(id, s.sys, s, yP, yL, slip, arOk))
         }
         if (obs.size < 5) return null
@@ -245,7 +246,7 @@ object Rtk {
         // kaukė netaikoma, jei ji išmestų daugiau nei pusę palydovų arba liktų mažiau nei 6
         if (masks.count { it.value } * 2 > geo.size || geo.size - masks.count { it.value } < 6) masks = masks.mapValues { false }
         val maskedRes = HashMap<String, Double>()
-        for ((si, sy) in listOf('G', 'E', 'R').withIndex()) {
+        for ((si, sy) in listOf('G', 'E', 'R', 'C').withIndex()) {
             val gs = geo.filter { it.o.sys == sy && masks[it.o.id] != true }
             // užmaskuotų palydovų kodo liekana (tik žemėlapiui) – to paties atskaitos palydovo atžvilgiu
             gs.maxByOrNull { it.el }?.let { ref -> geo.filter { it.o.sys == sy && masks[it.o.id] == true }.forEach { g ->

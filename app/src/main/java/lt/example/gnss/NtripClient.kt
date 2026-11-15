@@ -23,6 +23,38 @@ object NtripClient {
 
     fun enabled(ctx: Context) = ctx.getSharedPreferences("ntrip", Context.MODE_PRIVATE).getBoolean("on", false)
 
+    /** Taškas iš serverio sąrašo (sourcetable STR eilutė). */
+    class Mount(val name: String, val format: String, val details: String, val nav: String, val lat: Double, val lon: Double) {
+        val hasBds get() = nav.contains("BDS", true) || nav.contains("BEI", true) || nav.contains("COMPASS", true) ||
+            Regex("""\b112[4-7]\b""").containsMatchIn(details)
+    }
+
+    fun parseSourcetable(text: String): List<Mount> = text.lineSequence().filter { it.startsWith("STR;") }.mapNotNull { l ->
+        val f = l.split(';'); if (f.size < 11) return@mapNotNull null
+        Mount(f[1], f[3], f[4], f[6], f[9].toDoubleOrNull() ?: Double.NaN, f[10].toDoubleOrNull() ?: Double.NaN)
+    }.toList()
+
+    /** Serverio taškų sąrašas (blokuoja – kviesti ne UI gijoje). */
+    fun sourcetable(host: String, port: Int, user: String, pass: String): List<Mount> {
+        Socket().use { s ->
+            s.connect(InetSocketAddress(host, port), 10_000); s.soTimeout = 15_000
+            val auth = android.util.Base64.encodeToString("$user:$pass".toByteArray(), android.util.Base64.NO_WRAP)
+            s.getOutputStream().apply {
+                write(("GET / HTTP/1.0\r\nUser-Agent: NTRIP GnssApp/1.0\r\nAccept: */*\r\n" +
+                    (if (user.isNotEmpty()) "Authorization: Basic $auth\r\n" else "") + "Connection: close\r\n\r\n").toByteArray()); flush()
+            }
+            val sb = StringBuilder(); val buf = ByteArray(8192); val inp = s.getInputStream()
+            try {
+                while (sb.length < 2_000_000) {
+                    val n = inp.read(buf); if (n < 0) break
+                    sb.append(String(buf, 0, n, Charsets.ISO_8859_1))
+                    if (sb.contains("ENDSOURCETABLE")) break
+                }
+            } catch (_: java.net.SocketTimeoutException) {}
+            return parseSourcetable(sb.toString())
+        }
+    }
+
     @Volatile var status = "išjungta"
         private set
     @Volatile var bytes = 0L

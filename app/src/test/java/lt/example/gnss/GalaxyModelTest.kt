@@ -96,3 +96,16 @@ class GlonassTimeTest {
         assertEquals(100_000.0, r.third, 1e-6)
     }
 }
+
+class SourcetableTest {
+    @Test fun parsesMountsAndDetectsBeidou() {
+        val t = "SOURCETABLE 200 OK\r\n" +
+            "STR;VRS_RTCM32;VRS;RTCM 3.2;1005(10),1075(1),1085(1),1095(1);2;GPS+GLO+GAL;NET;LTU;54.70;25.30;1;1;sNTRIP;none;B;N;0;\r\n" +
+            "STR;RTX_RTCM34;RTX;RTCM 3.4;1005(10),1077(1),1087(1),1097(1),1127(1);2;GPS+GLO+GAL+BDS;NET;LTU;54.70;25.30;1;1;x;none;B;N;0;\r\n" +
+            "ENDSOURCETABLE\r\n"
+        val m = NtripClient.parseSourcetable(t)
+        assertEquals(2, m.size)
+        assertEquals("VRS_RTCM32", m[0].name); org.junit.Assert.assertFalse(m[0].hasBds)
+        assertEquals("RTCM 3.4", m[1].format); org.junit.Assert.assertTrue(m[1].hasBds)
+    }
+}

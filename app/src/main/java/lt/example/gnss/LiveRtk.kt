@@ -75,12 +75,17 @@ object LiveRtk {
     fun onRtcm(type: Int, p: ByteArray) {
         if (!enabled) return
         if (type == 1005 || type == 1006) { Rtcm3.station(p)?.let { basePos = it }; return }
-        val sys = Rtcm3.sysOf(type); if (sys != 'G' && sys != 'E' && sys != 'R') return
+        val sys = Rtcm3.sysOf(type); if (sys != 'G' && sys != 'E' && sys != 'R' && sys != 'C') return
         val m = Rtcm3.msm(p) ?: return
         val now = Sp3Live.gpsNow()
         val w = Math.floorDiv(now.toLong(), 604_800L)
         // GLONASS epocha – savaitės diena ir paros laikas Maskvos laiku (UTC + 3 h) -> GPS savaitės sekundės
-        val tow = if (sys == 'R') { if (m.dow > 6) return; ((m.dow * 86_400.0 + m.tow - 10_800.0 + 18.0) % 604_800.0 + 604_800.0) % 604_800.0 } else m.tow
+        // BeiDou – BDT savaitės sekundės (BDT = GPS − 14 s)
+        val tow = when (sys) {
+            'R' -> { if (m.dow > 6) return; ((m.dow * 86_400.0 + m.tow - 10_800.0 + 18.0) % 604_800.0 + 604_800.0) % 604_800.0 }
+            'C' -> (m.tow + 14.0) % 604_800.0
+            else -> m.tow
+        }
         var t = w * 604_800.0 + tow
         if (t - now > 302_400) t -= 604_800.0; if (now - t > 302_400) t += 604_800.0
         val key = Math.round(t * 1000) / 1000.0

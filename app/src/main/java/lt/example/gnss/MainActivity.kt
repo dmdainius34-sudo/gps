@@ -8175,6 +8175,36 @@ class MainActivity : AppCompatActivity() {
         val mount = field("Mount point (pvz. VRS_RTCM32)", p.getString("mount", "")!!, android.text.InputType.TYPE_CLASS_TEXT)
         val user = field("Vartotojas", p.getString("user", "")!!, android.text.InputType.TYPE_CLASS_TEXT)
         val pass = field("Slaptažodis", p.getString("pass", "")!!, android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        // serverio taškų sąrašas: sistemos, formatas, atstumas; ★ – siunčia BeiDou
+        box.addView(Button(this).apply { text = "Rodyti taškų sąrašą"; isAllCaps = false
+            setOnClickListener {
+                val h = host.text.toString().trim(); val pt = port.text.toString().toIntOrNull() ?: 2101
+                if (h.isEmpty()) { Toast.makeText(this@MainActivity, "Įveskite serverį", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+                text = "Gaunamas sąrašas…"; isEnabled = false
+                val btn = this
+                Thread {
+                    val res = try { Result.success(NtripClient.sourcetable(h, pt, user.text.toString(), pass.text.toString())) } catch (e: Exception) { Result.failure(e) }
+                    runOnUiThread {
+                        btn.text = "Rodyti taškų sąrašą"; btn.isEnabled = true
+                        val list = res.getOrNull()
+                        if (list == null || list.isEmpty()) {
+                            Toast.makeText(this@MainActivity, "Sąrašo gauti nepavyko" + (res.exceptionOrNull()?.message?.let { ": $it" } ?: " (tuščias)"), Toast.LENGTH_LONG).show()
+                            return@runOnUiThread
+                        }
+                        fun km(m: NtripClient.Mount) = if (m.lat.isNaN() || (obsLatNow == 0.0 && obsLonNow == 0.0)) Double.NaN
+                            else PositionSolver.horizDist(obsLatNow, obsLonNow, m.lat, m.lon) / 1000.0
+                        val sorted = list.sortedWith(compareBy({ !it.hasBds }, { km(it).let { d -> if (d.isNaN()) 1e9 else d } }))
+                        val items = sorted.map { m ->
+                            (if (m.hasBds) "★ " else "") + m.name + " · " + m.format + " · " + m.nav.ifEmpty { "?" } +
+                                km(m).let { d -> if (d.isNaN()) "" else " · %.0f km".format(Locale.US, d) } +
+                                (if (m.details.isNotEmpty()) "\n   " + m.details.take(90) else "")
+                        }.toTypedArray()
+                        android.app.AlertDialog.Builder(this@MainActivity).setTitle("Taškai (${list.size}); ★ – su BeiDou")
+                            .setItems(items) { _, i -> mount.setText(sorted[i].name) }
+                            .setNegativeButton("Uždaryti", null).show()
+                    }
+                }.start()
+            } })
         val on = CheckBox(this).apply { text = "Jungtis (pataisos įrašomos į gnss_rtcm.csv)"; isChecked = p.getBoolean("on", false); box.addView(this) }
         val rtk = CheckBox(this).apply { text = "Gyvas RTK (nešlio fazė; planšetė)"; isChecked = p.getBoolean("rtk_live", false); box.addView(this) }
         val mock = CheckBox(this).apply { text = "Perduoti programos vietą kitoms programoms (RTK, kitaip – SP3 sprendinys su realiu tikslumu; bandomoji vieta, pvz. AlpineQuest)"; isChecked = MockLoc.armed; box.addView(this) }

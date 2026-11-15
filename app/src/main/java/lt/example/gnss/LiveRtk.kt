@@ -113,7 +113,7 @@ object LiveRtk {
         private set
     private fun spp(ep: Sp3V5.Ep) {
         val now = System.currentTimeMillis()
-        if (enabled && MockLoc.armed && now - lastMs < 3_000 && (last?.hacc ?: 99.0) < 0.5) return      // perduodamas RTK
+        if (enabled && MockLoc.armed && now - lastMs < 3_000 && engine.lastFix && (last?.hacc ?: 99.0) < 0.5) return      // perduodamas RTK FIX
         val r = Sp3Live.reader ?: return
         if (!Sp3Solver.inRange(r, ep.t)) return
         val obs = ep.meas.filter { (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min }
@@ -147,7 +147,8 @@ object LiveRtk {
             log(ep.timeMs, sol)
             // kitoms programoms – tik suartėjęs ir stabilus sprendinys
             val prev = pushed
-            val ok = sol.hacc < 0.5 && sol.sats >= 4 &&
+            // kitoms programoms – tik sveikųjų dviprasmybių FIX (patalpoje FLOAT „±0,5 m“ klaidina ir kaitaliojasi su SP3 sprendiniu)
+            val ok = engine.lastFix && sol.hacc < 0.5 && sol.sats >= 4 &&
                 (prev == null || PositionSolver.horizDist(prev.lat, prev.lon, sol.lat, sol.lon) < maxOf(1.0, 4 * sol.hacc) || held >= 10)
             if (ok) { MockLoc.push(sol); pushed = sol; held = 0; pushedN++ } else { held++; heldN++ }
             // be gero RTK perduodamas programos sprendinys (spp); jei ir jo nėra – sargas grąžina lusto GPS

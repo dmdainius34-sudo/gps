@@ -121,7 +121,8 @@ object LiveRtk {
         if (obs.size < 5) return
         val f = try { Sp3V5.solve(ep.week, ep.tow, obs, r, isb = true, raim = true) } catch (_: Exception) { null } ?: return
         val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }
-        val sol = PositionSolver.Solution(f.sol.lat, f.sol.lon, f.sol.h, f.sol.sats, real, f.sol.ecef)
+        val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, moving)
+        val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
         sppLast = sol
         if (MockLoc.armed) MockLoc.push(sol, "programa (SP3)")
     }

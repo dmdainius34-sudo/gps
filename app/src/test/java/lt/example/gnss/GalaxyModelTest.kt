@@ -68,3 +68,18 @@ class CourseHeadingTest {
         assertEquals(8.0, fix, 0.5)
     }
 }
+
+class PosFilterTest {
+    @Test fun stationaryAveragingSettlesAndRejectsJumps() {
+        PosFilter.reset()
+        val rnd = java.util.Random(1)
+        var out = DoubleArray(4)
+        for (i in 0 until 300) {
+            val jump = if (i % 25 == 0) 0.0005 else 0.0          // retkarčiais ~55 m šuolis
+            out = PosFilter.step(1_000_000L + i * 1000L, 54.7 + rnd.nextGaussian() * 0.00006 + jump, 25.3 + rnd.nextGaussian() * 0.0001, 200.0, 10.0, false)
+        }
+        assertEquals(54.7, out[0], 0.00003)                     // ~3 m
+        assertEquals(25.3, out[1], 0.00005)
+        org.junit.Assert.assertTrue(out[3] >= 5.0)               // ne mažiau nei pusė realaus
+    }
+}

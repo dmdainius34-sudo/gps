@@ -43,20 +43,38 @@ object Sp3V5 {
         return Triple(pr, week, tRxNs * 1e-9)
     }
 
-    private fun sysOf(c: String, sig: String): Pair<Char, Double>? = when {
+    private fun sysOf(c: String, sig: String, glo: Boolean): Pair<Char, Double>? = when {
         c == "GPS" && sig == "L1" -> 'G' to 0.0
         c == "GAL" && sig == "E1" -> 'E' to 0.0
         c == "BDS" && sig == "B1I" -> 'C' to -14.0
+        glo && c == "GLO" && sig == "G1" -> 'R' to 0.0
         else -> null
+    }
+
+    /** GLONASS: palydovo laikas – paros laikas GLONASS sistemoje (UTC(SU) = UTC + 3 h), būsena GLO_TOD_DECODED. */
+    const val STATE_GLO_TOD_DECODED = 0x80
+    private const val LEAP_S = 18.0
+    fun pseudorangeGlo(tn: Long, fb: Long, bias: Double, off: Double, state: Int, svt: Long): Triple<Double, Int, Double>? {
+        if (state and STATE_GLO_TOD_DECODED == 0) return null
+        val weekNs = 604_800_000_000_000L; val dayNs = 86_400e9
+        val gpsNs = tn - fb
+        val week = Math.floorDiv(gpsNs, weekNs).toInt()
+        val tRxNs = (gpsNs - week * weekNs).toDouble() + off - bias
+        var tod = (tRxNs + (10_800.0 - LEAP_S) * 1e9) % dayNs; if (tod < 0) tod += dayNs
+        var dt = tod - svt
+        if (dt < -dayNs / 2) dt += dayNs; if (dt > dayNs / 2) dt -= dayNs
+        val pr = dt * 1e-9 * C
+        if (pr < 1.5e7 || pr > 3.6e7) return null
+        return Triple(pr, week, tRxNs * 1e-9)
     }
 
     fun readRaw(raw: File, consumer: (Ep) -> Unit) {
         if (!raw.exists()) return
-        raw.bufferedReader().use { br -> readRaw(br, consumer) }
+        raw.bufferedReader().use { br -> readRaw(br, consumer = consumer) }
     }
 
     /** Tas pats skaitymas iš srauto (antraštė + eilutės) – gyvam RTK. */
-    fun readRaw(br: java.io.BufferedReader, consumer: (Ep) -> Unit) {
+    fun readRaw(br: java.io.BufferedReader, glo: Boolean = false, consumer: (Ep) -> Unit) {
         run {
             val head = br.readLine()?.split(',') ?: return
             fun idx(n: String) = head.indexOf(n)
@@ -71,7 +89,7 @@ object Sp3V5 {
             br.forEachLine { line ->
                 val p = line.split(',')
                 if (p.size <= maxOf(iSvt, iSt, iTn, iCn, iSig)) return@forEachLine
-                val sys = sysOf(p[iC], p[iSig]) ?: return@forEachLine
+                val sys = sysOf(p[iC], p[iSig], glo) ?: return@forEachLine
                 val tn = p[iTn].toLongOrNull() ?: return@forEachLine
                 val fb = p[iFb].toLongOrNull() ?: return@forEachLine
                 val b = p[iB].toDoubleOrNull() ?: 0.0
@@ -79,8 +97,9 @@ object Sp3V5 {
                 val st = p[iSt].toIntOrNull() ?: return@forEachLine
                 val svt = p[iSvt].toLongOrNull() ?: return@forEachLine
                 val sv = p[iSv].toIntOrNull() ?: return@forEachLine
+                if (sys.first == 'R' && sv !in 1..24) return@forEachLine          // dažnio kanalas vietoj orbitinės vietos – nesiejama su SP3
                 if (tn != curTn) { flush(); curTn = tn }
-                val r = pseudorange(tn, fb, b, off, st, svt, sys.second) ?: return@forEachLine
+                val r = (if (sys.first == 'R') pseudorangeGlo(tn, fb, b, off, st, svt) else pseudorange(tn, fb, b, off, st, svt, sys.second)) ?: return@forEachLine
                 curMs = p[iMs].toLongOrNull() ?: curMs
                 curWeek = r.second; curTow = r.third - off * 1e-9
                 if (list.any { it.sys == sys.first && it.svid == sv }) return@forEachLine
@@ -94,7 +113,7 @@ object Sp3V5 {
         }
     }
 
-    fun accept(m: M) = m.state and STATE_TOW_DECODED != 0 && m.mp != 1 && m.cn0 >= 20.0
+    fun accept(m: M) = (if (m.sys == 'R') m.state and STATE_GLO_TOD_DECODED != 0 else m.state and STATE_TOW_DECODED != 0) && m.mp != 1 && m.cn0 >= 20.0
 
     /** Glodinimas: ADR (fazė), kitaip integruotas Doppler; tas pats Hatch langas ir paleidimo iš naujo taisyklės. */
     class Smoother(val doppler: Boolean) {

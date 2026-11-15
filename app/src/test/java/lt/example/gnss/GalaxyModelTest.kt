@@ -83,3 +83,16 @@ class PosFilterTest {
         org.junit.Assert.assertTrue(out[3] >= 5.0)               // ne mažiau nei pusė realaus
     }
 }
+
+class GlonassTimeTest {
+    @Test fun pseudorangeFromGlonassTimeOfDay() {
+        // gavimo laikas: GPS savaitės 100 000 s; GLONASS paros laikas = 100 000 − 18 + 10 800 (mod 86 400); signalas skrido 70 ms
+        val week = 2400L; val weekNs = 604_800_000_000_000L
+        val tn = 1_000_000_000L; val fb = -(week * weekNs + 100_000_000_000_000L) + tn
+        val tod = ((100_000.0 - 18.0 + 10_800.0) % 86_400.0) * 1e9
+        val svt = (tod - 70e6).toLong()
+        val r = Sp3V5.pseudorangeGlo(tn, fb, 0.0, 0.0, Sp3V5.STATE_GLO_TOD_DECODED, svt)!!
+        assertEquals(0.070 * 299_792_458.0, r.first, 1.0)
+        assertEquals(100_000.0, r.third, 1e-6)
+    }
+}

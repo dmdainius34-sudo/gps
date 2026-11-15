@@ -23,6 +23,8 @@ object Rtk {
     /** GPS L1 / Galileo E1 bangos ilgis, m. */
     const val LAMBDA_L1 = PositionSolver.C / 1575.42e6
     const val RATIO = 3.0
+    /** Jau išlaikytam FIX su tais pačiais sveikaisiais – žemesnė riba. */
+    const val HOLD_RATIO = 1.8
 
     /** Bazės liekanos (m): kodas ir fazė be geometrijos ir palydovo laikrodžio; lock – užrakto indikatorius. */
     class BObs(val rc: Double, val rp: Double, val lock: Int, val half: Int = 0)
@@ -31,6 +33,7 @@ object Rtk {
     private fun pick(sys: Char, sig: String): Int = when (sys) {
         'G' -> if (sig == "1C") 0 else -1
         'E' -> when (sig) { "1C" -> 0; "1X" -> 1; "1B" -> 2; else -> -1 }
+        'R' -> if (sig == "1C") 0 else -1
         else -> -1
     }
 
@@ -163,6 +166,8 @@ object Rtk {
         var lastNFix = 0
             private set
         private var fixRun = 0
+        /** Paskutiniai priimti sveikieji (porai [ki, kr]) – FIX tęstinumui. */
+        private val heldInts = HashMap<Pair<Int, Int>, Double>()
         private val lockN = HashMap<String, Int>()
         var lastPhase = 0
             private set
@@ -170,7 +175,7 @@ object Rtk {
         fun step(ep: Sp3V5.Ep, e0: BEp, e1: BEp, bp: DoubleArray, prepare: (Double, List<Sp3V5.Ob>) -> List<Sp3V5.SatEp>): PositionSolver.Solution? {
         val t = ep.t
         val a = (t - e0.t) / (e1.t - e0.t)
-        val acc = ep.meas.filter { Sp3V5.accept(it) && (it.sys == 'G' || it.sys == 'E') }
+        val acc = ep.meas.filter { Sp3V5.accept(it) && (it.sys == 'G' || it.sys == 'E' || it.sys == 'R') }
         val sats = prepare(t, acc.map { Sp3V5.Ob(it.sys, it.svid, it.pr, it.cn0) })
         val byId = acc.associateBy { it.id }
         // matavimai: yP = P + c·dts − bazės liekana, yL = Φ + c·dts − bazės fazės liekana
@@ -196,7 +201,8 @@ object Rtk {
                 }
             } else slip = true
             if (adrOk) lastAdr[id] = doubleArrayOf(m.adr!!, m.prr ?: Double.NaN, t) else lastAdr.remove(id)
-            val arOk = !yL.isNaN() && (m.adrState and 8) != 0 && b0.half == 0 && b1.half == 0
+            // GLONASS (FDMA, skirtingi bangų ilgiai ir imtuvų kanalų poslinkiai) – tik slankiosios dviprasmybės, be sveikųjų sprendimo
+            val arOk = s.sys != 'R' && !yL.isNaN() && (m.adrState and 8) != 0 && b0.half == 0 && b1.half == 0
             obs.add(Ob(id, s.sys, s, yP, yL, slip, arOk))
         }
         if (obs.size < 5) return null
@@ -239,7 +245,7 @@ object Rtk {
         // kaukė netaikoma, jei ji išmestų daugiau nei pusę palydovų arba liktų mažiau nei 6
         if (masks.count { it.value } * 2 > geo.size || geo.size - masks.count { it.value } < 6) masks = masks.mapValues { false }
         val maskedRes = HashMap<String, Double>()
-        for ((si, sy) in listOf('G', 'E').withIndex()) {
+        for ((si, sy) in listOf('G', 'E', 'R').withIndex()) {
             val gs = geo.filter { it.o.sys == sy && masks[it.o.id] != true }
             // užmaskuotų palydovų kodo liekana (tik žemėlapiui) – to paties atskaitos palydovo atžvilgiu
             gs.maxByOrNull { it.el }?.let { ref -> geo.filter { it.o.sys == sy && masks[it.o.id] == true }.forEach { g ->
@@ -333,7 +339,12 @@ object Rtk {
                 val res = Lambda.solve(DoubleArray(nd) { am[it] / LAMBDA_L1 }, Array(nd) { i -> DoubleArray(nd) { j -> qm[i][j] / (LAMBDA_L1 * LAMBDA_L1) } })
                 if (res != null) {
                     lastRatio = res.ratio; run.ratios.add(res.ratio)
-                    if (res.ratio >= RATIO) {
+                    // laikymas: jau išlaikytas FIX (≥ 3 epochos) tęsiamas ir esant žemesniam ratio, jei sveikieji nepasikeitė
+                    val ids = pairs.map { it[0] to it[1] }
+                    val same = heldInts.isNotEmpty() && ids.indices.all { i -> heldInts[ids[i]]?.let { it == res.best[i] } ?: true } &&
+                        ids.count { it in heldInts } >= 4
+                    if (res.ratio >= RATIO || (fixRun >= 3 && res.ratio >= HOLD_RATIO && same)) {
+                        heldInts.clear(); for (i in ids.indices) heldInts[ids[i]] = res.best[i]
                         val qInv = inv(qm)
                         if (qInv != null) {
                             val db = DoubleArray(nd) { am[it] - res.best[it] * LAMBDA_L1 }
@@ -357,9 +368,9 @@ object Rtk {
                                 }
                             }
                         }
-                    } else fixRun = 0
-                } else fixRun = 0
-            } else fixRun = 0
+                    } else { fixRun = 0; heldInts.clear() }
+                } else { fixRun = 0; heldInts.clear() }
+            } else { fixRun = 0; heldInts.clear() }
         }
         if (lastFix) { run.fixEpochs++; if (run.firstFixS.isNaN()) run.firstFixS = t - t0 }
         run.fixed.add(lastFix)

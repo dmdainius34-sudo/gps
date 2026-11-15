@@ -75,11 +75,13 @@ object LiveRtk {
     fun onRtcm(type: Int, p: ByteArray) {
         if (!enabled) return
         if (type == 1005 || type == 1006) { Rtcm3.station(p)?.let { basePos = it }; return }
-        val sys = Rtcm3.sysOf(type); if (sys != 'G' && sys != 'E') return
+        val sys = Rtcm3.sysOf(type); if (sys != 'G' && sys != 'E' && sys != 'R') return
         val m = Rtcm3.msm(p) ?: return
         val now = Sp3Live.gpsNow()
         val w = Math.floorDiv(now.toLong(), 604_800L)
-        var t = w * 604_800.0 + m.tow
+        // GLONASS epocha – savaitės diena ir paros laikas Maskvos laiku (UTC + 3 h) -> GPS savaitės sekundės
+        val tow = if (sys == 'R') { if (m.dow > 6) return; ((m.dow * 86_400.0 + m.tow - 10_800.0 + 18.0) % 604_800.0 + 604_800.0) % 604_800.0 } else m.tow
+        var t = w * 604_800.0 + tow
         if (t - now > 302_400) t -= 604_800.0; if (now - t > 302_400) t += 604_800.0
         val key = Math.round(t * 1000) / 1000.0
         Rtk.pickObs(m, pending.getOrPut(key) { HashMap() })
@@ -100,7 +102,7 @@ object LiveRtk {
         lastClockNs = event.clock.timeNanos
         val text = SessionFiles.RAW_HEADER + RawRecorder.lines(event).joinToString("\n") + "\n"
         val eps = ArrayList<Sp3V5.Ep>()
-        Sp3V5.readRaw(java.io.BufferedReader(java.io.StringReader(text))) { eps.add(it) }
+        Sp3V5.readRaw(java.io.BufferedReader(java.io.StringReader(text)), glo = true) { eps.add(it) }
         eps.lastOrNull()?.let { spp(it) }
         if (!enabled) return
         rover.addAll(eps)
@@ -116,7 +118,7 @@ object LiveRtk {
         if (enabled && MockLoc.armed && now - lastMs < 3_000 && engine.lastFix && (last?.hacc ?: 99.0) < 0.5) return      // perduodamas RTK FIX
         val r = Sp3Live.reader ?: return
         if (!Sp3Solver.inRange(r, ep.t)) return
-        val obs = ep.meas.filter { (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min }
+        val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min }
             .map { Sp3V5.Ob(it.sys, it.svid, it.pr, it.cn0, it.prr) }
         if (obs.size < 5) return
         val f = try { Sp3V5.solve(ep.week, ep.tow, obs, r, isb = true, raim = true) } catch (_: Exception) { null } ?: return

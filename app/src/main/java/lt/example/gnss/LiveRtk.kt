@@ -134,7 +134,8 @@ object LiveRtk {
     }
 
     /** Palydovų būsena: SP3, jei apima; kitaip – transliuojamos efemeridės (GPS/Galileo žinutės, BRDC). */
-    fun prepare(t: Double, obs: List<Sp3V5.Ob>): List<Sp3V5.SatEp> {
+    fun prepare(t: Double, obs0: List<Sp3V5.Ob>): List<Sp3V5.SatEp> {
+        val obs = obs0.filter { it.cn0 >= CnoMask.min }
         val r = Sp3Live.reader
         if (r != null && Sp3Solver.inRange(r, t)) { source = "SP3"; return Sp3V5.prepare(t, obs, r) }
         source = "transliuojamos efemeridės"

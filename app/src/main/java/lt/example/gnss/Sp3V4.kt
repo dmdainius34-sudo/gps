@@ -70,11 +70,11 @@ object Sp3V4 {
         }
     }
 
-    /** Filtras: TOW iššifruotas, daugiaspindis nepažymėtas (1 – aptiktas), C/N0 ≥ 20 dB-Hz. */
+    /** Filtras: TOW iššifruotas, daugiaspindis nepažymėtas (1 – aptiktas), C/N0 ≥ CnoMask.min (numatyta 20 dB-Hz). */
     fun accept(m: Meas, rej: Rejects?): Boolean {
         if (m.state and PositionSolver.STATE_TOW_DECODED == 0) { rej?.let { it.noTow++ }; return false }
         if (m.multipath == 1) { rej?.let { it.multipath++ }; return false }
-        if (m.cn0 < 20.0) { rej?.let { it.lowCn0++ }; return false }
+        if (m.cn0 < CnoMask.min) { rej?.let { it.lowCn0++ }; return false }
         return true
     }
 
@@ -291,7 +291,7 @@ object Sp3V4 {
             run(raw, sp3, "A + filtras + svoriai", aw, true, false),
             run(raw, sp3, "A + filtras + svoriai + Hatch", aw, true, true, outV4, hatchState = hatch))
         steps.forEach { appendLine(stats(it, ref, fixH)) }
-        appendLine("Filtro atmetimai: TOW neiššifruotas ${rej.noTow}, daugiaspindis ${rej.multipath}, C/N0 < 20 dB-Hz ${rej.lowCn0}; " +
+        appendLine("Filtro atmetimai: TOW neiššifruotas ${rej.noTow}, daugiaspindis ${rej.multipath}, C/N0 < %.0f dB-Hz ${rej.lowCn0}".format(java.util.Locale.US, CnoMask.min) + "; " +
             "be laiko sinchronizacijos (neįtraukta į epochas) – žr. matavimų skyrių")
         appendLine("Hatch: langas 100 epochų, glodinimo paleidimų iš naujo (šuolis > max(10 m, 4σ) / tarpas > 1,5 s): ${hatch.restarts}; failas $OUT_FILE_V4")
     }

@@ -2141,7 +2141,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val px2 = p[0] - dd * eyeI[0]; val py2 = p[1] - dd * eyeI[1]; val pz2 = p[2] - dd * eyeI[2]
             if (dd < 0f && kotlin.math.sqrt(px2 * px2 + py2 * py2 + pz2 * pz2) < EARTH_R) continue
             val col = constRgb(sat.const)
-            val usedK = if (sat.used) 1f else 0.4f
+            // žemiau slenksčio (programos skaičiavime nenaudojamas) – blyškus
+            val usedK = if (sat.cn0 < CnoMask.min) 0.25f else if (sat.used) 1f else 0.4f
             // Švytėjimas: 0 ties 20 dB-Hz, didžiausias ties 45 dB-Hz
             val glow = ((sat.cn0 - 20f) / 25f).coerceIn(0f, 1f)
             val nb = if (showNavBits) NavBits.get(sat.const + sat.svid)?.takeIf { System.currentTimeMillis() - it.tMs < 8_000L } else null
@@ -6949,6 +6950,29 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbStableN, LinearLayout.LayoutParams(mw, ww))
+        // mažiausias signalo stiprumas programos skaičiavime (lusto padėties neveikia)
+        val cnoSp = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
+        CnoMask.min = cnoSp.getFloat("cno_min", 20f).toDouble()
+        val cnoLabel = TextView(this).apply { textSize = 13f }
+        fun cnoText() {
+            val u = lastSats.filter { it.used }.distinctBy { it.const to it.svid }
+            val left2 = u.count { it.cn0 >= CnoMask.min }
+            cnoLabel.text = "Mažiausias signalas mano skaičiavime: %.0f dB-Hz (lieka %d iš %d naudojamų palydovų; realus tikslumas %s)".format(
+                Locale.US, CnoMask.min, left2, u.size, Readiness.realAcc().let { if (it.isNaN()) "—" else "~%.0f m".format(Locale.US, it) })
+        }
+        cnoText()
+        left.addView(cnoLabel, LinearLayout.LayoutParams(mw, ww))
+        left.addView(android.widget.SeekBar(this).apply {
+            max = 25; progress = (CnoMask.min - 15).toInt().coerceIn(0, 25)
+            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: android.widget.SeekBar, v: Int, user: Boolean) {
+                    CnoMask.min = 15.0 + v; cnoText()
+                    if (user) cnoSp.edit().putFloat("cno_min", CnoMask.min.toFloat()).apply()
+                }
+                override fun onStartTrackingTouch(sb: android.widget.SeekBar) {}
+                override fun onStopTrackingTouch(sb: android.widget.SeekBar) { cnoText() }
+            })
+        }, LinearLayout.LayoutParams(mw, ww))
         SignalHeading.autoFix = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sig_heading_fix", true)
         SignalHeading.mapClean = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("cabin_clean_v2", false)
         left.addView(CheckBox(this).apply {

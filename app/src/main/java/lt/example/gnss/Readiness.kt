@@ -49,7 +49,7 @@ object Readiness {
 
     /** Realus tikslumas iš naudojamų palydovų išsidėstymo ir stiprumo (RealAcc), m; NaN – per mažai palydovų. */
     fun realAcc(): Double {
-        val u = sats.filter { it.used }.groupBy { it.const to it.svid }.map { (_, v) -> v.maxBy { it.cn0 } }
+        val u = sats.filter { it.used && it.cn0 >= CnoMask.min }.groupBy { it.const to it.svid }.map { (_, v) -> v.maxBy { it.cn0 } }
         return RealAcc.horizontal(DoubleArray(u.size) { u[it].az.toDouble() }, DoubleArray(u.size) { u[it].elev.toDouble() },
             DoubleArray(u.size) { u[it].cn0.toDouble() })
     }

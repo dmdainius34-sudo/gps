@@ -8037,6 +8037,9 @@ class MainActivity : AppCompatActivity() {
         val fromSat = eph.count { (NavBits.stat(it.const + it.svid)?.eph ?: 0) > 0 }
         appendLine("Efemeridės: ${eph.size} palydovų; iš palydovų matyta ${fromSat}, kitos – iš interneto ar atminties (A-GNSS)")
         Readiness.shortAcc()?.let { appendLine("Tikslumas: lustas $it (skliaustuose – realus)") }
+        appendLine("Perdavimas kitoms programoms: " + (if (!MockLoc.armed) "išjungtas" else MockLoc.status) +
+            (LiveRtk.sppLast?.let { "; programos sprendinys ±%.1f m, palydovų %d".format(Locale.US, it.hacc, it.sats) } ?: "; programos sprendinio dar nėra (reikia SP3 orbitų)") +
+            "; SP3: " + (if (Sp3Live.reader != null) "įkeltos" else "neįkeltos"))
     }
 
     /** Slankiojama kortelė „Lustas“ virš 3D vaizdo: tempiama už antraštės, su kopijavimu. */
@@ -8182,6 +8185,7 @@ class MainActivity : AppCompatActivity() {
                     .putString("mount", mount.text.toString().trim()).putString("user", user.text.toString())
                     .putString("pass", pass.text.toString()).putBoolean("on", on.isChecked).putBoolean("rtk_live", rtk.isChecked).apply()
                 LiveRtk.load(this); if (!rtk.isChecked) LiveRtk.reset()
+                p.edit().putBoolean("mock_on", mock.isChecked).apply()
                 if (mock.isChecked && !MockLoc.armed) {
                     if (!MockLoc.enable(this)) {
                         Toast.makeText(this, MockLoc.status, Toast.LENGTH_LONG).show()
@@ -8274,6 +8278,8 @@ class MainActivity : AppCompatActivity() {
     private fun startNtrip() {
         Crane.load(this)
         LiveRtk.load(this)
+        // perdavimas kitoms programoms išlieka po programos paleidimo iš naujo
+        if (getSharedPreferences("ntrip", Context.MODE_PRIVATE).getBoolean("mock_on", false) && !MockLoc.armed) MockLoc.enable(this)
         if (!NtripClient.enabled(this)) return
         NtripClient.start(this) { if (obsLatNow == 0.0 && obsLonNow == 0.0) null else doubleArrayOf(obsLatNow, obsLonNow, obsHNow) }
     }

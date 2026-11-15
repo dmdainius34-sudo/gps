@@ -96,13 +96,12 @@ object LiveRtk {
     @Synchronized
     fun onMeasurements(event: GnssMeasurementsEvent) {
         lastMeasMs = System.currentTimeMillis()
-        if (!enabled && !MockLoc.armed) return
         if (event.clock.timeNanos == lastClockNs) return
         lastClockNs = event.clock.timeNanos
         val text = SessionFiles.RAW_HEADER + RawRecorder.lines(event).joinToString("\n") + "\n"
         val eps = ArrayList<Sp3V5.Ep>()
         Sp3V5.readRaw(java.io.BufferedReader(java.io.StringReader(text))) { eps.add(it) }
-        if (MockLoc.armed) eps.lastOrNull()?.let { spp(it) }
+        eps.lastOrNull()?.let { spp(it) }
         if (!enabled) return
         rover.addAll(eps)
         while (rover.size > 20) rover.removeFirst()
@@ -114,7 +113,7 @@ object LiveRtk {
         private set
     private fun spp(ep: Sp3V5.Ep) {
         val now = System.currentTimeMillis()
-        if (enabled && now - lastMs < 3_000 && (last?.hacc ?: 99.0) < 0.5) return      // perduodamas RTK
+        if (enabled && MockLoc.armed && now - lastMs < 3_000 && (last?.hacc ?: 99.0) < 0.5) return      // perduodamas RTK
         val r = Sp3Live.reader ?: return
         if (!Sp3Solver.inRange(r, ep.t)) return
         val obs = ep.meas.filter { (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min }
@@ -124,7 +123,7 @@ object LiveRtk {
         val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }
         val sol = PositionSolver.Solution(f.sol.lat, f.sol.lon, f.sol.h, f.sol.sats, real, f.sol.ecef)
         sppLast = sol
-        MockLoc.push(sol, "programa (SP3)")
+        if (MockLoc.armed) MockLoc.push(sol, "programa (SP3)")
     }
 
     private fun process() {

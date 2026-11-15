@@ -8037,7 +8037,7 @@ class MainActivity : AppCompatActivity() {
         val fromSat = eph.count { (NavBits.stat(it.const + it.svid)?.eph ?: 0) > 0 }
         appendLine("Efemeridės: ${eph.size} palydovų; iš palydovų matyta ${fromSat}, kitos – iš interneto ar atminties (A-GNSS)")
         Readiness.shortAcc()?.let { appendLine("Tikslumas: lustas $it (skliaustuose – realus)") }
-        appendLine("Perdavimas kitoms programoms: " + (if (!MockLoc.armed) "išjungtas" else MockLoc.status) +
+        appendLine("Perdavimas kitoms programoms: " + (if (!MockLoc.armed) "išjungtas (" + MockLoc.status + ")" else MockLoc.status) +
             (LiveRtk.sppLast?.let { "; programos sprendinys ±%.1f m, palydovų %d".format(Locale.US, it.hacc, it.sats) } ?: "; programos sprendinio dar nėra (reikia SP3 orbitų)") +
             "; SP3: " + (if (Sp3Live.reader != null) "įkeltos" else "neįkeltos"))
     }

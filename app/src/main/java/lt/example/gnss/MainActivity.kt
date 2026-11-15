@@ -8023,9 +8023,9 @@ class MainActivity : AppCompatActivity() {
             appendLine("Antenos info: ${yn(c.hasAntennaInfo())}; matavimų korekcijos: ${yn(c.hasMeasurementCorrections())}; palydovų blokavimas: ${yn(c.hasSatelliteBlocklist())}")
         }
         val now = System.currentTimeMillis()
-        appendLine("Nešlio fazė (ADR, reikia RTK): " + when {
-            now - adrSeenMs < 60_000L -> "yra"
-            now - measSeenMs < 10_000L -> "nepateikiama"
+        appendLine("Nešlio bangos fazė (ADR; be jos RTK centimetrų nebūna): " + when {
+            now - adrSeenMs < 60_000L -> "lustas pateikia – RTK centimetrai galimi"
+            now - measSeenMs < 10_000L -> "lustas nepateikia – RTK centimetrai negalimi, tik metrai"
             else -> "dar nežinoma (laukiama matavimų)"
         })
         val per = SatCount.count(lastSats.map { SatCount.Sig(it.const, it.svid, it.used) }).perConst

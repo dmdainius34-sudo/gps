@@ -8040,7 +8040,7 @@ class MainActivity : AppCompatActivity() {
         appendLine("Efemeridės: ${eph.size} palydovų; iš palydovų matyta ${fromSat}, kitos – iš interneto ar atminties (A-GNSS)")
         Readiness.shortAcc()?.let { appendLine("Tikslumas: lustas $it (skliaustuose – realus)") }
         appendLine("Perdavimas kitoms programoms: " + (if (!MockLoc.armed) "išjungtas (" + MockLoc.status + ")" else MockLoc.status) +
-            (LiveRtk.sppLast?.let { "; programos sprendinys (%s) ±%.1f m, palydovų %d".format(Locale.US, LiveRtk.sppSource, it.hacc, it.sats) } ?: "; programos sprendinio dar nėra (reikia SP3 orbitų)") +
+            (LiveRtk.sppLast?.let { "; programos sprendinys ±%.1f m, palydovų %d".format(Locale.US, it.hacc, it.sats) } ?: "; programos sprendinio dar nėra (reikia SP3 orbitų)") +
             "; SP3: " + (if (Sp3Live.reader != null) "įkeltos" else "neįkeltos"))
     }
 

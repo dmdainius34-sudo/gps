@@ -75,10 +75,10 @@ object Dgnss {
         return Base(pos, eps, lines.size, counts, "")
     }
 
-    class Lsq(val x: DoubleArray, val used: Int, val dropped: List<String>)
+    private class Lsq(val x: DoubleArray, val used: Int, val dropped: List<String>)
 
     /** Mažiausi kvadratai: x, y, z ir laikrodis kiekvienai sistemai; svoris sin²(aukštis); iki 3 atmetimų. */
-    fun lsq(sats0: List<Sp3V5.SatEp>, tow: Double, atmo: Boolean): Lsq? {
+    private fun lsq(sats0: List<Sp3V5.SatEp>, tow: Double, atmo: Boolean): Lsq? {
         var sats = sats0
         val dropped = ArrayList<String>()
         repeat(4) {

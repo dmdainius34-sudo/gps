@@ -111,52 +111,20 @@ object LiveRtk {
     /** Programos sprendinys be bazės (SP3 orbitos, slenkstis CnoMask) – perduodamas kitoms programoms, kai nėra gero RTK. */
     @Volatile var sppLast: PositionSolver.Solution? = null
         private set
-    @Volatile var sppSource = ""
-        private set
-
-    /**
-     * Gyvas DGNSS (be nešlio fazės – pvz. telefonai, kurie ADR nepateikia): kiekvieno GPS/Galileo palydovo kodo matavimas
-     * pataisomas NTRIP bazės kodo likute (orbitos, laikrodžio, jonosferos ir troposferos klaidos bendros) su jos kitimo greičiu.
-     */
-    @Synchronized private fun dgnss(ep: Sp3V5.Ep): PositionSolver.Solution? {
-        if (!enabled || baseEps.size < 2) return null
-        val b1 = baseEps.last(); val b0 = baseEps[baseEps.size - 2]
-        if (kotlin.math.abs(ep.t - b1.t) > 3.0 || b1.t - b0.t !in 0.5..5.0) return null
-        val obs = ep.meas.filter { (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min && (it.sys == 'G' || it.sys == 'E') }
-            .mapNotNull { m ->
-                val c1 = b1.obs[m.id]?.rc ?: return@mapNotNull null
-                val rate = b0.obs[m.id]?.rc?.let { (c1 - it) / (b1.t - b0.t) } ?: 0.0
-                Sp3V5.Ob(m.sys, m.svid, m.pr - (c1 + rate * (ep.t - b1.t)), m.cn0)
-            }
-        if (obs.size < 5) return null
-        val l = Dgnss.lsq(prepare(ep.t, obs), ep.tow, false) ?: return null
-        val llh = PositionSolver.ecefToLlh(l.x[0], l.x[1], l.x[2])
-        return PositionSolver.Solution(Math.toDegrees(llh[0]), Math.toDegrees(llh[1]), llh[2], l.used, 1.0, doubleArrayOf(l.x[0], l.x[1], l.x[2]))
-    }
-
     private fun spp(ep: Sp3V5.Ep) {
         val now = System.currentTimeMillis()
         if (enabled && MockLoc.armed && now - lastMs < 3_000 && engine.lastFix && (last?.hacc ?: 99.0) < 0.5) return      // perduodamas RTK FIX
-        // pirmiausia DGNSS (NTRIP kodo pataisos), kitaip – SP3 be pataisų
-        val d = try { dgnss(ep) } catch (_: Exception) { null }
-        val raw: PositionSolver.Solution; val src: String; val floor: Double
-        if (d != null) { raw = d; src = "DGNSS (NTRIP)"; floor = 0.6 }
-        else {
-            val r = Sp3Live.reader ?: return
-            if (!Sp3Solver.inRange(r, ep.t)) return
-            val obs = ep.meas.filter { (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min }
-                .map { Sp3V5.Ob(it.sys, it.svid, it.pr, it.cn0, it.prr) }
-            if (obs.size < 5) return
-            val f = try { Sp3V5.solve(ep.week, ep.tow, obs, r, isb = true, raim = true) } catch (_: Exception) { null } ?: return
-            raw = f.sol; src = "programa (SP3)"; floor = 1.0
-        }
-        // DGNSS pašalina atmosferos ir orbitų klaidas, bet ne atspindžius – realus tikslumas sumažinamas tik iki pusės
-        val real = Readiness.realAcc().let { if (it.isNaN()) maxOf(raw.hacc, floor) else maxOf(if (d != null) it * 0.5 else it, raw.hacc, floor) }
-        if (sppSource != src) { PosFilter.reset(); sppSource = src }
-        val q = PosFilter.step(now, raw.lat, raw.lon, raw.h, real, moving)
-        val sol = PositionSolver.Solution(q[0], q[1], q[2], raw.sats, q[3], raw.ecef)
+        val r = Sp3Live.reader ?: return
+        if (!Sp3Solver.inRange(r, ep.t)) return
+        val obs = ep.meas.filter { (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min }
+            .map { Sp3V5.Ob(it.sys, it.svid, it.pr, it.cn0, it.prr) }
+        if (obs.size < 5) return
+        val f = try { Sp3V5.solve(ep.week, ep.tow, obs, r, isb = true, raim = true) } catch (_: Exception) { null } ?: return
+        val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }
+        val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, moving)
+        val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
         sppLast = sol
-        if (MockLoc.armed) MockLoc.push(sol, src)
+        if (MockLoc.armed) MockLoc.push(sol, "programa (SP3)")
     }
 
     private fun process() {

@@ -109,3 +109,13 @@ class SourcetableTest {
         assertEquals("RTCM 3.4", m[1].format); org.junit.Assert.assertTrue(m[1].hasBds)
     }
 }
+
+class MagWatchTest {
+    @Test fun detectsCleanStrongAndShiftedField() {
+        var t = 0L
+        repeat(20) { MagWatch.onUncal(t, floatArrayOf(20f, 0f, -47f, 0f, 0f, 0f)); t += 200 }    // ~51 µT
+        org.junit.Assert.assertFalse(MagWatch.why, MagWatch.disturbed)
+        repeat(30) { MagWatch.onUncal(t, floatArrayOf(60f, 0f, -47f, 0f, 0f, 0f)); t += 200 }    // ~76 µT – metalas
+        org.junit.Assert.assertTrue(MagWatch.disturbed)
+    }
+}

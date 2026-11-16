@@ -7808,8 +7808,8 @@ class MainActivity : AppCompatActivity() {
         // magnetometro klaida priklauso nuo krypties (geležis, magnetai): automatiškai taisoma tik ±30° nuo kalibravimo krypties
         val view = if (::skyDome.isInitialized) skyDome.headingDeg() else null
         if (view == null || e.sunAz.isNaN() || kotlin.math.abs(SunCal.wrap(view - d - e.sunAz)) > 30.0) return
-        // stipriai iškraipytas magnetometras (pvz. kabinos plienas) arba įkraunama (laido srovė keičia lauką) – netaisoma
-        if (e.magDistorted || isCharging()) return
+        // stipriai iškraipytas magnetometras (pvz. kabinos plienas), įkraunama (laido srovė keičia lauką) arba dabar aptiktas trikdis – netaisoma
+        if (e.magDistorted || isCharging() || MagWatch.disturbed) return
         if (now() - magStableAt.first > 30_000L) magStableAt = now() to SunCal.magStable(this, obsLatNow, obsLonNow)
         if (!magStableAt.second) return
         SunCal.watch(System.currentTimeMillis(), d) { fix -> runOnUiThread { if (::skyDome.isInitialized) skyDome.nudgeNorth(fix, "automatinė pagal žurnalą+magnetometrą") } }
@@ -7954,8 +7954,11 @@ class MainActivity : AppCompatActivity() {
                 Sensor.TYPE_LINEAR_ACCELERATION -> {
                     val a = kotlin.math.sqrt((e.values[0] * e.values[0] + e.values[1] * e.values[1] + e.values[2] * e.values[2]).toDouble())
                     motionLevel = motionLevel * 0.9 + a * 0.1     // išlygintas judėjimo lygis
-                    LiveRtk.moving = motionLevel > 0.4             // krano kabinos vibracija ~0,1–0,2 m/s² – ne judėjimas
+                    // krano kabinos vibracija ~0,1–0,2 m/s² – ne judėjimas; žingsniai – tikrai einama
+                    LiveRtk.moving = motionLevel > 0.4 || Steps.walking()
                 }
+                Sensor.TYPE_STEP_DETECTOR -> { Steps.onStep(System.currentTimeMillis()); LiveRtk.moving = true }
+                Sensor.TYPE_MAGNETIC_FIELD_UNCALIBRATED -> MagWatch.onUncal(System.currentTimeMillis(), e.values)
             }
         }
         override fun onAccuracyChanged(s: Sensor?, a: Int) {}
@@ -7965,6 +7968,25 @@ class MainActivity : AppCompatActivity() {
         val sm = getSystemService(SENSOR_SERVICE) as SensorManager
         sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let { sm.registerListener(devSensorListener, it, SensorManager.SENSOR_DELAY_UI) }
         sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)?.let { sm.registerListener(devSensorListener, it, SensorManager.SENSOR_DELAY_UI) }
+        sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD_UNCALIBRATED)?.let { sm.registerListener(devSensorListener, it, SensorManager.SENSOR_DELAY_NORMAL) }
+        // žingsniai (Android 10+ reikia leidimo „Fizinė veikla“) – vieną kartą paklausiama
+        val stepOk = Build.VERSION.SDK_INT < 29 || checkSelfPermission("android.permission.ACTIVITY_RECOGNITION") == PackageManager.PERMISSION_GRANTED
+        if (stepOk) sm.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)?.let { sm.registerListener(devSensorListener, it, SensorManager.SENSOR_DELAY_NORMAL) }
+        else {
+            val sp = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
+            if (!sp.getBoolean("asked_activity", false)) {
+                sp.edit().putBoolean("asked_activity", true).apply()
+                requestPermissions(arrayOf("android.permission.ACTIVITY_RECOGNITION"), 78)
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 78 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            val sm = getSystemService(SENSOR_SERVICE) as SensorManager
+            sm.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)?.let { sm.registerListener(devSensorListener, it, SensorManager.SENSOR_DELAY_NORMAL) }
+        }
     }
 
     private fun stopDeviceSensors() {
@@ -8039,6 +8061,8 @@ class MainActivity : AppCompatActivity() {
         val fromSat = eph.count { (NavBits.stat(it.const + it.svid)?.eph ?: 0) > 0 }
         appendLine("Efemeridės: ${eph.size} palydovų; iš palydovų matyta ${fromSat}, kitos – iš interneto ar atminties (A-GNSS)")
         Readiness.shortAcc()?.let { appendLine("Tikslumas: lustas $it (skliaustuose – realus)") }
+        appendLine("Magnetinis laukas: " + MagWatch.why + (if (MagWatch.disturbed) " – kompasu nepasitikima" else ""))
+        appendLine("Judėjimas: " + (if (Steps.walking()) "einama" else if (LiveRtk.moving) "juda" else "stovima") + "; žingsnių nuo paleidimo ${Steps.count}")
         appendLine("Perdavimas kitoms programoms: " + (if (!MockLoc.armed) "išjungtas (" + MockLoc.status + ")" else MockLoc.status) +
             (LiveRtk.sppLast?.let { "; programos sprendinys ±%.1f m, palydovų %d".format(Locale.US, it.hacc, it.sats) } ?: "; programos sprendinio dar nėra (reikia SP3 orbitų)") +
             "; SP3: " + (if (Sp3Live.reader != null) "įkeltos" else "neįkeltos"))
@@ -8416,6 +8440,7 @@ class MainActivity : AppCompatActivity() {
                 appendLine(KnownHeight.text())
             }
             appendLine("Planšetės padėtis: pitch ${fx(devPitch, 0)}°, roll ${fx(devRoll, 0)}°, ekrano azimutas ${fx(devAzimuth, 0)}°, judėjimas ${fx(motionLevel, 2)} m/s²")
+            appendLine("Magnetinis laukas: ${MagWatch.why}${if (MagWatch.disturbed) " – kompasu nepasitikima" else ""}; žingsnių ${Steps.count}, ${if (Steps.walking()) "einama" else "neinama"}")
             devAxisZ?.let { appendLine("Žiūrėjimo pro ekraną kryptis: azimutas ${fx(it.first, 0)}°, ${fx(it.second, 0)}° nuo horizontalės") }
             appendLine(Orient.check.text(1.5))
             appendLine(SignalHeading.text(if (::skyDome.isInitialized) skyDome.headingDeg() else null))

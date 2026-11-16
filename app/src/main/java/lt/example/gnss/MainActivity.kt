@@ -1416,7 +1416,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                     .setPrimaryClip(android.content.ClipData.newPlainText(title, txt))
                 Toast.makeText(context, "Nukopijuota", Toast.LENGTH_SHORT).show()
             }
-            .setPositiveButton("Gerai", null).show().also { WinUtil.draggable(it) }
+            .setPositiveButton("Gerai", null).show().also { WinUtil.unfold(it); WinUtil.draggable(it) }
     }
     private var prevArc = doubleArrayOf(0.0, 0.0, 1.0)
     private var pinchLast = 0f

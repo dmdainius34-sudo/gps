@@ -40,18 +40,45 @@ object WinUtil {
         else if (v is ViewGroup) for (i in 0 until v.childCount) selectable(v.getChildAt(i))
     }
 
+    private fun unselectable(v: View) {
+        if (v is TextView) { try { v.setTextIsSelectable(false); v.isClickable = false; v.isLongClickable = false; v.isFocusable = false } catch (_: Exception) {} }
+        else if (v is ViewGroup) for (i in 0 until v.childCount) unselectable(v.getChildAt(i))
+    }
+
     /**
      * Po dialog.show(): langas tempiamas už antraštės į visas puses (už ekrano gali išeiti, kol lieka ~10 %; viršuje antraštė lieka matoma),
      * tekstas pažymimas pirštu, o ilgai palaikius antraštę nukopijuojamas visas lango tekstas.
      */
+    /** Voko atsivėrimas: langas išsiskleidžia žemyn nuo viršutinio krašto (kaip voko atvartas). Kviesti po show(). */
+    fun unfold(d: Dialog) {
+        val w = d.window ?: return
+        w.setWindowAnimations(0)
+        val v = w.decorView
+        v.cameraDistance = 12000f * v.resources.displayMetrics.density
+        v.alpha = 0f
+        v.post {
+            v.pivotX = v.width / 2f; v.pivotY = 0f
+            v.rotationX = -95f; v.scaleY = 0.3f; v.alpha = 1f
+            v.animate().rotationX(0f).scaleY(1f).setDuration(420)
+                .setInterpolator(android.view.animation.OvershootInterpolator(0.8f)).start()
+        }
+    }
+
     fun draggable(d: Dialog) {
         val w = d.window ?: return
         val decor = w.decorView
+        decor.post { makeDraggable(d, w, decor) }
+    }
+
+    private fun makeDraggable(d: Dialog, w: android.view.Window, decor: View) {
         val ctx = decor.context
         selectable(decor)
         val topId = ctx.resources.getIdentifier("topPanel", "id", "android")
-        val header = (if (topId != 0) decor.findViewById<View>(topId) else null)?.takeIf { it.visibility == View.VISIBLE && it.height > 0 } ?: return
+        val header = (if (topId != 0) decor.findViewById<View>(topId) else null)?.takeIf { it.visibility == View.VISIBLE } ?: return
+        unselectable(header)   // antraštė – tempimo rankena, jos tekstas neturi gaudyti lietimų
         w.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
+        // lango koordinatės skaičiuojamos programos lango atžvilgiu (padalintame ekrane jis ne nuo ekrano kampo)
+        val parent = d.ownerActivity?.window?.decorView
         var sx = 0f; var sy = 0f; var ox = 0; var oy = 0; var moved = false
         val gd = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
             override fun onLongPress(e: MotionEvent) {
@@ -66,16 +93,20 @@ object WinUtil {
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     val loc = IntArray(2); decor.getLocationOnScreen(loc)
-                    val lp = w.attributes; lp.gravity = Gravity.TOP or Gravity.START; lp.x = loc[0]; lp.y = loc[1]; w.attributes = lp
-                    ox = loc[0]; oy = loc[1]; sx = e.rawX; sy = e.rawY; moved = false
+                    val p0 = IntArray(2); parent?.getLocationOnScreen(p0)
+                    val lp = w.attributes; lp.gravity = Gravity.TOP or Gravity.START
+                    lp.x = loc[0] - p0[0]; lp.y = loc[1] - p0[1]; w.attributes = lp
+                    ox = lp.x; oy = lp.y; sx = e.rawX; sy = e.rawY; moved = false
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = e.rawX - sx; val dy = e.rawY - sy
                     if (!moved && kotlin.math.abs(dx) + kotlin.math.abs(dy) < 12f) return@setOnTouchListener true
                     moved = true
-                    val sz = fullSize(ctx); val lp = w.attributes
-                    lp.x = (ox + dx).toInt().coerceIn(-(decor.width * 0.9f).toInt(), sz.x - (decor.width * 0.1f).toInt())
-                    lp.y = (oy + dy).toInt().coerceIn(0, sz.y - (decor.height * 0.1f).toInt())
+                    val pw = parent?.width?.takeIf { it > 0 } ?: fullSize(ctx).x
+                    val ph = parent?.height?.takeIf { it > 0 } ?: fullSize(ctx).y
+                    val lp = w.attributes
+                    lp.x = (ox + dx).toInt().coerceIn(-(decor.width * 0.9f).toInt(), pw - (decor.width * 0.1f).toInt())
+                    lp.y = (oy + dy).toInt().coerceIn(0, ph - (decor.height * 0.1f).toInt())
                     w.attributes = lp
                 }
             }

@@ -6046,6 +6046,31 @@ class DraggablePanel(
         gravity = Gravity.TOP or Gravity.START
     }
     private fun message(): String = msgInput.text.toString().trim().ifEmpty { questionInput.text.toString().trim() }
+    // RTK FIX taškai: paskutiniai du, pažymimi ir kopijuojami; atnaujinami kas sekundę
+    private val fixText = TextView(context).apply { textSize = 12f; setTextIsSelectable(true); text = FixPoints.text() }
+    private var fixShown = -1
+    private val fixBox = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(0, 0, 0, (6 * context.resources.displayMetrics.density).toInt())
+        addView(fixText)
+        addView(Button(context).apply {
+            text = "Kopijuoti FIX taškus"; textSize = 12f; isAllCaps = false
+            setOnClickListener {
+                val t = FixPoints.copyText()
+                if (t.isEmpty()) { Toast.makeText(context, "FIX taškų dar nėra", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+                (context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("FIX", t))
+                Toast.makeText(context, "Nukopijuota", Toast.LENGTH_SHORT).show()
+            }
+        })
+        val tick = object : Runnable { override fun run() {
+            if (FixPoints.version != fixShown) { fixShown = FixPoints.version; fixText.text = FixPoints.text() }
+            postDelayed(this, 1000L)
+        } }
+        addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) { removeCallbacks(tick); post(tick) }
+            override fun onViewDetachedFromWindow(v: View) { removeCallbacks(tick) }
+        })
+    }
     private val pkReport = CheckBox(context).apply { text = "Pridėti ataskaitą (koordinatės suapvalintos – saugykla vieša)"; textSize = 12f; isChecked = true }
     private val pkBtn = Button(context).apply { text = "Pokalbis su „PagrindinisKodas“ (Claude Code)…"; textSize = 12f; isAllCaps = false }
     fun setPkBusy(busy: Boolean) { pkBtn.isEnabled = !busy; pkBtn.text = if (busy) "Laukiama atsakymo iš „PagrindinisKodas“…" else "Pokalbis su „PagrindinisKodas“ (Claude Code)…" }
@@ -6172,6 +6197,7 @@ class DraggablePanel(
         panel.addView(recRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         panel.addView(inputRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         panel.addView(sp3Status, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        bodyInner.addView(fixBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(msgInput, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(pkBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(pkReport)
@@ -7109,6 +7135,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        FixPoints.init(filesDir)
         // HDR: langas prašo HDR ryškumo atsargos (ekranas leidžia taškams šviesti ryškiau už įprastą baltą)
         if (Build.VERSION.SDK_INT >= 26 && getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("hdr", true))
             window.colorMode = android.content.pm.ActivityInfo.COLOR_MODE_HDR
@@ -7555,6 +7582,9 @@ class MainActivity : AppCompatActivity() {
                     try { val sf = SunCal.file(this@MainActivity)
                         if (sf.exists()) { val cf = File(cacheDir, SunCal.FILE); sf.copyTo(cf, true)
                             uris.add(FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", cf)) } } catch (e: Exception) { logError("${SunCal.FILE}: ${e.message}") }
+                    try { val ff = File(filesDir, FixPoints.FILE)
+                        if (ff.exists()) { val cf = File(cacheDir, FixPoints.FILE); ff.copyTo(cf, true)
+                            uris.add(FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", cf)) } } catch (_: Exception) {}
                     // GPS pozicijos skaičiuoklė (1 žingsnis) – fone, rezultatas gnss_solver.csv
                     offerSp3PickerOnce { Thread {
                       // bet kokia skaičiuoklės klaida neturi sustabdyti eksporto: matavimų failai ir ataskaita išsiunčiami visada

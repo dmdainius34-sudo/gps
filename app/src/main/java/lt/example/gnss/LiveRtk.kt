@@ -172,6 +172,7 @@ object LiveRtk {
             val ok = engine.lastFix && sol.hacc < 0.5 && sol.sats >= 4 &&
                 (prev == null || PositionSolver.horizDist(prev.lat, prev.lon, sol.lat, sol.lon) < maxOf(1.0, 4 * sol.hacc) || held >= 10)
             val nowMs = System.currentTimeMillis()
+            if (engine.lastFix && sol.hacc < 0.5) FixPoints.onFix(sol, nowMs)
             if (ok) { MockLoc.push(sol); pushed = sol; held = 0; pushedN++; lastFixSol = sol; lastFixMs = nowMs }
             else {
                 held++; heldN++

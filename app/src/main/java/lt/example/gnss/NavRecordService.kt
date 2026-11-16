@@ -117,6 +117,7 @@ class NavRecordService : Service() {
     override fun onCreate() {
         super.onCreate()
         GapLog.event(this, "paslauga onCreate")
+        FixPoints.init(filesDir)
         try { BroadcastEph.load(filesDir) } catch (e: Exception) { Log.w("GnssApp", "BroadcastEph.load: ${e.message}") }
         try { KnownHeight.load(this) } catch (_: Exception) {}
     }

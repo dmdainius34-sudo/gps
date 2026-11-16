@@ -39,6 +39,13 @@ object LiveRtk {
         private set
     val fix get() = engine.lastFix
     private var pushed: PositionSolver.Solution? = null
+    // Sklandus perėjimas: po FIX praradimo dar iki FLOAT_HOLD_MS perduodamas FLOAT, jei jis arti paskutinio FIX
+    private var lastFixSol: PositionSolver.Solution? = null
+    private var lastFixMs = 0L
+    @Volatile private var bridgeMs = 0L
+    private const val FLOAT_HOLD_MS = 120_000L
+    private const val FLOAT_NEAR_M = 0.5
+    @Volatile var bridgeN = 0
     private var held = 0
     @Volatile var pushedN = 0
         private set
@@ -121,6 +128,7 @@ object LiveRtk {
     private fun spp(ep: Sp3V5.Ep) {
         val now = System.currentTimeMillis()
         if (enabled && MockLoc.armed && now - lastMs < 3_000 && engine.lastFix && (last?.hacc ?: 99.0) < 0.5) return      // perduodamas RTK FIX
+        if (enabled && MockLoc.armed && now - bridgeMs < 3_000) return                                                   // perduodamas RTK FLOAT tiltas
         val r = Sp3Live.reader ?: return
         if (!Sp3Solver.inRange(r, ep.t)) return
         val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min }
@@ -163,7 +171,21 @@ object LiveRtk {
             // kitoms programoms – tik sveikųjų dviprasmybių FIX (patalpoje FLOAT „±0,5 m“ klaidina ir kaitaliojasi su SP3 sprendiniu)
             val ok = engine.lastFix && sol.hacc < 0.5 && sol.sats >= 4 &&
                 (prev == null || PositionSolver.horizDist(prev.lat, prev.lon, sol.lat, sol.lon) < maxOf(1.0, 4 * sol.hacc) || held >= 10)
-            if (ok) { MockLoc.push(sol); pushed = sol; held = 0; pushedN++ } else { held++; heldN++ }
+            val nowMs = System.currentTimeMillis()
+            if (ok) { MockLoc.push(sol); pushed = sol; held = 0; pushedN++; lastFixSol = sol; lastFixMs = nowMs }
+            else {
+                held++; heldN++
+                // FIX prarastas: FLOAT perduodamas, kol jis neatitolsta nuo paskutinio FIX (tikslumas – ne geresnis nei atstumas iki jo)
+                val lf = lastFixSol
+                if (!engine.lastFix && lf != null && nowMs - lastFixMs < FLOAT_HOLD_MS && sol.sats >= 4) {
+                    val d = PositionSolver.horizDist(lf.lat, lf.lon, sol.lat, sol.lon)
+                    if (d < FLOAT_NEAR_M && sol.hacc < 1.0) {
+                        val acc = maxOf(sol.hacc, d, 0.1)
+                        MockLoc.push(PositionSolver.Solution(sol.lat, sol.lon, sol.h, sol.sats, acc, sol.ecef), "RTK FLOAT (po FIX)")
+                        bridgeMs = nowMs; bridgeN++
+                    } else lastFixSol = null                         // nutolo – toliau programos sprendinys (~2 m)
+                }
+            }
             // be gero RTK perduodamas programos sprendinys (spp); jei ir jo nėra – sargas grąžina lusto GPS
         }
     }

@@ -1770,13 +1770,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val v = DoubleArray(3) { cos(el) * (cos(az) * fN[it] + sin(az) * e[it]) + sin(el) * fU[it] }
         val t1 = DoubleArray(3) { -sin(az) * fN[it] + cos(az) * e[it] }
         val t2 = DoubleArray(3) { -sin(el) * (cos(az) * fN[it] + sin(az) * e[it]) + cos(el) * fU[it] }
-        val r = SUN_DIST * 0.9; val k = 0.07
+        val r = SUN_DIST * 0.8; val k = 0.14
         fun p(dir: DoubleArray, a: Double = 0.0, b: Double = 0.0) = FloatArray(3) { (fP[it] + dir[it] * r + t1[it] * a + t2[it] * b).toFloat() }
         val c = p(v); val sc = p(d)
         val seg = floatArrayOf(*p(v, -k, 0.0), *p(v, k, 0.0), *p(v, 0.0, -k), *p(v, 0.0, k), *c, *sc)
-        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
-        GLES20.glLineWidth(3f * density)
-        drawLines(seg, 1f, 0.15f, 0.15f, 0.95f)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)   // Saulė piešiama pridedamai – raudona ant geltonos išnyktų
+        GLES20.glLineWidth(4f * density)
+        drawLines(seg, 1f, 0.1f, 0.1f, 1f)
+        GLES20.glDepthMask(true)
         GLES20.glLineWidth(1f)
     }
     private var fQ = DoubleArray(9)
@@ -2148,7 +2150,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // Žvaigždės, Oriono linijos, dangaus pusiaujas ir ekliptika (I erdvė, tik virš horizonto)
         drawSky()
-        drawSunShot()
 
         // Saulė tikroje dangaus kryptyje nuo stebėtojo (švytintis diskas)
         run {
@@ -2161,6 +2162,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 drawSun3D(sp, t)
             }
         }
+        drawSunShot()                       // po Saulės – kitaip jos diskas uždengia kryželį
         val pin = pinWorld()
         for (si in satsI) {
             val sat = si.sat

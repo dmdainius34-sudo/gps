@@ -1191,6 +1191,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     fun setMarkers(on: Boolean) { renderer.showMarkers = on }
     fun setOrient(on: Boolean) { renderer.showOrient = on }
+    /** Paskutinis kalibravimo pagal Saulę „šūvis“: nugarėlės kryptis minus Saulės centras (azimutu ir aukščiu, °). */
+    fun setSunShot(dAz: Double, dEl: Double) { renderer.sunShot = doubleArrayOf(dAz, dEl) }
     fun setNavBits(on: Boolean) { renderer.showNavBits = on }
     fun setGrid(on: Boolean) { renderer.showGrid = on; calPrefs.edit().putBoolean("grid", on).apply() }
     fun setSunGrid(on: Boolean) { renderer.showSunGrid = on; calPrefs.edit().putBoolean("sun_grid", on).apply() }
@@ -1372,6 +1374,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
         renderer.showMarkers = calPrefs.getBoolean("markers", true)
         renderer.showOrient = calPrefs.getBoolean("orient", true)
+        if (calPrefs.contains("sun_shot_daz")) renderer.sunShot = doubleArrayOf(calPrefs.getFloat("sun_shot_daz", 0f).toDouble(), calPrefs.getFloat("sun_shot_del", 0f).toDouble())
         renderer.showNavBits = calPrefs.getBoolean("nav_bits", true)
         renderer.showGrid = calPrefs.getBoolean("grid", true)
         renderer.showSunGrid = calPrefs.getBoolean("sun_grid", true)
@@ -1751,6 +1754,33 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var fE = DoubleArray(3)
     private var fN = DoubleArray(3)
     private var fU = DoubleArray(3)
+    @Volatile var sunShot: DoubleArray? = null
+
+    /**
+     * Kalibravimo „šūvis“ prie Saulės: kryželis ten, kur buvo nukreipta nugarėlė (tikras kampinis nuokrypis nuo Saulės centro,
+     * atidėtas nuo dabartinės Saulės padėties stebėtojo horizonto sistemoje), ir linija iki centro. Spalva: ≤ 2° žalia, ≤ 5° geltona, kitaip raudona.
+     */
+    private fun drawSunShot() {
+        val sh = sunShot ?: return
+        val d = sunDir()
+        val e = doubleArrayOf(fN[1] * fU[2] - fN[2] * fU[1], fN[2] * fU[0] - fN[0] * fU[2], fN[0] * fU[1] - fN[1] * fU[0])
+        val dn = d[0] * fN[0] + d[1] * fN[1] + d[2] * fN[2]; val de = d[0] * e[0] + d[1] * e[1] + d[2] * e[2]; val du = d[0] * fU[0] + d[1] * fU[1] + d[2] * fU[2]
+        if (du < -0.05) return                                           // Saulė po horizontu
+        val az = kotlin.math.atan2(de, dn) + Math.toRadians(sh[0]); val el = kotlin.math.asin(du.coerceIn(-1.0, 1.0)) + Math.toRadians(sh[1])
+        val v = DoubleArray(3) { cos(el) * (cos(az) * fN[it] + sin(az) * e[it]) + sin(el) * fU[it] }
+        val t1 = DoubleArray(3) { -sin(az) * fN[it] + cos(az) * e[it] }
+        val t2 = DoubleArray(3) { -sin(el) * (cos(az) * fN[it] + sin(az) * e[it]) + cos(el) * fU[it] }
+        val r = SUN_DIST * 0.9; val k = 0.07
+        fun p(dir: DoubleArray, a: Double = 0.0, b: Double = 0.0) = FloatArray(3) { (fP[it] + dir[it] * r + t1[it] * a + t2[it] * b).toFloat() }
+        val c = p(v); val sc = p(d)
+        val seg = floatArrayOf(*p(v, -k, 0.0), *p(v, k, 0.0), *p(v, 0.0, -k), *p(v, 0.0, k), *c, *sc)
+        val err = Math.hypot(sh[0] * cos(el), sh[1])
+        val col = when { err <= 2.0 -> floatArrayOf(0.2f, 1f, 0.4f); err <= 5.0 -> floatArrayOf(1f, 0.85f, 0.2f); else -> floatArrayOf(1f, 0.3f, 0.3f) }
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        GLES20.glLineWidth(3f * density)
+        drawLines(seg, col[0], col[1], col[2], 0.95f)
+        GLES20.glLineWidth(1f)
+    }
     private var fQ = DoubleArray(9)
     private var fP = FloatArray(3)
     private var fG = 0.0
@@ -2120,6 +2150,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // Žvaigždės, Oriono linijos, dangaus pusiaujas ir ekliptika (I erdvė, tik virš horizonto)
         drawSky()
+        drawSunShot()
 
         // Saulė tikroje dangaus kryptyje nuo stebėtojo (švytintis diskas)
         run {
@@ -7777,6 +7808,11 @@ class MainActivity : AppCompatActivity() {
         if (kotlin.math.abs(skyDome.deviceAim().second) > 75.0) { Toast.makeText(this, "Kalibruoti negalima: prietaisas guli – nugarėlė turi žiūrėti į orientyrą (ekranas į save)", Toast.LENGTH_LONG).show(); return false }
         val magAz = devAxisZ?.first ?: Double.NaN; val decl = skyDome.declinationDeg()
         val r = skyDome.calibrateTarget(key, obsLatNow, obsLonNow) ?: return false
+        if (key == "sun") {
+            val dAz = SunCal.wrap(r.devAz - r.sunAz); val dEl = r.devEl - r.sunEl
+            skyDome.setSunShot(dAz, dEl)
+            getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putFloat("sun_shot_daz", dAz.toFloat()).putFloat("sun_shot_del", dEl.toFloat()).apply()
+        }
         try { SunCal.log(this, SunCal.Rec(System.currentTimeMillis(), obsLatNow, obsLonNow, obsHNow, lastFixAcc, r.sunAz, r.sunEl,
             r.devAz, r.devEl, r.corr, magAz, decl, devPitch, devRoll, Build.MANUFACTURER + " " + Build.MODEL, t.name)); calCache = 0L to null } catch (e: Exception) { logError("Kalibravimų žurnalas: ${e.message}") }
         val warn = if (kotlin.math.abs(r.devEl - r.sunEl) > SunCal.WARN_DEL)

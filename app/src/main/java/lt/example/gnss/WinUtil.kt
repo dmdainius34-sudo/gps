@@ -76,7 +76,7 @@ object WinUtil {
         val topId = ctx.resources.getIdentifier("topPanel", "id", "android")
         val header = (if (topId != 0) decor.findViewById<View>(topId) else null)?.takeIf { it.visibility == View.VISIBLE } ?: return
         unselectable(header)   // antraštė – tempimo rankena, jos tekstas neturi gaudyti lietimų
-        w.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
+        // FLAG_LAYOUT_NO_LIMITS – tik pradėjus tempti: kitaip aukštas langas (telefone) išlenda už ekrano ir dingsta mygtukai
         // lango koordinatės skaičiuojamos programos lango atžvilgiu (padalintame ekrane jis ne nuo ekrano kampo)
         val parent = d.ownerActivity?.window?.decorView
         var sx = 0f; var sy = 0f; var ox = 0; var oy = 0; var moved = false
@@ -91,16 +91,19 @@ object WinUtil {
         header.setOnTouchListener { _, e ->
             gd.onTouchEvent(e)
             when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    val loc = IntArray(2); decor.getLocationOnScreen(loc)
-                    val p0 = IntArray(2); parent?.getLocationOnScreen(p0)
-                    val lp = w.attributes; lp.gravity = Gravity.TOP or Gravity.START
-                    lp.x = loc[0] - p0[0]; lp.y = loc[1] - p0[1]; w.attributes = lp
-                    ox = lp.x; oy = lp.y; sx = e.rawX; sy = e.rawY; moved = false
-                }
+                MotionEvent.ACTION_DOWN -> { sx = e.rawX; sy = e.rawY; moved = false }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = e.rawX - sx; val dy = e.rawY - sy
                     if (!moved && kotlin.math.abs(dx) + kotlin.math.abs(dy) < 12f) return@setOnTouchListener true
+                    if (!moved) {
+                        // pirmas judesys: langas pririšamas prie kairio viršutinio kampo dabartinėje vietoje
+                        val loc = IntArray(2); decor.getLocationOnScreen(loc)
+                        val p0 = IntArray(2); parent?.getLocationOnScreen(p0)
+                        w.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
+                        val lp = w.attributes; lp.gravity = Gravity.TOP or Gravity.START
+                        lp.x = loc[0] - p0[0]; lp.y = loc[1] - p0[1]; w.attributes = lp
+                        ox = lp.x; oy = lp.y
+                    }
                     moved = true
                     val pw = parent?.width?.takeIf { it > 0 } ?: fullSize(ctx).x
                     val ph = parent?.height?.takeIf { it > 0 } ?: fullSize(ctx).y

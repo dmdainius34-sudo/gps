@@ -7083,6 +7083,10 @@ class MainActivity : AppCompatActivity() {
         }
         left.addView(cbOrient, LinearLayout.LayoutParams(mw, ww))
         left.addView(Button(this).apply {
+            text = "Rašiklio diagnostika (S Pen)"
+            setOnClickListener { showPenDiag() }
+        }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(Button(this).apply {
             text = "Suteikti visus leidimus"
             setOnClickListener { requestAllPermissions(withSpecials = true) }
         }, LinearLayout.LayoutParams(mw, ww))
@@ -8196,6 +8200,66 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Kortelė „Lustas“: tik tai, kas svarbu GNSS darbui (kopijuojama, kad būtų galima įklijuoti ir paklausti). */
+    /**
+     * Rašiklio diagnostika: kokie įvesties įrenginiai yra (ekranas, rašiklis, Bluetooth), kokias ašis jie turi, ir gyvai –
+     * ką rašiklis duoda prisilietus ar pakėlus prie ekrano (spaudimas, pasvirimas, orientacija, atstumas, mygtukai).
+     */
+    private fun showPenDiag() {
+        val dp = resources.displayMetrics.density
+        val sb = StringBuilder()
+        fun axName(a: Int) = android.view.MotionEvent.axisToString(a).removePrefix("AXIS_")
+        val devs = android.view.InputDevice.getDeviceIds().mapNotNull { android.view.InputDevice.getDevice(it) }
+        for (d in devs) {
+            val src = d.sources
+            val stylus = (src and android.view.InputDevice.SOURCE_STYLUS) == android.view.InputDevice.SOURCE_STYLUS
+            val touch = (src and android.view.InputDevice.SOURCE_TOUCHSCREEN) == android.view.InputDevice.SOURCE_TOUCHSCREEN
+            if (!stylus && !touch && !d.name.contains("pen", true) && !d.name.contains("sec_e", true)) continue
+            sb.append(d.name).append(if (stylus) "  [RAŠIKLIS]" else if (touch) "  [lietimas]" else "").append('\n')
+            sb.append("   šaltiniai 0x").append(Integer.toHexString(src)).append(", išorinis: ").append(if (Build.VERSION.SDK_INT >= 31) d.isExternal.toString() else "?").append('\n')
+            val axes = d.motionRanges.joinToString(", ") { axName(it.axis) + "[%.1f..%.1f]".format(Locale.US, it.min, it.max) }
+            sb.append("   ašys: ").append(axes).append('\n')
+        }
+        if (devs.none { (it.sources and android.view.InputDevice.SOURCE_STYLUS) == android.view.InputDevice.SOURCE_STYLUS })
+            sb.append("Rašiklio įvesties įrenginio sistema dabar nemato (pakelkite rašiklį prie ekrano ir atidarykite iš naujo).\n")
+        // Bluetooth (tik jau prijungti įrenginiai; leidimo neprašome)
+        try {
+            val bm = getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
+            val bonded = if (Build.VERSION.SDK_INT < 31 || checkSelfPermission("android.permission.BLUETOOTH_CONNECT") == PackageManager.PERMISSION_GRANTED)
+                bm.adapter?.bondedDevices?.joinToString(", ") { it.name ?: it.address } else "(nėra Bluetooth leidimo – nerodoma)"
+            sb.append("Bluetooth suporuoti: ").append(bonded ?: "nėra").append('\n')
+        } catch (e: Exception) { sb.append("Bluetooth: ").append(e.javaClass.simpleName).append('\n') }
+        val sensors = (getSystemService(SENSOR_SERVICE) as SensorManager).getSensorList(Sensor.TYPE_ALL)
+        sb.append("Prietaiso jutikliai: ").append(sensors.size).append(" (rašiklio jutiklių sistema atskirai nerodo, jei jie ne prietaise)\n")
+        val head = sb.toString()
+        val live = TextView(this).apply { textSize = 13f; typeface = android.graphics.Typeface.MONOSPACE; text = "Palieskite ar pakelkite rašiklį prie šio lango…" }
+        val area = object : View(this) {
+            override fun onHoverEvent(e: android.view.MotionEvent): Boolean { report(e); return true }
+            override fun onTouchEvent(e: android.view.MotionEvent): Boolean { report(e); return true }
+            fun report(e: android.view.MotionEvent) {
+                val tool = when (e.getToolType(0)) { android.view.MotionEvent.TOOL_TYPE_STYLUS -> "RAŠIKLIS"; android.view.MotionEvent.TOOL_TYPE_FINGER -> "pirštas"
+                    android.view.MotionEvent.TOOL_TYPE_ERASER -> "trintukas"; android.view.MotionEvent.TOOL_TYPE_MOUSE -> "pelė"; else -> "?" }
+                live.text = "įrankis: $tool, veiksmas ${android.view.MotionEvent.actionToString(e.actionMasked)}\n" +
+                    "spaudimas %.2f, dydis %.2f\n".format(Locale.US, e.pressure, e.size) +
+                    "pasvirimas %.0f°, orientacija %.0f°\n".format(Locale.US, Math.toDegrees(e.getAxisValue(android.view.MotionEvent.AXIS_TILT).toDouble()), Math.toDegrees(e.orientation.toDouble())) +
+                    "atstumas virš ekrano %.2f\n".format(Locale.US, e.getAxisValue(android.view.MotionEvent.AXIS_DISTANCE)) +
+                    "mygtukai 0x${Integer.toHexString(e.buttonState)} (rašiklio mygtukas: ${(e.buttonState and android.view.MotionEvent.BUTTON_STYLUS_PRIMARY) != 0})\n" +
+                    "x %.0f, y %.0f".format(Locale.US, e.x, e.y)
+            }
+        }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding((16 * dp).toInt(), (8 * dp).toInt(), (16 * dp).toInt(), 0)
+            addView(TextView(context).apply { textSize = 12f; setTextIsSelectable(true); text = head })
+            addView(area, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (160 * dp).toInt()).apply { topMargin = (8 * dp).toInt() }
+                .also { area.setBackgroundColor(0x22000000) })
+            addView(live) }
+        android.app.AlertDialog.Builder(this).setTitle("Rašiklio diagnostika")
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
+            .setNeutralButton("Kopijuoti") { _, _ ->
+                (getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("S Pen", head + "\n" + live.text))
+                Toast.makeText(this, "Nukopijuota", Toast.LENGTH_SHORT).show() }
+            .setPositiveButton("Uždaryti", null).show()
+    }
+
     private fun chipCardText(): String = buildString {
         appendLine("Įrenginys: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         if (Build.VERSION.SDK_INT >= 28) appendLine("GNSS lustas: ${lm.gnssHardwareModelName ?: "nežinomas"}; metai: ${lm.gnssYearOfHardware}")

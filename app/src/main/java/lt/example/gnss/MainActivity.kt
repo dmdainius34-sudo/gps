@@ -4505,7 +4505,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         crossEarth(mLa, mLo, floatArrayOf(0.8f, 0.85f, 0.95f))       // Mėnulis zenite
         // linijos tarp centrų (Žemės centras – scenos pradžia)
         val m = moonPosLast
-        val sp = floatArrayOf((fP[0] + sd[0] * SUN_DIST).toFloat(), (fP[1] + sd[1] * SUN_DIST).toFloat(), (fP[2] + sd[2] * SUN_DIST).toFloat())
+        // Saulė – ten, kur ji nupiešta (prie Žemės – nuo kameros, žr. skyO), kad linijos nenutrūktų nuo disko
+        val sp = floatArrayOf((skyO[0] + sd[0] * SUN_DIST).toFloat(), (skyO[1] + sd[1] * SUN_DIST).toFloat(), (skyO[2] + sd[2] * SUN_DIST).toFloat())
         val lines = ArrayList<Float>()
         fun ln(a: FloatArray, b: FloatArray) { a.forEach { lines.add(it) }; b.forEach { lines.add(it) } }
         val o = floatArrayOf(0f, 0f, 0f)

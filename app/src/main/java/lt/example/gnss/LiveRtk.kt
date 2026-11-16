@@ -125,6 +125,28 @@ object LiveRtk {
     /** Programos sprendinys be bazės (SP3 orbitos, slenkstis CnoMask) – perduodamas kitoms programoms, kai nėra gero RTK. */
     @Volatile var sppLast: PositionSolver.Solution? = null
         private set
+    @Volatile private var sppMs = 0L
+
+    /** FIX turi sutapti su programos padėtimi be bazės: horizontaliai ≤ 10 m, aukštis ≤ 15 m (kai ji šviežia). */
+    private fun sppCheck(x: DoubleArray): String? {
+        val s = sppLast ?: return null
+        if (System.currentTimeMillis() - sppMs > 15_000L) return null
+        val llh = PositionSolver.ecefToLlh(x[0], x[1], x[2])
+        val d = PositionSolver.horizDist(s.lat, s.lon, Math.toDegrees(llh[0]), Math.toDegrees(llh[1]))
+        if (d > 10.0) return "%.0f m nuo programos padėties be bazės".format(Locale.US, d)
+        val dh = llh[2] - s.h
+        if (kotlin.math.abs(dh) > 15.0) return "aukštis %+.0f m nuo programos padėties be bazės".format(Locale.US, dh)
+        return null
+    }
+
+    /** Trumpa RTK pastaba būsenos eilutei: kodėl nėra FIX, ar fazė nutrūksta per dažnai. */
+    fun note(): String {
+        if (engine.lastFix) return ""
+        val seg = engine.phaseSegMedian()
+        if (!seg.isNaN() && seg < 15.0) return "RTK negalimas: fazė nutrūksta kas ~%.0f s".format(Locale.US, seg)
+        return engine.fixNote
+    }
+
     private fun spp(ep: Sp3V5.Ep) {
         val now = System.currentTimeMillis()
         if (enabled && MockLoc.armed && now - lastMs < 3_000 && engine.lastFix && (last?.hacc ?: 99.0) < 0.5) return      // perduodamas RTK FIX
@@ -144,7 +166,7 @@ object LiveRtk {
         val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }
         val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, moving)
         val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
-        sppLast = sol
+        sppLast = sol; sppMs = now
         if (MockLoc.armed) MockLoc.push(sol, "programa (SP3)")
     }
 
@@ -162,6 +184,7 @@ object LiveRtk {
             // stovint (≥ 5 s be judesio) – statinis filtras, judant – kinematinis
             engine.qPos = if (System.currentTimeMillis() - movedMs < 5_000) 0.5 else 1e-5
             engine.mask = { az, el -> CabinMap.excluded(az, el, heading) }
+            engine.extCheck = ::sppCheck
             val sol = try { engine.step(ep, e0, e1, bp, ::prepare) } catch (e: Exception) { null } ?: continue
             last = sol; lastMs = System.currentTimeMillis(); epochs++
             CabinMap.learnRtk(heading, engine.lastObs, sol.hacc)
@@ -227,6 +250,8 @@ object LiveRtk {
         val s = last ?: return "Gyvas RTK: laukiama (bazė ${if (basePos != null) "yra" else "nėra"}, bazės epochų ${baseEps.size}, prietaiso epochų eilėje ${rover.size})"
         return "Gyvas RTK: %s %.7f, %.7f, h %.2f m, σh %.2f m, fazės palydovų %d, ratio %.1f, prieš %d s, epochų %d, FIX epochų %d (%s)".format(Locale.US,
             if (engine.lastFix) "FIX" else "FLOAT", s.lat, s.lon, s.h, s.hacc, s.sats, engine.lastRatio, (System.currentTimeMillis() - lastMs) / 1000, epochs, engine.run.fixEpochs, source) + (if (engine.qPos > 0.1) ", judant" else ", stovint") +
+            (note().let { if (it.isEmpty()) "" else "; $it" }) +
+            "; nepertraukta fazė (mediana) " + engine.phaseSegMedian().let { if (it.isNaN()) "nežinoma" else "%.0f s".format(Locale.US, it) } +
             "; kaukė praleido ${engine.masked} palydovų-epochų, Doppler aptiko ${engine.dopplerSlips} fazės trūkių; kitoms programoms perduota $pushedN, sulaikyta $heldN (nesuartėjęs ar šuolis); " + MockLoc.status
     }
 }

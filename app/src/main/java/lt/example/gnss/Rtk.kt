@@ -25,6 +25,10 @@ object Rtk {
     const val RATIO = 3.0
     /** Jau išlaikytam FIX su tais pačiais sveikaisiais – žemesnė riba. */
     const val HOLD_RATIO = 1.8
+    /** Sveikųjų kandidatas tampa FIX tik po tiek epochų iš eilės su tais pačiais sveikaisiais ir ratio ≥ RATIO. */
+    const val CONFIRM = 5
+    /** Mažiausiai dvigubų skirtumų (porų) sveikųjų sprendimui: ≥ 5 – bent 6 palydovai su faze. */
+    const val MIN_ND = 5
 
     /** Bazės liekanos (m): kodas ir fazė be geometrijos ir palydovo laikrodžio; lock – užrakto indikatorius. */
     class BObs(val rc: Double, val rp: Double, val lock: Int, val half: Int = 0)
@@ -169,9 +173,42 @@ object Rtk {
         private var fixRun = 0
         /** Paskutiniai priimti sveikieji (porai [ki, kr]) – FIX tęstinumui. */
         private val heldInts = HashMap<Pair<Int, Int>, Double>()
+        /** Dar nepatvirtintas sveikųjų kandidatas ir kiek epochų iš eilės jis kartojasi. */
+        private val candInts = HashMap<Pair<Int, Int>, Double>()
+        var candRun = 0
+            private set
+        /** Kodėl šioje epochoje nėra FIX (būsenos eilutei). */
+        @Volatile var fixNote = ""
+            private set
+        /** Išorinė patikra (gyvai – programos padėtis be bazės): grąžina priežastį, jei FIX su ja nesutampa. */
+        var extCheck: ((DoubleArray) -> String?)? = null
+        /** Nepertraukto fazės matavimo atkarpų ilgiai (epochomis) – rodo, ar RTK apskritai įmanomas. */
+        private val segs = ArrayDeque<Int>()
+        fun phaseSegMedian(): Double = synchronized(segs) { if (segs.size < 10) Double.NaN else segs.sorted()[segs.size / 2].toDouble() }
         private val lockN = HashMap<String, Int>()
         var lastPhase = 0
             private set
+
+        /**
+         * Sveikųjų sprendinio patikra prieš priimant FIX: (1) suderinamas su slankiuoju sprendiniu (Mahalanobio atstumas, 3 laisvės laipsniai, 99,9 %);
+         * (2) sutampa su žinomu aukščiu ir krano apribojimais, jei jie įvesti; (3) išorinė patikra (programos padėtis be bazės).
+         * Grąžina priežastį arba null.
+         */
+        private fun fixCheck(xFix: DoubleArray, ff: Filter): String? {
+            val d = DoubleArray(3) { xFix[it] - ff.x[it] }
+            val p3 = Array(3) { i -> DoubleArray(3) { k -> ff.p[i][k] } }
+            inv(p3)?.let { pi ->
+                val m2 = (0..2).sumOf { i -> (0..2).sumOf { k -> d[i] * pi[i][k] * d[k] } }
+                if (m2 > 16.27) return "nesutampa su slankiuoju sprendiniu"
+            }
+            val llh = PositionSolver.ecefToLlh(xFix[0], xFix[1], xFix[2])
+            if (useKnownH && KnownHeight.active) KnownHeight.h0(Math.toDegrees(llh[0]), Math.toDegrees(llh[1]))?.let { h0 ->
+                val dh = llh[2] - h0
+                if (abs(dh) > maxOf(3.0, 4 * KnownHeight.sigma())) return "aukštis %+.1f m nuo žinomo".format(Locale.US, dh)
+            }
+            if (useCrane) for ((_, v, sg) in Crane.pseudo(xFix)) if (abs(v) > maxOf(2.0, 5 * sg)) return "nesutampa su krano apribojimu (%.1f m)".format(Locale.US, v)
+            return extCheck?.invoke(xFix)
+        }
 
         fun step(ep: Sp3V5.Ep, e0: BEp, e1: BEp, bp: DoubleArray, prepare: (Double, List<Sp3V5.Ob>) -> List<Sp3V5.SatEp>): PositionSolver.Solution? {
         val t = ep.t
@@ -318,8 +355,10 @@ object Rtk {
         ff.p = mul(ikh, ff.p).let { p2 -> Array(n) { i -> DoubleArray(n) { k -> 0.5 * (p2[i][k] + p2[k][i]) } } }
         run.phaseObs += keep.count { it.key % 2 == 1 }
         // fazės tęstinumas (epochų be trūkio) – sveikųjų dviprasmybių kandidatams
-        for (g in geo) { val id = g.o.id; if (g.o.yL.isNaN() || g.o.slip) lockN.remove(id) else lockN[id] = (lockN[id] ?: 0) + 1 }
-        lockN.keys.retainAll(geo.map { it.o.id }.toSet())
+        fun endSeg(len: Int?) { if (len != null && len > 0) synchronized(segs) { segs.addLast(len); while (segs.size > 200) segs.removeFirst() } }
+        for (g in geo) { val id = g.o.id; if (g.o.yL.isNaN() || g.o.slip) endSeg(lockN.remove(id)) else lockN[id] = (lockN[id] ?: 0) + 1 }
+        val seen = geo.map { it.o.id }.toSet()
+        for (id in lockN.keys.filter { it !in seen }) endSeg(lockN.remove(id))
         // ---- sveikųjų dviprasmybių sprendimas (LAMBDA, dvigubi skirtumai, dalinis, ratio testas) ----
         var xOut = doubleArrayOf(ff.x[0], ff.x[1], ff.x[2]); var pOut: Array<DoubleArray>? = null
         lastFix = false; lastRatio = 0.0; lastNFix = 0
@@ -332,6 +371,7 @@ object Rtk {
                 for (g in cand) if (g !== ref) pairs.add(intArrayOf(ff.idx[g.o.id]!!, ff.idx[ref.o.id]!!))
             }
             val nd = pairs.size
+            var accepted = false
             if (nd >= 4) {
                 val am = DoubleArray(nd) { ff.x[pairs[it][0]] - ff.x[pairs[it][1]] }
                 // Q = D P Dᵀ (m²), Pxd = P[0..2] Dᵀ
@@ -340,38 +380,56 @@ object Rtk {
                 val res = Lambda.solve(DoubleArray(nd) { am[it] / LAMBDA_L1 }, Array(nd) { i -> DoubleArray(nd) { j -> qm[i][j] / (LAMBDA_L1 * LAMBDA_L1) } })
                 if (res != null) {
                     lastRatio = res.ratio; run.ratios.add(res.ratio)
-                    // laikymas: jau išlaikytas FIX (≥ 3 epochos) tęsiamas ir esant žemesniam ratio, jei sveikieji nepasikeitė
                     val ids = pairs.map { it[0] to it[1] }
-                    val same = heldInts.isNotEmpty() && ids.indices.all { i -> heldInts[ids[i]]?.let { it == res.best[i] } ?: true } &&
-                        ids.count { it in heldInts } >= 4
-                    if (res.ratio >= RATIO || (fixRun >= 3 && res.ratio >= HOLD_RATIO && same)) {
-                        heldInts.clear(); for (i in ids.indices) heldInts[ids[i]] = res.best[i]
-                        val qInv = inv(qm)
-                        if (qInv != null) {
-                            val db = DoubleArray(nd) { am[it] - res.best[it] * LAMBDA_L1 }
-                            val pxd = Array(3) { r -> DoubleArray(nd) { j -> pd(r, j) } }
-                            val k = mul(pxd, qInv)
-                            xOut = DoubleArray(3) { r -> ff.x[r] - (0 until nd).sumOf { j -> k[r][j] * db[j] } }
-                            val kp = mul(k, tr(pxd))
-                            pOut = Array(3) { r -> DoubleArray(3) { c -> ff.p[r][c] - kp[r][c] } }
-                            lastFix = true; lastNFix = nd; fixRun++
-                            // laikymas („fix-and-hold“): po 3 iš eilės fiksų – dviprasmybės pririšamos prie sveikųjų
-                            if (fixRun >= 3) {
-                                val hH = Array(nd) { i -> DoubleArray(n).also { r -> r[pairs[i][0]] = 1.0; r[pairs[i][1]] = -1.0 } }
-                                val hv = Array(nd) { i -> doubleArrayOf(res.best[i] * LAMBDA_L1 - am[i]) }
-                                val hpht = mul(ff.p, tr(hH)); val hs = mul(hH, hpht).also { for (i in 0 until nd) it[i][i] += 1e-6 }
-                                inv(hs)?.let { si ->
-                                    val kk = mul(hpht, si); val ddx = mul(kk, hv)
-                                    for (i in 0 until n) ff.x[i] += ddx[i][0]
-                                    val khh = mul(kk, hH)
-                                    ff.p = mul(Array(n) { i -> DoubleArray(n) { c -> (if (i == c) 1.0 else 0.0) - khh[i][c] } }, ff.p)
-                                        .let { p2 -> Array(n) { i -> DoubleArray(n) { c -> 0.5 * (p2[i][c] + p2[c][i]) } } }
+                    fun sameAs(m: Map<Pair<Int, Int>, Double>) = m.isNotEmpty() && ids.indices.all { i -> m[ids[i]]?.let { it == res.best[i] } ?: true } &&
+                        ids.count { it in m } >= 4
+                    // tęsiamas jau patvirtintas FIX (ir esant žemesniam ratio, jei sveikieji nepasikeitė)
+                    val holdOk = fixRun >= 1 && res.ratio >= HOLD_RATIO && sameAs(heldInts)
+                    val strong = res.ratio >= RATIO && nd >= MIN_ND
+                    val qInv = if (holdOk || strong) inv(qm) else null
+                    if (qInv != null) {
+                        val db = DoubleArray(nd) { am[it] - res.best[it] * LAMBDA_L1 }
+                        val pxd = Array(3) { r -> DoubleArray(nd) { j -> pd(r, j) } }
+                        val k = mul(pxd, qInv)
+                        val xFix = DoubleArray(3) { r -> ff.x[r] - (0 until nd).sumOf { j -> k[r][j] * db[j] } }
+                        val kp = mul(k, tr(pxd))
+                        val pFix = Array(3) { r -> DoubleArray(3) { c -> ff.p[r][c] - kp[r][c] } }
+                        val bad = fixCheck(xFix, ff)
+                        if (bad != null) { candRun = 0; candInts.clear(); fixNote = "FIX atmestas: $bad" }
+                        else {
+                            if (holdOk) accepted = true
+                            else {
+                                candRun = if (sameAs(candInts)) candRun + 1 else 1
+                                candInts.clear(); for (i in ids.indices) candInts[ids[i]] = res.best[i]
+                                accepted = candRun >= CONFIRM
+                                if (!accepted) fixNote = "FIX tikrinamas %d/%d".format(Locale.US, candRun, CONFIRM)
+                            }
+                            if (accepted) {
+                                heldInts.clear(); for (i in ids.indices) heldInts[ids[i]] = res.best[i]
+                                xOut = xFix; pOut = pFix
+                                lastFix = true; lastNFix = nd; fixRun++; fixNote = ""
+                                // laikymas („fix-and-hold“): tik patvirtintam FIX, po 3 iš eilės – dviprasmybės pririšamos prie sveikųjų
+                                if (fixRun >= 3) {
+                                    val hH = Array(nd) { i -> DoubleArray(n).also { r -> r[pairs[i][0]] = 1.0; r[pairs[i][1]] = -1.0 } }
+                                    val hv = Array(nd) { i -> doubleArrayOf(res.best[i] * LAMBDA_L1 - am[i]) }
+                                    val hpht = mul(ff.p, tr(hH)); val hs = mul(hH, hpht).also { for (i in 0 until nd) it[i][i] += 1e-6 }
+                                    inv(hs)?.let { si ->
+                                        val kk = mul(hpht, si); val ddx = mul(kk, hv)
+                                        for (i in 0 until n) ff.x[i] += ddx[i][0]
+                                        val khh = mul(kk, hH)
+                                        ff.p = mul(Array(n) { i -> DoubleArray(n) { c -> (if (i == c) 1.0 else 0.0) - khh[i][c] } }, ff.p)
+                                            .let { p2 -> Array(n) { i -> DoubleArray(n) { c -> 0.5 * (p2[i][c] + p2[c][i]) } } }
+                                    }
                                 }
                             }
                         }
-                    } else { fixRun = 0; heldInts.clear() }
-                } else { fixRun = 0; heldInts.clear() }
-            } else { fixRun = 0; heldInts.clear() }
+                    } else {
+                        candRun = 0; candInts.clear()
+                        fixNote = if (nd < MIN_ND) "per mažai palydovų su nenutrūkusia faze (${nd + 1})" else "ratio %.1f < %.0f".format(Locale.US, res.ratio, RATIO)
+                    }
+                } else { candRun = 0; candInts.clear(); fixNote = "sveikųjų sprendinys nerastas" }
+            } else { candRun = 0; candInts.clear(); fixNote = "per mažai palydovų su nenutrūkusia faze (${nd + 1})" }
+            if (!accepted) { fixRun = 0; heldInts.clear() }
         }
         if (lastFix) { run.fixEpochs++; if (run.firstFixS.isNaN()) run.firstFixS = t - t0 }
         run.fixed.add(lastFix)

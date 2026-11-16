@@ -8146,11 +8146,13 @@ class MainActivity : AppCompatActivity() {
         tv.text = "Nukreipkite planšetės NUGARĖLĘ (kamerą) į ${t.name.substringBefore(" (")}. Kadre matysite kameros vaizdą; rasta dėmė apibrėžiama geltonu ratu – atveskite ją į centrą.\n" +
             "Saugumas: jutiklis trumpai nukreipti į Saulę – kaip fotografuojant; ilgai nelaikykite. Geriausia ant objektyvo uždėti Saulės stebėjimo plėvelę ar tamsų filtrą. Kamera išsijungs po kalibravimo ar po 40 s."
         val dlg = android.app.AlertDialog.Builder(this).setTitle("Kalibravimas kamera: ${t.name}")
-            .setView(android.widget.ScrollView(this).apply { addView(box) }).setNegativeButton("Atšaukti", null).create()
+            .setView(android.widget.ScrollView(this).apply { addView(box) }).setNegativeButton("Atšaukti", null)
+            .setPositiveButton("Kalibruoti", null).create()
         skyDome.sensorsOn()
         val ui = Handler(Looper.getMainLooper())
         val buf = ArrayDeque<Triple<Double, Double, DoubleArray>>()
         var lastTry = 0L; var done = false
+        var validNow = false                       // paskutinis kadras: dėmė tinkama (aukštis, atpažinimas, ne per daug šviesos)
         lateinit var cam: SunCam
         cam = SunCam(this, { f ->
             ui.post {
@@ -8167,6 +8169,7 @@ class MainActivity : AppCompatActivity() {
                     b.setPixels(cr, 0, n, 0, 0, n, n) }
                 frameView.aspect = f.aspect; frameView.requestLayout(); frameView.invalidate()
                 if (!f.found || f.vec == null) {
+                    validNow = false
                     frameView.nx = Double.NaN; buf.clear(); frameView.invalidate()
                     val tel0 = SunCal.targetAzEl(key, System.currentTimeMillis(), obsLatNow, obsLonNow).second
                     tv.text = "${t.name.substringBefore(" (")} kadre nerastas: reikia kontrastingos dėmės %.0f° aukštyje (kontrastingų dėmių kadre: ${f.cands.size}). Lėtai pasukite planšetę į šonus, laikydami nugarėlę tame aukštyje.\n".format(Locale.US, tel0) + cam.info
@@ -8188,6 +8191,7 @@ class MainActivity : AppCompatActivity() {
                         spread > 0.5 -> "Laikykite planšetę ramiai…"
                         else -> "Stabilu – kalibruojama…"
                     } + "\n" + cam.info
+                validNow = kotlin.math.abs(wel - tel) <= 8.0 && !bigBlob && shapeOk
                 if (kotlin.math.abs(wel - tel) <= 8.0 && !bigBlob && shapeOk && spread <= 0.5 && System.currentTimeMillis() - lastTry > 5_000L) {
                     lastTry = System.currentTimeMillis()
                     val avg = DoubleArray(3) { k -> buf.map { it.third[k] }.average() }
@@ -8198,6 +8202,14 @@ class MainActivity : AppCompatActivity() {
         }, { msg -> ui.post { tv.text = "Kamera: $msg"; Toast.makeText(this, msg, Toast.LENGTH_LONG).show() } })
         dlg.setOnDismissListener { done = true; cam.stop() }
         dlg.show(); WinUtil.draggable(dlg)
+        // rankinis kalibravimas: dabar, nelaukiant 12 ramių kadrų (bent 3 kadrai su tinkama dėme)
+        dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+            if (!validNow || buf.size < 3) { Toast.makeText(this, "Kalibruoti negalima: kadre nėra tinkamos dėmės (${t.name.substringBefore(" (")}) – nukreipkite ir palaikykite sekundę", Toast.LENGTH_LONG).show(); return@setOnClickListener }
+            val use = buf.toList().takeLast(6)
+            val avg = DoubleArray(3) { k -> use.map { it.third[k] }.average() }
+            val l = kotlin.math.sqrt(avg[0] * avg[0] + avg[1] * avg[1] + avg[2] * avg[2])
+            if (calibrateWith(key, DoubleArray(3) { avg[it] / l })) { done = true; cam.stop(); dlg.dismiss() }
+        }
         // kandidatai tik orientyro aukštyje (±6°): aukštis iš gravitacijos patikimas, o azimutą kaip tik kalibruojame
         cam.accept = { vec -> val (_, el) = skyDome.worldAzElOfDevice(vec)
             kotlin.math.abs(el - SunCal.targetAzEl(key, System.currentTimeMillis(), obsLatNow, obsLonNow).second) <= 6.0 }

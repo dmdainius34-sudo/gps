@@ -1254,6 +1254,11 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             Surface.ROTATION_270 -> doubleArrayOf(-v[1], v[0], v[2])
             else -> v
         }
+        return worldAzElOfScreen(sv)
+    }
+
+    /** Ekrano ašių vektorius (x – dešinėn, y – į ekrano viršų, z – iš ekrano į žiūrovą) -> pasaulio azimutas ir aukštis. */
+    fun worldAzElOfScreen(sv: DoubleArray): Pair<Double, Double> {
         val r = lastRaw
         val e = r[0] * sv[0] + r[1] * sv[1] + r[2] * sv[2]; val n = r[3] * sv[0] + r[4] * sv[1] + r[5] * sv[2]; val u = r[6] * sv[0] + r[7] * sv[1] + r[8] * sv[2]
         val az = (Math.toDegrees(kotlin.math.atan2(e, n)) + 360.0) % 360.0
@@ -1345,14 +1350,58 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                 val s = renderer.pickSat(e.x, e.y)
                 if (s == null) hideHover()
                 else if (s.const + s.svid != hoverKey) showHover(s, e)
+                if (tool == MotionEvent.TOOL_TYPE_STYLUS) penPoint(e)
             }
-            MotionEvent.ACTION_HOVER_EXIT -> hideHover()
+            MotionEvent.ACTION_HOVER_EXIT -> { hideHover(); hidePen() }
         }
         return true
     }
 
+    // ---- Rašiklio kryptis danguje: pasvirimas ir orientacija (ekrano atžvilgiu) + planšetės padėtis erdvėje ----
+    private var penPopup: android.widget.PopupWindow? = null
+    private var penTv: TextView? = null
+
+    /** Kur rodo rašiklio viršutinis galas (ekrano ašimis). Android: orientacija 0 – smaigalys rodo į ekrano viršų, +90° – į dešinę; pasvirimas – nuo statmens. */
+    private fun penScreenVec(e: MotionEvent): DoubleArray {
+        val tilt = e.getAxisValue(MotionEvent.AXIS_TILT).toDouble().coerceIn(0.0, Math.PI / 2)
+        val ori = e.getAxisValue(MotionEvent.AXIS_ORIENTATION).toDouble()
+        val st = sin(tilt)
+        // viršutinis galas pasviręs priešinga kryptimi nei smaigalys; ekrano y į viršų
+        return doubleArrayOf(-st * sin(ori), -st * cos(ori), cos(tilt))
+    }
+
+    private fun penPoint(e: MotionEvent) {
+        val (az, el) = worldAzElOfScreen(penScreenVec(e))
+        renderer.penAzEl = doubleArrayOf(az, el); renderer.penMs = android.os.SystemClock.elapsedRealtime(); renderer.penLive = true
+        val L = java.util.Locale.US
+        val near = renderer.nearestSat(az, el)
+        val txt = "Rašiklis rodo: azimutas %.0f° (%s), aukštis %.0f°".format(L, az, compass(az), el) +
+            (if (el < 0) "\n(po horizontu)" else "") +
+            (near?.let { "\nArčiausiai: %s %d (%.0f°)".format(L, it.first.const, it.first.svid, it.second) } ?: "")
+        val dp = resources.displayMetrics.density
+        val loc = IntArray(2); getLocationOnScreen(loc)
+        val x = loc[0] + e.x.toInt() - (24 * dp).toInt(); val y = loc[1] + e.y.toInt() - (90 * dp).toInt()
+        val tv = penTv
+        if (tv != null && penPopup?.isShowing == true) { tv.text = txt; try { penPopup?.update(x.coerceAtLeast(0), y.coerceAtLeast(0), -1, -1) } catch (_: Exception) {}; return }
+        val t = TextView(context).apply {
+            textSize = 12f; setTextColor(0xFF0B3B4A.toInt()); setPadding((8 * dp).toInt(), (4 * dp).toInt(), (8 * dp).toInt(), (4 * dp).toInt())
+            background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 8 * dp; setColor(0xE6CFFAFE.toInt()); setStroke(1, 0x5506B6D4) }
+            text = txt
+        }
+        val pw = android.widget.PopupWindow(t, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        pw.isTouchable = false; pw.isFocusable = false; pw.elevation = 6 * dp
+        try { pw.showAtLocation(this, Gravity.NO_GRAVITY, x.coerceAtLeast(0), y.coerceAtLeast(0)); penPopup = pw; penTv = t } catch (_: Exception) {}
+    }
+
+    private fun hidePen() {
+        renderer.penLive = false; renderer.penMs = android.os.SystemClock.elapsedRealtime()
+        try { penPopup?.dismiss() } catch (_: Exception) {}; penPopup = null; penTv = null
+    }
+
+    private fun compass(az: Double): String = arrayOf("Š", "ŠR", "R", "PR", "P", "PV", "V", "ŠV")[(((az + 22.5) % 360.0) / 45.0).toInt().coerceIn(0, 7)]
+
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (ev.actionMasked == MotionEvent.ACTION_DOWN) hideHover()
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) { hideHover(); hidePen() }
         return super.dispatchTouchEvent(ev)
     }
 
@@ -1814,6 +1863,61 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var fU = DoubleArray(3)
     @Volatile var sunShot: DoubleArray? = null
 
+    // Rašiklio spindulys: azimutas/aukštis (laipsniais); po rašiklio pakėlimo dar 5 s blėsta
+    @Volatile var penAzEl: DoubleArray? = null
+    @Volatile var penMs = 0L
+    @Volatile var penLive = false
+
+    /** Dangaus taškas stebėtojo kryptimi az/el, altKm aukštyje virš Žemės – tuo pačiu būdu kaip dedami palydovai. */
+    private fun skyPoint(azDeg: Double, elDeg: Double, altKm: Double): FloatArray {
+        val el = Math.toRadians(elDeg.coerceIn(-90.0, 90.0)); val az = Math.toRadians(azDeg)
+        val re = 6371.0; val rs = re + altKm; val se = sin(el)
+        val rho = -re * se + kotlin.math.sqrt(re * re * se * se + rs * rs - re * re)
+        val dx = cos(el) * sin(az); val dy = cos(el) * cos(az); val dz = sin(el)
+        if (earthMatLast[10] != 0f) {
+            val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon)
+            val o = doubleArrayOf(re * cos(la) * cos(lo), re * cos(la) * sin(lo), re * sin(la))
+            val e = doubleArrayOf(-sin(lo), cos(lo), 0.0)
+            val n = doubleArrayOf(-sin(la) * cos(lo), -sin(la) * sin(lo), cos(la))
+            val u = doubleArrayOf(cos(la) * cos(lo), cos(la) * sin(lo), sin(la))
+            return ecefToScene(DoubleArray(3) { o[it] + rho * (dx * e[it] + dy * n[it] + dz * u[it]) })
+        }
+        val dist = rho * EARTH_R / re
+        return FloatArray(3) { (fU[it] * EARTH_R + dist * (dx * fE[it] + dy * fN[it] + dz * fU[it])).toFloat() }
+    }
+
+    private fun drawPenRay() {
+        val pe = penAzEl ?: return
+        val age = android.os.SystemClock.elapsedRealtime() - penMs
+        val a = if (penLive) 1f else (1f - age / 5000f)
+        if (a <= 0f) return
+        val az = pe[0]; val el = pe[1]; val alt = 20200.0
+        val o = skyPoint(az, el, 0.0); val tip = skyPoint(az, el, alt)
+        val k = 2.0; val ka = k / cos(Math.toRadians(el)).coerceAtLeast(0.2)
+        val seg = floatArrayOf(*o, *tip,
+            *skyPoint(az - ka, el, alt), *skyPoint(az + ka, el, alt),
+            *skyPoint(az, el - k, alt), *skyPoint(az, el + k, alt))
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glLineWidth(3f * density)
+        drawLines(seg, 0.2f, 0.9f, 1f, a)
+        GLES20.glDepthMask(true)
+        GLES20.glLineWidth(1f)
+    }
+
+    /** Matomas palydovas, kurio kryptis artimiausia az/el: (palydovas, kampas laipsniais). */
+    fun nearestSat(azDeg: Double, elDeg: Double): Pair<Sat, Double>? {
+        fun v(a: Double, e: Double): DoubleArray { val ar = Math.toRadians(a); val er = Math.toRadians(e); return doubleArrayOf(cos(er) * sin(ar), cos(er) * cos(ar), sin(er)) }
+        val p = v(azDeg, elDeg)
+        var best: Sat? = null; var bd = 1e9
+        for (si in satsI) {
+            val q = v(si.sat.az.toDouble(), si.sat.elev.toDouble())
+            val d = Math.toDegrees(kotlin.math.acos((p[0] * q[0] + p[1] * q[1] + p[2] * q[2]).coerceIn(-1.0, 1.0)))
+            if (d < bd) { bd = d; best = si.sat }
+        }
+        return best?.let { it to bd }
+    }
+
     /**
      * Kalibravimo „šūvis“ prie Saulės: kryželis ten, kur buvo nukreipta nugarėlė (tikras kampinis nuokrypis nuo Saulės centro,
      * atidėtas nuo dabartinės Saulės padėties stebėtojo horizonto sistemoje), ir linija iki centro – raudonai.
@@ -2221,6 +2325,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             }
         }
         drawSunShot()                       // po Saulės – kitaip jos diskas uždengia kryželį
+        drawPenRay()
         val pin = pinWorld()
         for (si in satsI) {
             val sat = si.sat

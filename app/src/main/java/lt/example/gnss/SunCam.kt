@@ -28,6 +28,8 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
     /** Kontrastinga dėmė: padėtis kadre 0..1, kryptis prietaiso kadre, plotas (taškais), kontrasto suma, didžiausias ryškumas. */
     class Cand(val nx: Double, val ny: Double, val vec: DoubleArray, val n: Int, val strength: Double, val peak: Int)
 
+    companion object { const val CROP = 128 }
+
     /** Kandidato atranka (pvz. pagal aukštį – Mėnulio/Saulės aukštis žinomas tiksliai); null – visi tinka. */
     @Volatile var accept: ((DoubleArray) -> Boolean)? = null
 
@@ -91,8 +93,8 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                     val buf = pl.buffer; val arr = bytes?.takeIf { it.size == buf.remaining() } ?: ByteArray(buf.remaining()).also { bytes = it }; buf.get(arr)
                     var max = 0
                     for (y in 0 until hh step 2) { val o = y * rs; for (x in 0 until w step 2) { val v = arr[o + x].toInt() and 0xFF; if (v > max) max = v } }
-                    // sumažintas kadras rodymui (~160 px pločio)
-                    val st = maxOf(1, w / 160); val tw = w / st; val tht = hh / st
+                    // sumažintas kadras rodymui (~640 px pločio)
+                    val st = maxOf(1, w / 640); val tw = w / st; val tht = hh / st
                     val thumb = IntArray(tw * tht) { i -> val g = arr[(i / tw) * st * rs + (i % tw) * st].toInt() and 0xFF; (0xFF shl 24) or (g shl 16) or (g shl 8) or g }
                     val asp = size.width.toDouble() / size.height
                     // Kontrastas, ne absoliutus ryškumas: dieną Mėnulis ne šviesesnis už debesis, bet šviesesnis už aplinką.
@@ -171,11 +173,11 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                     var best = ok.firstOrNull()
                     var shape = best?.let { shapeOf(it) }
                     if (shape != null && !shape.ok) for (c in ok.drop(1).take(3)) { val r = shapeOf(c); if (r?.ok == true) { best = c; shape = r; break } }
-                    // padidinta sritis aplink pasirinktą dėmę (64×64 taškai) – kad būtų matyti, kas rasta
+                    // padidinta sritis aplink pasirinktą dėmę (CROP×CROP pilnos raiškos taškų) – kad būtų matyti, kas rasta
                     var crop: IntArray? = null
                     if (best != null) {
                         val bx = (best.nx * w).toInt(); val by = (best.ny * hh).toInt()
-                        crop = IntArray(64 * 64) { i -> val x = (bx - 32 + i % 64).coerceIn(0, w - 1); val y = (by - 32 + i / 64).coerceIn(0, hh - 1)
+                        crop = IntArray(CROP * CROP) { i -> val x = (bx - CROP / 2 + i % CROP).coerceIn(0, w - 1); val y = (by - CROP / 2 + i / CROP).coerceIn(0, hh - 1)
                             val g = arr[y * rs + x].toInt() and 0xFF; (0xFF shl 24) or (g shl 16) or (g shl 8) or g }
                     }
                     val f = if (best == null) Frame(false, 0.0, 0.0, null, max, 0.0, asp, thumb, tw, tht, cands)

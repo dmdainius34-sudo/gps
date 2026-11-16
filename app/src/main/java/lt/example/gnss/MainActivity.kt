@@ -8111,7 +8111,7 @@ class MainActivity : AppCompatActivity() {
             /** Neapdoroto kadro (u, v) 0..1 -> rodomo kadro (x, y) 0..1. */
             fun map(u: Double, v: Double): Pair<Double, Double> = when (rot) { 90 -> (1 - v) to u; 180 -> (1 - u) to (1 - v); 270 -> v to (1 - u); else -> u to v }
             override fun onMeasure(w: Int, h: Int) {
-                val maxH = (300 * dp).toInt(); var sw = MeasureSpec.getSize(w); var sh = (sw / shownAspect()).toInt()
+                val maxH = (420 * dp).toInt(); var sw = MeasureSpec.getSize(w); var sh = (sw / shownAspect()).toInt()
                 if (sh > maxH) { sh = maxH; sw = (sh * shownAspect()).toInt() }
                 setMeasuredDimension(MeasureSpec.getSize(w), sh); fw = sw
             }
@@ -8134,7 +8134,7 @@ class MainActivity : AppCompatActivity() {
                     p.color = 0xFFFACC15.toInt(); p.strokeWidth = 3f * dp; c.drawCircle(x0 + (sx * fwF).toFloat(), (sy * fh).toFloat(), 12f * dp, p) }
                 // padidinta rastos dėmės sritis (kairiajame viršutiniame kampe)
                 cropBmp?.takeIf { !nx.isNaN() }?.let { b ->
-                    val s = 96f * dp
+                    val s = minOf(180f * dp, fh * 0.6f)
                     c.save(); c.translate(x0 + 6 * dp + s / 2, 6 * dp + s / 2); c.rotate(rot.toFloat())
                     c.drawBitmap(b, null, android.graphics.RectF(-s / 2, -s / 2, s / 2, s / 2), null); c.restore()
                     p.color = 0xFFFACC15.toInt(); p.strokeWidth = 2f; c.drawRect(x0 + 6 * dp, 6 * dp, x0 + 6 * dp + s, 6 * dp + s, p)
@@ -8162,8 +8162,9 @@ class MainActivity : AppCompatActivity() {
                     b.setPixels(f.thumb, 0, f.tw, 0, 0, f.tw, f.th)
                 }
                 frameView.cands = f.cands
-                f.crop?.let { cr -> val b = frameView.cropBmp ?: android.graphics.Bitmap.createBitmap(64, 64, android.graphics.Bitmap.Config.ARGB_8888).also { frameView.cropBmp = it }
-                    b.setPixels(cr, 0, 64, 0, 0, 64, 64) }
+                f.crop?.let { cr -> val n = SunCam.CROP
+                    val b = frameView.cropBmp ?: android.graphics.Bitmap.createBitmap(n, n, android.graphics.Bitmap.Config.ARGB_8888).also { frameView.cropBmp = it }
+                    b.setPixels(cr, 0, n, 0, 0, n, n) }
                 frameView.aspect = f.aspect; frameView.requestLayout(); frameView.invalidate()
                 if (!f.found || f.vec == null) {
                     frameView.nx = Double.NaN; buf.clear(); frameView.invalidate()

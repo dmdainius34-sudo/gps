@@ -8016,8 +8016,8 @@ class MainActivity : AppCompatActivity() {
             t.name + " – " + when {
                 el < SunCal.MIN_EL -> "po horizontu (%.0f°)".format(Locale.US, el)
                 SunCal.isStar(t.key) && SunCal.sunAzEl(now, obsLatNow, obsLonNow).second > -6.0 -> "dar per šviesu (laukite sutemų)"
-                el > SunCal.MAX_EL -> "per aukštai (%.0f°)".format(Locale.US, el)
-                else -> "az %.0f° (%s), aukštis %.0f°".format(Locale.US, az, compass(az), el)
+                el > SunCal.MAX_EL -> "per aukštai (%.0f°; tikslumas būtų %s)".format(Locale.US, el, SunCal.accText(el, true))
+                else -> "az %.0f° (%s), aukštis %.0f°; laukiamas krypties tikslumas %s".format(Locale.US, az, compass(az), el, SunCal.accText(el))
             }
         }.toTypedArray()
         android.app.AlertDialog.Builder(this).setTitle("Į kurį orientyrą taikysite?")
@@ -8058,12 +8058,12 @@ class MainActivity : AppCompatActivity() {
                 lastTry = now
                 if (calibrateWith(key)) { dlg.dismiss(); return }
             }
-            tv.text ="${t.name}: %s, aukštis %.1f° virš horizonto\nPlanšetės nugarėlė: %.1f°\n%s\n\nLaikykite planšetę ekranu į save, nugarėlę – į ${t.name.substringBefore(" (")}. Aukštį tikrina jutikliai; šonus nustatykite akimis į tikrą orientyrą. Kai aukštis sutampa, išlaikykite 2 s – kalibracija išsisaugos automatiškai.".format(Locale.US,
+            tv.text ="${t.name}: %s, aukštis %.1f° virš horizonto\nLaukiamas krypties tikslumas: ${SunCal.accText(el)}\nPlanšetės nugarėlė: %.1f°\n%s\n\nLaikykite planšetę ekranu į save, nugarėlę – į ${t.name.substringBefore(" (")}. Aukštį tikrina jutikliai; šonus nustatykite akimis į tikrą orientyrą. Kai aukštis sutampa, išlaikykite 2 s – kalibracija išsisaugos automatiškai.".format(Locale.US,
                 if (el < SunCal.MIN_EL) "po horizontu" else "azimutas %.0f° (%s)".format(Locale.US, az, compass(az)), el, dev.second,
                 when { el < SunCal.MIN_EL -> "Orientyras po horizontu – kalibruoti negalima"
                     dev.second < -75.0 -> "Prietaisas guli ekranu į viršų – nugarėlė į žemę. Pakelkite jį stačiai, ekranu į save"
                     dev.second > 75.0 -> "Nugarėlė į zenitą – nuleiskite prietaisą, kad nugarėlė žiūrėtų į orientyrą"
-                    el > SunCal.MAX_EL -> "Per aukštai (> 70°) – azimutas būtų netikslus"
+                    el > SunCal.MAX_EL -> "Per aukštai (> 70°) – krypties tikslumas būtų tik ${SunCal.accText(el)}. Kalibruokite, kai orientyras bus žemiau"
                     ok && el > 45.0 -> "✓ Aukštis sutampa. Orientyras aukštai – šoninė kryptis jautresnė (×%.1f), taikykite ypač tiksliai".format(Locale.US, 1 / kotlin.math.cos(Math.toRadians(el)))
                     ok -> "✓ Aukštis sutampa – išlaikykite 2 s, kalibracija išsisaugos automatiškai"
                     dEl > 0 -> "↑ Pakelkite nugarėlę %.1f°".format(Locale.US, dEl)
@@ -8178,7 +8178,7 @@ class MainActivity : AppCompatActivity() {
                 val spread = if (buf.size < 12) 99.0 else buf.maxOf { kotlin.math.abs(SunCal.wrap(it.first - waz)) * kotlin.math.cos(Math.toRadians(wel)) } .coerceAtLeast(buf.maxOf { kotlin.math.abs(it.second - wel) })
                 val bigBlob = f.areaPct > 15.0
                 val shapeOk = key != "moon" || f.shape?.ok == true
-                tv.text = "Dėmė rasta (ryškumas ${f.peak}, plotas %.1f %%). Aukštis pagal jutiklius %.1f°, skaičiuojamas %.1f°.\n".format(Locale.US, f.areaPct, wel, tel) +
+                tv.text = "Dėmė rasta (ryškumas ${f.peak}, plotas %.1f %%). Aukštis pagal jutiklius %.1f°, skaičiuojamas %.1f°. Laukiamas krypties tikslumas %s.\n".format(Locale.US, f.areaPct, wel, tel, SunCal.accText(tel, true)) +
                     (f.shape?.let { (if (it.ok) "✓ " else "✗ ") + it.why + "\n" } ?: "") +
                     when {
                         kotlin.math.abs(wel - tel) > 8.0 -> "Aukštis neatitinka – tai greičiausiai ne ${t.name.substringBefore(" (")} (atspindys, lempa?)"
@@ -8229,7 +8229,7 @@ class MainActivity : AppCompatActivity() {
         if (SunCal.isStar(key) && SunCal.sunAzEl(System.currentTimeMillis(), obsLatNow, obsLonNow).second > -6.0) {
             Toast.makeText(this, "Kalibruoti negalima: dar per šviesu – žvaigždė ryškiai matoma tik Saulei nusileidus > 6° po horizontu", Toast.LENGTH_LONG).show(); return false }
         if (el < SunCal.MIN_EL) { Toast.makeText(this, "Kalibruoti negalima: ${t.name} po horizontu (aukštis %.1f°)".format(Locale.US, el), Toast.LENGTH_LONG).show(); return false }
-        if (el > SunCal.MAX_EL) { Toast.makeText(this, "Kalibruoti negalima: ${t.name} per aukštai (%.1f° > 70°) – azimutas netikslus".format(Locale.US, el), Toast.LENGTH_LONG).show(); return false }
+        if (el > SunCal.MAX_EL) { Toast.makeText(this, "Kalibruoti negalima: ${t.name} per aukštai (%.1f° > 70°) – krypties tikslumas būtų tik %s".format(Locale.US, el, SunCal.accText(el, camVec != null)), Toast.LENGTH_LONG).show(); return false }
         if (!skyDome.aimReady()) { Toast.makeText(this, "Kalibruoti negalima: krypties jutikliai dar neparuošti – palaukite sekundę", Toast.LENGTH_LONG).show(); return false }
         if (kotlin.math.abs(skyDome.deviceAim().second) > 75.0) { Toast.makeText(this, "Kalibruoti negalima: prietaisas guli – nugarėlė turi žiūrėti į orientyrą (ekranas į save)", Toast.LENGTH_LONG).show(); return false }
         val magAz = devAxisZ?.first ?: Double.NaN; val decl = skyDome.declinationDeg()
@@ -8243,7 +8243,7 @@ class MainActivity : AppCompatActivity() {
             r.devAz, r.devEl, r.corr, magAz, decl, devPitch, devRoll, Build.MANUFACTURER + " " + Build.MODEL, t.name)); calCache = 0L to null } catch (e: Exception) { logError("Kalibravimų žurnalas: ${e.message}") }
         val warn = if (kotlin.math.abs(r.devEl - r.sunEl) > SunCal.WARN_DEL)
             "\nĮSPĖJIMAS: nugarėlės aukštis %.0f°, orientyro %.0f° – skirtumas > 10°, tikriausiai nenukreipta".format(Locale.US, r.devEl, r.sunEl) else ""
-        Toast.makeText(this, "${t.name}: az %.1f°, aukštis %.1f°; kompaso pataisa %+.1f°".format(Locale.US, r.sunAz, r.sunEl, r.corr) + warn, Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "${t.name}: az %.1f°, aukštis %.1f°; kompaso pataisa %+.1f°; laukiamas krypties tikslumas %s".format(Locale.US, r.sunAz, r.sunEl, r.corr, SunCal.accText(r.sunEl, camVec != null)) + warn, Toast.LENGTH_LONG).show()
         if (kotlin.math.abs(r.corr) > 15.0 && CabinMap.cabin.samples > 0)
             android.app.AlertDialog.Builder(this).setTitle("Išvalyti kabinos žemėlapį?")
                 .setMessage("Prieš kalibravimą kryptis buvo klaidinga %+.0f°. Kabinos žemėlapis (kryptys planšetės atžvilgiu) galėjo būti mokytas su klaidinga kryptimi – tada kryptis iš signalų stiprumo klaidina. Išvalius jis išmoks iš naujo su teisinga kryptimi.".format(Locale.US, r.corr))

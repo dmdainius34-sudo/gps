@@ -38,6 +38,21 @@ object SunCal {
         return (1.0 + (refraction(elDeg + h) - refraction(elDeg - h)) / (2 * h)).coerceIn(0.5, 1.0)
     }
 
+    /**
+     * Laukiamas šiaurės (azimuto) tikslumas po kalibravimo, °: taikymo klaida / cos(aukščio).
+     * Per kamerą taikymo klaida ~0,3° (dėmės centras + pakrypimo jutikliai), akimis – ~2°.
+     */
+    fun expectedAzAcc(elDeg: Double, camera: Boolean): Double {
+        val aim = if (camera) 0.3 else 2.0
+        return aim / kotlin.math.cos(Math.toRadians(elDeg.coerceIn(0.0, 89.0)))
+    }
+
+    /** Trumpas tekstas: „±0,4° per kamerą, ±2,3° akimis“. */
+    fun accText(elDeg: Double, camera: Boolean? = null): String {
+        fun f(c: Boolean) = "±%.1f°".format(Locale.US, expectedAzAcc(elDeg, c))
+        return when (camera) { true -> f(true); false -> f(false); null -> "${f(true)} per kamerą, ${f(false)} akimis" }
+    }
+
     /** Mėnulio regimasis kampinis skersmuo (°) iš stebėtojo vietos: atstumas iš paralaksės, arčiau – kai Mėnulis aukščiau. */
     fun moonDiamDeg(ms: Long, lat: Double, lon: Double): Double {
         val t = Astro.daysJ2000(ms) / 36525.0

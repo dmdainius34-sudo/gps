@@ -17,7 +17,7 @@ object MoonShape {
     const val DIAM_DEG = 0.52
 
     /** Laukiamas vaizdas: skersmuo taškais, apšviesta dalis 0..1, kryptis į Saulę kadre (vienetinis, x – dešinėn, y – žemyn). */
-    class Expect(val diamPx: Double, val k: Double, val sunDx: Double, val sunDy: Double)
+    class Expect(val diamPx: Double, val k: Double, val sunDx: Double, val sunDy: Double, val flat: Double = 1.0)
 
     class Result(val ok: Boolean, val why: String, val extentPx: Double, val areaFrac: Double, val dirErrDeg: Double)
 
@@ -68,7 +68,7 @@ object MoonShape {
             for (i in 0 until n) { val p = xs[i] * ca + ys[i] * sa; if (p < lo) lo = p; if (p > hi) hi = p }
             if (hi - lo + 1 > ext) { ext = hi - lo + 1; axA = a }
         }
-        val areaFrac = n / (PI * ex.diamPx * ex.diamPx / 4)
+        val areaFrac = n / (PI * ex.diamPx * ex.diamPx / 4 * ex.flat)      // prie horizonto diskas suplotas refrakcijos
         if (ext < 0.6 * ex.diamPx) return Result(false, "per maža dėmė (%.0f tšk., Mėnulis ~%.0f)".format(java.util.Locale.US, ext, ex.diamPx), ext, areaFrac, 0.0)
         if (ext > 1.7 * ex.diamPx) return Result(false, "per didelė dėmė (%.0f tšk., Mėnulis ~%.0f)".format(java.util.Locale.US, ext, ex.diamPx), ext, areaFrac, 0.0)
         if (areaFrac > 2.0 * ex.k + 0.25) return Result(false, "per daug apšviesta fazei (%.0f %% vietoj ~%.0f %%)".format(java.util.Locale.US, 100 * areaFrac, 100 * ex.k), ext, areaFrac, 0.0)

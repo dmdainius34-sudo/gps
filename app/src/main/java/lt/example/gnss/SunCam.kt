@@ -45,6 +45,8 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
     private var bytes: ByteArray? = null
     /** Laukiamas Mėnulio vaizdas rastai krypčiai (prietaiso kadre): kampinis skersmuo (°), apšviesta dalis, Saulės kryptis dangaus plokštumoje (prietaiso vektorius). */
     @Volatile var expect: ((DoubleArray) -> Triple<Double, Double, DoubleArray?>?)? = null
+    /** Refrakcijos suplojimas (vertikalus / horizontalus skersmuo) – Mėnulio ploto patikrai. */
+    @Volatile var flattening = 1.0
     private var queue: IntArray? = null
 
     @SuppressLint("MissingPermission")
@@ -164,7 +166,7 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                             val p0 = pix(c.vec); val p1 = pix(DoubleArray(3) { c.vec[it] + 0.01 * sunDev[it] })
                             if (p0 != null && p1 != null) { val dx = p1.first - p0.first; val dy = p1.second - p0.second; val l = kotlin.math.hypot(dx, dy); if (l > 1e-9) { sdx = dx / l; sdy = dy / l } }
                         }
-                        MoonShape.check({ x, y -> arr[y * rs + x].toInt() and 0xFF }, w, hh, c.nx * w, c.ny * hh, MoonShape.Expect(diam, k, sdx, sdy))
+                        MoonShape.check({ x, y -> arr[y * rs + x].toInt() and 0xFF }, w, hh, c.nx * w, c.ny * hh, MoonShape.Expect(diam, k, sdx, sdy, flattening))
                     }
                     var best = ok.firstOrNull()
                     var shape = best?.let { shapeOf(it) }

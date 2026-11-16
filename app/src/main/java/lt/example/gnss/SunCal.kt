@@ -29,6 +29,26 @@ object SunCal {
         return r / 60.0
     }
 
+    /**
+     * Refrakcijos suplojimas: vertikalus disko skersmuo / horizontalus (≤ 1). Apatinis kraštas pakeliamas daugiau nei viršutinis,
+     * todėl santykis = 1 + dR/dh (R – refrakcija). Virš ~15° beveik 1, prie horizonto ~0,8.
+     */
+    fun refractionFlattening(elDeg: Double): Double {
+        val h = 0.05
+        return (1.0 + (refraction(elDeg + h) - refraction(elDeg - h)) / (2 * h)).coerceIn(0.5, 1.0)
+    }
+
+    /** Mėnulio regimasis kampinis skersmuo (°) iš stebėtojo vietos: atstumas iš paralaksės, arčiau – kai Mėnulis aukščiau. */
+    fun moonDiamDeg(ms: Long, lat: Double, lon: Double): Double {
+        val t = Astro.daysJ2000(ms) / 36525.0
+        fun cd(a: Double) = kotlin.math.cos(Math.toRadians(a))
+        val par = 0.9508 + 0.0518 * cd(135.0 + 477198.87 * t) + 0.0095 * cd(259.3 - 413335.36 * t) + 0.0078 * cd(235.7 + 890534.22 * t) + 0.0028 * cd(269.9 + 954397.74 * t)
+        val dGeo = 6378.14 / kotlin.math.sin(Math.toRadians(par))
+        val el = moonAzEl(ms, lat, lon).second
+        val dTopo = dGeo - 6378.14 * kotlin.math.sin(Math.toRadians(el.coerceAtLeast(0.0)))
+        return 2 * Math.toDegrees(kotlin.math.asin(1737.4 / dTopo))
+    }
+
     // ---- gamtos orientyrai: Saulė, Mėnulis, Šiaurinė žvaigždė, Oriono žvaigždės ----
     class Target(val key: String, val name: String, val raJ2000: Double = Double.NaN, val decJ2000: Double = Double.NaN)
     val targets = listOf(

@@ -8208,9 +8208,12 @@ class MainActivity : AppCompatActivity() {
             val m = enu(maz, mel); val sn = enu(saz, sel)
             val k = MoonShape.illuminated(kotlin.math.acos(MoonShape.dot(m, sn).coerceIn(-1.0, 1.0)))
             val (a, c) = MoonShape.sunInUpBasis(m, sn)
-            val upT = MoonShape.tangent(skyDome.upInDevice(), vec) ?: return@expect Triple(MoonShape.DIAM_DEG, k, null)
+            // tikslus regimasis skersmuo (atstumas kinta per mėnesį) ir refrakcijos suplojimas prie horizonto
+            val diam = SunCal.moonDiamDeg(now, obsLatNow, obsLonNow)
+            cam.flattening = SunCal.refractionFlattening(mel)
+            val upT = MoonShape.tangent(skyDome.upInDevice(), vec) ?: return@expect Triple(diam, k, null)
             val eT = MoonShape.cross(vec, upT)
-            Triple(MoonShape.DIAM_DEG, k, DoubleArray(3) { a * upT[it] + c * eT[it] })
+            Triple(diam, k, DoubleArray(3) { a * upT[it] + c * eT[it] })
         }
         cam.start()
         ui.postDelayed({ if (!done && dlg.isShowing) dlg.dismiss() }, 40_000L)

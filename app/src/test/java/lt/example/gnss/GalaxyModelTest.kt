@@ -190,3 +190,13 @@ class MoonShapeTest {
         org.junit.Assert.assertEquals(1.0, a, 1e-9); org.junit.Assert.assertEquals(0.0, c, 1e-9)
     }
 }
+
+class MoonSizeTest {
+    @org.junit.Test fun diameterAndFlattening() {
+        val ms = 1_794_830_000_000L
+        val d = SunCal.moonDiamDeg(ms, 54.69, 25.28)
+        org.junit.Assert.assertTrue("skersmuo $d", d in 0.48..0.57)
+        org.junit.Assert.assertTrue(SunCal.refractionFlattening(45.0) > 0.995)
+        org.junit.Assert.assertTrue(SunCal.refractionFlattening(1.0) < 0.95)
+    }
+}

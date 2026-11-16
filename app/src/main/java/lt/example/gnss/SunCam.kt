@@ -60,7 +60,9 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
             val effW = phys.width.toDouble() * act.width() / pix.width
             val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
             val aspect = act.width().toDouble() / act.height()
-            val sizes = map.getOutputSizes(ImageFormat.YUV_420_888).filter { it.width in 400..1100 }
+            // didesnė raiška (~2000 px pločio): Mėnulis kadre ~15 taškų, kampas taškui ~0,03°; jei tokios nėra – iki 1100 px
+            val all = map.getOutputSizes(ImageFormat.YUV_420_888)
+            val sizes = all.filter { it.width in 1400..2200 }.ifEmpty { all.filter { it.width in 400..1100 } }
             val size = sizes.filter { abs(it.width.toDouble() / it.height - aspect) < 0.02 }.maxByOrNull { it.width }
                 ?: sizes.maxByOrNull { it.width } ?: return onError("Nėra tinkamo kadro dydžio")
             val fpx = focal.toDouble() * size.width / effW
@@ -90,12 +92,14 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                     val asp = size.width.toDouble() / size.height
                     // Kontrastas, ne absoliutus ryškumas: dieną Mėnulis ne šviesesnis už debesis, bet šviesesnis už aplinką.
                     // Pusinė raiška (2×2 vidurkis), fonas – 25×25 langas (integralinis vaizdas), kontrastas = taškas − fonas.
-                    val w2 = w / 2; val h2 = hh / 2
-                    val y2 = IntArray(w2 * h2) { i -> val x = (i % w2) * 2; val y = (i / w2) * 2
+                    // paieškos tinklelis ~480 px pločio (ds× mažesnis), tikslus centras – pilna raiška
+                    val ds = maxOf(2, w / 480)
+                    val w2 = w / ds; val h2 = hh / ds
+                    val y2 = IntArray(w2 * h2) { i -> val x = (i % w2) * ds; val y = (i / w2) * ds
                         ((arr[y * rs + x].toInt() and 0xFF) + (arr[y * rs + x + 1].toInt() and 0xFF) + (arr[(y + 1) * rs + x].toInt() and 0xFF) + (arr[(y + 1) * rs + x + 1].toInt() and 0xFF)) / 4 }
                     val ii = LongArray((w2 + 1) * (h2 + 1))
                     for (y in 0 until h2) { var row = 0L; for (x in 0 until w2) { row += y2[y * w2 + x]; ii[(y + 1) * (w2 + 1) + x + 1] = ii[y * (w2 + 1) + x + 1] + row } }
-                    val rad = 12
+                    val rad = maxOf(4, 24 / ds)
                     val con = IntArray(w2 * h2)
                     for (y in 0 until h2) for (x in 0 until w2) {
                         val xa = maxOf(0, x - rad); val xb = minOf(w2, x + rad + 1); val ya = maxOf(0, y - rad); val yb = minOf(h2, y + rad + 1)
@@ -124,12 +128,25 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                                 if (lb[j] == 0 && con[j] >= thr) { lb[j] = label; if (tail < q.size) q[tail++] = j }
                             }
                         }
-                        if (n < 2 || n > 3000) continue            // pavieniai karšti taškai ir dideli debesų kraštai – ne
-                        val cx = (sx / n) * 2 + 1.0; val cy = (sy / n) * 2 + 1.0
+                        if (n < 2 || n * ds * ds > 12000) continue            // pavieniai karšti taškai ir dideli debesų kraštai – ne
+                        var cx = (sx / n) * ds + ds / 2.0; var cy = (sy / n) * ds + ds / 2.0
+                        // patikslinimas pilna raiška: šviesumo virš fono svoriais lange aplink dėmę
+                        run {
+                            val r = (ds * 3 + 2 * sqrt(n.toDouble()) * ds).toInt().coerceIn(6, 60)
+                            val x0 = (cx - r).toInt().coerceAtLeast(0); val x1 = (cx + r).toInt().coerceAtMost(w - 1)
+                            val yA = (cy - r).toInt().coerceAtLeast(0); val yB = (cy + r).toInt().coerceAtMost(hh - 1)
+                            var bs = 0L; var bn = 0
+                            for (x in x0..x1) { bs += (arr[yA * rs + x].toInt() and 0xFF) + (arr[yB * rs + x].toInt() and 0xFF); bn += 2 }
+                            for (y in yA..yB) { bs += (arr[y * rs + x0].toInt() and 0xFF) + (arr[y * rs + x1].toInt() and 0xFF); bn += 2 }
+                            val bg = bs.toDouble() / bn
+                            var ws = 0.0; var wx = 0.0; var wy = 0.0
+                            for (y in yA..yB) for (x in x0..x1) { val d = (arr[y * rs + x].toInt() and 0xFF) - bg - 2.0; if (d > 0) { ws += d; wx += d * x; wy += d * y } }
+                            if (ws > 0) { cx = wx / ws + 0.5; cy = wy / ws + 0.5 }
+                        }
                         val tu = (cx - w / 2.0) / fpx; val tv = (cy - hh / 2.0) / fpx
                         val v = DoubleArray(3) { tu * right[it] + tv * down[it] + (if (it == 2) -1.0 else 0.0) }
                         val l = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
-                        cands.add(Cand(cx / w, cy / hh, DoubleArray(3) { v[it] / l }, n * 4, str.toDouble(), pk))
+                        cands.add(Cand(cx / w, cy / hh, DoubleArray(3) { v[it] / l }, n * ds * ds, str.toDouble(), pk))
                     }
                     // pasirinkimas: tinkamo aukščio (accept) ir stipriausio kontrasto dėmė
                     val ok = cands.filter { c -> accept?.invoke(c.vec) ?: true }.sortedByDescending { it.strength }

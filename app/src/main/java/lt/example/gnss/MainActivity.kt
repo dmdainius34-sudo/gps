@@ -8129,20 +8129,24 @@ class MainActivity : AppCompatActivity() {
                 c.drawCircle(x0 + fwF / 2f, fh / 2f, fh * 0.12f, p)
                 // kiti kontrastingi kandidatai (netinkamo aukščio) – blankiai
                 p.strokeWidth = 1.5f * dp; p.color = 0x6694A3B8
-                for (k in cands) { val (sx, sy) = map(k.nx, k.ny); c.drawCircle(x0 + (sx * fwF).toFloat(), (sy * fh).toFloat(), 6f * dp, p) }
+                for (k in cands.filter { it.accepted }.sortedByDescending { it.strength }.take(8)) { val (sx, sy) = map(k.nx, k.ny); c.drawCircle(x0 + (sx * fwF).toFloat(), (sy * fh).toFloat(), 6f * dp, p) }
                 if (!nx.isNaN()) { val (sx, sy) = map(nx, ny)
                     p.color = 0xFFFACC15.toInt(); p.strokeWidth = 3f * dp; c.drawCircle(x0 + (sx * fwF).toFloat(), (sy * fh).toFloat(), 12f * dp, p) }
                 // padidinta rastos dėmės sritis (kairiajame viršutiniame kampe)
                 cropBmp?.takeIf { !nx.isNaN() }?.let { b ->
-                    val s = minOf(180f * dp, fh * 0.6f)
-                    c.save(); c.translate(x0 + 6 * dp + s / 2, 6 * dp + s / 2); c.rotate(rot.toFloat())
+                    val s = minOf(130f * dp, fh * 0.35f, fwF * 0.35f)
+                    val (sx, sy) = map(nx, ny)
+                    val left = if (sx > 0.5) x0 + 6 * dp else x0 + fwF - 6 * dp - s
+                    val top = if (sy > 0.5) 6 * dp else fh - 6 * dp - s
+                    c.save(); c.translate(left + s / 2, top + s / 2); c.rotate(rot.toFloat())
                     c.drawBitmap(b, null, android.graphics.RectF(-s / 2, -s / 2, s / 2, s / 2), null); c.restore()
-                    p.color = 0xFFFACC15.toInt(); p.strokeWidth = 2f; c.drawRect(x0 + 6 * dp, 6 * dp, x0 + 6 * dp + s, 6 * dp + s, p)
+                    p.color = 0xFFFACC15.toInt(); p.strokeWidth = 2f; c.drawRect(left, top, left + s, top + s, p)
                 }
             }
         }
+        val status = TextView(this).apply { setPadding(32, 0, 32, 8); textSize = 15f; setTypeface(typeface, android.graphics.Typeface.BOLD) }
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 16, 24, 0)
-            addView(frameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)); addView(tv) }
+            addView(status); addView(frameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)); addView(tv) }
         tv.text = "Nukreipkite planšetės NUGARĖLĘ (kamerą) į ${t.name.substringBefore(" (")}. Kadre matysite kameros vaizdą; rasta dėmė apibrėžiama geltonu ratu – atveskite ją į centrą.\n" +
             "Saugumas: jutiklis trumpai nukreipti į Saulę – kaip fotografuojant; ilgai nelaikykite. Geriausia ant objektyvo uždėti Saulės stebėjimo plėvelę ar tamsų filtrą. Kamera išsijungs po kalibravimo ar po 40 s."
         val dlg = android.app.AlertDialog.Builder(this).setTitle("Kalibravimas kamera: ${t.name}")
@@ -8170,6 +8174,7 @@ class MainActivity : AppCompatActivity() {
                 frameView.aspect = f.aspect; frameView.requestLayout(); frameView.invalidate()
                 if (!f.found || f.vec == null) {
                     validNow = false
+                    status.text = "Ieškoma: ${t.name.substringBefore(" (")} kadre nerastas"; status.setTextColor(0xFF6B7280.toInt())
                     frameView.nx = Double.NaN; buf.clear(); frameView.invalidate()
                     val tel0 = SunCal.targetAzEl(key, System.currentTimeMillis(), obsLatNow, obsLonNow).second
                     tv.text = "${t.name.substringBefore(" (")} kadre nerastas: reikia kontrastingos dėmės %.0f° aukštyje (kontrastingų dėmių kadre: ${f.cands.size}). Lėtai pasukite planšetę į šonus, laikydami nugarėlę tame aukštyje.\n".format(Locale.US, tel0) + cam.info
@@ -8182,6 +8187,13 @@ class MainActivity : AppCompatActivity() {
                 val spread = if (buf.size < 12) 99.0 else buf.maxOf { kotlin.math.abs(SunCal.wrap(it.first - waz)) * kotlin.math.cos(Math.toRadians(wel)) } .coerceAtLeast(buf.maxOf { kotlin.math.abs(it.second - wel) })
                 val bigBlob = f.areaPct > 15.0
                 val shapeOk = key != "moon" || f.shape?.ok == true
+                val sh = f.shape
+                status.text = when {
+                    kotlin.math.abs(wel - tel) > 8.0 -> "✗ aukštis neatitinka"
+                    sh != null -> (if (sh.ok) "✓ " else "✗ ") + sh.why
+                    else -> "✓ dėmė ${t.name.substringBefore(" (")} aukštyje"
+                }
+                status.setTextColor(if (shapeOk && kotlin.math.abs(wel - tel) <= 8.0) 0xFF16A34A.toInt() else 0xFFDC2626.toInt())
                 tv.text = "Dėmė rasta (ryškumas ${f.peak}, plotas %.1f %%). Aukštis pagal jutiklius %.1f°, skaičiuojamas %.1f°. Laukiamas krypties tikslumas %s.\n".format(Locale.US, f.areaPct, wel, tel, SunCal.accText(tel, true)) +
                     (f.shape?.let { (if (it.ok) "✓ " else "✗ ") + it.why + "\n" } ?: "") +
                     when {
@@ -8214,6 +8226,7 @@ class MainActivity : AppCompatActivity() {
         cam.accept = { vec -> val (_, el) = skyDome.worldAzElOfDevice(vec)
             kotlin.math.abs(el - SunCal.targetAzEl(key, System.currentTimeMillis(), obsLatNow, obsLonNow).second) <= 6.0 }
         // Mėnulio atpažinimas: laukiamas dydis, fazė ir Saulės kryptis dangaus plokštumoje (bazė „aukštyn“ – iš gravitacijos)
+        if (key == "moon") cam.shortExposure = true
         if (key == "moon") cam.expect = expect@{ vec ->
             val now = System.currentTimeMillis()
             val (maz, mel) = SunCal.targetAzEl("moon", now, obsLatNow, obsLonNow); val (saz, sel) = SunCal.sunAzEl(now, obsLatNow, obsLonNow)

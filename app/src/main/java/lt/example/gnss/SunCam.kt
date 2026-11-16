@@ -26,7 +26,7 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                 /** Visi kontrastingi kandidatai ir padidinta (64×64) sritis aplink pasirinktą. */
                 val cands: List<Cand> = emptyList(), val crop: IntArray? = null, val shape: MoonShape.Result? = null)
     /** Kontrastinga dėmė: padėtis kadre 0..1, kryptis prietaiso kadre, plotas (taškais), kontrasto suma, didžiausias ryškumas. */
-    class Cand(val nx: Double, val ny: Double, val vec: DoubleArray, val n: Int, val strength: Double, val peak: Int)
+    class Cand(val nx: Double, val ny: Double, val vec: DoubleArray, val n: Int, val strength: Double, val peak: Int) { var accepted = false }
 
     companion object { const val CROP = 128 }
 
@@ -49,6 +49,14 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
     @Volatile var expect: ((DoubleArray) -> Triple<Double, Double, DoubleArray?>?)? = null
     /** Refrakcijos suplojimas (vertikalus / horizontalus skersmuo) – Mėnulio ploto patikrai. */
     @Volatile var flattening = 1.0
+    /** Mėnuliui – rankinė trumpa ekspozicija (kitaip naktį jis perdega į didelę švytinčią dėmę). */
+    @Volatile var shortExposure = false
+    private var expNs = 333_333L                 // ~1/3000 s
+    private var manualOk = false
+    private var isoMin = 100
+    private var expRange: android.util.Range<Long>? = null
+    private var reqFn: (() -> Unit)? = null
+    private var frameNo = 0
     private var queue: IntArray? = null
 
     @SuppressLint("MissingPermission")
@@ -64,6 +72,9 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
             val focal = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: return onError("Nėra židinio nuotolio")
             val orient = (ch.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90).also { this.orient = it }
             val aeRange = ch.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+            manualOk = ch.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) == true
+            isoMin = ch.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.lower ?: 100
+            expRange = ch.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
             val effW = phys.width.toDouble() * act.width() / pix.width
             val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
             val aspect = act.width().toDouble() / act.height()
@@ -82,7 +93,7 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                 else -> { right = doubleArrayOf(0.0, -1.0, 0.0); down = doubleArrayOf(-1.0, 0.0, 0.0) }
             }
             info = "kamera $id, ${size.width}×${size.height}, f=%.1f mm, regos laukas %.0f°, orientacija $orient°".format(
-                java.util.Locale.US, focal, Math.toDegrees(2 * Math.atan(effW / (2.0 * focal))))
+                java.util.Locale.US, focal, Math.toDegrees(2 * Math.atan(effW / (2.0 * focal)))) + (if (shortExposure) (if (manualOk) ", rankinė ekspozicija" else ", rankinė ekspozicija nepalaikoma") else "")
             val th = HandlerThread("suncam").also { it.start() }; thread = th
             val h = Handler(th.looper)
             val rd = ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 2); reader = rd
@@ -156,7 +167,8 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                         cands.add(Cand(cx / w, cy / hh, DoubleArray(3) { v[it] / l }, n * ds * ds, str.toDouble(), pk))
                     }
                     // pasirinkimas: tinkamo aukščio (accept) ir stipriausio kontrasto dėmė
-                    val ok = cands.filter { c -> accept?.invoke(c.vec) ?: true }.sortedByDescending { it.strength }
+                    cands.forEach { c -> c.accepted = accept?.invoke(c.vec) ?: true }
+                    val ok = cands.filter { it.accepted }.sortedByDescending { it.strength }
                     // Mėnulio atpažinimas: dydis, fazė ir pjautuvo kryptis į Saulę (tikrinami iki 4 stipriausių kandidatų)
                     fun shapeOf(c: Cand): MoonShape.Result? = expect?.invoke(c.vec)?.let { (dDeg, k, sunDev) ->
                         val diam = 2 * fpx * kotlin.math.tan(Math.toRadians(dDeg / 2))
@@ -180,6 +192,14 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                         crop = IntArray(CROP * CROP) { i -> val x = (bx - CROP / 2 + i % CROP).coerceIn(0, w - 1); val y = (by - CROP / 2 + i / CROP).coerceIn(0, hh - 1)
                             val g = arr[y * rs + x].toInt() and 0xFF; (0xFF shl 24) or (g shl 16) or (g shl 8) or g }
                     }
+                    // Mėnulio ekspozicija: rastos dėmės smailė laikoma ~150–250 (perdegus – trumpiau, per blanku – ilgiau)
+                    if (shortExposure && manualOk && ++frameNo % 5 == 0) {
+                        val pk = best?.peak ?: 0
+                        val old = expNs
+                        if (best != null && pk >= 250) expNs = (expNs / 2).coerceAtLeast(10_000L)
+                        else if (best == null || pk < 150) expNs = (expNs * 2).coerceAtMost(30_000_000L)
+                        if (expNs != old) reqFn?.invoke()
+                    }
                     val f = if (best == null) Frame(false, 0.0, 0.0, null, max, 0.0, asp, thumb, tw, tht, cands)
                         else Frame(true, best.nx, best.ny, best.vec, best.peak, 100.0 * best.n / (w * hh), asp, thumb, tw, tht, cands, crop, shape)
                     if (!closed) onFrame(f)
@@ -193,16 +213,28 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                         c.createCaptureSession(listOf(rd.surface), object : CameraCaptureSession.StateCallback() {
                             override fun onConfigured(s: CameraCaptureSession) {
                                 session = s
-                                try {
-                                    val rq = c.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                                        addTarget(rd.surface)
-                                        set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-                                        set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                                        // tamsiausias vaizdas: Saulė išsiskiria, jutiklis neperkaista
-                                        aeRange?.let { set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, it.lower) }
-                                    }
-                                    s.setRepeatingRequest(rq.build(), null, h)
-                                } catch (e: Exception) { onError("Kameros užklausa: ${e.message}") }
+                                reqFn = {
+                                    try {
+                                        val rq = c.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                                            addTarget(rd.surface)
+                                            set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                                            if (shortExposure && manualOk) {
+                                                // Mėnulis: rankinė ekspozicija, mažiausias ISO (fonas tamsus, diskas neperdega)
+                                                set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                                                val e = expRange?.let { expNs.coerceIn(it.lower, it.upper) } ?: expNs
+                                                set(CaptureRequest.SENSOR_EXPOSURE_TIME, e)
+                                                set(CaptureRequest.SENSOR_SENSITIVITY, isoMin)
+                                                set(CaptureRequest.SENSOR_FRAME_DURATION, 33_333_333L)
+                                            } else {
+                                                set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                                                // tamsiausias vaizdas: Saulė išsiskiria, jutiklis neperkaista
+                                                aeRange?.let { set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, it.lower) }
+                                            }
+                                        }
+                                        s.setRepeatingRequest(rq.build(), null, h)
+                                    } catch (e: Exception) { onError("Kameros užklausa: ${e.message}") }
+                                }
+                                reqFn?.invoke()
                             }
                             override fun onConfigureFailed(s: CameraCaptureSession) { onError("Kameros sesija nepavyko") }
                         }, h)

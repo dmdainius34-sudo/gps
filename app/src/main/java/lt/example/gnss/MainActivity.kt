@@ -1302,6 +1302,13 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     }
 
     fun nudgeNorth(d: Double, src: String = "pataisa") {
+        // Po kalibravimo pagal Saulę / Polaris / kamerą automatinės pataisos (magnetometras, signalai) 30 min. neleidžiamos – jos mažiau tikslios ir „nusuka“ kryptį
+        val auto = src.startsWith("automatinė") || src.startsWith("po paleidimo")
+        val since = System.currentTimeMillis() - calPrefs.getLong("sun_cal_ms", 0L)
+        if (auto && since in 0 until LANDMARK_HOLD_MS) {
+            headingEvent("atmesta „%s“ %+.1f° – prieš %d min. kalibruota pagal orientyrą".format(java.util.Locale.US, src, -d, since / 60_000L))
+            return
+        }
         headingEvent("%s %+.1f°".format(java.util.Locale.US, src, -d))
         offsetDeg += d.toFloat()
         calPrefs.edit().putFloat("offset", offsetDeg).putBoolean("north_saved", true).apply()
@@ -1557,6 +1564,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private var listening = false
 
     /** Po pradinės krypties iš magnetometro: pataisa pagal patikimą kryptį iš signalų (jei ji šviežia). */
+    private val LANDMARK_HOLD_MS = 30 * 60_000L
     private var reanchorTries = 0
     /** Bandoma kas 5 s iki 2 min., kol atsiranda patikima kryptis iš signalų (paleidus GNSS jos dar nėra). */
     private val reanchor: Runnable = object : Runnable { override fun run() {

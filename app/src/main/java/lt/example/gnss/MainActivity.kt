@@ -8087,21 +8087,39 @@ class MainActivity : AppCompatActivity() {
         val t = SunCal.target(key)
         val dp = resources.displayMetrics.density
         val tv = TextView(this).apply { setPadding(32, 8, 32, 8); textSize = 14f }
+        // Kadras rodomas taip, kaip jį mato kamera, pasuktas pagal ekrano padėtį (kitaip dėmė juda „ne į tą pusę“)
         val frameView = object : View(this) {
             var nx = Double.NaN; var ny = Double.NaN; var aspect = 4.0 / 3.0
+            var bmp: android.graphics.Bitmap? = null
+            var rot = 0                                    // kiek laipsnių pagal laikrodžio rodyklę pasukti neapdorotą kadrą
             val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
-            override fun onMeasure(w: Int, h: Int) { val s = MeasureSpec.getSize(w); setMeasuredDimension(s, (s / aspect).toInt().coerceAtMost((260 * dp).toInt())) }
+            fun shownAspect() = if (rot % 180 == 0) aspect else 1.0 / aspect
+            /** Neapdoroto kadro (u, v) 0..1 -> rodomo kadro (x, y) 0..1. */
+            fun map(u: Double, v: Double): Pair<Double, Double> = when (rot) { 90 -> (1 - v) to u; 180 -> (1 - u) to (1 - v); 270 -> v to (1 - u); else -> u to v }
+            override fun onMeasure(w: Int, h: Int) {
+                val maxH = (300 * dp).toInt(); var sw = MeasureSpec.getSize(w); var sh = (sw / shownAspect()).toInt()
+                if (sh > maxH) { sh = maxH; sw = (sh * shownAspect()).toInt() }
+                setMeasuredDimension(MeasureSpec.getSize(w), sh); fw = sw
+            }
+            var fw = 0
             override fun onDraw(c: android.graphics.Canvas) {
-                p.style = android.graphics.Paint.Style.FILL; p.color = 0xFF0B1020.toInt(); c.drawRect(0f, 0f, width.toFloat(), height.toFloat(), p)
+                val x0 = (width - fw) / 2f; val fwF = fw.toFloat(); val fh = height.toFloat()
+                p.style = android.graphics.Paint.Style.FILL; p.color = 0xFF0B1020.toInt(); c.drawRect(0f, 0f, width.toFloat(), fh, p)
+                bmp?.let { b ->
+                    c.save(); c.translate(x0 + fwF / 2f, fh / 2f); c.rotate(rot.toFloat())
+                    val (bw, bh) = if (rot % 180 == 0) fwF to fh else fh to fwF
+                    c.drawBitmap(b, null, android.graphics.RectF(-bw / 2f, -bh / 2f, bw / 2f, bh / 2f), null); c.restore()
+                }
                 p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = 2f; p.color = 0x88FFFFFF.toInt()
-                c.drawLine(width / 2f, 0f, width / 2f, height.toFloat(), p); c.drawLine(0f, height / 2f, width.toFloat(), height / 2f, p)
-                c.drawCircle(width / 2f, height / 2f, height * 0.12f, p)
-                if (!nx.isNaN()) { p.style = android.graphics.Paint.Style.FILL; p.color = 0xFFFACC15.toInt(); c.drawCircle((nx * width).toFloat(), (ny * height).toFloat(), 9f * dp, p) }
+                c.drawLine(x0 + fwF / 2f, 0f, x0 + fwF / 2f, fh, p); c.drawLine(x0, fh / 2f, x0 + fwF, fh / 2f, p)
+                c.drawCircle(x0 + fwF / 2f, fh / 2f, fh * 0.12f, p)
+                if (!nx.isNaN()) { val (sx, sy) = map(nx, ny)
+                    p.color = 0xFFFACC15.toInt(); p.strokeWidth = 3f * dp; c.drawCircle(x0 + (sx * fwF).toFloat(), (sy * fh).toFloat(), 12f * dp, p) }
             }
         }
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 16, 24, 0)
             addView(frameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)); addView(tv) }
-        tv.text = "Nukreipkite planšetės NUGARĖLĘ (kamerą) į ${t.name.substringBefore(" (")}. Kadre ji pasirodys kaip ryški geltona dėmė.\n" +
+        tv.text = "Nukreipkite planšetės NUGARĖLĘ (kamerą) į ${t.name.substringBefore(" (")}. Kadre matysite kameros vaizdą; rasta dėmė apibrėžiama geltonu ratu – atveskite ją į centrą.\n" +
             "Saugumas: jutiklis trumpai nukreipti į Saulę – kaip fotografuojant; ilgai nelaikykite. Geriausia ant objektyvo uždėti Saulės stebėjimo plėvelę ar tamsų filtrą. Kamera išsijungs po kalibravimo ar po 40 s."
         val dlg = android.app.AlertDialog.Builder(this).setTitle("Kalibravimas kamera: ${t.name}")
             .setView(android.widget.ScrollView(this).apply { addView(box) }).setNegativeButton("Atšaukti", null).create()
@@ -8113,6 +8131,13 @@ class MainActivity : AppCompatActivity() {
         cam = SunCam(this, { f ->
             ui.post {
                 if (done) return@post
+                @Suppress("DEPRECATION") val dr = windowManager.defaultDisplay.rotation
+                frameView.rot = ((cam.orient - dr * 90) % 360 + 360) % 360
+                if (f.thumb != null) {
+                    val b = frameView.bmp?.takeIf { it.width == f.tw && it.height == f.th } ?: android.graphics.Bitmap.createBitmap(f.tw, f.th, android.graphics.Bitmap.Config.ARGB_8888).also { frameView.bmp = it }
+                    b.setPixels(f.thumb, 0, f.tw, 0, 0, f.tw, f.th)
+                }
+                frameView.aspect = f.aspect; frameView.requestLayout(); frameView.invalidate()
                 if (!f.found || f.vec == null) {
                     frameView.nx = Double.NaN; buf.clear(); frameView.invalidate()
                     tv.text = "Ryškios dėmės kadre nėra (didžiausias ryškumas ${f.peak}/255). Lėtai judinkite planšetę, kol dėmė pasirodys.\n" + cam.info

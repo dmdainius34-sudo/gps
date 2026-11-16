@@ -6740,20 +6740,24 @@ class MainActivity : AppCompatActivity() {
         if (specialsPending) requestSpecials()
     }
     private fun requestAllPermissions(withSpecials: Boolean) {
-        specialsPending = withSpecials
+        specialsPending = withSpecials; specialsStep = 0
         val miss = Perms.missing(this)
         if (miss.isNotEmpty()) allPermLauncher.launch(miss.toTypedArray()) else if (withSpecials) requestSpecials()
     }
     /** Specialūs leidimai atidaromi sistemos languose po vieną; grįžus (onResume) – kitas. */
+    private var specialsStep = 0
     private fun requestSpecials() {
-        if (!Settings.canDrawOverlays(this)) {
-            try { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))); return } catch (_: Exception) {}
+        // kiekvienas langas atidaromas tik kartą (jei vartotojas jame atsisakė – einama toliau, ne ratu)
+        while (specialsStep < 2) {
+            val step = specialsStep++
+            val intent = when {
+                step == 0 && !Settings.canDrawOverlays(this) -> Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                step == 1 && !GapLog.batteryExempt(this) -> Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+                else -> null
+            } ?: continue
+            try { startActivity(intent); return } catch (_: Exception) {}
         }
-        if (!GapLog.batteryExempt(this)) {
-            specialsPending = false
-            try { startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))); return } catch (_: Exception) {}
-        }
-        specialsPending = false
+        specialsPending = false; specialsStep = 0
         Toast.makeText(this, "Visi leidimai suteikti. Vietos perdavimui kitoms programoms dar reikia: Kūrėjo parinktys → Bandomosios vietos programa → GNSS App", Toast.LENGTH_LONG).show()
     }
 

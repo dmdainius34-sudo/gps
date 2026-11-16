@@ -159,3 +159,34 @@ class IonoSf4Test {
         org.junit.Assert.assertFalse(Sp3Solver.ionoFromGpsSf4(words.copyOf().also { it[2] = w(18, 12, 1) }))
     }
 }
+
+class MoonShapeTest {
+    /** Pjautuvas: disko taškai už „šešėlio“ disko, pasislinkusio nuo Saulės; iškiloji pusė – į Saulę (sx, sy). */
+    private fun crescent(w: Int, h: Int, cx: Double, cy: Double, r: Double, shift: Double, sx: Double, sy: Double): IntArray =
+        IntArray(w * h) { i -> val x = i % w + 0.5; val y = i / w + 0.5
+            val inA = (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r
+            val bx = cx - sx * shift; val by = cy - sy * shift
+            val inB = (x - bx) * (x - bx) + (y - by) * (y - by) <= r * r
+            if (inA && !inB) 220 else 60 }
+
+    @org.junit.Test fun crescentTowardSun() {
+        val w = 120; val h = 120; val d = 28.0
+        val img = crescent(w, h, 60.0, 60.0, d / 2, 0.6 * d, 1.0, 0.0)          // Saulė dešinėje
+        val k = 0.2
+        val ok = MoonShape.check({ x, y -> img[y * w + x] }, w, h, 66.0, 60.0, MoonShape.Expect(d, k, 1.0, 0.0))
+        org.junit.Assert.assertTrue(ok.why, ok.ok)
+        val bad = MoonShape.check({ x, y -> img[y * w + x] }, w, h, 66.0, 60.0, MoonShape.Expect(d, k, -1.0, 0.0))
+        org.junit.Assert.assertFalse(bad.why, bad.ok)
+        val tooBig = MoonShape.check({ x, y -> img[y * w + x] }, w, h, 66.0, 60.0, MoonShape.Expect(d / 3, k, 1.0, 0.0))
+        org.junit.Assert.assertFalse(tooBig.why, tooBig.ok)
+    }
+
+    @org.junit.Test fun phase() {
+        org.junit.Assert.assertEquals(0.5, MoonShape.illuminated(Math.PI / 2), 1e-9)
+        org.junit.Assert.assertEquals(1.0, MoonShape.illuminated(Math.PI), 1e-9)
+        // Saulė tiesiai virš Mėnulio (zenito kryptimi) – bazėje „aukštyn“ (1, 0)
+        val m = doubleArrayOf(0.0, 1.0, 0.0); val s = doubleArrayOf(0.0, 0.0, 1.0)
+        val (a, c) = MoonShape.sunInUpBasis(m, s)
+        org.junit.Assert.assertEquals(1.0, a, 1e-9); org.junit.Assert.assertEquals(0.0, c, 1e-9)
+    }
+}

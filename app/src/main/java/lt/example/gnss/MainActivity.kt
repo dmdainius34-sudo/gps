@@ -1257,6 +1257,18 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         return worldAzElOfScreen(sv)
     }
 
+    /** Vietinis „aukštyn“ (zenitas) prietaiso natūralios padėties koordinatėse – iš gravitacijos (kalibravimas jo nekeičia). */
+    fun upInDevice(): DoubleArray {
+        val r = lastRaw
+        val sv = doubleArrayOf(r[6].toDouble(), r[7].toDouble(), r[8].toDouble())
+        return when (wm.defaultDisplay.rotation) {
+            Surface.ROTATION_90 -> doubleArrayOf(-sv[1], sv[0], sv[2])
+            Surface.ROTATION_180 -> doubleArrayOf(-sv[0], -sv[1], sv[2])
+            Surface.ROTATION_270 -> doubleArrayOf(sv[1], -sv[0], sv[2])
+            else -> sv
+        }
+    }
+
     /** Ekrano ašių vektorius (x – dešinėn, y – į ekrano viršų, z – iš ekrano į žiūrovą) -> pasaulio azimutas ir aukštis. */
     fun worldAzElOfScreen(sv: DoubleArray): Pair<Double, Double> {
         val r = lastRaw
@@ -8165,14 +8177,17 @@ class MainActivity : AppCompatActivity() {
                 buf.addLast(Triple(waz, wel, f.vec)); while (buf.size > 12) buf.removeFirst()
                 val spread = if (buf.size < 12) 99.0 else buf.maxOf { kotlin.math.abs(SunCal.wrap(it.first - waz)) * kotlin.math.cos(Math.toRadians(wel)) } .coerceAtLeast(buf.maxOf { kotlin.math.abs(it.second - wel) })
                 val bigBlob = f.areaPct > 15.0
+                val shapeOk = key != "moon" || f.shape?.ok == true
                 tv.text = "Dėmė rasta (ryškumas ${f.peak}, plotas %.1f %%). Aukštis pagal jutiklius %.1f°, skaičiuojamas %.1f°.\n".format(Locale.US, f.areaPct, wel, tel) +
+                    (f.shape?.let { (if (it.ok) "✓ " else "✗ ") + it.why + "\n" } ?: "") +
                     when {
                         kotlin.math.abs(wel - tel) > 8.0 -> "Aukštis neatitinka – tai greičiausiai ne ${t.name.substringBefore(" (")} (atspindys, lempa?)"
+                        !shapeOk -> "Neatpažinta kaip Mėnulis – nekalibruojama"
                         bigBlob -> "Per daug šviesos kadre – uždenkite objektyvą filtru ar atitraukite"
                         spread > 0.5 -> "Laikykite planšetę ramiai…"
                         else -> "Stabilu – kalibruojama…"
                     } + "\n" + cam.info
-                if (kotlin.math.abs(wel - tel) <= 8.0 && !bigBlob && spread <= 0.5 && System.currentTimeMillis() - lastTry > 5_000L) {
+                if (kotlin.math.abs(wel - tel) <= 8.0 && !bigBlob && shapeOk && spread <= 0.5 && System.currentTimeMillis() - lastTry > 5_000L) {
                     lastTry = System.currentTimeMillis()
                     val avg = DoubleArray(3) { k -> buf.map { it.third[k] }.average() }
                     val l = kotlin.math.sqrt(avg[0] * avg[0] + avg[1] * avg[1] + avg[2] * avg[2])
@@ -8185,6 +8200,18 @@ class MainActivity : AppCompatActivity() {
         // kandidatai tik orientyro aukštyje (±6°): aukštis iš gravitacijos patikimas, o azimutą kaip tik kalibruojame
         cam.accept = { vec -> val (_, el) = skyDome.worldAzElOfDevice(vec)
             kotlin.math.abs(el - SunCal.targetAzEl(key, System.currentTimeMillis(), obsLatNow, obsLonNow).second) <= 6.0 }
+        // Mėnulio atpažinimas: laukiamas dydis, fazė ir Saulės kryptis dangaus plokštumoje (bazė „aukštyn“ – iš gravitacijos)
+        if (key == "moon") cam.expect = expect@{ vec ->
+            val now = System.currentTimeMillis()
+            val (maz, mel) = SunCal.targetAzEl("moon", now, obsLatNow, obsLonNow); val (saz, sel) = SunCal.sunAzEl(now, obsLatNow, obsLonNow)
+            fun enu(az: Double, el: Double) = Math.toRadians(az).let { a -> Math.toRadians(el).let { e -> doubleArrayOf(kotlin.math.cos(e) * kotlin.math.sin(a), kotlin.math.cos(e) * kotlin.math.cos(a), kotlin.math.sin(e)) } }
+            val m = enu(maz, mel); val sn = enu(saz, sel)
+            val k = MoonShape.illuminated(kotlin.math.acos(MoonShape.dot(m, sn).coerceIn(-1.0, 1.0)))
+            val (a, c) = MoonShape.sunInUpBasis(m, sn)
+            val upT = MoonShape.tangent(skyDome.upInDevice(), vec) ?: return@expect Triple(MoonShape.DIAM_DEG, k, null)
+            val eT = MoonShape.cross(vec, upT)
+            Triple(MoonShape.DIAM_DEG, k, DoubleArray(3) { a * upT[it] + c * eT[it] })
+        }
         cam.start()
         ui.postDelayed({ if (!done && dlg.isShowing) dlg.dismiss() }, 40_000L)
     }

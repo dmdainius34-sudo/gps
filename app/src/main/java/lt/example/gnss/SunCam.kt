@@ -24,7 +24,7 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                 /** Sumažintas pilkas kadras (neapdoroto jutiklio padėtis) ir jo dydis – kad vartotojas matytų, ką mato kamera. */
                 val thumb: IntArray? = null, val tw: Int = 0, val th: Int = 0,
                 /** Visi kontrastingi kandidatai ir padidinta (64×64) sritis aplink pasirinktą. */
-                val cands: List<Cand> = emptyList(), val crop: IntArray? = null)
+                val cands: List<Cand> = emptyList(), val crop: IntArray? = null, val shape: MoonShape.Result? = null)
     /** Kontrastinga dėmė: padėtis kadre 0..1, kryptis prietaiso kadre, plotas (taškais), kontrasto suma, didžiausias ryškumas. */
     class Cand(val nx: Double, val ny: Double, val vec: DoubleArray, val n: Int, val strength: Double, val peak: Int)
 
@@ -42,6 +42,9 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
     var orient = 90
         private set
     private var lab: IntArray? = null
+    private var bytes: ByteArray? = null
+    /** Laukiamas Mėnulio vaizdas rastai krypčiai (prietaiso kadre): kampinis skersmuo (°), apšviesta dalis, Saulės kryptis dangaus plokštumoje (prietaiso vektorius). */
+    @Volatile var expect: ((DoubleArray) -> Triple<Double, Double, DoubleArray?>?)? = null
     private var queue: IntArray? = null
 
     @SuppressLint("MissingPermission")
@@ -62,7 +65,7 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
             val aspect = act.width().toDouble() / act.height()
             // didesnė raiška (~2000 px pločio): Mėnulis kadre ~15 taškų, kampas taškui ~0,03°; jei tokios nėra – iki 1100 px
             val all = map.getOutputSizes(ImageFormat.YUV_420_888)
-            val sizes = all.filter { it.width in 1400..2200 }.ifEmpty { all.filter { it.width in 400..1100 } }
+            val sizes = all.filter { it.width in 1400..4100 }.ifEmpty { all.filter { it.width in 400..1100 } }
             val size = sizes.filter { abs(it.width.toDouble() / it.height - aspect) < 0.02 }.maxByOrNull { it.width }
                 ?: sizes.maxByOrNull { it.width } ?: return onError("Nėra tinkamo kadro dydžio")
             val fpx = focal.toDouble() * size.width / effW
@@ -83,7 +86,7 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                 val img = try { r.acquireLatestImage() } catch (_: Exception) { null } ?: return@setOnImageAvailableListener
                 try {
                     val pl = img.planes[0]; val w = img.width; val hh = img.height; val rs = pl.rowStride
-                    val buf = pl.buffer; val arr = ByteArray(buf.remaining()); buf.get(arr)
+                    val buf = pl.buffer; val arr = bytes?.takeIf { it.size == buf.remaining() } ?: ByteArray(buf.remaining()).also { bytes = it }; buf.get(arr)
                     var max = 0
                     for (y in 0 until hh step 2) { val o = y * rs; for (x in 0 until w step 2) { val v = arr[o + x].toInt() and 0xFF; if (v > max) max = v } }
                     // sumažintas kadras rodymui (~160 px pločio)
@@ -150,7 +153,22 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                     }
                     // pasirinkimas: tinkamo aukščio (accept) ir stipriausio kontrasto dėmė
                     val ok = cands.filter { c -> accept?.invoke(c.vec) ?: true }.sortedByDescending { it.strength }
-                    val best = ok.firstOrNull()
+                    // Mėnulio atpažinimas: dydis, fazė ir pjautuvo kryptis į Saulę (tikrinami iki 4 stipriausių kandidatų)
+                    fun shapeOf(c: Cand): MoonShape.Result? = expect?.invoke(c.vec)?.let { (dDeg, k, sunDev) ->
+                        val diam = 2 * fpx * kotlin.math.tan(Math.toRadians(dDeg / 2))
+                        // Saulės kryptis kadre: taško (b + ε·s) vaizdas minus b vaizdas
+                        var sdx = 0.0; var sdy = 0.0
+                        if (sunDev != null) {
+                            fun pix(v: DoubleArray): Pair<Double, Double>? { val vz = -v[2]; if (vz <= 1e-6) return null
+                                return (v[0] * right[0] + v[1] * right[1] + v[2] * right[2]) / vz * fpx to (v[0] * down[0] + v[1] * down[1] + v[2] * down[2]) / vz * fpx }
+                            val p0 = pix(c.vec); val p1 = pix(DoubleArray(3) { c.vec[it] + 0.01 * sunDev[it] })
+                            if (p0 != null && p1 != null) { val dx = p1.first - p0.first; val dy = p1.second - p0.second; val l = kotlin.math.hypot(dx, dy); if (l > 1e-9) { sdx = dx / l; sdy = dy / l } }
+                        }
+                        MoonShape.check({ x, y -> arr[y * rs + x].toInt() and 0xFF }, w, hh, c.nx * w, c.ny * hh, MoonShape.Expect(diam, k, sdx, sdy))
+                    }
+                    var best = ok.firstOrNull()
+                    var shape = best?.let { shapeOf(it) }
+                    if (shape != null && !shape.ok) for (c in ok.drop(1).take(3)) { val r = shapeOf(c); if (r?.ok == true) { best = c; shape = r; break } }
                     // padidinta sritis aplink pasirinktą dėmę (64×64 taškai) – kad būtų matyti, kas rasta
                     var crop: IntArray? = null
                     if (best != null) {
@@ -159,7 +177,7 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                             val g = arr[y * rs + x].toInt() and 0xFF; (0xFF shl 24) or (g shl 16) or (g shl 8) or g }
                     }
                     val f = if (best == null) Frame(false, 0.0, 0.0, null, max, 0.0, asp, thumb, tw, tht, cands)
-                        else Frame(true, best.nx, best.ny, best.vec, best.peak, 100.0 * best.n / (w * hh), asp, thumb, tw, tht, cands, crop)
+                        else Frame(true, best.nx, best.ny, best.vec, best.peak, 100.0 * best.n / (w * hh), asp, thumb, tw, tht, cands, crop, shape)
                     if (!closed) onFrame(f)
                 } finally { img.close() }
             }, h)

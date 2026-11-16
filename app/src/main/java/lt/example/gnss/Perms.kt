@@ -9,6 +9,7 @@ object Perms {
     fun runtime(): List<String> = buildList {
         add("android.permission.ACCESS_FINE_LOCATION")
         add("android.permission.ACCESS_COARSE_LOCATION")
+        add("android.permission.CAMERA")
         if (Build.VERSION.SDK_INT >= 29) add("android.permission.ACTIVITY_RECOGNITION")
         if (Build.VERSION.SDK_INT >= 33) add("android.permission.POST_NOTIFICATIONS")
     }

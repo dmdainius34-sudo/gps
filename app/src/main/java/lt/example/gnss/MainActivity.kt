@@ -1236,13 +1236,29 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun deviceAim(): Triple<Double, Double, String> = SunCal.deviceAzEl(lastRaw, backOnly = true)
 
     /** Kalibravimas pagal orientyrą (Saulė, Mėnulis, Polaris, Oriono žvaigždės). */
-    fun calibrateTarget(key: String, lat: Double, lon: Double): SunCalResult? {
+    fun calibrateTarget(key: String, lat: Double, lon: Double, camVec: DoubleArray? = null): SunCalResult? {
         val now = System.currentTimeMillis()
         val (az, alt) = SunCal.targetAzEl(key, now, lat, lon)
         if (alt < SunCal.MIN_EL || alt > SunCal.MAX_EL) return null
-        val dev = SunCal.deviceAzEl(lastRaw, backOnly = true)
-        val r = calibrateTo(az, alt, now, SunCal.target(key).name)
+        // camVec – kameros išmatuota orientyro kryptis prietaiso koordinatėse; kitaip – nugarėlės ašis (−Z)
+        val dev = if (camVec != null) worldAzElOfDevice(camVec).let { Triple(it.first, it.second, "kamera") } else SunCal.deviceAzEl(lastRaw, backOnly = true)
+        val r = calibrateTo(az, alt, now, SunCal.target(key).name + if (camVec != null) " (kamera)" else "", dev.first)
         return SunCalResult(az, alt, r.third, dev.first, dev.second)
+    }
+
+    /** Prietaiso (natūralios padėties) vektorius -> ekrano pasukimas -> pasaulio azimutas ir aukštis pagal dabartinę orientaciją. */
+    fun worldAzElOfDevice(v: DoubleArray): Pair<Double, Double> {
+        val sv = when (wm.defaultDisplay.rotation) {
+            Surface.ROTATION_90 -> doubleArrayOf(v[1], -v[0], v[2])
+            Surface.ROTATION_180 -> doubleArrayOf(-v[0], -v[1], v[2])
+            Surface.ROTATION_270 -> doubleArrayOf(-v[1], v[0], v[2])
+            else -> v
+        }
+        val r = lastRaw
+        val e = r[0] * sv[0] + r[1] * sv[1] + r[2] * sv[2]; val n = r[3] * sv[0] + r[4] * sv[1] + r[5] * sv[2]; val u = r[6] * sv[0] + r[7] * sv[1] + r[8] * sv[2]
+        val az = (Math.toDegrees(kotlin.math.atan2(e, n)) + 360.0) % 360.0
+        val el = Math.toDegrees(kotlin.math.asin((u / kotlin.math.sqrt(e * e + n * n + u * u)).coerceIn(-1.0, 1.0)))
+        return az to el
     }
 
     /** Kalibravimas pagal Šiaurinę žvaigždę (naktį planšetės nugarėlė nukreipiama į Polaris). */
@@ -1254,8 +1270,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         return calibrateTo(az, alt, now, "polaris")
     }
 
-    private fun calibrateTo(az: Double, alt: Double, now: Long, src: String): Triple<Double, Double, Double> {
-        val heading = SunCal.deviceAzEl(lastRaw, backOnly = true).first   // nugarėlės (−Z) projekcija į horizontalią plokštumą
+    private fun calibrateTo(az: Double, alt: Double, now: Long, src: String, headingOverride: Double? = null): Triple<Double, Double, Double> {
+        val heading = headingOverride ?: SunCal.deviceAzEl(lastRaw, backOnly = true).first   // nugarėlės (−Z) projekcija į horizontalią plokštumą
         var d = heading - az
         while (d > 180) d -= 360.0
         while (d <= -180) d += 360.0
@@ -7787,7 +7803,8 @@ class MainActivity : AppCompatActivity() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 16, 24, 0)
             addView(aim, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)); addView(tv) }
         val dlg = android.app.AlertDialog.Builder(this).setTitle("Kalibravimas: ${t.name}").setView(android.widget.ScrollView(this).apply { addView(box) })
-            .setPositiveButton("Kalibruoti", null).setNegativeButton("Atšaukti", null).create()
+            .setPositiveButton("Kalibruoti", null).setNegativeButton("Atšaukti", null)
+            .also { if (key == "sun" || key == "moon") it.setNeutralButton("Per kamerą", null) }.create()
         skyDome.sensorsOn()
         AimDiag.start(t.name)
         val ch = android.view.Choreographer.getInstance()
@@ -7826,6 +7843,7 @@ class MainActivity : AppCompatActivity() {
         } }
         dlg.setOnShowListener {
             dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener { if (calibrateWith(key)) dlg.dismiss() }
+            dlg.getButton(android.app.AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener { dlg.dismiss(); showCameraAim(key) }
             ch.postFrameCallback(tick)
         }
         dlg.setOnDismissListener { alive = false; ch.removeFrameCallback(tick)
@@ -7833,8 +7851,79 @@ class MainActivity : AppCompatActivity() {
         dlg.show()
     }
 
+    /**
+     * Taikymas galine kamera: ryškiausia dėmė kadre (Saulė/Mėnulis) duoda kryptį be rankinio taikymo. Kai ji ~1 s stabili
+     * (pasaulio kryptis kinta < 0,5°) ir aukštis atitinka skaičiuojamą (±8°, kitaip – ne tas objektas) – automatiškai kalibruojama.
+     */
+    private fun showCameraAim(key: String) {
+        if (!::skyDome.isInitialized) return
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "Reikia kameros leidimo – suteikite ir bandykite dar kartą", Toast.LENGTH_LONG).show()
+            requestAllPermissions(withSpecials = false); return
+        }
+        val t = SunCal.target(key)
+        val dp = resources.displayMetrics.density
+        val tv = TextView(this).apply { setPadding(32, 8, 32, 8); textSize = 14f }
+        val frameView = object : View(this) {
+            var nx = Double.NaN; var ny = Double.NaN; var aspect = 4.0 / 3.0
+            val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+            override fun onMeasure(w: Int, h: Int) { val s = MeasureSpec.getSize(w); setMeasuredDimension(s, (s / aspect).toInt().coerceAtMost((260 * dp).toInt())) }
+            override fun onDraw(c: android.graphics.Canvas) {
+                p.style = android.graphics.Paint.Style.FILL; p.color = 0xFF0B1020.toInt(); c.drawRect(0f, 0f, width.toFloat(), height.toFloat(), p)
+                p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = 2f; p.color = 0x88FFFFFF.toInt()
+                c.drawLine(width / 2f, 0f, width / 2f, height.toFloat(), p); c.drawLine(0f, height / 2f, width.toFloat(), height / 2f, p)
+                c.drawCircle(width / 2f, height / 2f, height * 0.12f, p)
+                if (!nx.isNaN()) { p.style = android.graphics.Paint.Style.FILL; p.color = 0xFFFACC15.toInt(); c.drawCircle((nx * width).toFloat(), (ny * height).toFloat(), 9f * dp, p) }
+            }
+        }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 16, 24, 0)
+            addView(frameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)); addView(tv) }
+        tv.text = "Nukreipkite planšetės NUGARĖLĘ (kamerą) į ${t.name.substringBefore(" (")}. Kadre ji pasirodys kaip ryški geltona dėmė.\n" +
+            "Saugumas: jutiklis trumpai nukreipti į Saulę – kaip fotografuojant; ilgai nelaikykite. Geriausia ant objektyvo uždėti Saulės stebėjimo plėvelę ar tamsų filtrą. Kamera išsijungs po kalibravimo ar po 40 s."
+        val dlg = android.app.AlertDialog.Builder(this).setTitle("Kalibravimas kamera: ${t.name}")
+            .setView(android.widget.ScrollView(this).apply { addView(box) }).setNegativeButton("Atšaukti", null).create()
+        skyDome.sensorsOn()
+        val ui = Handler(Looper.getMainLooper())
+        val buf = ArrayDeque<Triple<Double, Double, DoubleArray>>()
+        var lastTry = 0L; var done = false
+        lateinit var cam: SunCam
+        cam = SunCam(this, { f ->
+            ui.post {
+                if (done) return@post
+                if (!f.found || f.vec == null) {
+                    frameView.nx = Double.NaN; buf.clear(); frameView.invalidate()
+                    tv.text = "Ryškios dėmės kadre nėra (didžiausias ryškumas ${f.peak}/255). Lėtai judinkite planšetę, kol dėmė pasirodys.\n" + cam.info
+                    return@post
+                }
+                frameView.nx = f.nx; frameView.ny = f.ny; frameView.aspect = f.aspect; frameView.requestLayout(); frameView.invalidate()
+                val (waz, wel) = skyDome.worldAzElOfDevice(f.vec)
+                val (taz, tel) = SunCal.targetAzEl(key, System.currentTimeMillis(), obsLatNow, obsLonNow)
+                buf.addLast(Triple(waz, wel, f.vec)); while (buf.size > 12) buf.removeFirst()
+                val spread = if (buf.size < 12) 99.0 else buf.maxOf { kotlin.math.abs(SunCal.wrap(it.first - waz)) * kotlin.math.cos(Math.toRadians(wel)) } .coerceAtLeast(buf.maxOf { kotlin.math.abs(it.second - wel) })
+                val bigBlob = f.areaPct > 15.0
+                tv.text = "Dėmė rasta (ryškumas ${f.peak}, plotas %.1f %%). Aukštis pagal jutiklius %.1f°, skaičiuojamas %.1f°.\n".format(Locale.US, f.areaPct, wel, tel) +
+                    when {
+                        kotlin.math.abs(wel - tel) > 8.0 -> "Aukštis neatitinka – tai greičiausiai ne ${t.name.substringBefore(" (")} (atspindys, lempa?)"
+                        bigBlob -> "Per daug šviesos kadre – uždenkite objektyvą filtru ar atitraukite"
+                        spread > 0.5 -> "Laikykite planšetę ramiai…"
+                        else -> "Stabilu – kalibruojama…"
+                    } + "\n" + cam.info
+                if (kotlin.math.abs(wel - tel) <= 8.0 && !bigBlob && spread <= 0.5 && System.currentTimeMillis() - lastTry > 5_000L) {
+                    lastTry = System.currentTimeMillis()
+                    val avg = DoubleArray(3) { k -> buf.map { it.third[k] }.average() }
+                    val l = kotlin.math.sqrt(avg[0] * avg[0] + avg[1] * avg[1] + avg[2] * avg[2])
+                    if (calibrateWith(key, DoubleArray(3) { avg[it] / l })) { done = true; cam.stop(); dlg.dismiss() }
+                }
+            }
+        }, { msg -> ui.post { tv.text = "Kamera: $msg"; Toast.makeText(this, msg, Toast.LENGTH_LONG).show() } })
+        dlg.setOnDismissListener { done = true; cam.stop() }
+        dlg.show()
+        cam.start()
+        ui.postDelayed({ if (!done && dlg.isShowing) dlg.dismiss() }, 40_000L)
+    }
+
     /** Kalibravimas pagal orientyrą su apsaugomis ir įrašu žurnale. Grąžina true, jei pritaikyta. */
-    private fun calibrateWith(key: String): Boolean {
+    private fun calibrateWith(key: String, camVec: DoubleArray? = null): Boolean {
         val t = SunCal.target(key)
         val fixAge = System.currentTimeMillis() - lastFixWallMs
         if ((obsLatNow == 0.0 && obsLonNow == 0.0) || lastFixWallMs == 0L || fixAge > 30_000L || lastFixAcc.isNaN() || lastFixAcc > 50.0) {
@@ -7847,7 +7936,7 @@ class MainActivity : AppCompatActivity() {
         if (!skyDome.aimReady()) { Toast.makeText(this, "Kalibruoti negalima: krypties jutikliai dar neparuošti – palaukite sekundę", Toast.LENGTH_LONG).show(); return false }
         if (kotlin.math.abs(skyDome.deviceAim().second) > 75.0) { Toast.makeText(this, "Kalibruoti negalima: prietaisas guli – nugarėlė turi žiūrėti į orientyrą (ekranas į save)", Toast.LENGTH_LONG).show(); return false }
         val magAz = devAxisZ?.first ?: Double.NaN; val decl = skyDome.declinationDeg()
-        val r = skyDome.calibrateTarget(key, obsLatNow, obsLonNow) ?: return false
+        val r = skyDome.calibrateTarget(key, obsLatNow, obsLonNow, camVec) ?: return false
         if (key == "sun") {
             val dAz = SunCal.wrap(r.devAz - r.sunAz); val dEl = r.devEl - r.sunEl
             skyDome.setSunShot(dAz, dEl)

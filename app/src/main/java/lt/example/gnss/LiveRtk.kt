@@ -39,13 +39,9 @@ object LiveRtk {
         private set
     val fix get() = engine.lastFix
     private var pushed: PositionSolver.Solution? = null
-    // Sklandus perėjimas: po FIX praradimo dar iki FLOAT_HOLD_MS perduodamas FLOAT, jei jis arti paskutinio FIX
+    // Paskutinis patvirtintas FIX (būsenai)
     private var lastFixSol: PositionSolver.Solution? = null
     private var lastFixMs = 0L
-    @Volatile private var bridgeMs = 0L
-    private const val FLOAT_HOLD_MS = 120_000L
-    private const val FLOAT_NEAR_M = 0.5
-    @Volatile var bridgeN = 0
     private var held = 0
     @Volatile var pushedN = 0
         private set
@@ -106,6 +102,62 @@ object LiveRtk {
         process()
     }
 
+    // ---- Viena išvestis kitoms programoms ----
+    // Pagrindas – programos padėtis be bazės (išlyginta); patvirtintas RTK FIX ją patikslina palaipsniui (τ 2 s), FIX dingus padėtis
+    // grįžta palaipsniui (τ 30 s, iki 2 min.); tarp epochų ir trumpai nutrūkus skaičiavimui (iki 30 s) – tęsiama pagal Doplerio greitį.
+    @Volatile private var fixOut: PositionSolver.Solution? = null
+    @Volatile private var fixOutMs = 0L
+    private var oLat = Double.NaN; private var oLon = Double.NaN; private var oH = Double.NaN
+    private var oMs = 0L; private var oTargetMs = 0L; private var oFixMs = 0L; private var oFixAcc = 0.0; private var oAcc = 99.0
+    @Volatile var outSource = ""
+        private set
+    private const val TAU_FIX = 2.0
+    private const val TAU_RETURN = 30.0
+    private const val RETURN_MS = 120_000L
+    private const val COAST_MS = 30_000L
+
+    private fun outTick(now: Long) {
+        if (!MockLoc.armed) { oLat = Double.NaN; return }
+        val dt = if (oMs == 0L) 1.0 else ((now - oMs) / 1000.0).coerceIn(0.0, 5.0)
+        oMs = now
+        // prognozė pagal Doplerio greitį (stovint – be dreifo)
+        val v = velocity()
+        if (!oLat.isNaN() && v != null && (v.speedH >= 0.3 || moving)) {
+            val c = Math.toRadians(v.courseDeg)
+            oLat += v.speedH * kotlin.math.cos(c) * dt / 111_320.0
+            oLon += v.speedH * kotlin.math.sin(c) * dt / (111_320.0 * kotlin.math.cos(Math.toRadians(oLat)))
+            oH += v.vUp * dt
+        }
+        val fix = fixOut?.takeIf { now - fixOutMs < 2_500L }
+        val spp = sppLast?.takeIf { now - sppMs < 2_500L }
+        val target: PositionSolver.Solution; val tau: Double; val tAcc: Double; val src: String
+        when {
+            fix != null -> { target = fix; tau = TAU_FIX; tAcc = fix.hacc; oFixMs = now; oFixAcc = fix.hacc; src = "RTK FIX" }
+            spp != null && now - oFixMs < RETURN_MS -> {
+                target = spp; tau = TAU_RETURN
+                tAcc = minOf(spp.hacc, oFixAcc + 0.1 * (now - oFixMs) / 1000.0); src = "po RTK FIX (grįžtama palaipsniui)"
+            }
+            spp != null -> { target = spp; tau = 3.0; tAcc = spp.hacc; src = "programa (SP3)" }
+            else -> {
+                // nėra naujo sprendinio: tęsiama pagal greitį iki COAST_MS, toliau – vieta grąžinama lustui (sargas)
+                if (oLat.isNaN() || now - oTargetMs > COAST_MS) return
+                oAcc += 0.5 * dt
+                MockLoc.push(PositionSolver.Solution(oLat, oLon, oH, 0, oAcc, DoubleArray(3)), "tęsiama pagal greitį")
+                outSource = "tęsiama pagal greitį"; return
+            }
+        }
+        oTargetMs = now
+        val d = if (oLat.isNaN()) Double.MAX_VALUE else PositionSolver.horizDist(oLat, oLon, target.lat, target.lon)
+        if (oLat.isNaN() || d > 100.0) { oLat = target.lat; oLon = target.lon; oH = target.h }     // pradžia arba didelis tikras pokytis
+        else {
+            val k = (dt / tau).coerceIn(0.0, 1.0)
+            oLat += k * (target.lat - oLat); oLon += k * (target.lon - oLon); oH += k * (target.h - oH)
+        }
+        oAcc = maxOf(tAcc, PositionSolver.horizDist(oLat, oLon, target.lat, target.lon), 0.05)
+        outSource = src
+        MockLoc.push(PositionSolver.Solution(oLat, oLon, oH, target.sats, oAcc, target.ecef), src)
+    }
+
     /** Prietaiso matavimai (veikla ir paslauga – pasikartojimai praleidžiami). */
     @Synchronized
     fun onMeasurements(event: GnssMeasurementsEvent) {
@@ -116,10 +168,12 @@ object LiveRtk {
         val eps = ArrayList<Sp3V5.Ep>()
         Sp3V5.readRaw(java.io.BufferedReader(java.io.StringReader(text)), glo = true) { eps.add(it) }
         eps.lastOrNull()?.let { spp(it) }
-        if (!enabled) return
-        rover.addAll(eps)
-        while (rover.size > 20) rover.removeFirst()
-        process()
+        if (enabled) {
+            rover.addAll(eps)
+            while (rover.size > 20) rover.removeFirst()
+            process()
+        }
+        outTick(System.currentTimeMillis())
     }
 
     /** Programos sprendinys be bazės (SP3 orbitos, slenkstis CnoMask) – perduodamas kitoms programoms, kai nėra gero RTK. */
@@ -155,8 +209,6 @@ object LiveRtk {
 
     private fun spp(ep: Sp3V5.Ep) {
         val now = System.currentTimeMillis()
-        // perduodamas RTK FIX arba FLOAT tiltas – programos sprendinys vis tiek skaičiuojamas (greičiui ir patikrai), bet neperduodamas
-        val rtkPushing = enabled && MockLoc.armed && ((now - lastMs < 3_000 && engine.lastFix && (last?.hacc ?: 99.0) < 0.5) || now - bridgeMs < 3_000)
         val r = Sp3Live.reader ?: return
         if (!Sp3Solver.inRange(r, ep.t)) return
         val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min }
@@ -174,7 +226,6 @@ object LiveRtk {
         val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
         sppLast = sol; sppMs = now
         try { DopplerVel.solve(f.sats, f.x)?.let { velLast = it; velMs = now } } catch (_: Exception) {}
-        if (MockLoc.armed && !rtkPushing) MockLoc.push(sol, "programa (SP3)")
     }
 
     private fun process() {
@@ -203,21 +254,9 @@ object LiveRtk {
                 (prev == null || PositionSolver.horizDist(prev.lat, prev.lon, sol.lat, sol.lon) < maxOf(1.0, 4 * sol.hacc) || held >= 10)
             val nowMs = System.currentTimeMillis()
             if (engine.lastFix && sol.hacc < 0.5) FixPoints.onFix(sol, nowMs)
-            if (ok) { MockLoc.push(sol); pushed = sol; held = 0; pushedN++; lastFixSol = sol; lastFixMs = nowMs }
-            else {
-                held++; heldN++
-                // FIX prarastas: FLOAT perduodamas, kol jis neatitolsta nuo paskutinio FIX (tikslumas – ne geresnis nei atstumas iki jo)
-                val lf = lastFixSol
-                if (!engine.lastFix && lf != null && nowMs - lastFixMs < FLOAT_HOLD_MS && sol.sats >= 4) {
-                    val d = PositionSolver.horizDist(lf.lat, lf.lon, sol.lat, sol.lon)
-                    if (d < FLOAT_NEAR_M && sol.hacc < 1.0) {
-                        val acc = maxOf(sol.hacc, d, 0.1)
-                        MockLoc.push(PositionSolver.Solution(sol.lat, sol.lon, sol.h, sol.sats, acc, sol.ecef), "RTK FLOAT (po FIX)")
-                        bridgeMs = nowMs; bridgeN++
-                    } else lastFixSol = null                         // nutolo – toliau programos sprendinys (~2 m)
-                }
-            }
-            // be gero RTK perduodamas programos sprendinys (spp); jei ir jo nėra – sargas grąžina lusto GPS
+            if (ok) { pushed = sol; held = 0; pushedN++; lastFixSol = sol; lastFixMs = nowMs; fixOut = sol; fixOutMs = nowMs }
+            else { held++; heldN++ }
+            // kitoms programoms perduodama tik per bendrą išvestį (outTick)
         }
     }
 

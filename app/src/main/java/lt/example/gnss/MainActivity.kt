@@ -1941,7 +1941,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val t1 = DoubleArray(3) { -sin(az) * fN[it] + cos(az) * e[it] }
         val t2 = DoubleArray(3) { -sin(el) * (cos(az) * fN[it] + sin(az) * e[it]) + cos(el) * fU[it] }
         val r = SUN_DIST * 0.8; val k = 0.14
-        fun p(dir: DoubleArray, a: Double = 0.0, b: Double = 0.0) = FloatArray(3) { (fP[it] + dir[it] * r + t1[it] * a + t2[it] * b).toFloat() }
+        fun p(dir: DoubleArray, a: Double = 0.0, b: Double = 0.0) = FloatArray(3) { (skyO[it] + dir[it] * r + t1[it] * a + t2[it] * b).toFloat() }
         val c = p(v); val sc = p(d)
         val seg = floatArrayOf(*p(v, -k, 0.0), *p(v, k, 0.0), *p(v, 0.0, -k), *p(v, 0.0, k), *c, *sc)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
@@ -2274,6 +2274,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             camPos = floatArrayOf(eyeI[0] * zoom, eyeI[1] * zoom, eyeI[2] * zoom)
         }
         updateCamBasis()
+        updateSkyOrigin()
         // Kameros kryptis pasaulio koordinatėse (planšetės +Z)
         val eye = floatArrayOf(
             (fE[0] * eyeI[0] + fE[1] * eyeI[1] + fE[2] * eyeI[2]).toFloat(),
@@ -2325,7 +2326,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         run {
             val sd = sunDir()
             val sp = floatArrayOf(
-                (fP[0] + sd[0] * SUN_DIST).toFloat(), (fP[1] + sd[1] * SUN_DIST).toFloat(), (fP[2] + sd[2] * SUN_DIST).toFloat())
+                (skyO[0] + sd[0] * SUN_DIST).toFloat(), (skyO[1] + sd[1] * SUN_DIST).toFloat(), (skyO[2] + sd[2] * SUN_DIST).toFloat())
             // Saulė (spindulys 2× Žemės) nebeslepiama visa – Žemė ją užstoja tik iš dalies (gylio testas)
             if (sunTex != 0) {
                 val pulse = 1f + 0.04f * kotlin.math.sin(t * 1.5f)
@@ -2619,7 +2620,21 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Taškas I erdvėje: fP + dir × r. */
     private fun skyPt(d: FloatArray, r: Double) = floatArrayOf(
-        (fP[0] + d[0] * r).toFloat(), (fP[1] + d[1] * r).toFloat(), (fP[2] + d[2] * r).toFloat())
+        (skyO[0] + d[0] * r).toFloat(), (skyO[1] + d[1] * r).toFloat(), (skyO[2] + d[2] * r).toFloat())
+
+    /**
+     * „Begalybės“ objektų (Saulė, kalibravimo kryželis, Saulės orbita, dangaus apskritimai) atskaitos taškas.
+     * Prie Žemės – pati kamera: tada jų kryptys tokios pat kaip tikrame danguje, kryželis lieka ant Saulės,
+     * o Saulės orbita (ekliptika) yra plokštumoje per akį – ekrane tiesi ir sukant vaizdą nesilanksto.
+     * Atitolinus iki Saulės sistemos – pamažu Žemės centras (tikra 3D geometrija).
+     */
+    private var skyO = DoubleArray(3)
+    private fun updateSkyOrigin() {
+        if (focus != 0) { for (i in 0..2) skyO[i] = fP[i].toDouble(); return }
+        val z0 = EARTH_R + 2.0; val z1 = (EARTH_R + SOLAR_ZOOM).toDouble()
+        val x = ((zoom - z0) / (z1 - z0)).coerceIn(0.0, 1.0); val s = x * x * (3 - 2 * x)
+        for (i in 0..2) skyO[i] = camPos[i] * (1 - s) + fP[i] * s
+    }
 
     /** Ekliptinė platuma (laipsniais) krypčiai I erdvėje; ekliptikos polius = eclToEq(0, π/2). */
     private fun eclLatDeg(d: DoubleArray): Double {
@@ -2745,7 +2760,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val sDist = sunDistScene()
         val a = sDist / rNowUnit
         val sd = sunDir()
-        val sx = fP[0] + sd[0] * sDist; val sy = fP[1] + sd[1] * sDist; val sz = fP[2] + sd[2] * sDist
+        val sx = skyO[0] + sd[0] * sDist; val sy = skyO[1] + sd[1] * sDist; val sz = skyO[2] + sd[2] * sDist
         // Anomalijos: tolygiai 720 + logaritmiškai tankėjančios link Žemės (ji guli ant orbitos, kamera šalia –
         // be tankinimo artimiausia styga eina pro Žemę tiesia linija ir orbitoje matosi „kampas“)
         val nu0 = lEarth - peri

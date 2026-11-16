@@ -126,6 +126,12 @@ object LiveRtk {
     @Volatile var sppLast: PositionSolver.Solution? = null
         private set
     @Volatile private var sppMs = 0L
+    /** Greitis ir judėjimo kryptis iš Doplerio (programos sprendinys). */
+    @Volatile var velLast: DopplerVel.Vel? = null
+        private set
+    @Volatile var velMs = 0L
+        private set
+    fun velocity(): DopplerVel.Vel? = velLast?.takeIf { System.currentTimeMillis() - velMs < 3_000L }
 
     /** FIX turi sutapti su programos padėtimi be bazės: horizontaliai ≤ 10 m, aukštis ≤ 15 m (kai ji šviežia). */
     private fun sppCheck(x: DoubleArray): String? {
@@ -149,8 +155,8 @@ object LiveRtk {
 
     private fun spp(ep: Sp3V5.Ep) {
         val now = System.currentTimeMillis()
-        if (enabled && MockLoc.armed && now - lastMs < 3_000 && engine.lastFix && (last?.hacc ?: 99.0) < 0.5) return      // perduodamas RTK FIX
-        if (enabled && MockLoc.armed && now - bridgeMs < 3_000) return                                                   // perduodamas RTK FLOAT tiltas
+        // perduodamas RTK FIX arba FLOAT tiltas – programos sprendinys vis tiek skaičiuojamas (greičiui ir patikrai), bet neperduodamas
+        val rtkPushing = enabled && MockLoc.armed && ((now - lastMs < 3_000 && engine.lastFix && (last?.hacc ?: 99.0) < 0.5) || now - bridgeMs < 3_000)
         val r = Sp3Live.reader ?: return
         if (!Sp3Solver.inRange(r, ep.t)) return
         val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min }
@@ -167,7 +173,8 @@ object LiveRtk {
         val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, moving)
         val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
         sppLast = sol; sppMs = now
-        if (MockLoc.armed) MockLoc.push(sol, "programa (SP3)")
+        try { DopplerVel.solve(f.sats, f.x)?.let { velLast = it; velMs = now } } catch (_: Exception) {}
+        if (MockLoc.armed && !rtkPushing) MockLoc.push(sol, "programa (SP3)")
     }
 
     private fun process() {
@@ -334,7 +341,21 @@ object MockLoc {
                 accuracy = s.hacc.toFloat().coerceAtLeast(0.05f)
                 time = System.currentTimeMillis(); elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                 if (android.os.Build.VERSION.SDK_INT >= 26) verticalAccuracyMeters = (s.hacc * 2).toFloat().coerceAtLeast(0.1f)
-                extras = android.os.Bundle().apply { putInt("satellites", s.sats); putString("source", src) }
+                // greitis ir kryptis: judant (≥ 1 m/s) – judėjimo kryptis iš Doplerio; stovint – kalibruota planšetės kryptis (ne magnetinė)
+                val v = LiveRtk.velocity()
+                val hd = LiveRtk.heading?.takeIf { HeadingTrust.trusted }
+                if (v != null) { speed = v.speedH.toFloat(); if (android.os.Build.VERSION.SDK_INT >= 26) speedAccuracyMetersPerSecond = (2 * v.sigma).toFloat().coerceIn(0.05f, 5f) }
+                val moving = v != null && v.speedH >= 1.0
+                val b = if (moving) v!!.courseDeg else hd
+                if (b != null) {
+                    bearing = b.toFloat()
+                    if (android.os.Build.VERSION.SDK_INT >= 26) bearingAccuracyDegrees = if (moving) Math.toDegrees(2 * v!!.sigma / v.speedH).toFloat().coerceIn(1f, 45f) else 3f
+                }
+                extras = android.os.Bundle().apply {
+                    putInt("satellites", s.sats); putString("source", src)
+                    hd?.let { putDouble("heading", it) }
+                    putString("bearing_source", if (moving) "doppler" else if (hd != null) "kalibruota planšetės kryptis" else "nėra")
+                }
             }
             m.setTestProviderLocation(LocationManager.GPS_PROVIDER, l)
             lastPushMs = System.currentTimeMillis(); status = "bandomoji vieta: perduodama – $src, ±%.1f m".format(Locale.US, s.hacc)

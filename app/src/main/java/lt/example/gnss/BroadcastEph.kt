@@ -112,6 +112,7 @@ object BroadcastEph {
         }
         val s = sf ?: run { rejected++; return }
         subframes++
+        if (s.id == 4) Sp3Solver.ionoFromGpsSf4(s.words)      // 18 puslapis – šiandienos Klobuchar koeficientai
         if (s.id > 3) return
         keep('G', svid, s.id, tMs, data)
         val slot = slots.getOrPut(svid) { arrayOfNulls(3) }

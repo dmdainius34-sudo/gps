@@ -161,7 +161,7 @@ object Brdc {
 
     // ---------------- Atsisiuntimas ir būsena ----------------
     @Volatile var set: Set? = null
-        private set(v) { field = v; Sp3Solver.setIono(v?.gpsIonA, v?.gpsIonB) }   // šiandienos Klobuchar koeficientai iš BRDC antraštės
+        private set(v) { field = v; if (v?.gpsIonA != null && v.gpsIonB != null) Sp3Solver.setIono(v.gpsIonA, v.gpsIonB, "BRDC") }   // šiandienos Klobuchar koeficientai iš BRDC antraštės (jei yra)
     @Volatile var source = ""
         private set
     @Volatile var status = "neatsisiųsta"

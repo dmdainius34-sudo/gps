@@ -147,3 +147,15 @@ class DualFreqTest {
         org.junit.Assert.assertNotEquals(d0, d1, 1e-6)
     }
 }
+
+class IonoSf4Test {
+    @org.junit.Test fun page18() {
+        fun w(b1: Int, b2: Int, b3: Int) = ((b1 and 0xFF) shl 16) or ((b2 and 0xFF) shl 8) or (b3 and 0xFF)
+        // α0 = 12·2^-30, α1 = 1·2^-27, α2 = −4·2^-24, α3 = −1·2^-24, β0 = 50·2^11, β1 = 4·2^14, β2 = −4·2^16, β3 = −2·2^16
+        val words = intArrayOf(0x8B0000, 0, w(56, 12, 1), w(-4, -1, 50), w(4, -4, -2), 0, 0, 0, 0, 0)
+        org.junit.Assert.assertTrue(Sp3Solver.ionoFromGpsSf4(words))
+        org.junit.Assert.assertEquals("GPS palydovas", Sp3Solver.ionoSource)
+        Sp3Solver.setIono(null, null, "GPS palydovas")
+        org.junit.Assert.assertFalse(Sp3Solver.ionoFromGpsSf4(words.copyOf().also { it[2] = w(18, 12, 1) }))
+    }
+}

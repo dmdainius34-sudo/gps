@@ -8469,7 +8469,7 @@ class MainActivity : AppCompatActivity() {
         val dual = bandsSeen.any { it.endsWith("L5") || it.endsWith("E5a") || it.endsWith("E5b") || it.endsWith("B2b") || it.endsWith("B2a") }
         appendLine("Dviejų dažnių (L1+L5): ${if (dual) "taip" else "nematyta – tik L1 juosta"}")
         appendLine("Jonosfera programos sprendinyje: L1+L5 – ${DualFreq.lastUsed} iš ${DualFreq.lastTotal} palydovų; kitiems modelis su " +
-            (if (Sp3Solver.ionoBroadcast) "šiandienos koeficientais (BRDC)" else "numatytaisiais koeficientais (BRDC neįkeltas)"))
+            (if (Sp3Solver.ionoBroadcast) "šiandienos koeficientais (${Sp3Solver.ionoSource})" else "numatytaisiais koeficientais (šiandienos dar negauti: GPS 4 subkadro 18 puslapis ateina kas 12,5 min.)"))
         appendLine("Pirmas fiksas (TTFF): " + if (ttffMs >= 0) "%.1f s".format(Locale.US, ttffMs / 1000.0) else "nežinoma (fiksas jau buvo arba dar nėra)")
         appendLine("Lusto žinios: ${Readiness.knowledge()?.text ?: "—"}")
         val eph = lastSats.filter { it.eph }.distinctBy { it.const to it.svid }

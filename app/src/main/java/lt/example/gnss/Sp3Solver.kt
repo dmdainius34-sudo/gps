@@ -79,14 +79,33 @@ object Sp3Solver {
     private val KLOB_BETA = doubleArrayOf(0.1167e6, 0.1638e6, -0.3277e6, -0.2621e6)
     @Volatile private var ionA: DoubleArray = KLOB_ALPHA
     @Volatile private var ionB: DoubleArray = KLOB_BETA
-    /** Ar naudojami transliuojami (BRDC) koeficientai, o ne numatytieji. */
+    /** Ar naudojami transliuojami koeficientai, o ne numatytieji. */
     @Volatile var ionoBroadcast = false
         private set
+    /** Iš kur koeficientai: „GPS palydovas“, „BRDC“ arba tuščia (numatytieji). */
+    @Volatile var ionoSource = ""
+        private set
 
-    /** Šiandienos Klobuchar koeficientai (iš BRDC antraštės); null ar netinkami – numatytieji. */
-    fun setIono(a: DoubleArray?, b: DoubleArray?) {
+    /** Šiandienos Klobuchar koeficientai; null ar netinkami – numatytieji. Palydovo žinutė pirmesnė už BRDC failą. */
+    fun setIono(a: DoubleArray?, b: DoubleArray?, src: String = "BRDC") {
         val ok = a != null && b != null && a.size == 4 && b.size == 4 && (a + b).all { it.isFinite() } && b[0] > 0.0 && a.any { it != 0.0 }
-        ionA = if (ok) a!!.copyOf() else KLOB_ALPHA; ionB = if (ok) b!!.copyOf() else KLOB_BETA; ionoBroadcast = ok
+        if (ok && src == "BRDC" && ionoSource == "GPS palydovas") return
+        ionA = if (ok) a!!.copyOf() else KLOB_ALPHA; ionB = if (ok) b!!.copyOf() else KLOB_BETA; ionoBroadcast = ok; ionoSource = if (ok) src else ""
+    }
+
+    /**
+     * GPS L1 C/A 4 subkadras, 18 puslapis (SV ID 56): α0..α3, β0..β3 (IS-GPS-200 20-X lentelė, 8 b su ženklu).
+     * words – 10 žodžių po 24 duomenų bitus (paritetas jau patikrintas). Grąžina true, jei tai buvo 18 puslapis.
+     */
+    fun ionoFromGpsSf4(words: IntArray): Boolean {
+        if (words.size < 5 || ((words[2] ushr 16) and 0x3F) != 56) return false
+        fun s8(x: Int) = (x and 0xFF).let { if (it >= 128) it - 256 else it }.toDouble()
+        val a = doubleArrayOf(s8(words[2] ushr 8) * Math.scalb(1.0, -30), s8(words[2]) * Math.scalb(1.0, -27),
+            s8(words[3] ushr 16) * Math.scalb(1.0, -24), s8(words[3] ushr 8) * Math.scalb(1.0, -24))
+        val b = doubleArrayOf(s8(words[3]) * Math.scalb(1.0, 11), s8(words[4] ushr 16) * Math.scalb(1.0, 14),
+            s8(words[4] ushr 8) * Math.scalb(1.0, 16), s8(words[4]) * Math.scalb(1.0, 16))
+        setIono(a, b, "GPS palydovas")
+        return true
     }
 
     /** Klobuchar L1 jonosferos vėlinimas (m), IS-GPS-200 algoritmas; koeficientai iš BRDC, jei įkeltas, kitaip numatytieji. */

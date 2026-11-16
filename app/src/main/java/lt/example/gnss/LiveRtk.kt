@@ -124,7 +124,13 @@ object LiveRtk {
         val r = Sp3Live.reader ?: return
         if (!Sp3Solver.inRange(r, ep.t)) return
         val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min }
-            .map { Sp3V5.Ob(it.sys, it.svid, it.pr, it.cn0, it.prr) }
+            .map { m -> DualFreq.iono(m, ep.t)?.let { i -> Sp3V5.Ob(m.sys, m.svid, m.pr - i, m.cn0, m.prr, ifree = true) } ?: Sp3V5.Ob(m.sys, m.svid, m.pr, m.cn0, m.prr) }
+            .let { l ->
+                // L1+L5 palydovams reikia savo laikrodžio – verta tik kai sistemoje jų ≥ 3, kitaip lieka įprastas L1 su Klobuchar
+                val few = l.filter { it.ifree }.groupingBy { it.sys }.eachCount().filterValues { it < 3 }.keys
+                l.map { o -> if (o.ifree && o.sys in few) ep.meas.first { it.sys == o.sys && it.svid == o.svid }.let { m -> Sp3V5.Ob(m.sys, m.svid, m.pr, m.cn0, m.prr) } else o }
+            }
+        DualFreq.lastUsed = obs.count { it.ifree }; DualFreq.lastTotal = obs.size
         if (obs.size < 5) return
         val f = try { Sp3V5.solve(ep.week, ep.tow, obs, r, isb = true, raim = true) } catch (_: Exception) { null } ?: return
         val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }

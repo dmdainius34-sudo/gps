@@ -73,6 +73,11 @@ object Brdc {
                     val v = DoubleArray(4) { num(l.substring(5 + 12 * it, 17 + 12 * it)) }
                     if (l.startsWith("GPSA")) set.gpsIonA = v; if (l.startsWith("GPSB")) set.gpsIonB = v
                 }
+                // RINEX 2: „ION ALPHA“ / „ION BETA“ (2X, 4D12.4)
+                if (lab.startsWith("ION ALPHA") || lab.startsWith("ION BETA")) {
+                    val v = try { DoubleArray(4) { num(l.substring(2 + 12 * it, 14 + 12 * it)) } } catch (_: Exception) { null }
+                    if (v != null) { if (lab.startsWith("ION ALPHA")) set.gpsIonA = v else set.gpsIonB = v }
+                }
                 if (lab.startsWith("END OF HEADER")) break
             }
         }
@@ -156,6 +161,7 @@ object Brdc {
 
     // ---------------- Atsisiuntimas ir būsena ----------------
     @Volatile var set: Set? = null
+        set(v) { field = v; Sp3Solver.setIono(v?.gpsIonA, v?.gpsIonB) }   // šiandienos Klobuchar koeficientai iš BRDC antraštės
         private set
     @Volatile var source = ""
         private set

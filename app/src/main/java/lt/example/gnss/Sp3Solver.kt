@@ -77,8 +77,19 @@ object Sp3Solver {
 
     private val KLOB_ALPHA = doubleArrayOf(0.1118e-7, 0.1490e-7, -0.5960e-7, -0.5960e-7)
     private val KLOB_BETA = doubleArrayOf(0.1167e6, 0.1638e6, -0.3277e6, -0.2621e6)
+    @Volatile private var ionA: DoubleArray = KLOB_ALPHA
+    @Volatile private var ionB: DoubleArray = KLOB_BETA
+    /** Ar naudojami transliuojami (BRDC) koeficientai, o ne numatytieji. */
+    @Volatile var ionoBroadcast = false
+        private set
 
-    /** Klobuchar L1 jonosferos vėlinimas (m), IS-GPS-200 algoritmas su numatytaisiais koeficientais. */
+    /** Šiandienos Klobuchar koeficientai (iš BRDC antraštės); null ar netinkami – numatytieji. */
+    fun setIono(a: DoubleArray?, b: DoubleArray?) {
+        val ok = a != null && b != null && a.size == 4 && b.size == 4 && (a + b).all { it.isFinite() } && b[0] > 0.0 && a.any { it != 0.0 }
+        ionA = if (ok) a!!.copyOf() else KLOB_ALPHA; ionB = if (ok) b!!.copyOf() else KLOB_BETA; ionoBroadcast = ok
+    }
+
+    /** Klobuchar L1 jonosferos vėlinimas (m), IS-GPS-200 algoritmas; koeficientai iš BRDC, jei įkeltas, kitaip numatytieji. */
     fun klobuchar(latRad: Double, lonRad: Double, azRad: Double, elRad: Double, towSec: Double): Double {
         val el = elRad / PI                                          // pusapskritimiai
         val psi = 0.0137 / (el + 0.11) - 0.022
@@ -87,8 +98,8 @@ object Sp3Solver {
         val phiM = phiI + 0.064 * cos((lamI - 1.617) * PI)
         val t = Math.floorMod((43200.0 * lamI + towSec).toLong(), 86400L).toDouble()
         val poly = { k: DoubleArray -> k[0] + phiM * (k[1] + phiM * (k[2] + phiM * k[3])) }
-        val amp = poly(KLOB_ALPHA).coerceAtLeast(0.0)
-        val per = poly(KLOB_BETA).coerceAtLeast(72_000.0)
+        val amp = poly(ionA).coerceAtLeast(0.0)
+        val per = poly(ionB).coerceAtLeast(72_000.0)
         val x = 2.0 * PI * (t - 50_400.0) / per
         val f = 1.0 + 16.0 * (0.53 - el).pow(3)
         val day = if (abs(x) < 1.57) amp * (1.0 - x * x / 2.0 + x * x * x * x / 24.0) else 0.0

@@ -23,6 +23,8 @@ object Sp3V5 {
 
     class M(val sys: Char, val svid: Int, val pr: Double, val cn0: Double, val state: Int, val mp: Int,
             val adr: Double?, val adrState: Int, val prr: Double?) {
+        /** Antro dažnio (L5 / E5a / B2a) pseudoatstumas tą pačią epochą, jei lustas jį pateikė. */
+        var pr5: Double? = null
         val key get() = sys.code * 1000 + svid
         val id get() = "%c%02d".format(Locale.US, sys, svid)
     }
@@ -41,6 +43,14 @@ object Sp3V5 {
         val pr = dt * 1e-9 * C
         if (pr < 1.5e7 || pr > 3.6e7) return null
         return Triple(pr, week, tRxNs * 1e-9)
+    }
+
+    /** Antro dažnio signalai (1176,45 MHz): GPS L5, Galileo E5a, BeiDou B2a. */
+    private fun sys5Of(c: String, sig: String): Pair<Char, Double>? = when {
+        c == "GPS" && sig == "L5" -> 'G' to 0.0
+        c == "GAL" && sig == "E5a" -> 'E' to 0.0
+        c == "BDS" && sig == "B2a" -> 'C' to -14.0
+        else -> null
     }
 
     private fun sysOf(c: String, sig: String, glo: Boolean): Pair<Char, Double>? = when {
@@ -85,10 +95,24 @@ object Sp3V5 {
             if (listOf(iMs, iC, iSv, iSig, iTn, iFb, iB, iSt, iSvt, iCn).any { it < 0 }) return
             var curTn = Long.MIN_VALUE; var curMs = 0L; var curWeek = 0; var curTow = 0.0
             val list = ArrayList<M>()
-            fun flush() { if (list.isNotEmpty()) consumer(Ep(curMs, curWeek, curTow, ArrayList(list))); list.clear() }
+            val l5 = HashMap<Int, Double>()                                     // raktas sys*1000+svid -> L5 pseudoatstumas
+            fun flush() {
+                if (list.isNotEmpty()) { list.forEach { m -> m.pr5 = l5[m.key] }; consumer(Ep(curMs, curWeek, curTow, ArrayList(list))) }
+                list.clear(); l5.clear()
+            }
             br.forEachLine { line ->
                 val p = line.split(',')
                 if (p.size <= maxOf(iSvt, iSt, iTn, iCn, iSig)) return@forEachLine
+                sys5Of(p[iC], p[iSig])?.let { s5 ->
+                    val tn = p[iTn].toLongOrNull() ?: return@forEachLine
+                    val sv = p[iSv].toIntOrNull() ?: return@forEachLine
+                    if (tn != curTn) { flush(); curTn = tn }
+                    val r = pseudorange(tn, p[iFb].toLongOrNull() ?: return@forEachLine, p[iB].toDoubleOrNull() ?: 0.0,
+                        if (iOff >= 0) p.getOrNull(iOff)?.toDoubleOrNull() ?: 0.0 else 0.0,
+                        p[iSt].toIntOrNull() ?: return@forEachLine, p[iSvt].toLongOrNull() ?: return@forEachLine, s5.second) ?: return@forEachLine
+                    l5[s5.first.code * 1000 + sv] = r.first
+                    return@forEachLine
+                }
                 val sys = sysOf(p[iC], p[iSig], glo) ?: return@forEachLine
                 val tn = p[iTn].toLongOrNull() ?: return@forEachLine
                 val fb = p[iFb].toLongOrNull() ?: return@forEachLine
@@ -140,6 +164,8 @@ object Sp3V5 {
     /** Palydovo duomenys epochai: nepasukta padėtis, greitis, pataisytas pseudoatstumas, laikrodžio dreifas (m/s). */
     class SatEp(val sys: Char, val svid: Int, val pos: DoubleArray, val vel: DoubleArray, val prc: Double, val tau0: Double,
                 val cn0: Double, val clkDrift: Double, val prr: Double?) {
+        /** Jonosfera jau pašalinta pagal L1+L5 – Klobuchar netaikomas, savas imtuvo laikrodis (kitas dažnių poslinkis). */
+        var ifree = false
         val rp = DoubleArray(3)
         fun rotate(rx: DoubleArray) {
             val dx = rx[0] - rp[0]; val dy = rx[1] - rp[1]; val dz = rx[2] - pos[2]
@@ -150,7 +176,7 @@ object Sp3V5 {
         }
     }
 
-    class Ob(val sys: Char, val svid: Int, val pr: Double, val cn0: Double, val prr: Double? = null)
+    class Ob(val sys: Char, val svid: Int, val pr: Double, val cn0: Double, val prr: Double? = null, val ifree: Boolean = false)
 
     fun prepare(t: Double, obs: List<Ob>, sp3: Sp3Reader): List<SatEp> {
         val out = ArrayList<SatEp>()
@@ -164,7 +190,7 @@ object Sp3V5 {
             val a = sp3.positionXyz(id, w, sow - 0.5) ?: continue; val b = sp3.positionXyz(id, w, sow + 0.5) ?: continue
             val ca = sp3.clock(id, w, sow - 0.5); val cb = sp3.clock(id, w, sow + 0.5)
             val drift = if (ca != null && cb != null && !ca.isNaN() && !cb.isNaN()) (cb - ca) * 1e-6 * C else 0.0
-            out.add(SatEp(o.sys, o.svid, st.pos, DoubleArray(3) { (b[it] - a[it]) * 1000.0 }, o.pr + C * st.dts, t - tTx, o.cn0, drift, o.prr))
+            out.add(SatEp(o.sys, o.svid, st.pos, DoubleArray(3) { (b[it] - a[it]) * 1000.0 }, o.pr + C * st.dts, t - tTx, o.cn0, drift, o.prr).also { it.ifree = o.ifree })
         }
         return out
     }
@@ -194,7 +220,9 @@ object Sp3V5 {
 
     private fun lsq(sats: List<SatEp>, tow: Double, isb: Boolean, weighted: Boolean): Lsq? {
         if (sats.size < 4) return null
-        val systems = if (isb) sats.map { it.sys }.distinct().sorted() else listOf('*')
+        // L1+L5 pataisyti palydovai – atskiras laikrodis (mažoji raidė): imtuvo L1/L5 poslinkis kitoks nei vien L1
+        fun ck(s: SatEp) = if (s.ifree) s.sys.lowercaseChar() else s.sys
+        val systems = if (isb) sats.map { ck(it) }.distinct().sorted() else listOf('*')
         val np = 3 + systems.size
         val x = DoubleArray(np); x[2] = 6_378_137.0
         sats.forEach { it.rp.fill(0.0) }
@@ -210,17 +238,17 @@ object Sp3V5 {
                 if (near) {
                     val l = Sp3Solver.look(x, s.rp, rho)
                     if (l[4] < MASK) continue
-                    corr = Sp3Solver.saastamoinen(l[0], l[2], l[4]) + Sp3Solver.klobuchar(l[0], l[1], l[3], l[4], tow)
+                    corr = Sp3Solver.saastamoinen(l[0], l[2], l[4]) + (if (s.ifree) 0.0 else Sp3Solver.klobuchar(l[0], l[1], l[3], l[4], tow))
                     if (weighted) w = weight(l[4], s.cn0)
                 }
                 val h = DoubleArray(np); h[0] = dx / rho; h[1] = dy / rho; h[2] = dz / rho
-                val ci = if (isb) systems.indexOf(s.sys) else 0
+                val ci = if (isb) systems.indexOf(ck(s)) else 0
                 h[3 + ci] = 1.0
                 rows.add(Triple(s, h, w)); res.add(s.prc - (rho + x[3 + ci] + corr))
             }
             // kiekvienam laikrodžiui reikia bent vieno palydovo; nenaudojamas laikrodis neįvertinamas
-            val usedSys = rows.map { it.first.sys }.toSet()
-            if (isb && systems.any { it !in usedSys }) return lsq(sats.filter { it.sys in usedSys }, tow, isb, weighted)
+            val usedSys = rows.map { ck(it.first) }.toSet()
+            if (isb && systems.any { it !in usedSys }) return lsq(sats.filter { ck(it) in usedSys }, tow, isb, weighted)
             if (rows.size < np) return null
             val d = solveNormal(rows.map { it.second }, res, rows.map { it.third }) ?: return null
             for (k in 0 until np) x[k] += d[k]

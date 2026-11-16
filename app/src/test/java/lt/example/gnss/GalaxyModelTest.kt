@@ -119,3 +119,31 @@ class MagWatchTest {
         org.junit.Assert.assertTrue(MagWatch.disturbed)
     }
 }
+
+class DualFreqTest {
+    @org.junit.Test fun ionoFromL1L5() {
+        DualFreq.reset()
+        // jonosfera L1 = 5 m -> L5 vėluoja γ kartų daugiau; imtuvo poslinkis 0
+        val i1 = 5.0; val p1 = 2.2e7; val p5 = p1 - i1 + DualFreq.GAMMA * i1
+        org.junit.Assert.assertEquals(i1, DualFreq.raw(p1, p5), 1e-6)
+        var got: Double? = null
+        for (k in 0 until 12) {
+            val m = Sp3V5.M('E', 7, p1, 40.0, 8, 0, null, 0, null).apply { pr5 = p5 }
+            got = DualFreq.iono(m, 1000.0 + k)
+            if (k < DualFreq.MIN_N - 1) org.junit.Assert.assertNull(got)
+        }
+        org.junit.Assert.assertEquals(i1, got!!, 1e-6)
+    }
+
+    @org.junit.Test fun broadcastCoefficients() {
+        val a = doubleArrayOf(2.0e-8, 1.5e-8, -6.0e-8, -6.0e-8); val b = doubleArrayOf(1.2e5, 1.6e5, -2.0e5, -2.6e5)
+        val d0 = Sp3Solver.klobuchar(0.95, 0.44, 1.0, 0.6, 43200.0)
+        Sp3Solver.setIono(a, b)
+        org.junit.Assert.assertTrue(Sp3Solver.ionoBroadcast)
+        val d1 = Sp3Solver.klobuchar(0.95, 0.44, 1.0, 0.6, 43200.0)
+        Sp3Solver.setIono(null, null)
+        org.junit.Assert.assertFalse(Sp3Solver.ionoBroadcast)
+        org.junit.Assert.assertEquals(d0, Sp3Solver.klobuchar(0.95, 0.44, 1.0, 0.6, 43200.0), 1e-12)
+        org.junit.Assert.assertNotEquals(d0, d1, 1e-6)
+    }
+}

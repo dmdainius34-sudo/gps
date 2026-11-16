@@ -8091,6 +8091,8 @@ class MainActivity : AppCompatActivity() {
         val frameView = object : View(this) {
             var nx = Double.NaN; var ny = Double.NaN; var aspect = 4.0 / 3.0
             var bmp: android.graphics.Bitmap? = null
+            var cropBmp: android.graphics.Bitmap? = null
+            var cands: List<SunCam.Cand> = emptyList()
             var rot = 0                                    // kiek laipsnių pagal laikrodžio rodyklę pasukti neapdorotą kadrą
             val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
             fun shownAspect() = if (rot % 180 == 0) aspect else 1.0 / aspect
@@ -8113,8 +8115,18 @@ class MainActivity : AppCompatActivity() {
                 p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = 2f; p.color = 0x88FFFFFF.toInt()
                 c.drawLine(x0 + fwF / 2f, 0f, x0 + fwF / 2f, fh, p); c.drawLine(x0, fh / 2f, x0 + fwF, fh / 2f, p)
                 c.drawCircle(x0 + fwF / 2f, fh / 2f, fh * 0.12f, p)
+                // kiti kontrastingi kandidatai (netinkamo aukščio) – blankiai
+                p.strokeWidth = 1.5f * dp; p.color = 0x6694A3B8
+                for (k in cands) { val (sx, sy) = map(k.nx, k.ny); c.drawCircle(x0 + (sx * fwF).toFloat(), (sy * fh).toFloat(), 6f * dp, p) }
                 if (!nx.isNaN()) { val (sx, sy) = map(nx, ny)
                     p.color = 0xFFFACC15.toInt(); p.strokeWidth = 3f * dp; c.drawCircle(x0 + (sx * fwF).toFloat(), (sy * fh).toFloat(), 12f * dp, p) }
+                // padidinta rastos dėmės sritis (kairiajame viršutiniame kampe)
+                cropBmp?.takeIf { !nx.isNaN() }?.let { b ->
+                    val s = 96f * dp
+                    c.save(); c.translate(x0 + 6 * dp + s / 2, 6 * dp + s / 2); c.rotate(rot.toFloat())
+                    c.drawBitmap(b, null, android.graphics.RectF(-s / 2, -s / 2, s / 2, s / 2), null); c.restore()
+                    p.color = 0xFFFACC15.toInt(); p.strokeWidth = 2f; c.drawRect(x0 + 6 * dp, 6 * dp, x0 + 6 * dp + s, 6 * dp + s, p)
+                }
             }
         }
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 16, 24, 0)
@@ -8137,10 +8149,14 @@ class MainActivity : AppCompatActivity() {
                     val b = frameView.bmp?.takeIf { it.width == f.tw && it.height == f.th } ?: android.graphics.Bitmap.createBitmap(f.tw, f.th, android.graphics.Bitmap.Config.ARGB_8888).also { frameView.bmp = it }
                     b.setPixels(f.thumb, 0, f.tw, 0, 0, f.tw, f.th)
                 }
+                frameView.cands = f.cands
+                f.crop?.let { cr -> val b = frameView.cropBmp ?: android.graphics.Bitmap.createBitmap(64, 64, android.graphics.Bitmap.Config.ARGB_8888).also { frameView.cropBmp = it }
+                    b.setPixels(cr, 0, 64, 0, 0, 64, 64) }
                 frameView.aspect = f.aspect; frameView.requestLayout(); frameView.invalidate()
                 if (!f.found || f.vec == null) {
                     frameView.nx = Double.NaN; buf.clear(); frameView.invalidate()
-                    tv.text = "Ryškios dėmės kadre nėra (didžiausias ryškumas ${f.peak}/255). Lėtai judinkite planšetę, kol dėmė pasirodys.\n" + cam.info
+                    val tel0 = SunCal.targetAzEl(key, System.currentTimeMillis(), obsLatNow, obsLonNow).second
+                    tv.text = "${t.name.substringBefore(" (")} kadre nerastas: reikia kontrastingos dėmės %.0f° aukštyje (kontrastingų dėmių kadre: ${f.cands.size}). Lėtai pasukite planšetę į šonus, laikydami nugarėlę tame aukštyje.\n".format(Locale.US, tel0) + cam.info
                     return@post
                 }
                 frameView.nx = f.nx; frameView.ny = f.ny; frameView.aspect = f.aspect; frameView.requestLayout(); frameView.invalidate()
@@ -8166,6 +8182,9 @@ class MainActivity : AppCompatActivity() {
         }, { msg -> ui.post { tv.text = "Kamera: $msg"; Toast.makeText(this, msg, Toast.LENGTH_LONG).show() } })
         dlg.setOnDismissListener { done = true; cam.stop() }
         dlg.show(); WinUtil.draggable(dlg)
+        // kandidatai tik orientyro aukštyje (±6°): aukštis iš gravitacijos patikimas, o azimutą kaip tik kalibruojame
+        cam.accept = { vec -> val (_, el) = skyDome.worldAzElOfDevice(vec)
+            kotlin.math.abs(el - SunCal.targetAzEl(key, System.currentTimeMillis(), obsLatNow, obsLonNow).second) <= 6.0 }
         cam.start()
         ui.postDelayed({ if (!done && dlg.isShowing) dlg.dismiss() }, 40_000L)
     }

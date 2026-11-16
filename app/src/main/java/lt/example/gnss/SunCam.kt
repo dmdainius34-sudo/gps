@@ -15,14 +15,21 @@ import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
- * Galinė kamera kaip taikiklis: be vaizdo rodymo, mažiausia ekspozicija; ryškiausia dėmė (Saulė, Mėnulis) randama kadre,
+ * Galinė kamera kaip taikiklis: mažiausia ekspozicija; Saulė ar Mėnulis randami kaip kontrastingiausia dėmė tinkamame aukštyje (ir dieną tarp debesų),
  * jos kryptis kameros ašies atžvilgiu perskaičiuojama į prietaiso koordinates (natūralioje padėtyje: X dešinėn, Y aukštyn, nugarėlė = −Z).
  */
 class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, private val onError: (String) -> Unit) {
     /** found – rasta ryški dėmė; nx, ny – padėtis kadre 0..1; vec – vienetinis vektorius prietaiso (natūraliame) kadre; sat – dėmės plotas, % kadro. */
     class Frame(val found: Boolean, val nx: Double, val ny: Double, val vec: DoubleArray?, val peak: Int, val areaPct: Double, val aspect: Double,
                 /** Sumažintas pilkas kadras (neapdoroto jutiklio padėtis) ir jo dydis – kad vartotojas matytų, ką mato kamera. */
-                val thumb: IntArray? = null, val tw: Int = 0, val th: Int = 0)
+                val thumb: IntArray? = null, val tw: Int = 0, val th: Int = 0,
+                /** Visi kontrastingi kandidatai ir padidinta (64×64) sritis aplink pasirinktą. */
+                val cands: List<Cand> = emptyList(), val crop: IntArray? = null)
+    /** Kontrastinga dėmė: padėtis kadre 0..1, kryptis prietaiso kadre, plotas (taškais), kontrasto suma, didžiausias ryškumas. */
+    class Cand(val nx: Double, val ny: Double, val vec: DoubleArray, val n: Int, val strength: Double, val peak: Int)
+
+    /** Kandidato atranka (pvz. pagal aukštį – Mėnulio/Saulės aukštis žinomas tiksliai); null – visi tinka. */
+    @Volatile var accept: ((DoubleArray) -> Boolean)? = null
 
     private var thread: HandlerThread? = null
     private var camera: CameraDevice? = null
@@ -81,38 +88,61 @@ class SunCam(private val ctx: Context, private val onFrame: (Frame) -> Unit, pri
                     val st = maxOf(1, w / 160); val tw = w / st; val tht = hh / st
                     val thumb = IntArray(tw * tht) { i -> val g = arr[(i / tw) * st * rs + (i % tw) * st].toInt() and 0xFF; (0xFF shl 24) or (g shl 16) or (g shl 8) or g }
                     val asp = size.width.toDouble() / size.height
-                    fun none() { if (!closed) onFrame(Frame(false, 0.0, 0.0, null, max, 0.0, asp, thumb, tw, tht)) }
-                    if (max < 200) { none(); return@setOnImageAvailableListener }
-                    // ryškiausių taškų jungiosios sritys: imama didžiausia (≥ 3 taškai) – pavieniai „karšti“ taškai ir kitos lempos nesumaišomos
-                    val thr = maxOf(200, (max * 0.9).toInt())
-                    val lb = lab?.takeIf { it.size == w * hh } ?: IntArray(w * hh).also { lab = it }
-                    val q = queue?.takeIf { it.size == w * hh } ?: IntArray(w * hh).also { queue = it }
+                    // Kontrastas, ne absoliutus ryškumas: dieną Mėnulis ne šviesesnis už debesis, bet šviesesnis už aplinką.
+                    // Pusinė raiška (2×2 vidurkis), fonas – 25×25 langas (integralinis vaizdas), kontrastas = taškas − fonas.
+                    val w2 = w / 2; val h2 = hh / 2
+                    val y2 = IntArray(w2 * h2) { i -> val x = (i % w2) * 2; val y = (i / w2) * 2
+                        ((arr[y * rs + x].toInt() and 0xFF) + (arr[y * rs + x + 1].toInt() and 0xFF) + (arr[(y + 1) * rs + x].toInt() and 0xFF) + (arr[(y + 1) * rs + x + 1].toInt() and 0xFF)) / 4 }
+                    val ii = LongArray((w2 + 1) * (h2 + 1))
+                    for (y in 0 until h2) { var row = 0L; for (x in 0 until w2) { row += y2[y * w2 + x]; ii[(y + 1) * (w2 + 1) + x + 1] = ii[y * (w2 + 1) + x + 1] + row } }
+                    val rad = 12
+                    val con = IntArray(w2 * h2)
+                    for (y in 0 until h2) for (x in 0 until w2) {
+                        val xa = maxOf(0, x - rad); val xb = minOf(w2, x + rad + 1); val ya = maxOf(0, y - rad); val yb = minOf(h2, y + rad + 1)
+                        val sum = ii[yb * (w2 + 1) + xb] - ii[ya * (w2 + 1) + xb] - ii[yb * (w2 + 1) + xa] + ii[ya * (w2 + 1) + xa]
+                        con[y * w2 + x] = y2[y * w2 + x] - (sum / ((xb - xa) * (yb - ya))).toInt()
+                    }
+                    // triukšmo lygis: kontrasto modulio mediana (atsitiktinė 4000 taškų imtis)
+                    val smp = IntArray(4000) { kotlin.math.abs(con[(it * 7919) % con.size]) }; smp.sort()
+                    val thr = maxOf(10, 6 * maxOf(1, smp[smp.size / 2]))
+                    val lb = lab?.takeIf { it.size == w2 * h2 } ?: IntArray(w2 * h2).also { lab = it }
+                    val q = queue?.takeIf { it.size == w2 * h2 } ?: IntArray(w2 * h2).also { queue = it }
                     java.util.Arrays.fill(lb, 0)
-                    var label = 0; var bestN = 0; var bestSx = 0.0; var bestSy = 0.0; var total = 0
-                    for (y in 0 until hh) { val o = y * rs; for (x in 0 until w) {
-                        val i = y * w + x
-                        if (lb[i] != 0 || (arr[o + x].toInt() and 0xFF) < thr) continue
-                        label++; var head = 0; var tail = 0; q[tail++] = i; lb[i] = label
-                        var n = 0; var sx = 0.0; var sy = 0.0
+                    var label = 0
+                    val cands = ArrayList<Cand>()
+                    for (i0 in 0 until w2 * h2) {
+                        if (lb[i0] != 0 || con[i0] < thr) continue
+                        label++; var head = 0; var tail = 0; q[tail++] = i0; lb[i0] = label
+                        var n = 0; var sx = 0.0; var sy = 0.0; var str = 0L; var pk = 0
                         while (head < tail) {
-                            val c = q[head++]; val cx = c % w; val cy = c / w
-                            n++; sx += cx; sy += cy
+                            val c = q[head++]; val cx = c % w2; val cy = c / w2
+                            n++; sx += cx; sy += cy; str += con[c]; if (y2[c] > pk) pk = y2[c]
                             for (dy in -1..1) for (dx in -1..1) {
                                 val nx = cx + dx; val ny = cy + dy
-                                if (nx < 0 || ny < 0 || nx >= w || ny >= hh) continue
-                                val j = ny * w + nx
-                                if (lb[j] == 0 && (arr[ny * rs + nx].toInt() and 0xFF) >= thr) { lb[j] = label; q[tail++] = j }
+                                if (nx < 0 || ny < 0 || nx >= w2 || ny >= h2) continue
+                                val j = ny * w2 + nx
+                                if (lb[j] == 0 && con[j] >= thr) { lb[j] = label; if (tail < q.size) q[tail++] = j }
                             }
                         }
-                        total += n
-                        if (n > bestN) { bestN = n; bestSx = sx; bestSy = sy }
-                    } }
-                    if (bestN < 3) { none(); return@setOnImageAvailableListener }
-                    val cx = bestSx / bestN; val cy = bestSy / bestN
-                    val tu = (cx + 0.5 - w / 2.0) / fpx; val tv = (cy + 0.5 - hh / 2.0) / fpx
-                    val v = DoubleArray(3) { tu * right[it] + tv * down[it] + (if (it == 2) -1.0 else 0.0) }
-                    val l = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
-                    val f = Frame(true, (cx + 0.5) / w, (cy + 0.5) / hh, DoubleArray(3) { v[it] / l }, max, 100.0 * bestN / (w * hh), asp, thumb, tw, tht)
+                        if (n < 2 || n > 3000) continue            // pavieniai karšti taškai ir dideli debesų kraštai – ne
+                        val cx = (sx / n) * 2 + 1.0; val cy = (sy / n) * 2 + 1.0
+                        val tu = (cx - w / 2.0) / fpx; val tv = (cy - hh / 2.0) / fpx
+                        val v = DoubleArray(3) { tu * right[it] + tv * down[it] + (if (it == 2) -1.0 else 0.0) }
+                        val l = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+                        cands.add(Cand(cx / w, cy / hh, DoubleArray(3) { v[it] / l }, n * 4, str.toDouble(), pk))
+                    }
+                    // pasirinkimas: tinkamo aukščio (accept) ir stipriausio kontrasto dėmė
+                    val ok = cands.filter { c -> accept?.invoke(c.vec) ?: true }.sortedByDescending { it.strength }
+                    val best = ok.firstOrNull()
+                    // padidinta sritis aplink pasirinktą dėmę (64×64 taškai) – kad būtų matyti, kas rasta
+                    var crop: IntArray? = null
+                    if (best != null) {
+                        val bx = (best.nx * w).toInt(); val by = (best.ny * hh).toInt()
+                        crop = IntArray(64 * 64) { i -> val x = (bx - 32 + i % 64).coerceIn(0, w - 1); val y = (by - 32 + i / 64).coerceIn(0, hh - 1)
+                            val g = arr[y * rs + x].toInt() and 0xFF; (0xFF shl 24) or (g shl 16) or (g shl 8) or g }
+                    }
+                    val f = if (best == null) Frame(false, 0.0, 0.0, null, max, 0.0, asp, thumb, tw, tht, cands)
+                        else Frame(true, best.nx, best.ny, best.vec, best.peak, 100.0 * best.n / (w * hh), asp, thumb, tw, tht, cands, crop)
                     if (!closed) onFrame(f)
                 } finally { img.close() }
             }, h)

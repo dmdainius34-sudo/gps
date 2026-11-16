@@ -171,7 +171,7 @@ class MoonShapeTest {
 
     @org.junit.Test fun crescentTowardSun() {
         val w = 120; val h = 120; val d = 28.0
-        val img = crescent(w, h, 60.0, 60.0, d / 2, 0.6 * d, 1.0, 0.0)          // Saulė dešinėje
+        val img = crescent(w, h, 60.0, 60.0, d / 2, 0.35 * d, 1.0, 0.0)         // Saulė dešinėje (apšviesta ~44 %)
         val k = 0.2
         val ok = MoonShape.check({ x, y -> img[y * w + x] }, w, h, 66.0, 60.0, MoonShape.Expect(d, k, 1.0, 0.0))
         org.junit.Assert.assertTrue(ok.why, ok.ok)

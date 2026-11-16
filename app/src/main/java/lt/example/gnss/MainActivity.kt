@@ -1758,7 +1758,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /**
      * Kalibravimo „šūvis“ prie Saulės: kryželis ten, kur buvo nukreipta nugarėlė (tikras kampinis nuokrypis nuo Saulės centro,
-     * atidėtas nuo dabartinės Saulės padėties stebėtojo horizonto sistemoje), ir linija iki centro. Spalva: ≤ 2° žalia, ≤ 5° geltona, kitaip raudona.
+     * atidėtas nuo dabartinės Saulės padėties stebėtojo horizonto sistemoje), ir linija iki centro – raudonai.
      */
     private fun drawSunShot() {
         val sh = sunShot ?: return
@@ -1774,11 +1774,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         fun p(dir: DoubleArray, a: Double = 0.0, b: Double = 0.0) = FloatArray(3) { (fP[it] + dir[it] * r + t1[it] * a + t2[it] * b).toFloat() }
         val c = p(v); val sc = p(d)
         val seg = floatArrayOf(*p(v, -k, 0.0), *p(v, k, 0.0), *p(v, 0.0, -k), *p(v, 0.0, k), *c, *sc)
-        val err = Math.hypot(sh[0] * cos(el), sh[1])
-        val col = when { err <= 2.0 -> floatArrayOf(0.2f, 1f, 0.4f); err <= 5.0 -> floatArrayOf(1f, 0.85f, 0.2f); else -> floatArrayOf(1f, 0.3f, 0.3f) }
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         GLES20.glLineWidth(3f * density)
-        drawLines(seg, col[0], col[1], col[2], 0.95f)
+        drawLines(seg, 1f, 0.15f, 0.15f, 0.95f)
         GLES20.glLineWidth(1f)
     }
     private var fQ = DoubleArray(9)
@@ -6733,6 +6731,32 @@ class MainActivity : AppCompatActivity() {
 
     private val locationListener = LocationListener { loc -> onLocation(loc) }
 
+    /** Visi vykdymo leidimai vienu prašymu (Perms), po jų – leidimas rodyti virš kitų programų ir baterijos išimtis. */
+    private var specialsPending = false
+    private val allPermLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) startGnss()
+        else { posText = "Reikia vietos leidimo."; logError("Vietos leidimas nesuteiktas"); render() }
+        if (res["android.permission.ACTIVITY_RECOGNITION"] == true) startDeviceSensors()
+        if (specialsPending) requestSpecials()
+    }
+    private fun requestAllPermissions(withSpecials: Boolean) {
+        specialsPending = withSpecials
+        val miss = Perms.missing(this)
+        if (miss.isNotEmpty()) allPermLauncher.launch(miss.toTypedArray()) else if (withSpecials) requestSpecials()
+    }
+    /** Specialūs leidimai atidaromi sistemos languose po vieną; grįžus (onResume) – kitas. */
+    private fun requestSpecials() {
+        if (!Settings.canDrawOverlays(this)) {
+            try { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))); return } catch (_: Exception) {}
+        }
+        if (!GapLog.batteryExempt(this)) {
+            specialsPending = false
+            try { startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))); return } catch (_: Exception) {}
+        }
+        specialsPending = false
+        Toast.makeText(this, "Visi leidimai suteikti. Vietos perdavimui kitoms programoms dar reikia: Kūrėjo parinktys → Bandomosios vietos programa → GNSS App", Toast.LENGTH_LONG).show()
+    }
+
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startGnss() else {
             posText = "Reikia vietos leidimo."
@@ -6864,6 +6888,12 @@ class MainActivity : AppCompatActivity() {
                 launchSp3Picker(next)
             }
         }.start()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // grįžus iš sistemos leidimo lango – kitas specialus leidimas
+        if (specialsPending) window.decorView.postDelayed({ if (specialsPending) requestSpecials() }, 400L)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -7030,6 +7060,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbOrient, LinearLayout.LayoutParams(mw, ww))
+        left.addView(Button(this).apply {
+            text = "Suteikti visus leidimus"
+            setOnClickListener { requestAllPermissions(withSpecials = true) }
+        }, LinearLayout.LayoutParams(mw, ww))
         left.addView(CheckBox(this).apply {
             text = "HDR galaktika (ryškiau už baltą; įsigalioja atidarius iš naujo)"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("hdr", true)
@@ -7435,7 +7469,7 @@ class MainActivity : AppCompatActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             startGnss()
         } else {
-            permLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+            requestAllPermissions(withSpecials = false)
         }
     }
 
@@ -8009,11 +8043,7 @@ class MainActivity : AppCompatActivity() {
         val stepOk = Build.VERSION.SDK_INT < 29 || checkSelfPermission("android.permission.ACTIVITY_RECOGNITION") == PackageManager.PERMISSION_GRANTED
         if (stepOk) sm.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)?.let { sm.registerListener(devSensorListener, it, SensorManager.SENSOR_DELAY_NORMAL) }
         else {
-            val sp = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
-            if (!sp.getBoolean("asked_activity", false)) {
-                sp.edit().putBoolean("asked_activity", true).apply()
-                requestPermissions(arrayOf("android.permission.ACTIVITY_RECOGNITION"), 78)
-            }
+            // prašoma kartu su visais leidimais (requestAllPermissions)
         }
     }
 

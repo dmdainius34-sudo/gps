@@ -6930,7 +6930,7 @@ class MainActivity : AppCompatActivity() {
         left.addView(Button(this).apply { text = "Kalibravimų žurnalas (peržiūra, trynimas, šiaurės atkūrimas)…"; setOnClickListener { showSunLogDialog() } }, LinearLayout.LayoutParams(mw, ww))
         SunCal.autoFix = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_log_fix", true)
         left.addView(CheckBox(this).apply {
-            text = "Šiaurės pataisa pagal Saulės žurnalą ir magnetometrą (kai nuokrypis > 5° ir 2 min. stabilus)"
+            text = "Šiaurės pataisa pagal Saulės žurnalą ir magnetometrą (kai nuokrypis > 2° ir 30 s stabilus)"
             isChecked = SunCal.autoFix
             setOnCheckedChangeListener { _, on -> SunCal.autoFix = on
                 getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_log_fix", on).apply() }

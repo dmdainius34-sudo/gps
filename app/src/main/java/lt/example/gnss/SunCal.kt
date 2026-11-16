@@ -191,12 +191,13 @@ object SunCal {
     @Synchronized fun watch(ms: Long, d: Double, apply: (Double) -> Unit) {
         lastDiff = d
         hist.addLast(ms to d)
-        while (hist.isNotEmpty() && ms - hist.first().first > 120_000L) hist.removeFirst()
-        if (!autoFix || hist.size < 60 || ms - lastFixMs < 300_000L) return
+        // dažnai, bet tik pastoviam nuokrypiui: 30 s langas (≥ 20 palyginimų), ne dažniau kaip kas 30 s
+        while (hist.isNotEmpty() && ms - hist.first().first > 30_000L) hist.removeFirst()
+        if (!autoFix || hist.size < 20 || ms - lastFixMs < 30_000L) return
         val r = hist.map { Math.toRadians(it.second) }
         val sx = r.sumOf { sin(it) }; val cx = r.sumOf { cos(it) }
         val mean = Math.toDegrees(atan2(sx, cx)); val rl = kotlin.math.sqrt(sx * sx + cx * cx) / r.size
-        if (rl < 0.9976 || kotlin.math.abs(mean) < 5.0) return             // 0,9976 ≈ sklaida 4°
+        if (rl < 0.9976 || kotlin.math.abs(mean) < 2.0) return             // 0,9976 ≈ sklaida 4°
         lastFixMs = ms; lastFixDeg = mean; hist.clear()
         apply(mean)
     }

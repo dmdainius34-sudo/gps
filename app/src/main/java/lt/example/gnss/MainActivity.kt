@@ -1330,6 +1330,48 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private var lastRaw = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
     private val resumeSensors = Runnable { manual = false }
     var onDoubleTapCb: (() -> Unit)? = null
+
+    // ---- Rašiklio (ar pelės) užvedimas ant palydovo: greita kortelė be bakstelėjimo ----
+    private var hoverPopup: android.widget.PopupWindow? = null
+    private var hoverKey = ""
+
+    private fun hideHover() { try { hoverPopup?.dismiss() } catch (_: Exception) {}; hoverPopup = null; hoverKey = "" }
+
+    override fun onHoverEvent(e: MotionEvent): Boolean {
+        val tool = e.getToolType(0)
+        if (tool != MotionEvent.TOOL_TYPE_STYLUS && tool != MotionEvent.TOOL_TYPE_MOUSE) return super.onHoverEvent(e)
+        when (e.actionMasked) {
+            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
+                val s = renderer.pickSat(e.x, e.y)
+                if (s == null) hideHover()
+                else if (s.const + s.svid != hoverKey) showHover(s, e)
+            }
+            MotionEvent.ACTION_HOVER_EXIT -> hideHover()
+        }
+        return true
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) hideHover()
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun showHover(s: Sat, e: MotionEvent) {
+        hideHover(); hoverKey = s.const + s.svid
+        val (title, rows) = try { renderer.satInfo(s) } catch (_: Exception) { return }
+        val dp = resources.displayMetrics.density
+        val tv = TextView(context).apply {
+            textSize = 12f; setTextColor(0xFF111827.toInt()); setPadding((10 * dp).toInt(), (6 * dp).toInt(), (10 * dp).toInt(), (6 * dp).toInt())
+            background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 10 * dp; setColor(0xEEFFFFFF.toInt()); setStroke(1, 0x55000000) }
+            text = title + "\n" + rows.take(6).joinToString("\n") { "${it.first}: ${it.second}" } + "\n(bakstelėkite – visa kortelė)"
+            maxWidth = (300 * dp).toInt()
+        }
+        val pw = android.widget.PopupWindow(tv, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        pw.isTouchable = false; pw.isFocusable = false; pw.elevation = 8 * dp
+        val loc = IntArray(2); getLocationOnScreen(loc)
+        try { pw.showAtLocation(this, Gravity.NO_GRAVITY, loc[0] + e.x.toInt() + (24 * dp).toInt(), loc[1] + e.y.toInt() - (20 * dp).toInt()); hoverPopup = pw } catch (_: Exception) {}
+    }
+
     private val gd = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
         override fun onDoubleTap(e: MotionEvent): Boolean { onDoubleTapCb?.invoke(); return true }
@@ -1374,7 +1416,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                     .setPrimaryClip(android.content.ClipData.newPlainText(title, txt))
                 Toast.makeText(context, "Nukopijuota", Toast.LENGTH_SHORT).show()
             }
-            .setPositiveButton("Gerai", null).show()
+            .setPositiveButton("Gerai", null).show().also { WinUtil.draggable(it) }
     }
     private var prevArc = doubleArrayOf(0.0, 0.0, 1.0)
     private var pinchLast = 0f
@@ -5565,8 +5607,9 @@ class BubbleOverlayService : Service() {
             PixelFormat.TRANSLUCENT
         )
         lp.gravity = Gravity.TOP or Gravity.START
-        lp.x = dm.widthPixels - size - 40
-        lp.y = dm.heightPixels / 3
+        val full0 = WinUtil.fullSize(this)
+        lp.x = full0.x - size - 40
+        lp.y = full0.y / 3
 
         var startX = 0; var startY = 0
         var touchX = 0f; var touchY = 0f
@@ -5588,9 +5631,11 @@ class BubbleOverlayService : Service() {
                 MotionEvent.ACTION_MOVE -> {
                     val nx = startX + (ev.rawX - touchX).toInt()
                     val ny = startY + (ev.rawY - touchY).toInt()
-                    // Burbulas gali išeiti už krašto, bet bent 10 % lieka matoma
-                    lp.x = nx.coerceIn(-(size * 0.9f).toInt(), dm.widthPixels - (size * 0.1f).toInt())
-                    lp.y = ny.coerceIn(-(size * 1.35f).toInt(), dm.heightPixels - (size * 0.15f).toInt())
+                    // Burbulas gali išeiti už krašto, bet bent 10 % lieka matoma; ribos – VISAS ekranas (ir padalintame ekrane
+                    // virš kitos programos), ne programos lango dalis
+                    val full = WinUtil.fullSize(this)
+                    lp.x = nx.coerceIn(-(size * 0.9f).toInt(), full.x - (size * 0.1f).toInt())
+                    lp.y = ny.coerceIn(-(size * 1.35f).toInt(), full.y - (size * 0.15f).toInt())
                     manager.updateViewLayout(view, lp)
                 }
             }
@@ -6561,23 +6606,23 @@ class MainActivity : AppCompatActivity() {
         val p = sharePanel ?: return
         if (overlayHost != null) { p.open(); return }
         try {
-            val wmm = getSystemService(WINDOW_SERVICE) as WindowManager
+            val wmm = applicationContext.getSystemService(WINDOW_SERVICE) as WindowManager
             panelHomeParams = p.layoutParams
             (p.parent as? ViewGroup)?.removeView(p)
             // permatomas langas su paraštėmis – kad panelės užapvalinti kampai ir šešėlis nebūtų nukirpti stačiakampiu
             val host = FrameLayout(this).apply { val pd = (12 * resources.displayMetrics.density).toInt(); setPadding(pd, pd, pd, pd)
                 clipToPadding = false; clipChildren = false; setBackgroundColor(android.graphics.Color.TRANSPARENT) }
             p.translationX = 0f; p.translationY = 0f; p.visibility = View.VISIBLE
-            val dm = resources.displayMetrics
-            p.overlayMaxH = (dm.heightPixels * 0.85f).toInt()
+            val dm = resources.displayMetrics; val full = WinUtil.fullSize(this)
+            p.overlayMaxH = (full.y * 0.85f).toInt()
             host.addView(p, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
             val lp = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
                 if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, android.graphics.PixelFormat.TRANSLUCENT)
             lp.gravity = Gravity.TOP or Gravity.START
             val w = (270 * dm.density).toInt()
-            lp.x = OverlayBus.bubbleX.coerceIn(0, (dm.widthPixels - w).coerceAtLeast(0))
-            lp.y = OverlayBus.bubbleY.coerceIn(0, (dm.heightPixels * 0.15f).toInt().coerceAtLeast(OverlayBus.bubbleY.coerceAtMost(dm.heightPixels / 3)))
+            lp.x = OverlayBus.bubbleX.coerceIn(0, (full.x - w).coerceAtLeast(0))
+            lp.y = OverlayBus.bubbleY.coerceIn(0, (full.y * 0.15f).toInt().coerceAtLeast(OverlayBus.bubbleY.coerceAtMost(full.y / 3)))
             wmm.addView(host, lp)
             overlayHost = host
             p.onMinimized = { collapsePanelOverlay(true) }
@@ -6591,12 +6636,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Langas virš programų perstumiamas; bent 48 dp lieka ekrane, kad būtų už ko paimti. */
+    /**
+     * Langas virš programų perstumiamas po VISĄ ekraną (padalintame ekrane – ir virš kitos programos, pvz. AlpineQuest):
+     * šonuose ir apačioje gali išeiti už krašto, kol lieka 10 % lango; viršuje – kad liktų antraštė, už kurios paimama.
+     */
     private fun moveOverlay(v: View, lp: WindowManager.LayoutParams, dx: Float, dy: Float) {
-        val dm = resources.displayMetrics; val keep = (48 * dm.density).toInt()
-        lp.x = (lp.x + dx.toInt()).coerceIn(keep - v.width, dm.widthPixels - keep)
-        lp.y = (lp.y + dy.toInt()).coerceIn(0, dm.heightPixels - keep)
-        try { (getSystemService(WINDOW_SERVICE) as WindowManager).updateViewLayout(v, lp) } catch (_: Exception) {}
+        val full = WinUtil.fullSize(this)
+        lp.x = (lp.x + dx.toInt()).coerceIn(-(v.width * 0.9f).toInt(), full.x - (v.width * 0.1f).toInt())
+        lp.y = (lp.y + dy.toInt()).coerceIn(0, full.y - (v.height * 0.1f).toInt())
+        try { (applicationContext.getSystemService(WINDOW_SERVICE) as WindowManager).updateViewLayout(v, lp) } catch (_: Exception) {}
     }
 
     /** Panelė grąžinama į programą; showBubble – vėl parodyti plūduriuojantį burbulą virš kitų programų. */
@@ -6604,7 +6652,7 @@ class MainActivity : AppCompatActivity() {
         val host = overlayHost ?: run { if (showBubble) OverlayBus.showBubble?.invoke(); return }
         val p = sharePanel
         overlayHost = null
-        try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(host) } catch (_: Exception) {}
+        try { (applicationContext.getSystemService(WINDOW_SERVICE) as WindowManager).removeView(host) } catch (_: Exception) {}
         if (p != null) {
             host.removeView(p); p.overlayMaxH = 0; p.onMinimized = null; p.onDragBy = null; p.onPin = { pinBubble() }
             p.visibility = View.GONE
@@ -6813,7 +6861,7 @@ class MainActivity : AppCompatActivity() {
             openUrl = { u -> try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {} },
             onClose = {
                 pkChatDialog?.dismiss(); pkChatDialog = null
-                pkChatHost?.let { try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {} }; pkChatHost = null
+                pkChatHost?.let { try { (applicationContext.getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {} }; pkChatHost = null
             })
         chat.prefill(prefill)
         if (overlayHost != null && Settings.canDrawOverlays(this)) {
@@ -6821,9 +6869,10 @@ class MainActivity : AppCompatActivity() {
                 if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, android.graphics.PixelFormat.TRANSLUCENT)
             lp.gravity = Gravity.TOP or Gravity.START
-            lp.x = (dm.widthPixels - w) / 2; lp.y = (dm.heightPixels - h) / 3
+            val full = WinUtil.fullSize(this)
+            lp.x = (full.x - w) / 2; lp.y = (full.y - h) / 3
             chat.onDragBy = { dx, dy -> moveOverlay(chat, lp, dx, dy) }
-            (getSystemService(WINDOW_SERVICE) as WindowManager).addView(chat, lp); pkChatHost = chat
+            (applicationContext.getSystemService(WINDOW_SERVICE) as WindowManager).addView(chat, lp); pkChatHost = chat
         } else {
             val dlg = android.app.Dialog(this)
             dlg.setContentView(chat, ViewGroup.LayoutParams(w, h))
@@ -6831,6 +6880,17 @@ class MainActivity : AppCompatActivity() {
             dlg.window?.setLayout(w, h)
             dlg.setOnDismissListener { pkChatDialog = null; chat.close() }
             dlg.show(); pkChatDialog = dlg
+            // pokalbio langas be sistemos antraštės – tempiamas už savo juostos (PkChat.onDragBy), čia – lango padėtis
+            chat.onDragBy = { dx, dy ->
+                val win = dlg.window; val lp = win?.attributes
+                if (win != null && lp != null) {
+                    val full = WinUtil.fullSize(this)
+                    if (lp.gravity != (Gravity.TOP or Gravity.START)) { val loc = IntArray(2); win.decorView.getLocationOnScreen(loc); lp.gravity = Gravity.TOP or Gravity.START; lp.x = loc[0]; lp.y = loc[1]; win.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS) }
+                    lp.x = (lp.x + dx.toInt()).coerceIn(-(w * 0.9f).toInt(), full.x - (w * 0.1f).toInt())
+                    lp.y = (lp.y + dy.toInt()).coerceIn(0, full.y - (h * 0.1f).toInt())
+                    win.attributes = lp
+                }
+            }
         }
     }
 
@@ -7562,7 +7622,7 @@ class MainActivity : AppCompatActivity() {
                 "Pirmas fiksas gali užtrukti kelias minutes.")
             .setPositiveButton("Ištrinti") { _, _ -> coldStart() }
             .setNegativeButton("Atšaukti", null)
-            .show()
+            .show().also { WinUtil.draggable(it) }
     }
 
     private fun coldStart() {
@@ -7596,7 +7656,7 @@ class MainActivity : AppCompatActivity() {
                     } catch (e: Exception) { logError("Baterijos išimtis: ${e.message}") }
                 }
                 .setNegativeButton("Ne dabar") { _, _ -> GapLog.event(this, "baterijos išimties prašymas: atmesta") }
-                .show()
+                .show().also { WinUtil.draggable(it) }
         } catch (_: Exception) {}
     }
 
@@ -7790,7 +7850,7 @@ class MainActivity : AppCompatActivity() {
             }
         }.toTypedArray()
         android.app.AlertDialog.Builder(this).setTitle("Į kurį orientyrą taikysite?")
-            .setItems(items) { _, i -> showAimDialog(ts[i].key) }.setNegativeButton("Atšaukti", null).show()
+            .setItems(items) { _, i -> showAimDialog(ts[i].key) }.setNegativeButton("Atšaukti", null).show().also { WinUtil.draggable(it) }
     }
 
     private fun compass(az: Double): String = arrayOf("Š", "ŠR", "R", "PR", "P", "PV", "V", "ŠV")[(((az + 22.5) % 360) / 45).toInt().coerceIn(0, 7)]
@@ -7852,7 +7912,7 @@ class MainActivity : AppCompatActivity() {
         }
         dlg.setOnDismissListener { alive = false; ch.removeFrameCallback(tick)
             try { val d = skyDome.aimDiag(); AimDiag.stop(this, d[13], d[14]) } catch (_: Exception) {} }
-        dlg.show()
+        dlg.show(); WinUtil.draggable(dlg)
     }
 
     /**
@@ -7921,7 +7981,7 @@ class MainActivity : AppCompatActivity() {
             }
         }, { msg -> ui.post { tv.text = "Kamera: $msg"; Toast.makeText(this, msg, Toast.LENGTH_LONG).show() } })
         dlg.setOnDismissListener { done = true; cam.stop() }
-        dlg.show()
+        dlg.show(); WinUtil.draggable(dlg)
         cam.start()
         ui.postDelayed({ if (!done && dlg.isShowing) dlg.dismiss() }, 40_000L)
     }
@@ -7956,7 +8016,7 @@ class MainActivity : AppCompatActivity() {
                 .setMessage("Prieš kalibravimą kryptis buvo klaidinga %+.0f°. Kabinos žemėlapis (kryptys planšetės atžvilgiu) galėjo būti mokytas su klaidinga kryptimi – tada kryptis iš signalų stiprumo klaidina. Išvalius jis išmoks iš naujo su teisinga kryptimi.".format(Locale.US, r.corr))
                 .setPositiveButton("Išvalyti") { _, _ -> CabinMap.cabin.clear(); CabinMap.save(true); markCabinClean(); cabinView?.invalidate()
                     Toast.makeText(this, "Kabinos žemėlapis išvalytas", Toast.LENGTH_SHORT).show() }
-                .setNegativeButton("Palikti", null).show()
+                .setNegativeButton("Palikti", null).show().also { WinUtil.draggable(it) }
         return true
     }
 
@@ -8021,7 +8081,7 @@ class MainActivity : AppCompatActivity() {
         // antraštė su paaiškinimu (kartu su sąrašu žinutės rodyti negalima)
         if (items.isNotEmpty()) b.setCustomTitle(android.widget.TextView(this).apply {
             text = "Saulės kalibravimų žurnalas (${items.size})\n$msg"; setPadding(48, 32, 48, 8); textSize = 14f })
-        b.create().show()
+        b.create().also { it.show(); WinUtil.draggable(it) }
     }
 
     private fun logError(msg: String) {
@@ -8257,7 +8317,7 @@ class MainActivity : AppCompatActivity() {
                 (getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
                     .setPrimaryClip(android.content.ClipData.newPlainText("S Pen", head + "\n" + live.text))
                 Toast.makeText(this, "Nukopijuota", Toast.LENGTH_SHORT).show() }
-            .setPositiveButton("Uždaryti", null).show()
+            .setPositiveButton("Uždaryti", null).show().also { WinUtil.draggable(it) }
     }
 
     private fun chipCardText(): String = buildString {
@@ -8450,7 +8510,7 @@ class MainActivity : AppCompatActivity() {
                         }.toTypedArray()
                         android.app.AlertDialog.Builder(this@MainActivity).setTitle("Taškai (${list.size}); ★ – su BeiDou")
                             .setItems(items) { _, i -> mount.setText(sorted[i].name) }
-                            .setNegativeButton("Uždaryti", null).show()
+                            .setNegativeButton("Uždaryti", null).show().also { WinUtil.draggable(it) }
                     }
                 }.start()
             } })
@@ -8477,7 +8537,7 @@ class MainActivity : AppCompatActivity() {
                 if (on.isChecked) startNtrip()
             }
             .setNegativeButton("Atšaukti", null)
-            .show()
+            .show().also { WinUtil.draggable(it) }
         st.text = NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text()
     }
 
@@ -8509,7 +8569,7 @@ class MainActivity : AppCompatActivity() {
                 cv.shape = 1; cv.saveRoom(this); cv.invalidate()
             }
             .setNegativeButton("Atšaukti", null)
-            .show()
+            .show().also { WinUtil.draggable(it) }
     }
 
     /** Krano apribojimas: bokšto ašies koordinatės, spindulys iki planšetės, aukštis (nebūtinas). */
@@ -8553,7 +8613,7 @@ class MainActivity : AppCompatActivity() {
                     Toast.LENGTH_LONG).show()
             }
             .setNegativeButton("Atšaukti", null)
-            .show()
+            .show().also { WinUtil.draggable(it) }
     }
 
     private fun startNtrip() {

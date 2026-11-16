@@ -8208,7 +8208,7 @@ class MainActivity : AppCompatActivity() {
         val dp = resources.displayMetrics.density
         val sb = StringBuilder()
         fun axName(a: Int) = android.view.MotionEvent.axisToString(a).removePrefix("AXIS_")
-        val devs = android.view.InputDevice.getDeviceIds().mapNotNull { android.view.InputDevice.getDevice(it) }
+        val devs = android.view.InputDevice.getDeviceIds().toList().mapNotNull { android.view.InputDevice.getDevice(it) }
         for (d in devs) {
             val src = d.sources
             val stylus = (src and android.view.InputDevice.SOURCE_STYLUS) == android.view.InputDevice.SOURCE_STYLUS

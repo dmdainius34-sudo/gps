@@ -2191,7 +2191,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         monthTex.clear()
         labelTex.clear()
         wideLabels.clear()
-        galProg = 0; galBuf = null; coverTex = 0
+        galProg = 0; galBuf = null; coverTex = 0; polRingTex = 0
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
         glowProg = 0
@@ -2356,6 +2356,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawStars3d()
         drawGalaxy3d()
         drawStarCollapse(covers = false)
+        drawPolarisBeacon()
 
         // Dangaus skliauto kupolas (viršutinis ir apatinis) nebepiešiamas
         GLES20.glDepthMask(true)
@@ -2588,6 +2589,55 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     private var coverTex = 0
     /** Juodas minkštas diskas – uždengia fono žvaigždę, kurią „paėmė“ kolapsas. */
+    /**
+     * Orientyras galaktikoje – žybčiojanti Šiaurinė žvaigždė (Polaris, cefeidė): visada matoma, bet kokiu atitolinimu.
+     * Prie Žemės – savo vietoje danguje (fone), atitolinus – tikroje 3D vietoje (433 šm nuo Saulės, ta pati kryptis),
+     * galaktikos mastelyje – šalia Saulės, su plona linija nuo Saulės, kad matytųsi kryptis disko atžvilgiu (26° virš jo).
+     * Žybčioja tikru cefeidės ritmu, tik 1 para = 1 sekundė (3,97 s ciklas): greitai šviesėja, lėtai temsta.
+     * Dydis ekrane pastovus (skaičiuojamas nuo atstumo iki kameros), aplink – žiedas, kad būtų lengva rasti.
+     */
+    private var polRingTex = 0
+    private val polaris by lazy { NearStars.list.firstOrNull { it.name == "Polaris" } }
+    private fun makeRingTexture(): Int {
+        val n = 64; val bmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 3f; color = 0xFFFFFFFF.toInt() }
+        Canvas(bmp).drawCircle(n / 2f, n / 2f, n / 2f - 3f, p)
+        return uploadTexture(bmp)
+    }
+    private fun drawPolarisBeacon() {
+        val s = polaris ?: return
+        if (starTex == 0) return
+        if (polRingTex == 0) polRingTex = makeRingTexture()
+        val w = 1f - bgFade()                                             // 0 – danguje (fone), 1 – tikroje 3D vietoje
+        val dist3 = (s.ly * 0.3066 / 1000.0 * GAL_S).toFloat()           // šm -> pc -> kpc -> scenos vnt.
+        val pBg = FloatArray(3) { camPos[it] + s.dir[it] * 50f }
+        val p3 = FloatArray(3) { fP[it] + s.dir[it] * dist3 }
+        val p = FloatArray(3) { pBg[it] * (1f - w) + p3[it] * w }
+        val dx = p[0] - camPos[0]; val dy = p[1] - camPos[1]; val dz = p[2] - camPos[2]
+        val dc = sqrt(dx * dx + dy * dy + dz * dz).coerceAtLeast(1e-3f)
+        // cefeidės šviesos kreivė: kyla per 30 % ciklo, leidžiasi per 70 %
+        val ph = ((android.os.SystemClock.uptimeMillis() / 1000.0) / 3.9696 % 1.0).toFloat()
+        val lum = if (ph < 0.3f) ph / 0.3f else 1f - (ph - 0.3f) / 0.7f
+        val b = 0.25f + 0.75f * lum
+        System.arraycopy(mvpI, 0, mvp, 0, 16)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        // linija nuo Saulės iki Šiaurinės žvaigždės (tik kai jau ne fone)
+        if (w > 0.3f) {
+            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+            GLES20.glLineWidth(1f)
+            drawLines(floatArrayOf(fP[0], fP[1], fP[2], p3[0], p3[1], p3[2]), 1f, 0.9f, 0.6f, 0.35f * (w - 0.3f) / 0.7f)
+        }
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        val halo = dc * 0.035f * (0.7f + 0.3f * lum)
+        billboard(p, eyeI, halo, halo, starTex, 1f, 0.9f, 0.6f, 0.45f * b)
+        val core = dc * 0.009f
+        billboard(p, eyeI, core, core, starTex, 1f, 0.97f, 0.85f, b)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        val ring = dc * 0.028f
+        billboard(p, eyeI, ring, ring, polRingTex, 1f, 0.85f, 0.45f, 0.55f)
+        GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
     private fun makeCoverTexture(): Int {
         val n = 64; val bmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888)
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {

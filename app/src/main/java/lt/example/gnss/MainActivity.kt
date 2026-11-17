@@ -2423,7 +2423,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             if (muted) {
                 if (mutedTex == 0) mutedTex = makeMutedTexture()
                 GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-                billboard(floatArrayOf(p[0], p[1], p[2] + 0.12f), eyeI, 0.05f, 0.05f, mutedTex, 1f, 1f, 1f, 0.9f)
+                // tiesiai ant palydovo (ne pastumtas Žemės ašies kryptimi – iš šono žiūrint tada nukrypdavo nuo palydovo)
+                billboard(p, eyeI, 0.045f, 0.045f, mutedTex, 1f, 1f, 1f, 0.9f)
             }
             if (nb != null && sat.cn0 > 10f) {
                 val (lt, asp) = wideLabel(nb.label)

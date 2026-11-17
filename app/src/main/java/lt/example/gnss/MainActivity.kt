@@ -7321,7 +7321,7 @@ class MainActivity : AppCompatActivity() {
             Readiness.onStatus(SatCount.count(list.map { SatCount.Sig(it.const, it.svid, it.used) }).satUsed)
             updateReady()
             if (::satCountView.isInitialized) satCountView.text = SatCount.count(list.map { SatCount.Sig(it.const, it.svid, it.used) })
-                .let { "Palydovų ${it.satVisible} · lustas ${it.satUsed}" + (LiveRtk.sppUsed()?.let { n -> " · programa $n" + (if (LiveRtk.sppHeightCon) " + aukštis" else "") } ?: "") } +
+                .let { "Palydovų ${it.satVisible} · lustas ${it.satUsed}" + (LiveRtk.sppUsed()?.let { n -> " · programa $n" + (if (LiveRtk.sppHeightCon) KnownHeight.deviceMsl()?.let { h -> " + aukštis %.0f m".format(java.util.Locale.US, h) } ?: " + aukštis" else "") } ?: "") } +
                     (LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.let { "\nRTK %s ±%.2f m (%d palyd. su faze)%s".format(java.util.Locale.US, if (LiveRtk.fix) "FIX" else "FLOAT", it.hacc, it.sats, if (MockLoc.active) " → kitoms programoms" else "") + LiveRtk.note().let { n -> if (n.isEmpty()) "" else "\n$n" } } ?: "")
             val used = list.filter { it.used }
             val avg = if (used.isNotEmpty()) used.map { it.cn0.toDouble() }.average() else 0.0
@@ -7948,8 +7948,25 @@ class MainActivity : AppCompatActivity() {
                 }
                 gb.postDelayed(this, 500L)
             } }
-            gb.post(tick)
-            skyHolder.addView(gb, FrameLayout.LayoutParams(bSize, bSize, Gravity.BOTTOM or Gravity.START).apply {
+            // šalia – žemės aukštis virš jūros: išmatuotas (ryškiai), matuojant – dabartinis vidurkis, iš interneto žemėlapio – blankiai su „~“
+            val gLbl = TextView(this).apply { textSize = 13f; setTextColor(0xFFFFFFFF.toInt()); setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())
+                setPadding((6 * dp).toInt(), 0, (6 * dp).toInt(), 0) }
+            val gRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                addView(gb, LinearLayout.LayoutParams(bSize, bSize)); addView(gLbl) }
+            val lblTick = object : Runnable { override fun run() {
+                val live = KnownHeight.gLiveMsl
+                val meas = KnownHeight.measuredGround()
+                val dem = KnownHeight.groundMsl()
+                when {
+                    KnownHeight.gMeasuring -> { gLbl.alpha = 0.9f; gLbl.text = if (live.isNaN()) "…" else "%.0f m".format(Locale.US, live) }
+                    meas != null -> { gLbl.alpha = 1f; gLbl.text = "%.0f m".format(Locale.US, meas) }
+                    dem != null -> { gLbl.alpha = 0.5f; gLbl.text = "~%.0f m".format(Locale.US, dem) }
+                    else -> gLbl.text = ""
+                }
+                gLbl.postDelayed(this, 1000L)
+            } }
+            gb.post(tick); gLbl.post(lblTick)
+            skyHolder.addView(gRow, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, bSize, Gravity.BOTTOM or Gravity.START).apply {
                 val m = (10 * dp).toInt(); setMargins(m, m, m, m + (44 * dp).toInt() + (if (baro.hasSensor) bSize + (8 * dp).toInt() else 0)) })
         }
         toolCol = tools

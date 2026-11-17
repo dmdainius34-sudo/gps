@@ -57,11 +57,16 @@ object KnownHeight {
         private set
     @Volatile var gResult = ""
         private set
+    /** Matuojant – dabartinis vidurkis (žemė virš jūros, m); NaN – dar nėra. */
+    @Volatile var gLiveMsl = Double.NaN
+        private set
+    /** Išmatuota žemė čia (virš jūros, m) arba null. */
+    fun measuredGround(): Double? = groundNear()
     private const val G_MS = 180_000L
     private val gH = ArrayList<Double>(); private val gFix = ArrayList<Double>()
     private var gStart = 0L; private var gLat0 = Double.NaN; private var gLon0 = Double.NaN
 
-    @Synchronized fun startGround(now: Long) { gH.clear(); gFix.clear(); gStart = now; gLat0 = Double.NaN; gProgress = 0f; gMeasuring = true; gResult = "Žemė matuojama…" }
+    @Synchronized fun startGround(now: Long) { gH.clear(); gFix.clear(); gStart = now; gLat0 = Double.NaN; gProgress = 0f; gLiveMsl = Double.NaN; gMeasuring = true; gResult = "Žemė matuojama…" }
     @Synchronized fun cancelGround(why: String) { if (!gMeasuring) return; gMeasuring = false; gProgress = 0f; gResult = "Žemės matavimas nebaigtas: $why" }
 
     /** Išmatuotą žemę pamiršti – vėl naudojamas interneto žemėlapis. */
@@ -85,6 +90,10 @@ object KnownHeight {
         if (d > 25.0 && !fix) { cancelGround("padėtis nutolo %.0f m".format(Locale.US, d)); return false }
         if (fix) gFix.add(hEll) else gH.add(hEll)
         gProgress = ((now - gStart).toFloat() / G_MS).coerceIn(0f, 1f)
+        Geoid.undulation(lat, lon)?.let { n ->
+            val l = (if (gFix.size >= 5) gFix else gH).sorted()
+            gLiveMsl = l[l.size / 2] - n
+        }
         if (gFix.size >= 30 || (now - gStart >= G_MS && gH.size >= 100)) return finishGround(lat, lon)
         return false
     }

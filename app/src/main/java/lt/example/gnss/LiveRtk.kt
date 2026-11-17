@@ -180,6 +180,8 @@ object LiveRtk {
     @Volatile var sppLast: PositionSolver.Solution? = null
         private set
     @Volatile private var sppMs = 0L
+    /** Kiek palydovų panaudojo programos padėtis (šviežia – iki 5 s); null – neskaičiuojama. */
+    fun sppUsed(): Int? = sppLast?.takeIf { System.currentTimeMillis() - sppMs < 5_000L }?.sats
     /** Greitis ir judėjimo kryptis iš Doplerio (programos sprendinys). */
     @Volatile var velLast: DopplerVel.Vel? = null
         private set

@@ -182,6 +182,13 @@ object LiveRtk {
     @Volatile private var sppMs = 0L
     /** Kiek palydovų panaudojo programos padėtis (šviežia – iki 5 s); null – neskaičiuojama. */
     fun sppUsed(): Int? = sppLast?.takeIf { System.currentTimeMillis() - sppMs < 5_000L }?.sats
+    /** Programos padėtyje panaudoti palydovai („GPS12“, „GAL7“…), paskutinio sprendinio. */
+    @Volatile var sppUsedKeys: Set<String> = emptySet()
+        private set
+    private fun constOf(sys: Char) = when (sys) { 'G' -> "GPS"; 'E' -> "GAL"; 'C' -> "BDS"; 'R' -> "GLO"; 'J' -> "QZS"; else -> sys.toString() }
+    /** Ar programa šį palydovą „užtildė“ (neįtraukė į savo padėtį): pagal paskutinį sprendinį, kitaip – pagal signalo slenkstį. */
+    fun isMuted(const: String, svid: Int, cn0: Float): Boolean =
+        if (System.currentTimeMillis() - sppMs < 5_000L && sppUsedKeys.isNotEmpty()) (const + svid) !in sppUsedKeys else cn0 < CnoMask.min
     /** Greitis ir judėjimo kryptis iš Doplerio (programos sprendinys). */
     @Volatile var velLast: DopplerVel.Vel? = null
         private set
@@ -235,6 +242,7 @@ object LiveRtk {
         val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, moving)
         val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
         sppLast = sol; sppMs = now
+        sppUsedKeys = f.sats.map { constOf(it.sys) + it.svid }.toSet()
         try { DopplerVel.solve(f.sats, f.x)?.let { velLast = it; velMs = now } } catch (_: Exception) {}
     }
 

@@ -2187,7 +2187,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         horizonBuf = floatBuf(hz); horizonN = hz.size / 3
 
         // GL kontekstas atkuriamas po išėjimo/įėjimo – senos tekstūrų ID nebegalioja, todėl viską perkuriame
-        prnTex.clear()
+        prnTex.clear(); mutedTex = 0
         monthTex.clear()
         labelTex.clear()
         wideLabels.clear()
@@ -2408,14 +2408,23 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val px2 = p[0] - dd * eyeI[0]; val py2 = p[1] - dd * eyeI[1]; val pz2 = p[2] - dd * eyeI[2]
             if (dd < 0f && kotlin.math.sqrt(px2 * px2 + py2 * py2 + pz2 * pz2) < EARTH_R) continue
             val col = constRgb(sat.const)
-            // žemiau slenksčio (programos skaičiavime nenaudojamas) – blyškus
-            val usedK = if (sat.cn0 < CnoMask.min) 0.25f else if (sat.used) 1f else 0.4f
+            // programos „užtildytas“ (neįtrauktas į jos padėtį: žemiau slenksčio, be efemeridės, atmestas kaip klaidingas) – blyškus,
+            // be spindulio ir su raudonu „užtildymo“ ženkliuku
+            val muted = LiveRtk.isMuted(sat.const, sat.svid, sat.cn0)
+            val usedK = if (muted) 0.25f else if (sat.used) 1f else 0.4f
             // Švytėjimas: 0 ties 20 dB-Hz, didžiausias ties 45 dB-Hz
             val glow = ((sat.cn0 - 20f) / 25f).coerceIn(0f, 1f)
             val nb = if (showNavBits) NavBits.get(sat.const + sat.svid)?.takeIf { System.currentTimeMillis() - it.tMs < 8_000L } else null
-            if (nb != null && sat.cn0 > 10f) drawNavBits(p, pin, sat.const + sat.svid, nb, col, sat.cn0)
-            else drawLaser(p, pin, sat.cn0, sat.svid, t)
+            if (!muted) {
+                if (nb != null && sat.cn0 > 10f) drawNavBits(p, pin, sat.const + sat.svid, nb, col, sat.cn0)
+                else drawLaser(p, pin, sat.cn0, sat.svid, t)
+            }
             drawSatModel(p, col, glow, usedK, sat.const)
+            if (muted) {
+                if (mutedTex == 0) mutedTex = makeMutedTexture()
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+                billboard(floatArrayOf(p[0], p[1], p[2] + 0.12f), eyeI, 0.05f, 0.05f, mutedTex, 1f, 1f, 1f, 0.9f)
+            }
             if (nb != null && sat.cn0 > 10f) {
                 val (lt, asp) = wideLabel(nb.label)
                 // silpnas signalas – užrašas blankesnis ir mirksi (kuo silpnesnis, tuo gilesnis mirksėjimas); stiprus – ramus
@@ -5219,6 +5228,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val c = Canvas(bmp)
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color; textSize = h * 0.62f; textAlign = Paint.Align.CENTER }
         c.drawText(text, w / 2f, h * 0.72f, p)
+        return uploadTexture(bmp)
+    }
+
+    private var mutedTex = 0
+    /** „Užtildyta“: raudonas ratas su įstrižu brūkšniu ant permatomo fono. */
+    private fun makeMutedTexture(): Int {
+        val n = 64; val bmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888); val cv = Canvas(bmp)
+        val pt = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 7f; color = 0xFFEF4444.toInt() }
+        cv.drawCircle(n / 2f, n / 2f, n / 2f - 5f, pt)
+        cv.drawLine(n * 0.22f, n * 0.22f, n * 0.78f, n * 0.78f, pt)
         return uploadTexture(bmp)
     }
 

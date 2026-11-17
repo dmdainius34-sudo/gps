@@ -76,7 +76,11 @@ class CalibDrum(ctx: Context, private val icons: List<String>, private val names
         // inercija ir prisitraukimas prie artimiausio
         if (vt == null) {
             val now = System.nanoTime(); val dt = if (lastT == 0L) 0.016f else ((now - lastT) / 1e9f).coerceIn(0f, 0.05f); lastT = now
-            if (abs(vel) > 30f) { offset -= vel * dt; vel *= 0.92f; invalidate() }
+            val an = anim
+            if (an != null) {
+                val diff = (an - offset).toFloat()
+                if (abs(diff) > 0.5f) { offset += diff * 0.22f; invalidate() } else { offset = an.toFloat(); anim = null; lastT = 0L }
+            } else if (abs(vel) > 30f) { offset -= vel * dt; vel *= 0.92f; invalidate() }
             else {
                 vel = 0f
                 val target = (offset / itemH).roundToInt() * itemH
@@ -86,26 +90,36 @@ class CalibDrum(ctx: Context, private val icons: List<String>, private val names
         }
     }
 
+    /** Elemento poslinkis nuo centro (elementais) pagal ekrano y (atvirkščiai būgno formulei). */
+    private fun dAt(y: Float): Double {
+        val rel = ((y - height / 2f) / (itemH * 2.2f)).coerceIn(-0.99f, 0.99f)
+        return kotlin.math.asin(rel.toDouble()) / 0.55
+    }
+    private var grab = 0.0                               // pirštu paimtas elementas (indeksas ratu)
+    private var anim: Double? = null                     // tikslas, į kurį sukama po bakstelėjimo
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { vt = VelocityTracker.obtain().also { it.addMovement(e) }; lastY = e.y; downY = e.y; dragged = false; vel = 0f }
+            MotionEvent.ACTION_DOWN -> {
+                vt = VelocityTracker.obtain().also { it.addMovement(e) }; downY = e.y; dragged = false; vel = 0f; anim = null
+                grab = offset / itemH + dAt(e.y)                 // kuris paveikslėlis po pirštu
+                parent?.requestDisallowInterceptTouchEvent(true)
+            }
             MotionEvent.ACTION_MOVE -> {
                 vt?.addMovement(e)
-                if (abs(e.y - downY) > 8 * dp) dragged = true
-                offset -= (e.y - lastY) * 0.55f; lastY = e.y; invalidate()
+                if (abs(e.y - downY) > 6 * dp) dragged = true
+                // paimtas paveikslėlis seka pirštą tiksliai: jo padėtis = piršto y
+                if (dragged) { offset = ((grab - dAt(e.y)) * itemH).toFloat(); invalidate() }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                vt?.let { it.addMovement(e); it.computeCurrentVelocity(1000); vel = -it.yVelocity * -0.55f; it.recycle() }
+                vt?.let { it.addMovement(e); it.computeCurrentVelocity(1000); vel = if (dragged) it.yVelocity / 1.21f else 0f; it.recycle() }
                 vt = null; lastT = 0L
                 if (!dragged && e.actionMasked == MotionEvent.ACTION_UP) {
-                    // bakstelėjimas: kuris paveikslėlis po pirštu (pagal atstumą nuo centro)
-                    val cy = height / 2f
-                    val rel = ((e.y - cy) / (itemH * 2.2f)).coerceIn(-0.99f, 0.99f)
-                    val d = kotlin.math.asin(rel.toDouble()) / 0.55
-                    val k = (offset / itemH + d).roundToInt()
-                    offset = k * itemH; vel = 0f
-                    onPick(Math.floorMod(k, n))
+                    val k = Math.round(offset / itemH + dAt(e.y)).toInt()
+                    val cur = Math.round(offset / itemH)
+                    if (k == cur) onPick(Math.floorMod(k, n))         // bakstelėtas paryškintas – atidaromas
+                    else anim = k * itemH.toDouble()                  // kitas – atsukamas į paryškintą ratuką
                 }
                 invalidate()
             }

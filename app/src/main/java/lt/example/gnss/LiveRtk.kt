@@ -180,6 +180,9 @@ object LiveRtk {
     @Volatile var sppLast: PositionSolver.Solution? = null
         private set
     @Volatile private var sppMs = 0L
+    /** Paskutinė programos padėtis skaičiuota su žinomu aukščiu. */
+    @Volatile var sppHeightCon = false
+        private set
     /** Kiek palydovų panaudojo programos padėtis (šviežia – iki 5 s); null – neskaičiuojama. */
     fun sppUsed(): Int? = sppLast?.takeIf { System.currentTimeMillis() - sppMs < 5_000L }?.sats
     /** Programos padėtyje panaudoti palydovai („GPS12“, „GAL7“…), paskutinio sprendinio. */
@@ -232,11 +235,17 @@ object LiveRtk {
                 l.map { o -> if (o.ifree && o.sys in few) ep.meas.first { it.sys == o.sys && it.svid == o.svid }.let { m -> Sp3V5.Ob(m.sys, m.svid, m.pr, m.cn0, m.prr) } else o }
             }
         DualFreq.lastUsed = obs.count { it.ifree }; DualFreq.lastTotal = obs.size
-        if (obs.size < 5) return
-        val f = try {
-            if (r != null) Sp3V5.solve(ep.week, ep.tow, obs, r, isb = true, raim = true)
-            else Sp3V5.solveSats(ep.tow, prepareBroadcast(ep.t, obs), isb = true, raim = true)
-        } catch (_: Exception) { null } ?: return
+        fun fit(hc: Sp3V5.HCon?) = try {
+            if (r != null) Sp3V5.solve(ep.week, ep.tow, obs, r, isb = true, raim = true, hCon = hc)
+            else Sp3V5.solveSats(ep.tow, prepareBroadcast(ep.t, obs), isb = true, raim = true, hCon = hc)
+        } catch (_: Exception) { null }
+        // žinomas aukštis (įvestas ranka): kai palydovų pakanka – patikra, ar jis čia tinka (be barometro kitaip nežinoma)
+        val free = if (obs.size >= 6 && KnownHeight.deviceMsl() != null) fit(null)?.also { KnownHeight.checkFree(it.sol.lat, it.sol.lon, it.sol.h) } else null
+        val ref = sppLast?.takeIf { now - sppMs < 60_000L }?.let { it.lat to it.lon } ?: KnownHeight.lastLatLon()
+        val hc = ref?.let { KnownHeight.constraint(it.first, it.second) }
+        if (obs.size < (if (hc != null) 3 else 5)) return
+        val f = (if (hc != null) fit(hc) else free ?: fit(null)) ?: return
+        sppHeightCon = hc != null
         sppSource = if (r != null) "SP3" else "efemeridės iš palydovų"
         val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }
         val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, moving)

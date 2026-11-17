@@ -28,8 +28,38 @@ object KnownHeight {
     fun load(ctx: Context) {
         val p = ctx.getSharedPreferences("known_ref", Context.MODE_PRIVATE)
         fun d(k: String) = p.getString(k, "")?.trim()?.replace(',', '.')?.toDoubleOrNull()
-        agl = d("agl")?.takeIf { it in -100.0..1000.0 }; msl = d("msl")?.takeIf { it in -500.0..9000.0 }
+        val a = d("agl")?.takeIf { it in -100.0..1000.0 }; val m = d("msl")?.takeIf { it in -500.0..9000.0 }
+        if (a != agl || m != msl) { dhAvg = Double.NaN; dhCnt = 0; conflict = false }   // nauja vertė – patikra iš naujo
+        agl = a; msl = m
     }
+
+    /**
+     * Planšetė be barometro nežino, ar dar esama įvesto aukščio vietoje. Kai palydovų pakanka (≥ 6), programa skaičiuoja ir padėtį
+     * be aukščio apribojimo: jei ji ~20 s vidutiniškai > 30 m kitame aukštyje (pvz. nulipus nuo krano), įvestas aukštis nenaudojamas,
+     * kol vėl sutaps (< 15 m).
+     */
+    @Volatile var conflict = false
+        private set
+    @Volatile var freeDh = Double.NaN
+        private set
+    private var dhAvg = Double.NaN; private var dhCnt = 0
+    @Synchronized fun checkFree(lat: Double, lon: Double, h: Double) {
+        val h0 = h0(lat, lon) ?: return
+        val dh = h - h0
+        dhAvg = if (dhAvg.isNaN()) dh else dhAvg * 0.95 + dh * 0.05
+        dhCnt++; freeDh = dhAvg
+        if (dhCnt >= 20 && abs(dhAvg) > 30.0) conflict = true
+        else if (abs(dhAvg) < 15.0) conflict = false
+    }
+
+    /** Aukščio apribojimas programos padėčiai (vieta lat, lon – paskutinė žinoma) arba null. */
+    fun constraint(lat: Double, lon: Double): Sp3V5.HCon? {
+        if (!active) return null
+        val h0 = h0(lat, lon) ?: return null
+        return Sp3V5.HCon(h0, sigma(), PositionSolver.llhToEcef(Math.toRadians(lat), Math.toRadians(lon), h0))
+    }
+    /** Paskutinė Android vieta (kai programa dar neturi savo padėties). */
+    fun lastLatLon(): Pair<Double, Double>? = if (lastLat.isNaN()) null else lastLat to lastLon
 
     /**
      * Copernicus DEM yra paviršiaus modelis (su pastatais, medžiais) – gali būti klaidingas keliolika metrų.
@@ -37,7 +67,7 @@ object KnownHeight {
      */
     @Volatile var demSuspect = false
         private set
-    val active get() = msl != null || (agl != null && !ground.isNaN() && !demSuspect)
+    val active get() = (msl != null || (agl != null && !ground.isNaN() && !demSuspect)) && !conflict
 
     /** Prietaiso aukštis virš jūros, m. */
     fun deviceMsl(): Double? = msl ?: agl?.let { a -> if (ground.isNaN()) null else ground + a }
@@ -116,8 +146,10 @@ object KnownHeight {
         if (dm != null) append("; prietaisas %.2f m virš jūros (σ %.1f m)".format(Locale.US, dm, sigma()))
         if (!lastLat.isNaN()) h0(lastLat, lastLon)?.let { append(", elipsoidinis %.2f m".format(Locale.US, it)) }
         if (demStatus.isNotEmpty() && msl == null) append("; $demStatus")
+        if (!freeDh.isNaN()) append("; programos padėtis be aukščio %+.0f m nuo įvesto".format(Locale.US, freeDh))
         append(when {
-            active -> "; naudojamas RTK filtre"
+            conflict -> "; NENAUDOJAMAS: programos padėtis daugiau nei 30 m kitame aukštyje (nulipote?) – pataisykite arba ištrinkite"
+            active -> "; naudojamas programos padėtyje ir RTK filtre"
             demSuspect -> "; NENAUDOJAMAS: GNSS aukštis nuo DEM etalono skiriasi > 10 m (DEM su pastatais ar netikslus, arba neteisingas aukštis virš žemės) – įveskite aukštį virš jūros"
             else -> "; dar nenaudojamas (laukiama žemės aukščio)"
         })

@@ -200,3 +200,35 @@ class MoonSizeTest {
         org.junit.Assert.assertTrue(SunCal.refractionFlattening(1.0) < 0.95)
     }
 }
+
+/** Žinomas aukštis programos padėtyje: 3 palydovai + aukštis duoda tikslią vietą, be aukščio – nesprendžiama. */
+class KnownHeightSppTest {
+    private fun sat(xT: DoubleArray, lat: Double, lon: Double, azD: Double, elD: Double, svid: Int, clk: Double): Sp3V5.SatEp {
+        val az = Math.toRadians(azD); val el = Math.toRadians(elD)
+        val sf = kotlin.math.sin(lat); val cf = kotlin.math.cos(lat); val sl = kotlin.math.sin(lon); val cl = kotlin.math.cos(lon)
+        val e = doubleArrayOf(-sl, cl, 0.0); val n = doubleArrayOf(-sf * cl, -sf * sl, cf); val u = doubleArrayOf(cf * cl, cf * sl, sf)
+        val dir = DoubleArray(3) { kotlin.math.cos(el) * kotlin.math.sin(az) * e[it] + kotlin.math.cos(el) * kotlin.math.cos(az) * n[it] + kotlin.math.sin(el) * u[it] }
+        val range = 21_000_000.0
+        val pos = DoubleArray(3) { xT[it] + dir[it] * range }
+        val probe = Sp3V5.SatEp('G', svid, pos, DoubleArray(3), 0.0, range / 299_792_458.0, 45.0, 0.0, null)
+        repeat(4) { probe.rotate(xT) }
+        val rp = probe.rp
+        val rho = kotlin.math.sqrt((0..2).sumOf { (xT[it] - rp[it]) * (xT[it] - rp[it]) })
+        val l = Sp3Solver.look(xT, rp, rho)
+        val prc = rho + clk + Sp3Solver.saastamoinen(l[0], l[2], l[4])
+        return Sp3V5.SatEp('G', svid, pos, DoubleArray(3), prc, range / 299_792_458.0, 45.0, 0.0, null).also { it.ifree = true }
+    }
+
+    @Test fun threeSatsWithHeight() {
+        val latD = 54.70; val lonD = 25.30; val h = 150.0
+        val lat = Math.toRadians(latD); val lon = Math.toRadians(lonD)
+        val xT = PositionSolver.llhToEcef(lat, lon, h)
+        val sats = listOf(sat(xT, lat, lon, 10.0, 60.0, 1, 1000.0), sat(xT, lat, lon, 130.0, 40.0, 2, 1000.0), sat(xT, lat, lon, 250.0, 35.0, 3, 1000.0))
+        assertEquals(null, Sp3V5.solveSats(100.0, sats, isb = true, raim = true))
+        val x0 = PositionSolver.llhToEcef(Math.toRadians(latD + 0.002), Math.toRadians(lonD - 0.002), h)
+        val f = Sp3V5.solveSats(100.0, sats, isb = true, raim = true, hCon = Sp3V5.HCon(h, 0.3, x0))!!
+        assertEquals(0.0, PositionSolver.horizDist(latD, lonD, f.sol.lat, f.sol.lon), 0.05)
+        assertEquals(h, f.sol.h, 0.05)
+        assertEquals(3, f.sol.sats)
+    }
+}

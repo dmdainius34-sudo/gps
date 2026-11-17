@@ -203,15 +203,21 @@ object Sp3V5 {
      * Svertiniai MKM su atmosferos pataisomis ir 10° kauke; isb – atskiras laikrodis kiekvienai konsteliacijai;
      * raim – jei didžiausia normuota liekana > 3σ ir lieka ≥ 5 palydovai, palydovas atmetamas ir sprendžiama iš naujo.
      */
-    fun solve(week: Int, tow: Double, obs: List<Ob>, sp3: Sp3Reader, isb: Boolean, raim: Boolean, weighted: Boolean = true): Fit? =
-        solveSats(tow, prepare(week * W + tow, obs, sp3), isb, raim, weighted)
+    fun solve(week: Int, tow: Double, obs: List<Ob>, sp3: Sp3Reader, isb: Boolean, raim: Boolean, weighted: Boolean = true, hCon: HCon? = null): Fit? =
+        solveSats(tow, prepare(week * W + tow, obs, sp3), isb, raim, weighted, hCon)
+
+    /**
+     * Žinomas elipsoidinis aukštis h0 (σ, m) kaip papildomas matavimas: vienu nežinomuoju mažiau – padėtis stabilesnė
+     * prastos geometrijos vietoje ir randama jau iš 3 palydovų. x0 – pradinis spėjimas (ECEF, netoli tikrosios vietos).
+     */
+    class HCon(val h0: Double, val sigma: Double, val x0: DoubleArray)
 
     /** Tas pats sprendinys iš jau paruoštų palydovų (pvz. iš transliuojamų efemeridžių, kai SP3 nėra). */
-    fun solveSats(tow: Double, sats0: List<SatEp>, isb: Boolean, raim: Boolean, weighted: Boolean = true): Fit? {
+    fun solveSats(tow: Double, sats0: List<SatEp>, isb: Boolean, raim: Boolean, weighted: Boolean = true, hCon: HCon? = null): Fit? {
         var sats = sats0
         val dropped = ArrayList<String>()
         while (true) {
-            val f = lsq(sats, tow, isb, weighted) ?: return null
+            val f = lsq(sats, tow, isb, weighted, hCon) ?: return null
             if (!raim) return Fit(f.sol, f.clocks, f.x, dropped, sats)
             val (worst, nr) = f.worst
             if (worst == null || nr <= 3.0 || f.used - 1 < 5) return Fit(f.sol, f.clocks, f.x, dropped, sats)
@@ -222,13 +228,24 @@ object Sp3V5 {
 
     private class Lsq(val sol: PositionSolver.Solution, val clocks: Map<Char, Double>, val x: DoubleArray, val worst: Pair<SatEp?, Double>, val used: Int)
 
-    private fun lsq(sats: List<SatEp>, tow: Double, isb: Boolean, weighted: Boolean): Lsq? {
-        if (sats.size < 4) return null
+    private fun lsq(sats: List<SatEp>, tow: Double, isb: Boolean, weighted: Boolean, hCon: HCon? = null): Lsq? {
+        val nc = if (hCon != null) 1 else 0
+        if (sats.size + nc < 4) return null
         // L1+L5 pataisyti palydovai – atskiras laikrodis (mažoji raidė): imtuvo L1/L5 poslinkis kitoks nei vien L1
         fun ck(s: SatEp) = if (s.ifree) s.sys.lowercaseChar() else s.sys
         val systems = if (isb) sats.map { ck(it) }.distinct().sorted() else listOf('*')
         val np = 3 + systems.size
         val x = DoubleArray(np); x[2] = 6_378_137.0
+        if (hCon != null) for (k in 0..2) x[k] = hCon.x0[k]
+        // aukščio eilutė: H = vietinis zenitas, svoris (σ0/σh)², σ0 = 3 m – vienetinio svorio pseudoatstumo paklaida
+        fun conRow(): Triple<DoubleArray, Double, Double>? {
+            val c = hCon ?: return null
+            val llh = PositionSolver.ecefToLlh(x[0], x[1], x[2])
+            val h = DoubleArray(np)
+            h[0] = cos(llh[0]) * cos(llh[1]); h[1] = cos(llh[0]) * sin(llh[1]); h[2] = sin(llh[0])
+            val s = c.sigma.coerceAtLeast(0.1)
+            return Triple(h, c.h0 - llh[2], 9.0 / (s * s))
+        }
         sats.forEach { it.rp.fill(0.0) }
         var lastStep = Double.MAX_VALUE
         for (iter in 0 until 40) {
@@ -252,30 +269,36 @@ object Sp3V5 {
             }
             // kiekvienam laikrodžiui reikia bent vieno palydovo; nenaudojamas laikrodis neįvertinamas
             val usedSys = rows.map { ck(it.first) }.toSet()
-            if (isb && systems.any { it !in usedSys }) return lsq(sats.filter { ck(it) in usedSys }, tow, isb, weighted)
-            if (rows.size < np) return null
-            val d = solveNormal(rows.map { it.second }, res, rows.map { it.third }) ?: return null
+            if (isb && systems.any { it !in usedSys }) return lsq(sats.filter { ck(it) in usedSys }, tow, isb, weighted, hCon)
+            if (rows.size + nc < np) return null
+            val con = conRow()
+            val hs = rows.map { it.second } + listOfNotNull(con?.first)
+            val ws = rows.map { it.third } + listOfNotNull(con?.third)
+            val rs = res + listOfNotNull(con?.second)
+            val d = solveNormal(hs, rs, ws) ?: return null
             for (k in 0 until np) x[k] += d[k]
             val step = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
             if (near && step < 1e-3) {
                 var ss = 0.0
-                val post = rows.indices.map { i ->
-                    var r = res[i]; for (k in 0 until np) r -= rows[i].second[k] * d[k]
-                    ss += rows[i].third * r * r; r
+                val post = hs.indices.map { i ->
+                    var r = rs[i]; for (k in 0 until np) r -= hs[i][k] * d[k]
+                    ss += ws[i] * r * r; r
                 }
-                val dof = (rows.size - np).coerceAtLeast(1)
-                val s0 = sqrt(ss / dof)
+                val nObs = hs.size
+                val dof = (nObs - np).coerceAtLeast(1)
+                // be pertekliaus (pvz. 3 palydovai + aukštis) liekanos ≈ 0 – tikslumas nežinomas, laikomas 10 m
+                val s0 = if (hCon != null && nObs <= np) 5.0 else sqrt(ss / dof)
                 // Normuota liekana: |v|·√w / (σ̂ · √r_ii), r_ii = 1 − w·hᵀ(HᵀWH)⁻¹h (perteklius);
                 // σ̂ – be tikrinamo palydovo (kad klaida nepadidintų savo pačios slenksčio)
                 var worst: SatEp? = null; var nrMax = 0.0
-                val ninv = if (rows.size >= np + 2) invertNormal(rows.map { it.second }, rows.map { it.third }) else null
+                val ninv = if (nObs >= np + 2) invertNormal(hs, ws) else null
                 if (ninv != null) rows.indices.forEach { i ->
                     val h = rows[i].second; val wi = rows[i].third
                     var q = 0.0; for (a in 0 until np) for (b in 0 until np) q += h[a] * ninv[a][b] * h[b]
                     val rii = (1.0 - wi * q).coerceAtLeast(1e-6)
                     val ssi = ss - wi * post[i] * post[i] / rii
                     // apatinė riba 1 m: be triukšmo likusios liekanos ~0 ir būtų atmetami geri palydovai
-                    val si = sqrt(ssi.coerceAtLeast(0.0) / (rows.size - np - 1)).coerceAtLeast(1.0)
+                    val si = sqrt(ssi.coerceAtLeast(0.0) / (nObs - np - 1)).coerceAtLeast(1.0)
                     val nr = abs(post[i]) * sqrt(wi) / (si * sqrt(rii))
                     if (nr > nrMax) { nrMax = nr; worst = rows[i].first }
                 }

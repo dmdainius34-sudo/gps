@@ -2191,7 +2191,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         monthTex.clear()
         labelTex.clear()
         wideLabels.clear()
-        galProg = 0; galBuf = null; coverTex = 0
+        galProg = 0; galBuf = null; coverTex = 0; m31Tex = 0
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
         glowProg = 0
@@ -2356,6 +2356,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawStars3d()
         drawGalaxy3d()
         drawStarCollapse(covers = false)
+        drawAndromeda()
         drawPolarisBeacon()
 
         // Dangaus skliauto kupolas (viršutinis ir apatinis) nebepiešiamas
@@ -2597,6 +2598,77 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * Dydis ekrane pastovus (skaičiuojamas nuo atstumo iki kameros). Spalva tikra – F7 supermilžinės (Polaris Aa) balta su vos gelsvu atspalviu.
      */
     private val polaris by lazy { NearStars.list.firstOrNull { it.name == "Polaris" } }
+
+    /**
+     * Andromeda (M31): tikra kryptis (RA 00h42m44s, Dec +41°16′), atstumas 765 kpc, disko skersmuo ~42 kpc,
+     * tikras pasvirimas: polinkis 77°, didžiosios ašies pozicijos kampas 38° (nuo šiaurės į rytus). Matoma atitolinus už žvaigždžių.
+     * Toliau nei piešimo riba – todėl dedama arčiau ta pačia kryptimi nuo kameros, sumažinta proporcingai (kampinis dydis tikras).
+     */
+    private var m31Tex = 0
+    private val m31Dir by lazy {
+        val ra = Math.toRadians((0 + 42 / 60.0 + 44.3 / 3600.0) * 15.0); val de = Math.toRadians(41 + 16 / 60.0 + 9.0 / 3600.0)
+        doubleArrayOf(cos(de) * cos(ra), cos(de) * sin(ra), sin(de))
+    }
+    /** Disko ašys I erdvėje: (didžioji ašis, antroji disko ašis). */
+    private val m31Axes by lazy {
+        val sv = m31Dir
+        val z = doubleArrayOf(0.0, 0.0, 1.0)
+        val zd = z[0] * sv[0] + z[1] * sv[1] + z[2] * sv[2]
+        val n = DoubleArray(3) { z[it] - zd * sv[it] }.let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); DoubleArray(3) { v[it] / l } }
+        val e = doubleArrayOf(z[1] * sv[2] - z[2] * sv[1], z[2] * sv[0] - z[0] * sv[2], z[0] * sv[1] - z[1] * sv[0])
+            .let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); DoubleArray(3) { v[it] / l } }
+        val pa = Math.toRadians(38.0); val inc = Math.toRadians(77.0)
+        val a = DoubleArray(3) { cos(pa) * n[it] + sin(pa) * e[it] }
+        val b = doubleArrayOf(sv[1] * a[2] - sv[2] * a[1], sv[2] * a[0] - sv[0] * a[2], sv[0] * a[1] - sv[1] * a[0])
+        val c = DoubleArray(3) { cos(inc) * b[it] + sin(inc) * sv[it] }
+        a to c
+    }
+    /** Procedūrinis M31 vaizdas iš viršaus: gelsvas branduolys, melsvas diskas, žvaigždėdaros žiedas ~10 kpc, dulkių juostos. */
+    private fun makeM31Texture(): Int {
+        val n = 256; val bmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888)
+        val rnd = java.util.Random(31)
+        val px = IntArray(n * n)
+        for (y in 0 until n) for (x in 0 until n) {
+            val dx = (x - n / 2 + 0.5) / (n / 2.0); val dy = (y - n / 2 + 0.5) / (n / 2.0)
+            val r = kotlin.math.sqrt(dx * dx + dy * dy); if (r >= 1.0) continue
+            val th = kotlin.math.atan2(dy, dx)
+            val bulge = kotlin.math.exp(-r / 0.06)
+            val disk = kotlin.math.exp(-r / 0.28)
+            val ring = kotlin.math.exp(-((r - 0.48) / 0.06).let { it * it })
+            // dvi vijos (logaritminės) – silpnos
+            val arm = 0.5 + 0.5 * cos(2 * (th - kotlin.math.ln(r.coerceAtLeast(0.02)) / 0.25))
+            val dust = 1.0 - 0.45 * kotlin.math.exp(-((r - 0.40) / 0.03).let { it * it }) - 0.35 * kotlin.math.exp(-((r - 0.62) / 0.03).let { it * it })
+            val edge = (1.0 - r).coerceIn(0.0, 0.15) / 0.15
+            val speck = if (rnd.nextFloat() < 0.04f * disk.toFloat() + 0.02f * ring.toFloat()) 0.5 else 0.0
+            val lum = ((bulge * 1.6 + disk * (0.45 + 0.25 * arm) + ring * 0.35 + speck) * dust * edge).coerceIn(0.0, 1.0)
+            val warm = (bulge * 2.0).coerceIn(0.0, 1.0)
+            val cr = (lum * (0.80 + 0.20 * warm) * 255).toInt().coerceIn(0, 255)
+            val cg = (lum * (0.84 + 0.10 * warm) * 255).toInt().coerceIn(0, 255)
+            val cb = (lum * (1.00 - 0.30 * warm) * 255).toInt().coerceIn(0, 255)
+            px[y * n + x] = (0xFF shl 24) or (cr shl 16) or (cg shl 8) or cb     // nepermatomas: piešiama sudedant šviesą
+        }
+        bmp.setPixels(px, 0, n, 0, 0, n, n)
+        return uploadTexture(bmp)
+    }
+    private fun drawAndromeda() {
+        val a0 = sstep(0.4f, 0.9f, collapse()); if (a0 < 0.01f) return
+        if (m31Tex == 0) m31Tex = makeM31Texture()
+        val kpc = GAL_S.toDouble()
+        val trueP = DoubleArray(3) { fP[it] + m31Dir[it] * 765.0 * kpc }
+        val d = DoubleArray(3) { trueP[it] - camPos[it] }
+        val dl = kotlin.math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+        val farLim = (zoom + GALAXY_DEPTH) * 0.8
+        val k = if (dl > farLim) farLim / dl else 1.0                    // arčiau ta pačia kryptimi, tas pats kampinis dydis
+        val c = FloatArray(3) { (camPos[it] + d[it] * k).toFloat() }
+        val rad = (21.0 * kpc * k).toFloat()
+        val (ax, cx) = m31Axes
+        System.arraycopy(mvpI, 0, mvp, 0, 16)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        billboardQuad(c, FloatArray(3) { ax[it].toFloat() }, FloatArray(3) { cx[it].toFloat() }, rad, rad, m31Tex, 1f, 1f, 1f, 0.9f * a0)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
     private fun drawPolarisBeacon() {
         val s = polaris ?: return
         if (starTex == 0) return
@@ -3947,9 +4019,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Kameros padėtis sideralinėje erdvėje (Saulės ir švytėjimo šešėliuoklėms). */
     private var camPos = floatArrayOf(0f, 0f, 3f)
     private var headingSm = Double.NaN
-    /** Kameros vietos kryptis (už stebėtojo): arti – sutampa su žiūrėjimo kryptimi, toli (žvaigždės, galaktika) – sustingsta. */
-    private var posHeading = Double.NaN
-    private var posPhi = Double.NaN
+    /** Kameros vietos kryptis (už stebėtojo, I erdvėje): arti – sutampa su žiūrėjimo kryptimi, toli (žvaigždės, galaktika) – sustingsta. */
+    private var posDir: DoubleArray? = null
+    /** Laisvo žvilgsnio kryptis ir ekrano viršus (planšetės nugarėlė ir viršus, I erdvėje), išlyginti. */
+    private var lookFreeSm: DoubleArray? = null
+    private var upFreeSm: DoubleArray? = null
     private var rollSm = Double.NaN
     /** Vaizdo iš viršaus dalis 0..1 (planšetė paguldyta ekranu į viršų), sušvelninta laike. */
     private var topSm = Double.NaN
@@ -4136,25 +4210,30 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val phi = -Math.PI / 2 * topSm + Math.PI / 2 * botSm
         val look = DoubleArray(3) { cos(phi) * f[it] + sin(phi) * up[it] }
         val camUp = DoubleArray(3) { -sin(phi) * f[it] + cos(phi) * up[it] }
-        // Arti (iki Saulės sistemos) kamera sukasi už stebėtojo kartu su telefonu – stebėtojas lieka ekrano viduryje.
-        // Toli (žvaigždės, galaktika) kameros vieta sustingsta: sukant telefoną galaktika lieka vietoje, sukasi tik žiūrėjimo kryptis.
+        // Arti (iki Saulės sistemos) kamera sukasi už stebėtojo kartu su telefonu – stebėtojas lieka ekrano viduryje, horizontas lygus.
+        // Toli (žvaigždės, galaktika) – laisvas žvilgsnis: kameros vieta sustingsta, o žiūrima ten, kur rodo planšetės nugarėlė
+        // (ir aukštyn–žemyn), ekrano viršus – tikras planšetės viršus. Galaktika lieka vietoje; pakėlus telefoną – tamsus kosmosas.
         val freeze = sstep(0f, 0.3f, collapse()).toDouble()
-        if (posHeading.isNaN()) { posHeading = headingSm; posPhi = phi }
-        else {
-            var d = headingSm - posHeading
-            while (d > Math.PI) d -= 2 * Math.PI
-            while (d < -Math.PI) d += 2 * Math.PI
-            posHeading += (1.0 - freeze) * d
-            posPhi += (1.0 - freeze) * (phi - posPhi)
-        }
-        val fPos = DoubleArray(3) { sin(posHeading) * east[it] + cos(posHeading) * north[it] }
-        val lookPos = DoubleArray(3) { cos(posPhi) * fPos[it] + sin(posPhi) * up[it] }
+        fun nrm(v: DoubleArray): DoubleArray { val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); return if (l < 1e-9) v else DoubleArray(3) { v[it] / l } }
+        val lookFreeNow = nrm(DoubleArray(3) { -r[2] * east[it] - r[5] * north[it] - r[8] * up[it] })
+        val upFreeNow = nrm(DoubleArray(3) { r[1] * east[it] + r[4] * north[it] + r[7] * up[it] })
+        val lf0 = lookFreeSm; val uf0 = upFreeSm
+        lookFreeSm = if (lf0 == null) lookFreeNow else nrm(DoubleArray(3) { lf0[it] + 0.2 * (lookFreeNow[it] - lf0[it]) })
+        upFreeSm = if (uf0 == null) upFreeNow else nrm(DoubleArray(3) { uf0[it] + 0.2 * (upFreeNow[it] - uf0[it]) })
+        val lookB = nrm(DoubleArray(3) { look[it] * (1 - freeze) + lookFreeSm!![it] * freeze }).let { if (freeze > 0.5 && it.all { c -> kotlin.math.abs(c) < 1e-6 }) lookFreeSm!! else it }
+        val upMix = DoubleArray(3) { camUp[it] * (1 - freeze) + upFreeSm!![it] * freeze }
+        val ud = upMix[0] * lookB[0] + upMix[1] * lookB[1] + upMix[2] * lookB[2]
+        val camUpB = nrm(DoubleArray(3) { upMix[it] - ud * lookB[it] })
+        // kameros vieta: arti seka žiūrėjimo kryptį (už nugaros), toli – sustingsta (I erdvėje, todėl ir Žemei sukantis lieka vietoje)
+        val pd0 = posDir
+        posDir = if (pd0 == null) lookB else nrm(DoubleArray(3) { pd0[it] + (1.0 - freeze) * (lookB[it] - pd0[it]) })
+        val lookPos = posDir!!
         val eye = FloatArray(3) { (head[it] - lookPos[it] * dist).toFloat() }
         camPos = eye
         val lookV = FloatArray(16)
         Matrix.setLookAtM(lookV, 0, eye[0], eye[1], eye[2],
-            (eye[0] + look[0]).toFloat(), (eye[1] + look[1]).toFloat(), (eye[2] + look[2]).toFloat(),
-            camUp[0].toFloat(), camUp[1].toFloat(), camUp[2].toFloat())
+            (eye[0] + lookB[0]).toFloat(), (eye[1] + lookB[1]).toFloat(), (eye[2] + lookB[2]).toFloat(),
+            camUpB[0].toFloat(), camUpB[1].toFloat(), camUpB[2].toFloat())
         // sklandus sukimas 360°: ekranas neapsiverčia, vaizdas sukasi priešinga kryptimi – horizontas lieka lygus su tikru
         if (levelHorizon) {
             val gx = r[6].toDouble(); val gy = r[7].toDouble()            // tikras „aukštyn“ ekrano koordinatėmis
@@ -4169,7 +4248,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             }
             if (!rollSm.isNaN()) {
                 // vaizde iš viršaus posvyrio pataisos nebereikia (ekrano viršus jau – planšetės kryptis)
-                val rz = FloatArray(16); Matrix.setRotateM(rz, 0, (Math.toDegrees(-rollSm) * (1.0 - topSm - botSm).coerceAtLeast(0.0)).toFloat(), 0f, 0f, 1f)
+                // laisvame žvilgsnyje (toli) ekrano viršus jau tikras planšetės viršus – pataisos nereikia
+                val rz = FloatArray(16); Matrix.setRotateM(rz, 0, (Math.toDegrees(-rollSm) * (1.0 - topSm - botSm).coerceAtLeast(0.0) * (1.0 - freeze)).toFloat(), 0f, 0f, 1f)
                 val lv2 = FloatArray(16); Matrix.multiplyMM(lv2, 0, rz, 0, lookV, 0); lv2.copyInto(lookV)
             }
         } else rollSm = Double.NaN

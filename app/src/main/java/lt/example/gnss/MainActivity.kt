@@ -6787,6 +6787,56 @@ class MainActivity : AppCompatActivity() {
         margins(toolCol, m, m + t, m + r, m)
     }
 
+    private var immersive = false
+    /** ⛶ – paslėpti ar parodyti sistemos juostas (3D lieka per visą ekraną). */
+    private fun toggleImmersive() {
+        immersive = !immersive
+        androidx.core.view.WindowInsetsControllerCompat(window, window.decorView).apply {
+            systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            if (immersive) hide(androidx.core.view.WindowInsetsCompat.Type.systemBars()) else show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        }
+        fsBtn.text = if (immersive) "\u2715" else "\u26F6"
+    }
+
+    /**
+     * ⚙ Nustatymai: visas buvęs pradžios puslapis (mygtukai, varnelės, fiksas, palydovai, C/N0 grafikas) viename lange.
+     * Turinys laikinai perkeliamas į langą ir uždarius grąžinamas atgal (paslėptas, nes programa rodo 3D).
+     */
+    private fun openSettings() {
+        val l = leftCol ?: return
+        val lParent = l.parent as? ViewGroup ?: return
+        val lIdx = lParent.indexOfChild(l); val lLp = l.layoutParams
+        val cParent = cnoView.parent as? ViewGroup; val cIdx = cParent?.indexOfChild(cnoView) ?: -1; val cLp = cnoView.layoutParams
+        lParent.removeView(l); cParent?.removeView(cnoView)
+        l.visibility = View.VISIBLE; cnoView.visibility = View.VISIBLE
+        val dp = resources.displayMetrics.density
+        // kiek varnelių įjungta ir kiek leidimų suteikta
+        fun boxes(v: View, out: ArrayList<CheckBox>) { if (v is CheckBox) out.add(v) else if (v is ViewGroup) for (i in 0 until v.childCount) boxes(v.getChildAt(i), out) }
+        val cbs = ArrayList<CheckBox>(); boxes(l, cbs)
+        val perms = Perms.runtime(); val miss = Perms.missing(this)
+        val head = TextView(this).apply { textSize = 13f; setPadding((16 * dp).toInt(), 0, (16 * dp).toInt(), (8 * dp).toInt()); setTextColor(0xFF374151.toInt())
+            text = "Varnelės: įjungta ${cbs.count { it.isChecked }} iš ${cbs.size}. Leidimai: suteikta ${perms.size - miss.size} iš ${perms.size}" +
+                (if (miss.isEmpty()) "" else " – trūkstamus suteikite mygtuku „Suteikti visus leidimus“") }
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL
+            addView(head); addView(l, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(cnoView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (260 * dp).toInt())) }
+        val dlg = android.app.Dialog(this, android.R.style.Theme_DeviceDefault_Light_NoActionBar)
+        val title = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding((16 * dp).toInt(), (12 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt())
+            addView(TextView(this@MainActivity).apply { text = "\u2699 Nustatymai"; textSize = 20f; setTypeface(typeface, Typeface.BOLD) },
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(Button(this@MainActivity).apply { text = "\u2715 3D"; setOnClickListener { dlg.dismiss() } }) }
+        dlg.setContentView(LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(0xFFF3F4F6.toInt())
+            addView(title); addView(ScrollView(this@MainActivity).apply { addView(body) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)) })
+        dlg.setOnDismissListener {
+            body.removeView(l); body.removeView(cnoView)
+            lParent.addView(l, lIdx.coerceIn(0, lParent.childCount), lLp)
+            if (cParent != null) cParent.addView(cnoView, cIdx.coerceIn(0, cParent.childCount), cLp)
+            if (fullscreen) { l.visibility = View.GONE; cnoView.visibility = View.GONE }
+        }
+        dlg.show()
+    }
+
     private fun toggleFullscreen() {
         if (!::skyHolder.isInitialized) return
         if (!fullscreen) {
@@ -6794,7 +6844,6 @@ class MainActivity : AppCompatActivity() {
             leftCol?.visibility = View.GONE
             cnoView.visibility = View.GONE
             rootScroll?.scrollTo(0, 0)
-            fsBtn.text = "\u2715"
             fullscreen = true
             edgeToEdge(true)
             // po išdėstymo – visas ekranas, įskaitant sritis po būsenos ir naršymo juostomis
@@ -6807,7 +6856,6 @@ class MainActivity : AppCompatActivity() {
             leftCol?.visibility = View.VISIBLE
             cnoView.visibility = View.VISIBLE
             skyHolder.layoutParams = skyHolderLp
-            fsBtn.text = "\u26F6"
             fullscreen = false
             edgeToEdge(false)
         }
@@ -7256,7 +7304,7 @@ class MainActivity : AppCompatActivity() {
         val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         leftCol = left
         left.addView(modeSpinner, LinearLayout.LayoutParams(mw, ww))
-        left.addView(btnZero, LinearLayout.LayoutParams(mw, ww))
+        // „Nulis čia“ – mažas barometro mygtukas 3D vaizdo apačioje kairėje
         left.addView(btnGps, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnReset, LinearLayout.LayoutParams(mw, ww))
         val btnSouth = Button(this).apply {
@@ -7502,7 +7550,7 @@ class MainActivity : AppCompatActivity() {
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0x44000000) }
         }
         fun mark(v: View, on: Boolean) { v.alpha = if (on) 0.85f else 0.35f }
-        fsBtn = small("\u26F6", 16f).apply { alpha = 0.6f; setOnClickListener { toggleFullscreen() } }
+        fsBtn = small("\u26F6", 16f).apply { alpha = 0.6f; setOnClickListener { toggleImmersive() } }
         // du kameros režimai vienas kitą atspaudžia: įjungus vieną, kitas išsijungia
         val followBtn = small("\u27F3", 16f)
         val levelBtn = small("\u2296", 16f)
@@ -7528,10 +7576,31 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this@MainActivity, if (on) "Sklandus sukimas 360°: horizontas lieka lygus" else "Sklandus sukimas išjungtas", Toast.LENGTH_SHORT).show()
         }
         val calBtn = small("\uD83E\uDDED", 15f).apply { alpha = 0.85f; setOnClickListener { toggleCalibDrum() } }   // 🧭
+        val setBtn = small("\u2699", 17f).apply { alpha = 0.85f; setOnClickListener { openSettings() } }               // ⚙ nustatymai
         val tools = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val gap = (6 * dp).toInt()
-            for (b in listOf(fsBtn, followBtn, levelBtn, calBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
+            for (b in listOf(fsBtn, followBtn, levelBtn, calBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
+        }
+        // barometras: apačioje kairėje – paspaudus nulis čia, toliau rodoma, kiek pakilote ar nusileidote
+        if (baro.hasSensor) {
+            val baroLbl = TextView(this).apply { textSize = 13f; setTextColor(0xFFFFFFFF.toInt()); setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt()); visibility = View.GONE
+                setPadding((6 * dp).toInt(), 0, (6 * dp).toInt(), 0) }
+            val baroBtn = small("\u23F2", 15f).apply { alpha = 0.85f }
+            val baroRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                addView(baroBtn, LinearLayout.LayoutParams(bSize, bSize)); addView(baroLbl) }
+            var zeroSet = false
+            val tick = object : Runnable { override fun run() {
+                if (zeroSet) baro.altitude()?.let { h -> baroLbl.text = (if (h > 0.05) "\u25B2 " else if (h < -0.05) "\u25BC " else "") + "%+.1f m".format(Locale.US, h) }
+                baroRow.postDelayed(this, 500L)
+            } }
+            baroBtn.setOnClickListener {
+                baro.calibrateZero(); zeroSet = true; baroLbl.visibility = View.VISIBLE; baroLbl.text = "0.0 m"; render()
+                Toast.makeText(this@MainActivity, "Barometras: nulis čia – rodoma, kiek pakilsite ar nusileisite", Toast.LENGTH_SHORT).show()
+            }
+            baroRow.post(tick)
+            skyHolder.addView(baroRow, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
+                val m = (10 * dp).toInt(); setMargins(m, m, m, m + (44 * dp).toInt()) })
         }
         toolCol = tools
         skyHolder.addView(tools, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
@@ -7541,7 +7610,7 @@ class MainActivity : AppCompatActivity() {
         skyHolderParent = right
         skyHolderLp = LinearLayout.LayoutParams(skySide, skySide)
         right.addView(skyHolder, skyHolderLp)
-        skyDome.onDoubleTapCb = { setGlobe(false) }
+        skyDome.onDoubleTapCb = null                 // 2D pradžios puslapio nebėra – programa visada 3D
         val skyGd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean = true
             override fun onDoubleTap(e: MotionEvent): Boolean { setGlobe(true); return true }
@@ -7568,6 +7637,13 @@ class MainActivity : AppCompatActivity() {
         container.addView(root, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
         setContentView(container)
+        // Programa pradeda iš karto 3D vaizdu per visą ekraną; buvęs 2D pradžios puslapis – nustatymuose (⚙)
+        fun go3d(tries: Int) {
+            if (container.width <= 0 && tries > 0) { container.postDelayed({ go3d(tries - 1) }, 100L); return }
+            if (!use3d) setGlobe(true)
+            if (!fullscreen) toggleFullscreen()
+        }
+        container.post { go3d(30) }
         
         // Pradedame su iš karto aktyviu burbulu (minimizuota būsena)
         setupShareBubble()

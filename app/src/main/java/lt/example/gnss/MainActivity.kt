@@ -8165,7 +8165,10 @@ class MainActivity : AppCompatActivity() {
                 val meas = KnownHeight.measuredGround()
                 val dem = KnownHeight.groundMsl()
                 when {
-                    KnownHeight.gMeasuring -> { gLbl.alpha = 0.9f; gLbl.text = if (live.isNaN()) "…" else "%.0f m".format(Locale.US, live) }
+                    // matuojant – žemė po tavimi; jei atimamas aukštis virš žemės, jis parodomas skliaustuose
+                    KnownHeight.gMeasuring -> { gLbl.alpha = 0.9f
+                        gLbl.text = (if (live.isNaN()) "…" else "%.0f m".format(Locale.US, live)) +
+                            (if (KnownHeight.gAgl != 0.0) " (\u2212%.0f)".format(Locale.US, KnownHeight.gAgl) else "") }
                     KnownHeight.gResult.startsWith("Žemės matavimas nebaigtas") && System.currentTimeMillis() - gFailMs < 8_000L ->
                         { gLbl.alpha = 1f; gLbl.text = "\u2715" }
                     meas != null -> { gLbl.alpha = 1f; gLbl.text = "%.0f m".format(Locale.US, meas) }

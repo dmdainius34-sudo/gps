@@ -66,7 +66,14 @@ object KnownHeight {
     private val gH = ArrayList<Double>(); private val gFix = ArrayList<Double>()
     private var gStart = 0L; private var gLat0 = Double.NaN; private var gLon0 = Double.NaN; private var gWalk = 0
 
-    @Synchronized fun startGround(now: Long) { gH.clear(); gFix.clear(); gStart = now; gWalk = 0; gLat0 = Double.NaN; gProgress = 0f; gLiveMsl = Double.NaN; gMeasuring = true; gResult = "Žemė matuojama…" }
+    /**
+     * Matuoti galima iš bet kurio aukšto: jei laukelyje „aukštis virš žemės“ įrašyta (pvz. 25 m – 9 aukštas, 45 m – krano kabina),
+     * ta vertė (užfiksuota matavimo pradžioje) atimama – įsimenama žemė po tavimi. Ant pačios žemės laukelyje turi būti 0 arba tuščia.
+     */
+    @Volatile var gAgl = 0.0
+        private set
+    @Synchronized fun startGround(now: Long) { gH.clear(); gFix.clear(); gStart = now; gWalk = 0; gLat0 = Double.NaN; gProgress = 0f; gLiveMsl = Double.NaN
+        gAgl = agl ?: 0.0; gMeasuring = true; gResult = "Žemė matuojama…" }
     @Synchronized fun cancelGround(why: String) { if (!gMeasuring) return; gMeasuring = false; gProgress = 0f; gResult = "Žemės matavimas nebaigtas: $why" }
 
     /** Išmatuotą žemę pamiršti – vėl naudojamas interneto žemėlapis. */
@@ -97,7 +104,7 @@ object KnownHeight {
         gProgress = ((now - gStart).toFloat() / G_MS).coerceIn(0f, 1f)
         Geoid.undulation(lat, lon)?.let { n ->
             val l = (if (gFix.size >= 5) gFix else gH).sorted()
-            gLiveMsl = l[l.size / 2] - n
+            gLiveMsl = l[l.size / 2] - n - gAgl
         }
         if (gFix.size >= 30 || (now - gStart >= G_MS && gH.size >= 100)) return finishGround(lat, lon)
         return false
@@ -114,8 +121,9 @@ object KnownHeight {
         // gretimų sekundžių klaidos koreliuotos (~30 s): nepriklausomų mėginių ~ n/30
         val sig = if (useFix) 0.1 else maxOf(2.0, sd / sqrt(maxOf(1.0, ins.size / 30.0)))
         val n = Geoid.undulation(lat, lon) ?: run { cancelGround("nėra geoido"); return false }
-        val g = mean - n
-        val src = if (useFix) "RTK FIX, ${ins.size} mėg." else "programos padėtis, ${ins.size} mėg. per ${(G_MS / 60_000)} min."
+        val g = mean - n - gAgl
+        val src = (if (useFix) "RTK FIX, ${ins.size} mėg." else "programos padėtis, ${ins.size} mėg. per ${(G_MS / 60_000)} min.") +
+            (if (gAgl != 0.0) "; matuota %.1f m virš žemės – atimta".format(Locale.US, gAgl) else "")
         appCtx?.getSharedPreferences("known_ref", Context.MODE_PRIVATE)?.edit()
             ?.putFloat("g_msl", g.toFloat())?.putFloat("g_lat", lat.toFloat())?.putFloat("g_lon", lon.toFloat())
             ?.putFloat("g_sig", sig.toFloat())?.putString("g_src", src)?.apply()

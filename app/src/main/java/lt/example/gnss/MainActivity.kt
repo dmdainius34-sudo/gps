@@ -4186,9 +4186,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /**
      * Stebėtojo vaizdas: žmogus stovi ant Žemės (smeigtukas – vertikalus, galvutė – akys), planšetė – langas prieš veidą.
-     * Kamera už stebėtojo galvos aukštyje žiūri horizontaliai planšetės kryptimi (azimutas iš jutiklių);
-     * pakreipimas ir pasukimas apie žiūrėjimo ašį ignoruojami – horizontas visada ekrano viduryje ir lygiagretus rėmui.
-     * Atstumas už stebėtojo – priartinimas (zoom).
+     * Horizonto režimas (⊖): tikras langas – žiūrima ten, kur rodo planšetės nugarėlė (ir aukštyn–žemyn, tolygiai, be šuolių ties 45°),
+     * ekrano viršus – planšetės viršus, todėl horizontas lygus su tikru, o kampai nuo horizonto ir kryptys – tikri.
+     * Be horizonto režimo: žiūrima horizontaliai planšetės kryptimi, horizontas ekrano viduryje ir lygiagretus rėmui.
+     * Kamera už stebėtojo galvos žiūrėjimo kryptimi; atstumas – priartinimas (zoom); toli (žvaigždės, galaktika) jos vieta sustingsta.
      */
     private fun observerCamera() {
         val head = pinWorld()
@@ -4234,8 +4235,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val lf0 = lookFreeSm; val uf0 = upFreeSm
         lookFreeSm = if (lf0 == null) lookFreeNow else nrm(DoubleArray(3) { lf0[it] + 0.2 * (lookFreeNow[it] - lf0[it]) })
         upFreeSm = if (uf0 == null) upFreeNow else nrm(DoubleArray(3) { uf0[it] + 0.2 * (upFreeNow[it] - uf0[it]) })
-        val lookB = nrm(DoubleArray(3) { look[it] * (1 - freeze) + lookFreeSm!![it] * freeze }).let { if (freeze > 0.5 && it.all { c -> kotlin.math.abs(c) < 1e-6 }) lookFreeSm!! else it }
-        val upMix = DoubleArray(3) { camUp[it] * (1 - freeze) + upFreeSm!![it] * freeze }
+        // horizonto režime laisvas žvilgsnis visada (ir arti); kitaip – tik toli
+        val wFree = if (levelHorizon) 1.0 else freeze
+        val lookB = nrm(DoubleArray(3) { look[it] * (1 - wFree) + lookFreeSm!![it] * wFree }).let { if (wFree > 0.5 && it.all { c -> kotlin.math.abs(c) < 1e-6 }) lookFreeSm!! else it }
+        val upMix = DoubleArray(3) { camUp[it] * (1 - wFree) + upFreeSm!![it] * wFree }
         val ud = upMix[0] * lookB[0] + upMix[1] * lookB[1] + upMix[2] * lookB[2]
         val camUpB = nrm(DoubleArray(3) { upMix[it] - ud * lookB[it] })
         // kameros vieta: arti seka žiūrėjimo kryptį (už nugaros), toli – sustingsta (I erdvėje, todėl ir Žemei sukantis lieka vietoje)
@@ -4263,7 +4266,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             if (!rollSm.isNaN()) {
                 // vaizde iš viršaus posvyrio pataisos nebereikia (ekrano viršus jau – planšetės kryptis)
                 // laisvame žvilgsnyje (toli) ekrano viršus jau tikras planšetės viršus – pataisos nereikia
-                val rz = FloatArray(16); Matrix.setRotateM(rz, 0, (Math.toDegrees(-rollSm) * (1.0 - topSm - botSm).coerceAtLeast(0.0) * (1.0 - freeze)).toFloat(), 0f, 0f, 1f)
+                val rz = FloatArray(16); Matrix.setRotateM(rz, 0, (Math.toDegrees(-rollSm) * (1.0 - topSm - botSm).coerceAtLeast(0.0) * (1.0 - wFree)).toFloat(), 0f, 0f, 1f)
                 val lv2 = FloatArray(16); Matrix.multiplyMM(lv2, 0, rz, 0, lookV, 0); lv2.copyInto(lookV)
             }
         } else rollSm = Double.NaN

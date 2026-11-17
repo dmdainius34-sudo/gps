@@ -2628,7 +2628,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     /**
-     * Grįžulo Ratai (tik „samtis“, ne visas Didysis Lokys): 7 žvaigždės paryškintos, sujungtos plonomis auksinėmis linijomis
+     * Grįžulo Ratai (tik „samtis“, ne visas Didysis Lokys): 7 žvaigždės paryškintos, sujungtos plonomis sidabrinėmis linijomis
      * (linijos nesiekia pačių žvaigždžių, kad jų neuždengtų). Fone, tikrose J2000 kryptyse, kartu su kitomis ryškiomis žvaigždėmis.
      */
     private val dipperNames = listOf("Alkaid", "Mizar", "Alioth", "Megrez", "Dubhe", "Merak", "Phecda")
@@ -2649,8 +2649,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val g = 0.55f / l
             for (k in 0..2) seg.add(a[k] + d[k] * g); for (k in 0..2) seg.add(b[k] - d[k] * g)
         }
-        GLES20.glLineWidth(1.6f * density)
-        drawLines(seg.toFloatArray(), 1f, 0.84f, 0.45f, 0.55f * a0)
+        // plonos sidabrinės linijos
+        GLES20.glLineWidth(maxOf(1f, 0.7f * density))
+        drawLines(seg.toFloatArray(), 0.80f, 0.83f, 0.88f, 0.5f * a0)
         GLES20.glLineWidth(1f)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
         val sec = android.os.SystemClock.uptimeMillis() / 1000.0
@@ -4788,8 +4789,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val mf = m?.let { floatArrayOf(it[0].toFloat(), it[1].toFloat(), it[2].toFloat()) }
         ln(o, sp)
         if (mf != null) { ln(o, mf); ln(mf, sp) }
-        GLES20.glLineWidth(1.5f * density)
-        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 0.9f, 0.5f, 0.45f)
+        // vos matomos plonytės (1 taškelio) linijos
+        GLES20.glLineWidth(1f)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 0.92f, 0.65f, 0.16f)
         if (lines.isNotEmpty()) { bindPos(colorProg, floatBuf(lines.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, lines.size / 3) }
         GLES20.glLineWidth(1f); GLES20.glDepthMask(true); GLES20.glDisable(GLES20.GL_DEPTH_TEST)
     }

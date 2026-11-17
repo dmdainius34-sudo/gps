@@ -1204,7 +1204,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun headingDeg(): Double? {
         val r = lastRaw
         var e = -r[2].toDouble(); var n = -r[5].toDouble()
-        if (kotlin.math.hypot(e, n) < 0.3) { e = r[1].toDouble(); n = r[4].toDouble() }
+        // nugarėlė beveik vertikali: kryptis iš viršutinio krašto (gulint ekranu aukštyn) arba apatinio (pakėlus nugarėle į dangų) – be 180° šuolio
+        if (kotlin.math.hypot(e, n) < 0.3) { val sg = if (-r[8] > 0f) -1.0 else 1.0; e = sg * r[1].toDouble(); n = sg * r[4].toDouble() }
         if (kotlin.math.hypot(e, n) < 1e-3) return null
         return (Math.toDegrees(kotlin.math.atan2(e, n)) + 360.0) % 360.0
     }
@@ -3829,6 +3830,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var rollSm = Double.NaN
     /** Vaizdo iš viršaus dalis 0..1 (planšetė paguldyta ekranu į viršų), sušvelninta laike. */
     private var topSm = Double.NaN
+    private var botSm = Double.NaN
     /** Horizontas lygus su tikru, sukant prietaisą apie žiūrėjimo ašį (ekrano kryptis užrakinta). */
     @Volatile var levelHorizon = true
 
@@ -3989,7 +3991,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Azimutas: planšetės nugarėlės kryptis (gulint – viršutinis kraštas), tolygiai
         val r = rot
         var e = -r[2].toDouble(); var n = -r[5].toDouble()
-        if (kotlin.math.hypot(e, n) < 0.3) { e = r[1].toDouble(); n = r[4].toDouble() }
+        // nugarėlė beveik vertikali: kryptis iš viršutinio krašto (gulint ekranu aukštyn) arba apatinio (pakėlus nugarėle į dangų) – be 180° šuolio
+        if (kotlin.math.hypot(e, n) < 0.3) { val sg = if (-r[8] > 0f) -1.0 else 1.0; e = sg * r[1].toDouble(); n = sg * r[4].toDouble() }
         val target = kotlin.math.atan2(e, n)
         headingSm = if (headingSm.isNaN()) target else {
             var d = target - headingSm
@@ -4004,7 +4007,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val backEl = Math.toDegrees(kotlin.math.asin((-r[8]).toDouble().coerceIn(-1.0, 1.0)))
         val tTop = if (levelHorizon) ((-45.0 - backEl) / 30.0).coerceIn(0.0, 1.0).let { it * it * (3 - 2 * it) } else 0.0
         topSm = if (topSm.isNaN()) tTop else topSm + 0.12 * (tTop - topSm)
-        val phi = -Math.PI / 2 * topSm
+        // pakėlus prietaisą nugarėle į dangų (> 45°) – vaizdas iš apačios į zenitą; ranka pakeliant (poslinkis) modelis nesikeičia, tik pasukimas
+        val tBot = if (levelHorizon) ((backEl - 45.0) / 30.0).coerceIn(0.0, 1.0).let { it * it * (3 - 2 * it) } else 0.0
+        botSm = if (botSm.isNaN()) tBot else botSm + 0.12 * (tBot - botSm)
+        val phi = -Math.PI / 2 * topSm + Math.PI / 2 * botSm
         val look = DoubleArray(3) { cos(phi) * f[it] + sin(phi) * up[it] }
         val camUp = DoubleArray(3) { -sin(phi) * f[it] + cos(phi) * up[it] }
         val eye = FloatArray(3) { (head[it] - look[it] * dist).toFloat() }
@@ -4027,7 +4033,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             }
             if (!rollSm.isNaN()) {
                 // vaizde iš viršaus posvyrio pataisos nebereikia (ekrano viršus jau – planšetės kryptis)
-                val rz = FloatArray(16); Matrix.setRotateM(rz, 0, (Math.toDegrees(-rollSm) * (1.0 - topSm)).toFloat(), 0f, 0f, 1f)
+                val rz = FloatArray(16); Matrix.setRotateM(rz, 0, (Math.toDegrees(-rollSm) * (1.0 - topSm - botSm).coerceAtLeast(0.0)).toFloat(), 0f, 0f, 1f)
                 val lv2 = FloatArray(16); Matrix.multiplyMM(lv2, 0, rz, 0, lookV, 0); lv2.copyInto(lookV)
             }
         } else rollSm = Double.NaN
@@ -4051,7 +4057,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawObserverHeading() {
         val r = rot
         var e = -r[2].toDouble(); var n = -r[5].toDouble()
-        if (kotlin.math.hypot(e, n) < 0.3) { e = r[1].toDouble(); n = r[4].toDouble() }
+        // nugarėlė beveik vertikali: kryptis iš viršutinio krašto (gulint ekranu aukštyn) arba apatinio (pakėlus nugarėle į dangų) – be 180° šuolio
+        if (kotlin.math.hypot(e, n) < 0.3) { val sg = if (-r[8] > 0f) -1.0 else 1.0; e = sg * r[1].toDouble(); n = sg * r[4].toDouble() }
         val hl = kotlin.math.hypot(e, n); if (hl < 1e-6) return
         e /= hl; n /= hl
         val h = DoubleArray(3) { e * fE[it] + n * fN[it] }
@@ -7764,7 +7771,16 @@ class MainActivity : AppCompatActivity() {
                 if (zeroSet) baro.altitude()?.let { h -> baroLbl.text = (if (h > 0.05) "\u25B2 " else if (h < -0.05) "\u25BC " else "") + "%+.1f m".format(Locale.US, h) }
                 baroRow.postDelayed(this, 500L)
             } }
+            baroBtn.setOnLongClickListener {
+                // ilgai palaikius – pradinė būsena: nulis panaikinamas, aukščio pokytis nebeskaičiuojamas ir nerodomas
+                baro.reset(); zeroSet = false; baroLbl.visibility = View.GONE; render()
+                try { (getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.let { v ->
+                    if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 40, 60, 40), -1)) else @Suppress("DEPRECATION") v.vibrate(80) } } catch (_: Exception) {}
+                Toast.makeText(this@MainActivity, "Barometras: pradinė būsena (nulis panaikintas)", Toast.LENGTH_SHORT).show()
+                true
+            }
             baroBtn.setOnClickListener {
+                keyHaptic(baroBtn)
                 baro.calibrateZero(); zeroSet = true; baroLbl.visibility = View.VISIBLE; baroLbl.text = "0.0 m"; render()
                 Toast.makeText(this@MainActivity, "Barometras: nulis čia – rodoma, kiek pakilsite ar nusileisite", Toast.LENGTH_SHORT).show()
             }

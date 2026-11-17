@@ -99,8 +99,8 @@ class CnoFallView(ctx: Context) : View(ctx) {
     override fun onDraw(c: Canvas) {
         val w = width.toFloat(); val h = height.toFloat()
         val top = 14 * dp; val rowH = 2 * dp
-        c.drawText("silpni %.0f".format(java.util.Locale.US, lo), 2 * dp, 10 * dp, txt)
-        txt.textAlign = Paint.Align.RIGHT; c.drawText("%.0f stiprūs".format(java.util.Locale.US, hi), w - 2 * dp, 10 * dp, txt); txt.textAlign = Paint.Align.LEFT
+        c.drawText("silpni %.0f dB-Hz".format(java.util.Locale.US, lo), 2 * dp, 10 * dp, txt)
+        txt.textAlign = Paint.Align.RIGHT; c.drawText("%.0f dB-Hz stiprūs".format(java.util.Locale.US, hi), w - 2 * dp, 10 * dp, txt); txt.textAlign = Paint.Align.LEFT
         fun xOf(db: Float) = ((db - lo) / (hi - lo)).coerceIn(0f, 1f) * w
         var g = (kotlin.math.ceil(lo / 5f) * 5f); while (g < hi) { val x = xOf(g); c.drawLine(x, top, x, h, grid); g += 5f }
         // kiekvieno palydovo pėdsakas – linija per eilutes (sukant prietaisą matomi antenos svyravimai)

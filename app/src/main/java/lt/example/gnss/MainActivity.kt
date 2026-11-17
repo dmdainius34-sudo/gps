@@ -1532,6 +1532,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         if (stableNorth) calPrefs.edit().putFloat("decl0", declDeg).apply()
     }
 
+    /** Kiek laipsnių būtų pataisyta šiaurė, jei dabar spaustumėte „Įrašyti šiaurę“. */
+    fun northPreviewDeg(): Double = Math.toDegrees(renderer.northDeltaRad())
+
     fun saveNorth() {
         headingEvent("šiaurė įrašyta ranka %+.1f°".format(java.util.Locale.US, -Math.toDegrees(renderer.northDeltaRad())))
         offsetDeg += Math.toDegrees(renderer.northDeltaRad()).toFloat()
@@ -3946,15 +3949,28 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         userR = mul3d(axisAngleMat(doubleArrayOf(0.0, 0.0, 1.0), angle), userR)
     }
 
+    /**
+     * Kiek naudotojas pirštu pasuko modelio šiaurę aplink STEBĖTOJO vertikalę (zenitą), rad, pagal laikrodžio rodyklę žiūrint iš viršaus.
+     * Ekrano koordinatėse: šiaurė nd ir zenitas zd – iš orientacijos matricos; pasukta šiaurė nu = userR·nd.
+     * Abi projektuojamos į horizonto plokštumą (statmeną zd) – planšetės pakreipimas į pataisą nebeįsimaišo.
+     */
     fun northDeltaRad(): Double {
         val r = rot
         val nd = doubleArrayOf(r[3].toDouble(), r[4].toDouble(), r[5].toDouble())
+        val zd = doubleArrayOf(r[6].toDouble(), r[7].toDouble(), r[8].toDouble())
         val u = userR
         val nu = doubleArrayOf(
             u[0] * nd[0] + u[1] * nd[1] + u[2] * nd[2],
             u[3] * nd[0] + u[4] * nd[1] + u[5] * nd[2],
             u[6] * nd[0] + u[7] * nd[1] + u[8] * nd[2])
-        return kotlin.math.atan2(nu[0], nu[1]) - kotlin.math.atan2(nd[0], nd[1])
+        fun dot(a: DoubleArray, b: DoubleArray) = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+        fun flat(v: DoubleArray): DoubleArray { val d = dot(v, zd); return DoubleArray(3) { v[it] - d * zd[it] } }
+        val a = flat(nd); val la = kotlin.math.sqrt(dot(a, a)); if (la < 1e-9) return 0.0
+        for (i in 0..2) a[i] /= la
+        val b = doubleArrayOf(zd[1] * a[2] - zd[2] * a[1], zd[2] * a[0] - zd[0] * a[2], zd[0] * a[1] - zd[1] * a[0])   // zd × a
+        val n2 = flat(nu)
+        if (dot(n2, n2) < 1e-9) return 0.0
+        return -kotlin.math.atan2(dot(n2, b), dot(n2, a))
     }
 
     @Volatile private var southUp = false
@@ -7218,7 +7234,13 @@ class MainActivity : AppCompatActivity() {
         left.addView(btnReset, LinearLayout.LayoutParams(mw, ww))
         val btnSaveN = Button(this).apply {
             text = "Įrašyti šiaurę (3D: pasukite N į tikrąją šiaurę)"
-            setOnClickListener { if (::skyDome.isInitialized) skyDome.saveNorth() }
+            setOnClickListener {
+                if (!::skyDome.isInitialized) return@setOnClickListener
+                val d = -skyDome.northPreviewDeg()
+                android.app.AlertDialog.Builder(this@MainActivity).setTitle("Įrašyti šiaurę?")
+                    .setMessage("Šiaurė bus pataisyta %+.1f° (pasukimas aplink jūsų vertikalę, planšetės pakreipimas neįskaitomas).\nLaukiamas tikslumas apie ±3° – tai akimis nustatyta kryptis. Tiksliau: kalibravimas pagal Saulę ar Mėnulį per kamerą (±0,3°).".format(Locale.US, d))
+                    .setPositiveButton("Įrašyti") { _, _ -> skyDome.saveNorth() }.setNegativeButton("Atšaukti", null).show().also { WinUtil.draggable(it) }
+            }
         }
         val btnSouth = Button(this).apply {
             text = "Pietų vaizdas (apversti Žemę)"

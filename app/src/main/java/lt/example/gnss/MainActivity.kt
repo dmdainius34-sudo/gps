@@ -3827,6 +3827,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var camPos = floatArrayOf(0f, 0f, 3f)
     private var headingSm = Double.NaN
     private var rollSm = Double.NaN
+    /** Vaizdo iš viršaus dalis 0..1 (planšetė paguldyta ekranu į viršų), sušvelninta laike. */
+    private var topSm = Double.NaN
     /** Horizontas lygus su tikru, sukant prietaisą apie žiūrėjimo ašį (ekrano kryptis užrakinta). */
     @Volatile var levelHorizon = true
 
@@ -3997,12 +3999,20 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         val f = DoubleArray(3) { sin(headingSm) * east[it] + cos(headingSm) * north[it] }
         val dist = (zoom - EARTH_R).toDouble().coerceAtLeast(0.03)
-        val eye = FloatArray(3) { (head[it] - f[it] * dist).toFloat() }
+        // Lygus horizontas + planšetė paguldyta ekranu į viršų (nugarėlė žemyn > 45°): sklandžiai pereinama į vaizdą iš viršaus.
+        // Ekrano viršus – planšetės viršutinio krašto kryptis, todėl N ekrane rodo į tikrą šiaurę; horizontas – ratas aplink stebėtoją.
+        val backEl = Math.toDegrees(kotlin.math.asin((-r[8]).toDouble().coerceIn(-1.0, 1.0)))
+        val tTop = if (levelHorizon) ((-45.0 - backEl) / 30.0).coerceIn(0.0, 1.0).let { it * it * (3 - 2 * it) } else 0.0
+        topSm = if (topSm.isNaN()) tTop else topSm + 0.12 * (tTop - topSm)
+        val phi = -Math.PI / 2 * topSm
+        val look = DoubleArray(3) { cos(phi) * f[it] + sin(phi) * up[it] }
+        val camUp = DoubleArray(3) { -sin(phi) * f[it] + cos(phi) * up[it] }
+        val eye = FloatArray(3) { (head[it] - look[it] * dist).toFloat() }
         camPos = eye
         val lookV = FloatArray(16)
         Matrix.setLookAtM(lookV, 0, eye[0], eye[1], eye[2],
-            (eye[0] + f[0]).toFloat(), (eye[1] + f[1]).toFloat(), (eye[2] + f[2]).toFloat(),
-            up[0].toFloat(), up[1].toFloat(), up[2].toFloat())
+            (eye[0] + look[0]).toFloat(), (eye[1] + look[1]).toFloat(), (eye[2] + look[2]).toFloat(),
+            camUp[0].toFloat(), camUp[1].toFloat(), camUp[2].toFloat())
         // sklandus sukimas 360°: ekranas neapsiverčia, vaizdas sukasi priešinga kryptimi – horizontas lieka lygus su tikru
         if (levelHorizon) {
             val gx = r[6].toDouble(); val gy = r[7].toDouble()            // tikras „aukštyn“ ekrano koordinatėmis
@@ -4016,7 +4026,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 }
             }
             if (!rollSm.isNaN()) {
-                val rz = FloatArray(16); Matrix.setRotateM(rz, 0, Math.toDegrees(-rollSm).toFloat(), 0f, 0f, 1f)
+                // vaizde iš viršaus posvyrio pataisos nebereikia (ekrano viršus jau – planšetės kryptis)
+                val rz = FloatArray(16); Matrix.setRotateM(rz, 0, (Math.toDegrees(-rollSm) * (1.0 - topSm)).toFloat(), 0f, 0f, 1f)
                 val lv2 = FloatArray(16); Matrix.multiplyMM(lv2, 0, rz, 0, lookV, 0); lv2.copyInto(lookV)
             }
         } else rollSm = Double.NaN

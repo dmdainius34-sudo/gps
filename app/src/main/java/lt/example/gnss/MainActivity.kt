@@ -1539,6 +1539,19 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         return -r.third
     }
 
+    // ---- Šiaurė mygtukais: vaizdas sukamas iš karto, įrašoma tik paspaudus „Įrašyti“ ----
+    private var liveNorth = 0f
+    val liveNorthDeg get() = liveNorth.toDouble()
+    fun northStep(deg: Double) { liveNorth += deg.toFloat(); offsetDeg += deg.toFloat(); publish() }
+    fun northStepCommit() {
+        if (liveNorth == 0f) return
+        headingEvent("šiaurė pataisyta mygtukais %+.1f°".format(java.util.Locale.US, liveNorth))
+        calPrefs.edit().putFloat("offset", offsetDeg).putFloat("decl0", declDeg).putBoolean("north_saved", true).apply()
+        HeadingTrust.set(true, "šiaurė nustatyta ranka (mygtukais)")
+        liveNorth = 0f
+    }
+    fun northStepCancel() { if (liveNorth != 0f) { offsetDeg -= liveNorth; liveNorth = 0f; publish() } }
+
     /** Kiek laipsnių būtų pataisyta šiaurė, jei dabar spaustumėte „Įrašyti šiaurę“. */
     fun northPreviewDeg(): Double = Math.toDegrees(renderer.northDeltaRad())
 
@@ -8264,19 +8277,35 @@ class MainActivity : AppCompatActivity() {
     /** Šiaurės įrašymas: planšetė nukreipta į šiaurę arba pirštu pasuktas 3D vaizdas. */
     private fun showNorthDialog() {
         if (!::skyDome.isInitialized) return
-        val d = -skyDome.northPreviewDeg()
         val h = skyDome.headingDeg()
-        android.app.AlertDialog.Builder(this).setTitle("Įrašyti šiaurę")
-            .setMessage(("1) Planšetė dabar nukreipta į tikrąją šiaurę (nugarėlė, gulint – viršutinis kraštas): dabartinė kryptis %s taps 0°.\n" +
-                "2) Arba pirštu pasuktas vaizdas: šiaurė bus pataisyta %+.1f° (aplink jūsų vertikalę).\n\n" +
-                "Laukiamas tikslumas apie ±3–5° (akimis). Tiksliau – per kamerą pagal Saulę ar Mėnulį (±0,3°).").format(Locale.US,
-                h?.let { "%.0f°".format(Locale.US, it) } ?: "nežinoma", d))
-            .setPositiveButton("Planšetė į šiaurę") { _, _ ->
+        val dp = resources.displayMetrics.density
+        val corr = TextView(this).apply { textSize = 16f; gravity = Gravity.CENTER; setTypeface(typeface, Typeface.BOLD); text = "Pataisa mygtukais: 0°" }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        for ((lab, d) in listOf("\u25C0 5°" to -5.0, "\u25C0 1°" to -1.0, "1° \u25B6" to 1.0, "5° \u25B6" to 5.0)) {
+            row.addView(Button(this).apply { text = lab; isAllCaps = false; setOnClickListener {
+                skyDome.northStep(d); corr.text = "Pataisa mygtukais: %+.0f°".format(Locale.US, skyDome.liveNorthDeg) } },
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        val msg = TextView(this).apply { textSize = 13f; setPadding(0, 0, 0, (8 * dp).toInt())
+            text = ("Mygtukais sukite gaublį, kol N sutaps su tikra šiaure, ir spauskite „Įrašyti“ (veikia ir su ⊖).\n" +
+                "Arba atsisukite su planšete į šiaurę ir spauskite „Planšetė į šiaurę“ – dabartinė kryptis %s taps 0°.\n" +
+                "Tikslumas apie ±3–5° (akimis); per kamerą pagal Saulę ar Mėnulį – ±0,3°.").format(Locale.US, h?.let { "%.0f°".format(Locale.US, it) } ?: "nežinoma") }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; val p = (20 * dp).toInt(); setPadding(p, (8 * dp).toInt(), p, 0)
+            addView(msg); addView(row); addView(corr) }
+        var done = false
+        val dlg = android.app.AlertDialog.Builder(this).setTitle("Šiaurė").setView(box)
+            .setPositiveButton("Įrašyti") { _, _ -> done = true; skyDome.northStepCommit()
+                Toast.makeText(this, "Šiaurė įrašyta", Toast.LENGTH_SHORT).show() }
+            .setNeutralButton("Planšetė į šiaurę") { _, _ ->
+                done = true; skyDome.northStepCancel()
                 val c = skyDome.northHere()
                 Toast.makeText(this, if (c == null) "Krypties jutikliai dar neparuošti" else "Šiaurė nustatyta pagal planšetės kryptį (pataisa %+.1f°)".format(Locale.US, c), Toast.LENGTH_LONG).show()
             }
-            .setNeutralButton("Pirštu pasuktas vaizdas") { _, _ -> skyDome.saveNorth() }
-            .setNegativeButton("Atšaukti", null).show().also { WinUtil.draggable(it) }
+            .setNegativeButton("Atšaukti", null).create()
+        dlg.setOnDismissListener { if (!done) skyDome.northStepCancel() }
+        dlg.show(); WinUtil.draggable(dlg)
+        // gaublys turi matytis: be patamsinimo, langas ekrano apačioje
+        dlg.window?.let { w -> w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND); w.setGravity(Gravity.BOTTOM) }
     }
 
     /** Orientyro būsena trumpai: kur jis dabar ir ar galima kalibruoti. */

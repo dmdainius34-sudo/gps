@@ -75,34 +75,74 @@ class ShimmerDrawable(private val density: Float) : Drawable() {
  */
 class CnoFallView(ctx: Context) : View(ctx) {
     private val dp = ctx.resources.displayMetrics.density
-    private val rows = ArrayDeque<List<Pair<Float, Int>>>()
-    private val dot = Paint(Paint.ANTI_ALIAS_FLAG)
+    /** Eilutės (naujausia – pirma): palydovas -> (C/N0, spalva). */
+    private val rows = ArrayDeque<Map<String, Pair<Float, Int>>>()
+    private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
     private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 10f * ctx.resources.displayMetrics.density; color = 0xFF111827.toInt() }
     private val grid = Paint().apply { color = 0x33000000; strokeWidth = 1f }
-    private val lo = 10f; private val hi = 50f
+    // automatinė skalė (jautriau): rodomas dabartinių signalų intervalas ±2 dB, keičiamas sklandžiai
+    private var lo = 15f; private var hi = 48f
 
     fun addSample(sats: List<Sat>) {
-        rows.addFirst(sats.filter { it.cn0 > 0f }.map { it.cn0 to constColor(it.const) })
-        while (rows.size > 40) rows.removeLast()
+        val m = sats.filter { it.cn0 > 0f }.associate { (it.const + it.svid) to (it.cn0 to constColor(it.const)) }
+        rows.addFirst(m)
+        while (rows.size > 60) rows.removeLast()
+        if (m.isNotEmpty()) {
+            val mn = m.values.minOf { it.first } - 2f; val mx = m.values.maxOf { it.first } + 2f
+            lo += (minOf(mn, mx - 8f) - lo) * 0.2f; hi += (maxOf(mx, mn + 8f) - hi) * 0.2f
+        }
         invalidate()
     }
 
-    override fun onMeasure(w: Int, h: Int) = setMeasuredDimension(MeasureSpec.getSize(w), (120 * dp).toInt())
+    override fun onMeasure(w: Int, h: Int) = setMeasuredDimension(MeasureSpec.getSize(w), (130 * dp).toInt())
 
     override fun onDraw(c: Canvas) {
         val w = width.toFloat(); val h = height.toFloat()
-        val top = 14 * dp; val rowH = 4 * dp
-        c.drawText("silpni", 2 * dp, 10 * dp, txt)
-        txt.textAlign = Paint.Align.RIGHT; c.drawText("stiprūs", w - 2 * dp, 10 * dp, txt); txt.textAlign = Paint.Align.LEFT
-        for (db in listOf(20f, 30f, 40f)) { val x = (db - lo) / (hi - lo) * w; c.drawLine(x, top, x, h, grid) }
-        for ((i, row) in rows.withIndex()) {
-            val y = top + i * rowH + rowH / 2; if (y > h) break
-            val a = (255 * (1f - i.toFloat() / rows.size.coerceAtLeast(1)) ).toInt().coerceIn(40, 255)
-            for ((cn0, col) in row) {
-                val x = ((cn0 - lo) / (hi - lo)).coerceIn(0f, 1f) * w
-                dot.color = (col and 0x00FFFFFF) or (a shl 24)
-                c.drawCircle(x, y, (if (i == 0) 3.2f else 2.2f) * dp, dot)
+        val top = 14 * dp; val rowH = 2 * dp
+        c.drawText("silpni %.0f".format(java.util.Locale.US, lo), 2 * dp, 10 * dp, txt)
+        txt.textAlign = Paint.Align.RIGHT; c.drawText("%.0f stiprūs".format(java.util.Locale.US, hi), w - 2 * dp, 10 * dp, txt); txt.textAlign = Paint.Align.LEFT
+        fun xOf(db: Float) = ((db - lo) / (hi - lo)).coerceIn(0f, 1f) * w
+        var g = (kotlin.math.ceil(lo / 5f) * 5f); while (g < hi) { val x = xOf(g); c.drawLine(x, top, x, h, grid); g += 5f }
+        // kiekvieno palydovo pėdsakas – linija per eilutes (sukant prietaisą matomi antenos svyravimai)
+        val keys = rows.firstOrNull()?.keys ?: return
+        for (k in keys) {
+            val p = Path(); var started = false; var col = 0
+            for ((i, row) in rows.withIndex()) {
+                val y = top + i * rowH; if (y > h) break
+                val v = row[k]
+                if (v == null) { started = false; continue }
+                col = v.second
+                val x = xOf(v.first)
+                if (!started) { p.moveTo(x, y); started = true } else p.lineTo(x, y)
             }
+            line.color = col; line.strokeWidth = 1.6f * dp; line.alpha = 220
+            c.drawPath(p, line)
         }
+    }
+}
+
+/** Piktograma „pasukite prietaisą į šiaurę“: prietaiso stačiakampis, aplink jį lenkta rodyklė ir raudona N viršuje. */
+class DeviceTurnIcon(ctx: Context) : View(ctx) {
+    private val dp = ctx.resources.displayMetrics.density
+    private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x44000000 }
+    private val ln = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFFFFFFFF.toInt(); strokeCap = Paint.Cap.ROUND }
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
+    private val nTxt = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFEF4444.toInt(); textAlign = Paint.Align.CENTER; isFakeBoldText = true }
+    override fun onDraw(c: Canvas) {
+        val w = width.toFloat(); val h = height.toFloat(); val cx = w / 2; val cy = h / 2; val r = minOf(w, h) / 2
+        c.drawCircle(cx, cy, r, bg)
+        ln.strokeWidth = 1.6f * dp
+        // prietaisas
+        val pw = r * 0.42f; val ph = r * 0.72f
+        c.drawRoundRect(RectF(cx - pw / 2, cy - ph / 2 + r * 0.08f, cx + pw / 2, cy + ph / 2 + r * 0.08f), r * 0.1f, r * 0.1f, ln)
+        // lenkta rodyklė aplink
+        val ar = r * 0.68f
+        c.drawArc(RectF(cx - ar, cy - ar + r * 0.08f, cx + ar, cy + ar + r * 0.08f), 200f, 230f, false, ln)
+        val ang = Math.toRadians(70.0); val tx = cx + ar * cos(ang).toFloat(); val ty = cy + r * 0.08f + ar * sin(ang).toFloat()
+        val head = Path().apply { moveTo(tx, ty); lineTo(tx + r * 0.2f, ty - r * 0.02f); lineTo(tx + r * 0.05f, ty - r * 0.2f); close() }
+        c.drawPath(head, fill)
+        // N viršuje
+        nTxt.textSize = r * 0.42f
+        c.drawText("N", cx, cy - r * 0.48f, nTxt)
     }
 }

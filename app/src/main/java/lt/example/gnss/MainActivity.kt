@@ -8286,37 +8286,38 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Šiaurės įrašymas: planšetė nukreipta į šiaurę arba pirštu pasuktas 3D vaizdas. */
+    private var northBar: View? = null
+
+    /**
+     * Šiaurės juosta ant 3D vaizdo (be lango ir paaiškinimų): permatomi apvalūs mygtukai ◀5 ◀1 1▶ 5▶ (gaublys sukasi iš karto),
+     * „prietaisas į šiaurę“ (stačiakampis su rodykle), 💾 įrašyti, ✕ atšaukti; virš jų – dabartinė pataisa.
+     */
     private fun showNorthDialog() {
         if (!::skyDome.isInitialized) return
-        val h = skyDome.headingDeg()
+        northBar?.let { (it.parent as? ViewGroup)?.removeView(it); northBar = null; skyDome.northStepCancel(); return }
         val dp = resources.displayMetrics.density
-        val corr = TextView(this).apply { textSize = 16f; gravity = Gravity.CENTER; setTypeface(typeface, Typeface.BOLD); text = "Pataisa mygtukais: 0°" }
+        val b = (40 * dp).toInt(); val gap = (4 * dp).toInt()
+        fun round(t: String, size: Float = 13f) = TextView(this).apply {
+            text = t; textSize = size; gravity = Gravity.CENTER; setTextColor(0xFFFFFFFF.toInt())
+            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0x44000000) } }
+        val lbl = TextView(this).apply { textSize = 14f; setTextColor(0xFFFFFFFF.toInt()); setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt()); gravity = Gravity.CENTER; text = "0°" }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        for ((lab, d) in listOf("\u25C0 5°" to -5.0, "\u25C0 1°" to -1.0, "1° \u25B6" to 1.0, "5° \u25B6" to 5.0)) {
-            row.addView(Button(this).apply { text = lab; isAllCaps = false; setOnClickListener {
-                skyDome.northStep(d); corr.text = "Pataisa mygtukais: %+.0f°".format(Locale.US, skyDome.liveNorthDeg) } },
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        }
-        val msg = TextView(this).apply { textSize = 13f; setPadding(0, 0, 0, (8 * dp).toInt())
-            text = ("Mygtukais sukite gaublį, kol N sutaps su tikra šiaure, ir spauskite „Įrašyti“ (veikia ir su ⊖).\n" +
-                "Arba atsisukite su planšete į šiaurę ir spauskite „Planšetė į šiaurę“ – dabartinė kryptis %s taps 0°.\n" +
-                "Tikslumas apie ±3–5° (akimis); per kamerą pagal Saulę ar Mėnulį – ±0,3°.").format(Locale.US, h?.let { "%.0f°".format(Locale.US, it) } ?: "nežinoma") }
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; val p = (20 * dp).toInt(); setPadding(p, (8 * dp).toInt(), p, 0)
-            addView(msg); addView(row); addView(corr) }
-        var done = false
-        val dlg = android.app.AlertDialog.Builder(this).setTitle("Šiaurė").setView(box)
-            .setPositiveButton("Įrašyti") { _, _ -> done = true; skyDome.northStepCommit()
-                Toast.makeText(this, "Šiaurė įrašyta", Toast.LENGTH_SHORT).show() }
-            .setNeutralButton("Planšetė į šiaurę") { _, _ ->
-                done = true; skyDome.northStepCancel()
-                val c = skyDome.northHere()
-                Toast.makeText(this, if (c == null) "Krypties jutikliai dar neparuošti" else "Šiaurė nustatyta pagal planšetės kryptį (pataisa %+.1f°)".format(Locale.US, c), Toast.LENGTH_LONG).show()
-            }
-            .setNegativeButton("Atšaukti", null).create()
-        dlg.setOnDismissListener { if (!done) skyDome.northStepCancel() }
-        dlg.show(); WinUtil.draggable(dlg)
-        // gaublys turi matytis: be patamsinimo, langas ekrano apačioje
-        dlg.window?.let { w -> w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND); w.setGravity(Gravity.BOTTOM) }
+        fun close() { northBar?.let { (it.parent as? ViewGroup)?.removeView(it) }; northBar = null }
+        for ((t, d) in listOf("\u25C05" to -5.0, "\u25C01" to -1.0, "1\u25B6" to 1.0, "5\u25B6" to 5.0))
+            row.addView(round(t).apply { setOnClickListener { skyDome.northStep(d); lbl.text = "%+.0f°".format(Locale.US, skyDome.liveNorthDeg) } },
+                LinearLayout.LayoutParams(b, b).apply { setMargins(gap, 0, gap, 0) })
+        row.addView(DeviceTurnIcon(this).apply { setOnClickListener {
+            skyDome.northStepCancel(); val c = skyDome.northHere(); close()
+            Toast.makeText(this@MainActivity, if (c == null) "Krypties jutikliai dar neparuošti" else "N = prietaiso kryptis (%+.1f°)".format(Locale.US, c), Toast.LENGTH_SHORT).show() } },
+            LinearLayout.LayoutParams(b, b).apply { setMargins(gap, 0, gap, 0) })
+        row.addView(round("\uD83D\uDCBE", 16f).apply { setOnClickListener { skyDome.northStepCommit(); close() } },
+            LinearLayout.LayoutParams(b, b).apply { setMargins(gap, 0, gap, 0) })
+        row.addView(round("\u2715", 15f).apply { setOnClickListener { skyDome.northStepCancel(); close() } },
+            LinearLayout.LayoutParams(b, b).apply { setMargins(gap, 0, gap, 0) })
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; addView(lbl); addView(row) }
+        northBar = bar
+        skyHolder.addView(bar, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            bottomMargin = (64 * dp).toInt() })
     }
 
     /** Orientyro būsena trumpai: kur jis dabar ir ar galima kalibruoti. */

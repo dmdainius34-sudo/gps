@@ -2863,7 +2863,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         seg(DoubleArray(3) { c[it] - ax[it] * r * 1.5 }, DoubleArray(3) { c[it] + ax[it] * starR * 0.92 }, axis)
         drawLines(axis.toFloatArray(), 1f, 0.92f, 0.45f, 0.85f)
         val pin = pinWorld()
-        val obs = DoubleArray(3) { c[it] + (pin[it] - c[it]) / 1.35 }
+        val obs = DoubleArray(3) { c[it] + (pin[it] - c[it]) / PIN_H }
         // 2) Pratęsimas iki fono Polaris (punktyras, blankus): fonas – sfera R = 50 aplink kamerą, todėl žvaigždė fone yra kamera + 50 · kryptis
         val pol = starCatalog.first { it.name == "Polaris" }.dir
         val pd = doubleArrayOf(pol[0].toDouble(), pol[1].toDouble(), pol[2].toDouble())
@@ -2891,7 +2891,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         seg(DoubleArray(3) { obs[it] - nn[it] * hr }, DoubleArray(3) { obs[it] + nn[it] * hr }, ring)
         seg(DoubleArray(3) { obs[it] - e[it] * hr }, DoubleArray(3) { obs[it] + e[it] * hr }, ring)
-        drawLines(ring.toFloatArray(), 0.45f, 0.95f, 1f, 0.75f)
+        drawLines(ring.toFloatArray(), 0.45f, 0.95f, 1f, 0.4f)
         // 4) Žemės judėjimas orbitoje (ekliptikoje, 90° nuo Saulės): rodyklė iš Žemės
         val mv = SpaceOrientation.motionEq(System.currentTimeMillis())
         val side = doubleArrayOf(mv[1] * ax[2] - mv[2] * ax[1], mv[2] * ax[0] - mv[0] * ax[2], mv[0] * ax[1] - mv[1] * ax[0])
@@ -3185,7 +3185,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Smeigtuko galvutė (stebėtojo vieta) sideralinėje erdvėje – ta pati, kurią piešia drawEarth(). */
     private fun pinWorld(): FloatArray {
         val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon)
-        val k = 0.25 * 1.35
+        val k = 0.25 * PIN_H
         val x = (k * cos(la) * cos(lo)).toFloat(); val y = (k * cos(la) * sin(lo)).toFloat(); val z = (k * sin(la)).toFloat()
         val m = earthMat
         return floatArrayOf(
@@ -3385,7 +3385,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawObstacleSky(pin: FloatArray) {
         val m = earthMat
         val c = floatArrayOf(m[12], m[13], m[14])
-        val o = DoubleArray(3) { (c[it] + (pin[it] - c[it]) / 1.35f).toDouble() }
+        val o = DoubleArray(3) { (c[it] + (pin[it] - c[it]) / PIN_H).toDouble() }
         val up = DoubleArray(3) { o[it] - c[it] }.let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); DoubleArray(3) { v[it] / l } }
         val ax = doubleArrayOf(m[8].toDouble(), m[9].toDouble(), m[10].toDouble())
         var e = doubleArrayOf(ax[1] * up[2] - ax[2] * up[1], ax[2] * up[0] - ax[0] * up[2], ax[0] * up[1] - ax[1] * up[0])
@@ -3433,7 +3433,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUseProgram(colorProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false); GLES20.glDisable(GLES20.GL_CULL_FACE)
-        val cols = arrayOf(floatArrayOf(0.9f, 1f, 0f, 0.28f), floatArrayOf(0.15f, 0.39f, 0.92f, 0.45f), floatArrayOf(0.94f, 0.27f, 0.27f, 0.5f))
+        val cols = arrayOf(floatArrayOf(0.9f, 1f, 0f, 0.12f), floatArrayOf(0.15f, 0.39f, 0.92f, 0.22f), floatArrayOf(0.94f, 0.27f, 0.27f, 0.25f))
         for (k in 0..2) {
             val a = tris[k]; if (a.isEmpty()) continue
             GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), cols[k][0], cols[k][1], cols[k][2], cols[k][3])
@@ -3449,7 +3449,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (last == 0L || now - last > 10_000L || earthMatLast[10] == 0f) return
         val m = earthMat
         val c = floatArrayOf(m[12], m[13], m[14])
-        val o = FloatArray(3) { c[it] + (pin[it] - c[it]) / 1.35f }                  // stebėtojo vieta paviršiuje
+        val o = FloatArray(3) { c[it] + (pin[it] - c[it]) / PIN_H }                  // stebėtojo vieta paviršiuje
         val up = FloatArray(3) { o[it] - c[it] }.let { v -> val l = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); FloatArray(3) { v[it] / l } }
         // kryptis į stotį (paviršiaus liestinė)
         var dir: FloatArray? = null; var label = "NTRIP pataisos (virtuali bazė)"
@@ -3902,7 +3902,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val h = DoubleArray(3) { e * fE[it] + n * fN[it] }
         val side = DoubleArray(3) { n * fE[it] - e * fN[it] }
         val head = pinWorld()
-        val k = 1.12 / 1.35
+        val k = 1.06 / PIN_H
         val p0 = DoubleArray(3) { head[it] * k }
         val len = 0.07
         val tip = DoubleArray(3) { p0[it] + h[it] * len }
@@ -4340,18 +4340,20 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val py = (r * cos(la) * sin(lo)).toFloat()
         val pz = (r * sin(la)).toFloat()
         GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 0.95f, 0.15f, 0.15f, 1f)
-        bindPos(colorProg, floatBuf(floatArrayOf(px, py, pz, px * 1.35f, py * 1.35f, pz * 1.35f)))
+        bindPos(colorProg, floatBuf(floatArrayOf(px, py, pz, px * PIN_H, py * PIN_H, pz * PIN_H)))
         GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
         GLES20.glUseProgram(dotProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(dotProg, "uMVP"), 1, false, earthMvp, 0)
         GLES20.glUniform4f(GLES20.glGetUniformLocation(dotProg, "uColor"), 0.95f, 0.15f, 0.15f, 1f)
         // galaktikos stadijoje – mažas kaip žvaigždė (raudona spalva pakankamai išskiria)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), (22f - 18f * galFade()) * density)
-        bindPos(dotProg, floatBuf(floatArrayOf(px * 1.35f, py * 1.35f, pz * 1.35f)))
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), (11f - 7f * galFade()) * density)
+        bindPos(dotProg, floatBuf(floatArrayOf(px * PIN_H, py * PIN_H, pz * PIN_H)))
         GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
     }
 
     private val EARTH_R = 0.25f
+    /** Smeigtuko galvutės aukštis (Žemės spinduliais nuo centro): 1,12 – žemas smeigtukas. */
+    private val PIN_H = 1.12f
 
     /** Palydovo aukštis virš Žemės (km) pagal konstelaciją. */
     private fun altKm(c: String, svid: Int = 0): Double = when (c) {

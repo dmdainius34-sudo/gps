@@ -6145,7 +6145,31 @@ class DraggablePanel(
     /** C/N0 krioklys meniu viršuje: kairėje silpni, dešinėje stiprūs, eilutės leidžiasi žemyn. */
     private val cnoFall = CnoFallView(context).apply { threshold = CnoMask.min.toFloat() }
     private var lastPanelSats: List<Sat> = emptyList()
-    fun setSats(list: List<Sat>) { lastPanelSats = list; if (panel.visibility == VISIBLE) { cnoFall.addSample(list); cnoInfo() } }
+    fun setSats(list: List<Sat>) {
+        lastPanelSats = list
+        linkQuality(list)
+        if (panel.visibility == VISIBLE) { cnoFall.addSample(list); cnoInfo() }
+    }
+    /**
+     * Ryšio kokybė NLO fonui – pagal tai, ką programa iš tikro „girdi“ (palydovai virš slenksčio, neužtildyti):
+     * jų vidutinis C/N0, minus bauda už dingstančius gerus palydovus (trūkinėjimą) ir už per mažą skaičių
+     * (< 4 – padėties apskritai nesuskaičiuoti). Stiprūs ir pastovūs – geltona; trūkinėja ar per mažai – krenta iki juodos.
+     */
+    private var heardPrev: Set<String> = emptySet()
+    private var dropScore = 0.0
+    private fun linkQuality(list: List<Sat>) {
+        val heard = list.filter { it.cn0 > 0f && !LiveRtk.isMuted(it.const, it.svid, it.cn0) }.distinctBy { it.const to it.svid }
+        val keys = heard.map { it.const + it.svid }.toSet()
+        val lost = heardPrev.count { it !in keys }
+        heardPrev = keys
+        dropScore = dropScore * 0.85 + lost
+        val n = heard.size
+        val q: Float? = if (n == 0) 10f else {
+            val avg = heard.map { it.cn0.toDouble() }.average()
+            (avg - 3.0 * dropScore - (if (n < 4) 14.0 else if (n < 6) 4.0 else 0.0)).toFloat()
+        }
+        shimmer.setSignal(q)
+    }
     /** Signalo slenkstis programos skaičiavimui: slankiklis po kriokliu, riba krioklyje – juoda linija, kairėje – išmetami. */
     private val cnoLbl = TextView(context).apply { textSize = 11f; setTextColor(0xFF111827.toInt()) }
     private fun cnoInfo() {
@@ -6554,7 +6578,6 @@ class DraggablePanel(
     /** Burbulo spalva ir efektai: avg – vidutinis C/N0, peak – maksimalus. */
     fun setSignal(avgDb: Float?, peakDb: Float?) {
         bubble.setSignal(avgDb, peakDb)
-        shimmer.setSignal(avgDb)
     }
 
 

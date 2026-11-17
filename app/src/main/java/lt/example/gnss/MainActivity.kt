@@ -6994,6 +6994,7 @@ class MainActivity : AppCompatActivity() {
         margins(toolCol, m, m + t, m + r, m)
     }
 
+    private var cnoRefresh: (() -> Unit)? = null
     private var immersive = false
     /** ⛶ – paslėpti ar parodyti sistemos juostas (3D lieka per visą ekraną). */
     private fun toggleImmersive() {
@@ -7198,6 +7199,7 @@ class MainActivity : AppCompatActivity() {
             CabinMap.learnStatus(if (HeadingTrust.trusted) hd else null, list)
             cabinView?.let { it.heading = hd; it.sats = list; it.invalidate() }
             lastSats = list
+            cnoRefresh?.invoke()
             satMap.clear()
             for (x in list) satMap[x.const + x.svid] = x
             skyView.sats = list
@@ -7555,6 +7557,7 @@ class MainActivity : AppCompatActivity() {
                 Locale.US, CnoMask.min, left2, u.size, Readiness.realAcc().let { if (it.isNaN()) "—" else "~%.0f m".format(Locale.US, it) })
         }
         cnoText()
+        cnoRefresh = { cnoText() }                    // atnaujinama su kiekvienu palydovų sąrašu (ne tik judinant slankiklį)
         left.addView(cnoLabel, LinearLayout.LayoutParams(mw, ww))
         left.addView(android.widget.SeekBar(this).apply {
             max = 25; progress = (CnoMask.min - 15).toInt().coerceIn(0, 25)

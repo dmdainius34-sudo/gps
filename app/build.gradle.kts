@@ -11,8 +11,21 @@ android {
         applicationId = "lt.example.gnss"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        // kiekvienas build – didesnis versijos numeris (GitHub Actions paleidimo numeris)
+        val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionCode = run
+        versionName = "1.0.$run"
+    }
+
+    // Pastovus derinimo parašas (raktas saugykloje): naujas APK diegiamas ant seno be ištrynimo, duomenys išlieka.
+    // Tai tik derinimo raktas, ne leidybos.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("gnss-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {

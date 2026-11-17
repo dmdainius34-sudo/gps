@@ -6058,13 +6058,19 @@ class DraggablePanel(
     private var counting = false
     private var remaining = 0
 
+    /** Mirgantis sodrus fonas pagal signalo kokybę (žr. qualityColors). */
+    private val shimmer = ShimmerDrawable(resources.displayMetrics.density)
+    private val shimmerAnim = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 9000L; repeatCount = ValueAnimator.INFINITE; interpolator = LinearInterpolator()
+        addUpdateListener { shimmer.t = it.animatedFraction; shimmer.invalidateSelf() }
+    }
+    /** C/N0 krioklys meniu viršuje: kairėje silpni, dešinėje stiprūs, eilutės leidžiasi žemyn. */
+    private val cnoFall = CnoFallView(context)
+    fun setSats(list: List<Sat>) { if (panel.visibility == VISIBLE) cnoFall.addSample(list) }
+
     private val panel = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
-        background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = 16f * density
-            setColor(Color.WHITE)
-        }
+        background = shimmer
         elevation = 10 * density
         val pad = (10 * density).toInt()
         setPadding(pad, pad, pad, pad)
@@ -6397,6 +6403,7 @@ class DraggablePanel(
         panel.addView(recRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         panel.addView(inputRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         panel.addView(sp3Status, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        bodyInner.addView(cnoFall, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(fixBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(msgInput, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(pkBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -6446,6 +6453,7 @@ class DraggablePanel(
     /** Burbulo spalva ir efektai: avg – vidutinis C/N0, peak – maksimalus. */
     fun setSignal(avgDb: Float?, peakDb: Float?) {
         bubble.setSignal(avgDb, peakDb)
+        shimmer.setSignal(avgDb)
     }
 
 
@@ -6651,6 +6659,7 @@ class DraggablePanel(
 
     private fun minimize() {
         setOwnWidth(FrameLayout.LayoutParams.WRAP_CONTENT)
+        shimmerAnim.cancel()
         panel.visibility = GONE
         bubble.visibility = VISIBLE
         post { constrainPosition() }
@@ -6666,6 +6675,7 @@ class DraggablePanel(
         setOwnWidth(target)
         bubble.visibility = GONE
         panel.visibility = VISIBLE
+        if (!shimmerAnim.isStarted) shimmerAnim.start()
         post { limitBodyHeight(); post { adjustPositionOnExpand() } }
     }
 
@@ -6944,9 +6954,8 @@ class MainActivity : AppCompatActivity() {
         val l = leftCol ?: return
         val lParent = l.parent as? ViewGroup ?: return
         val lIdx = lParent.indexOfChild(l); val lLp = l.layoutParams
-        val cParent = cnoView.parent as? ViewGroup; val cIdx = cParent?.indexOfChild(cnoView) ?: -1; val cLp = cnoView.layoutParams
-        lParent.removeView(l); cParent?.removeView(cnoView)
-        l.visibility = View.VISIBLE; cnoView.visibility = View.VISIBLE
+        lParent.removeView(l)
+        l.visibility = View.VISIBLE
         val dp = resources.displayMetrics.density
         // kiek varnelių įjungta ir kiek leidimų suteikta
         fun boxes(v: View, out: ArrayList<CheckBox>) { if (v is CheckBox) out.add(v) else if (v is ViewGroup) for (i in 0 until v.childCount) boxes(v.getChildAt(i), out) }
@@ -6956,8 +6965,7 @@ class MainActivity : AppCompatActivity() {
             text = "Varnelės: įjungta ${cbs.count { it.isChecked }} iš ${cbs.size}. Leidimai: suteikta ${perms.size - miss.size} iš ${perms.size}" +
                 (if (miss.isEmpty()) "" else " – trūkstamus suteikite mygtuku „Suteikti visus leidimus“") }
         val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL
-            addView(head); addView(l, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-            addView(cnoView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (260 * dp).toInt())) }
+            addView(head); addView(l, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)) }
         val dlg = android.app.Dialog(this, android.R.style.Theme_DeviceDefault_Light_NoActionBar)
         val title = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding((16 * dp).toInt(), (12 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt())
@@ -6967,10 +6975,9 @@ class MainActivity : AppCompatActivity() {
         dlg.setContentView(LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(0xFFF3F4F6.toInt())
             addView(title); addView(ScrollView(this@MainActivity).apply { addView(body) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)) })
         dlg.setOnDismissListener {
-            body.removeView(l); body.removeView(cnoView)
+            body.removeView(l)
             lParent.addView(l, lIdx.coerceIn(0, lParent.childCount), lLp)
-            if (cParent != null) cParent.addView(cnoView, cIdx.coerceIn(0, cParent.childCount), cLp)
-            if (fullscreen) { l.visibility = View.GONE; cnoView.visibility = View.GONE }
+            if (fullscreen) l.visibility = View.GONE
         }
         dlg.show()
     }
@@ -7151,6 +7158,7 @@ class MainActivity : AppCompatActivity() {
             bg.setSignal(if (used.isNotEmpty()) avg.toFloat() else null)
             OverlayBus.avg = if (used.isNotEmpty()) avg.toFloat() else null
             OverlayBus.peak = top4Avg(list)
+            sharePanel?.setSats(list)
             sharePanel?.setSignal(
                 if (used.isNotEmpty()) avg.toFloat() else null,
                 top4Avg(list)

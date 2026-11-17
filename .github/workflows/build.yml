@@ -41,6 +41,18 @@ jobs:
           fi
           if [ -s starmap8k/stars_bg_8k.jpg ]; then cp starmap8k/stars_bg_8k.jpg app/src/main/assets/; ls -la app/src/main/assets/stars_bg_8k.jpg; fi
 
+      - name: 3D žvaigždžių laukas (HYG katalogas, CC BY-SA 4.0)
+        continue-on-error: true
+        run: |
+          for U in https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/CURRENT/hygdata_v41.csv.gz \
+                   https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/v4/hygdata_v41.csv.gz \
+                   https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/v3/hygdata_v38.csv.gz \
+                   https://raw.githubusercontent.com/astronexus/HYG-Database/master/hygdata_v3.csv; do
+            curl -sSL -m 300 -o hyg.bin -w "$U -> HTTP %{http_code} %{size_download}\n" "$U" || true
+            if [ -s hyg.bin ] && [ "$(stat -c%s hyg.bin)" -gt 1000000 ]; then python3 tools/stars3d.py hyg.bin app/src/main/assets/stars3d.csv && break; fi
+          done
+          ls -la app/src/main/assets/stars3d.csv || echo "stars3d.csv nesukurtas – programa veiks be 3D žvaigždžių lauko"
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
 

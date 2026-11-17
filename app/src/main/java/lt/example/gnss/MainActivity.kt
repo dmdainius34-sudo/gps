@@ -2311,6 +2311,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Žvaigždžių fonas – didelė sfera pusiaujo (RA/Dec) sistemoje, sukasi kartu su žvaigždėmis
         drawCmb()
         drawStarCollapse(covers = true)
+        drawStars3d()
         drawGalaxy3d()
         drawStarCollapse(covers = false)
 
@@ -2575,7 +2576,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 billboard(bg, eyeI, cr, cr, coverTex, 0f, 0f, 0f, (t * 4f).coerceAtMost(1f) * bgFade())
                 continue
             }
-            val p = FloatArray(3) { bg[it] + (fP[it] - bg[it]) * t }
+            // tikra 3D vieta aplink Saulę (galaktikos mastelis: GAL_S vnt./kpc, 1 šm = 0,3066 pc)
+            val tgt = FloatArray(3) { (fP[it] + s.dir[it] * (s.ly * 0.3066 / 1000.0 * GAL_S)).toFloat() }
+            val p = FloatArray(3) { bg[it] + (tgt[it] - bg[it]) * t }
             val dx = p[0] - camPos[0]; val dy = p[1] - camPos[1]; val dz = p[2] - camPos[2]
             val dc = sqrt(dx * dx + dy * dy + dz * dz)
             val sz = dc * (0.006f + 0.0012f * bright)
@@ -2585,6 +2588,64 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             billboard(p, eyeI, sz, sz, starTex, s.rgb[0], s.rgb[1], s.rgb[2], a)
             billboard(p, eyeI, sz * 0.4f, sz * 0.4f, starTex, 1f, 1f, 1f, a)
         }
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    // ---------------- 3D ŽVAIGŽDŽIŲ LAUKAS (HYG katalogas, CC BY-SA 4.0): tikri atstumai, tikras paralaksas ----------------
+    private var s3Buf: FloatBuffer? = null; private var s3N = 0; private var s3Prog = 0; private var s3Tried = false
+
+    /** Katalogas iš assets/stars3d.csv (sukuria build); be jo laukas nepiešiamas. */
+    private fun loadStars3d() {
+        s3Tried = true
+        val rows = try { appCtx.assets.open("stars3d.csv").bufferedReader().readLines() } catch (_: Exception) { return }
+        val k = GAL_S / 1000f                                         // parsekai -> scenos vienetai
+        val out = ArrayList<Float>(rows.size * 7)
+        for (ln in rows) {
+            if (ln.startsWith("#")) continue
+            val p = ln.split(','); if (p.size < 5) continue
+            val x = p[0].toFloatOrNull() ?: continue; val y = p[1].toFloatOrNull() ?: continue; val z = p[2].toFloatOrNull() ?: continue
+            val am = p[3].toFloatOrNull() ?: continue; val bv = p[4].toFloatOrNull() ?: 0.6f
+            // spalva pagal B−V: melsva (−0,3) … balta (0,3) … geltona (0,8) … oranžinė–raudona (1,5+)
+            val t = ((bv + 0.3f) / 1.9f).coerceIn(0f, 1f)
+            val r = (0.65f + 0.35f * minOf(1f, t * 2f)).coerceAtMost(1f)
+            val g = (0.75f + 0.25f * (1f - kotlin.math.abs(t - 0.35f) * 1.6f)).coerceIn(0.45f, 1f)
+            val b = (1f - 0.65f * t).coerceIn(0.3f, 1f)
+            val lum = Math.pow(10.0, -0.4 * (am - 4.83)).toFloat()          // šviesis Saulės vienetais
+            out.add(x * k); out.add(y * k); out.add(z * k); out.add(r); out.add(g); out.add(b); out.add(lum)
+        }
+        s3N = out.size / 7
+        if (s3N > 0) s3Buf = floatBuf(out.toFloatArray())
+    }
+
+    /**
+     * Žvaigždės tikrose 3D vietose aplink Saulę (galaktikos mastelis). Atitolinus už Saulės sistemos fono sfera blėsta,
+     * o šios žvaigždės lieka erdvėje: artimos slenka tolimųjų fone (tikras paralaksas), ryškumas – šviesis / atstumas².
+     */
+    private fun drawStars3d() {
+        val a = (1f - bgFade()) * (1f - 0.6f * galFade())
+        if (a < 0.01f) return
+        if (!s3Tried) loadStars3d()
+        val buf = s3Buf ?: return
+        if (s3Prog == 0) s3Prog = program(STAR3D_VS, GAL_FS)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        GLES20.glUseProgram(s3Prog)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(s3Prog, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(s3Prog, "uO"), fP[0], fP[1], fP[2])
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(s3Prog, "uCam"), camPos[0], camPos[1], camPos[2])
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(s3Prog, "uK"), 2.2f * density)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(s3Prog, "uMax"), 9f * density)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(s3Prog, "uA"), a)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(s3Prog, "uHdr"), if (Hdr.on) 1.6f else 1f)
+        resetAttribs()
+        val lp = GLES20.glGetAttribLocation(s3Prog, "aPos"); val lc = GLES20.glGetAttribLocation(s3Prog, "aCol")
+        GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lc)
+        buf.position(0); GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 28, buf)
+        buf.position(3); GLES20.glVertexAttribPointer(lc, 4, GLES20.GL_FLOAT, false, 28, buf)
+        GLES20.glDrawArrays(GLES20.GL_POINTS, 0, s3N)
+        GLES20.glDisableVertexAttribArray(lc)
+        buf.position(0)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
@@ -5250,6 +5311,25 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 gl_Position = uMVP * vec4(aPos + uO, 1.0);
                 gl_PointSize = clamp(uK / max(gl_Position.w, 0.001), 1.0, uMax);
                 vCol = vec4(aCol.rgb, min(aCol.a * uA, 1.0));
+            }
+        """
+        /** 3D žvaigždė: dydis ir permatomumas pagal regimąjį ryškį iš kameros (√šviesis / atstumas). */
+        private const val STAR3D_VS = """
+            attribute vec3 aPos;
+            attribute vec4 aCol;
+            uniform mat4 uMVP;
+            uniform vec3 uO;
+            uniform vec3 uCam;
+            uniform float uK;
+            uniform float uMax;
+            uniform float uA;
+            varying vec4 vCol;
+            void main() {
+                vec3 p = aPos + uO;
+                gl_Position = uMVP * vec4(p, 1.0);
+                float b = sqrt(aCol.a) / max(length(p - uCam), 0.01);
+                gl_PointSize = clamp(uK * b, 1.0, uMax);
+                vCol = vec4(aCol.rgb, clamp(uA * (0.2 + 0.4 * uK * b), 0.0, 1.0));
             }
         """
         private const val GAL_FS = """

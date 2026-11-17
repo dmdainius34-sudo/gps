@@ -75,6 +75,7 @@ object CnoMask {
             else -> min
         }
         if (nw == min) return false
+        AppDiag.thr(min, nw, sats.count { it.cn0 >= nw && it.elDeg >= 10.0 })
         min = nw
         return true
     }

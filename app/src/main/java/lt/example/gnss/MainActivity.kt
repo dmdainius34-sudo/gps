@@ -6205,6 +6205,7 @@ class DraggablePanel(
             (avg - 3.0 * dropScore - (if (n < 4) 14.0 else if (n < 6) 4.0 else 0.0)).toFloat()
         }
         shimmer.setSignal(q)
+        AppDiag.link(q, lost)
     }
     /** Signalo slenkstis programos skaičiavimui: slankiklis po kriokliu, riba krioklyje – juoda linija, kairėje – išmetami. */
     private val cnoLbl = TextView(context).apply { textSize = 11f; setTextColor(0xFF111827.toInt()) }
@@ -7972,6 +7973,7 @@ class MainActivity : AppCompatActivity() {
                         (SunCal.lastLine(this@MainActivity)?.let { "Paskutinis kalibravimas pagal Saulę (${SunCal.FILE}): ${SunCal.HEADER.trim()}\n$it\n" } ?: "Kalibravimų pagal Saulę žurnale nėra\n") +
                         (if (Uvi.enabled) Uvi.text() + "\n" else "") + SunFrame.text() + "\n" +
                         NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + CabinMap.text() + "\n" +
+                        KnownHeight.text() + "\n" + AppDiag.text() +
                         (Readiness.knowledge()?.let { "Lusto žinios: ${it.text}\n" } ?: "") +
                         "Pasiruošimas: " + Readiness.state(LiveRtk.enabled, LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc).text + "\n" +
                         (if (::skyDome.isInitialized) skyDome.fpsText() + "\n" else "")
@@ -9479,7 +9481,7 @@ class MainActivity : AppCompatActivity() {
             (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" + skyDome.northText(devAzimuth) + "\n" else "") +
             (AimDiag.lastSummary(this).takeIf { it.isNotEmpty() }?.let { it + "\n" } ?: "") +
             "Kalibravimų žurnalas (paskutiniai 10):\n" + (try { SunCal.file(this).readLines().takeLast(11).joinToString("\n") } catch (_: Exception) { "nėra" }) + "\n" +
-            SunFrame.text() + "\n" + CabinMap.text() + "\n" + KnownHeight.text() + "\n" +
+            SunFrame.text() + "\n" + CabinMap.text() + "\n" + KnownHeight.text() + "\n" + AppDiag.text() +
             NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n"
 
     private fun buildReport(sections: Set<String>, question: String): String = buildString {

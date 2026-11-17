@@ -243,14 +243,15 @@ object LiveRtk {
         val free = if (obs.size >= 6 && KnownHeight.deviceMsl() != null) fit(null)?.also { KnownHeight.checkFree(it.sol.lat, it.sol.lon, it.sol.h) } else null
         val ref = sppLast?.takeIf { now - sppMs < 60_000L }?.let { it.lat to it.lon } ?: KnownHeight.lastLatLon()
         val hc = ref?.let { KnownHeight.constraint(it.first, it.second) }
-        if (obs.size < (if (hc != null) 3 else 5)) return
-        val f = (if (hc != null) fit(hc) else free ?: fit(null)) ?: return
+        if (obs.size < (if (hc != null) 3 else 5)) { AppDiag.noPos(obs.size); return }
+        val f = (if (hc != null) fit(hc) else free ?: fit(null)) ?: run { AppDiag.noPos(obs.size); return }
         sppHeightCon = hc != null
         sppSource = if (r != null) "SP3" else "efemeridės iš palydovų"
         val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }
         val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, moving)
         val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
         sppLast = sol; sppMs = now
+        AppDiag.pos(obs.size, f.sol, hc != null)
         sppUsedKeys = f.sats.map { constOf(it.sys) + it.svid }.toSet()
         try { DopplerVel.solve(f.sats, f.x)?.let { velLast = it; velMs = now } } catch (_: Exception) {}
     }

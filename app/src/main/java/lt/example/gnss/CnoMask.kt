@@ -15,24 +15,20 @@ object CnoMask {
 
     class S(val sys: String, val cn0: Double, val elDeg: Double, val azDeg: Double)
 
-    /**
-     * Aukščiausias slenkstis, prie kurio dar lieka pakankamai palydovų, išsidėsčiusių po dangų:
-     * pirmiausia – perteklius ≥ 3 (palydovų minus 3 koordinatės minus po laikrodį kiekvienai konsteliacijai) ir PDOP ≤ 3;
-     * jei tokio nėra – perteklius ≥ 1 ir PDOP ≤ 6; kitaip – žemiausias.
-     */
+    /** Slenksčio t tinkamumas: 2 – perteklius ≥ 3 ir PDOP ≤ 3; 1 – perteklius ≥ 1 ir PDOP ≤ 6 (padėtis dar gera); 0 – per mažai. */
+    fun level(t: Double, sats: List<S>): Int {
+        val s = sats.filter { it.cn0 >= t && it.elDeg >= 10.0 }
+        val red = s.size - 3 - s.map { it.sys }.distinct().size
+        if (red < 1) return 0
+        val p = pdop(s)
+        return if (red >= 3 && p <= 3.0) 2 else if (p <= 6.0) 1 else 0
+    }
+
+    /** Aukščiausias slenkstis su 2 lygiu; jei tokio nėra – su 1 lygiu; kitaip – žemiausias. */
     fun target(sats: List<S>): Double {
-        fun ok(t: Double, minRed: Int, maxPdop: Double): Boolean {
-            val s = sats.filter { it.cn0 >= t && it.elDeg >= 10.0 }
-            val k = s.map { it.sys }.distinct().size
-            if (s.size - 3 - k < minRed) return false
-            return pdop(s) <= maxPdop
-        }
-        for (pass in 0..1) {
+        for (need in intArrayOf(2, 1)) {
             var t = HI
-            while (t >= LO) {
-                if (if (pass == 0) ok(t, 3, 3.0) else ok(t, 1, 6.0)) return t
-                t -= 1.0
-            }
+            while (t >= LO) { if (level(t, sats) >= need) return t; t -= 1.0 }
         }
         return LO
     }
@@ -58,21 +54,27 @@ object CnoMask {
         return sqrt((a[0][4] + a[1][5] + a[2][6]).coerceAtLeast(0.0))
     }
 
-    private val hist = ArrayDeque<Double>()
+    private var upN = 0
+    private var downN = 0
 
     /**
-     * Kartą per sekundę, kai auto: slenkstis nukrenta iš karto (kad padėtis nedingtų), o kyla tik kai ~10 s iš eilės
-     * leidžiama aukštesnis – po 1 dB per sekundę. Grąžina true, jei slenkstis pasikeitė.
+     * Kartą per sekundę, kai auto. Slenkstis turi būti ramus (kiekvienas pakeitimas keičia palydovų rinkinį ir pastumia padėtį):
+     *  - iš karto žemyn – tik kai dabartinis slenkstis nebeleidžia geros padėties (0 lygis);
+     *  - aukštyn – kai ≥ 20 s iš eilės leidžiama bent 2 dB aukščiau, po 1 dB (toliau kas 5 s);
+     *  - lėtai žemyn – kai ≥ 30 s dabartinis tik 1 lygio, o žemiau yra 2 lygio, po 1 dB (toliau kas 5 s).
+     * Grąžina true, jei slenkstis pasikeitė.
      */
     @Synchronized fun autoStep(sats: List<S>): Boolean {
-        if (!auto) { hist.clear(); return false }
+        if (!auto) { upN = 0; downN = 0; return false }
         val t = target(sats)
-        hist.addLast(t); while (hist.size > 10) hist.removeFirst()
-        val lo = hist.minOrNull() ?: t
-        val nw = when {
-            t < min -> t
-            hist.size >= 10 && lo > min -> minOf(min + 1.0, lo)
-            else -> min
+        val cur = level(min, sats)
+        var nw = min
+        if (cur == 0 && t < min) { nw = t; upN = 0; downN = 0 }
+        else {
+            upN = if (t >= min + 2.0) upN + 1 else 0
+            downN = if (cur < 2 && t < min) downN + 1 else 0
+            if (upN >= 20) { nw = min + 1.0; upN = 15 }
+            else if (downN >= 30) { nw = min - 1.0; downN = 25 }
         }
         if (nw == min) return false
         AppDiag.thr(min, nw, sats.count { it.cn0 >= nw && it.elDeg >= 10.0 })

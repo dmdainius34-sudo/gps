@@ -253,12 +253,24 @@ class CnoAutoTest {
     @Test fun dropsAtOnceRisesSlowly() {
         CnoMask.auto = true; CnoMask.min = 20.0
         val strong = sky({ 42.0 }, 10)
-        repeat(9) { CnoMask.autoStep(strong) }
-        assertEquals(20.0, CnoMask.min, 0.0)          // dar nekyla – laukiama ~10 s
+        repeat(19) { CnoMask.autoStep(strong) }
+        assertEquals(20.0, CnoMask.min, 0.0)          // dar nekyla – laukiama 20 s
         CnoMask.autoStep(strong)
         assertEquals(21.0, CnoMask.min, 0.0)          // po 1 dB
+        repeat(4) { CnoMask.autoStep(strong) }
+        assertEquals(21.0, CnoMask.min, 0.0)          // toliau kas 5 s
+        CnoMask.autoStep(strong)
+        assertEquals(22.0, CnoMask.min, 0.0)
         CnoMask.autoStep(sky({ if (it < 3) 42.0 else 18.0 }, 10))
         assert(CnoMask.min <= 18.0) { "turėjo nukristi iš karto: ${CnoMask.min}" }
+        CnoMask.min = 20.0
+    }
+
+    @Test fun holdsWhileStillGood() {
+        // signalai svyruoja aplink slenkstį, bet padėtis gera – slenkstis nešokinėja
+        CnoMask.auto = true; CnoMask.min = 29.0
+        repeat(40) { i -> CnoMask.autoStep(sky({ k -> if (k < 8) 30.0 + ((i + k) % 3) else 26.0 + (i % 4) }, 12)) }
+        assertEquals(29.0, CnoMask.min, 0.0)
         CnoMask.min = 20.0
     }
 }

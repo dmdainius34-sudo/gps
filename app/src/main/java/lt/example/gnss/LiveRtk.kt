@@ -180,6 +180,7 @@ object LiveRtk {
     @Volatile var sppLast: PositionSolver.Solution? = null
         private set
     @Volatile private var sppMs = 0L
+    private var sppIn: Set<String> = emptySet()
     /** Paskutinė programos padėtis skaičiuota su žinomu aukščiu. */
     @Volatile var sppHeightCon = false
         private set
@@ -227,7 +228,11 @@ object LiveRtk {
         val now = System.currentTimeMillis()
         // SP3 (tiksliausia), o jei jo nėra ar nebeapima – efemeridės iš palydovų žinučių (ar BRDC): padėtis veikia ir be interneto
         val r = Sp3Live.reader?.takeIf { Sp3Solver.inRange(it, ep.t) }
-        val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min }
+        // slenkstis su 3 dB histereze kiekvienam palydovui: įeina nuo slenksčio, išeina tik nukritęs 3 dB žemiau –
+        // ties slenksčiu mirgantys palydovai nekaitalioja rinkinio (kiekvienas pasikeitimas pastumia padėtį)
+        val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 &&
+                (it.cn0 >= CnoMask.min || (it.cn0 >= CnoMask.min - 3.0 && (it.sys.toString() + it.svid) in sppIn)) }
+            .also { l -> sppIn = l.map { it.sys.toString() + it.svid }.toSet() }
             .map { m -> DualFreq.iono(m, ep.t)?.let { i -> Sp3V5.Ob(m.sys, m.svid, m.pr - i, m.cn0, m.prr, ifree = true) } ?: Sp3V5.Ob(m.sys, m.svid, m.pr, m.cn0, m.prr) }
             .let { l ->
                 // L1+L5 palydovams reikia savo laikrodžio – verta tik kai sistemoje jų ≥ 3, kitaip lieka įprastas L1 su Klobuchar
@@ -251,7 +256,7 @@ object LiveRtk {
         val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, moving)
         val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
         sppLast = sol; sppMs = now
-        AppDiag.pos(obs.size, f.sol, hc != null)
+        AppDiag.pos(obs.size, f.sol, hc != null, sol)
         sppUsedKeys = f.sats.map { constOf(it.sys) + it.svid }.toSet()
         try { DopplerVel.solve(f.sats, f.x)?.let { velLast = it; velMs = now } } catch (_: Exception) {}
     }

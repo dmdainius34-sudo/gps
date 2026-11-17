@@ -6191,12 +6191,14 @@ class DraggablePanel(
      * jų vidutinis C/N0, minus bauda už dingstančius gerus palydovus (trūkinėjimą) ir už per mažą skaičių
      * (< 4 – padėties apskritai nesuskaičiuoti). Stiprūs ir pastovūs – geltona; trūkinėja ar per mažai – krenta iki juodos.
      */
-    private var heardPrev: Set<String> = emptySet()
+    private var heardPrev: Map<String, Float> = emptyMap()
     private var dropScore = 0.0
     private fun linkQuality(list: List<Sat>) {
         val heard = list.filter { it.cn0 > 0f && !LiveRtk.isMuted(it.const, it.svid, it.cn0) }.distinctBy { it.const to it.svid }
-        val keys = heard.map { it.const + it.svid }.toSet()
-        val lost = heardPrev.count { it !in keys }
+        val keys = heard.associate { (it.const + it.svid) to it.cn0 }
+        // dingęs palydovas sveriamas pagal tai, koks stiprus jis buvo: ties slenksčiu mirgantis – beveik 0, ≥ 8 dB virš – 1
+        val thr = CnoMask.min.toFloat()
+        val lost = heardPrev.entries.filter { it.key !in keys }.sumOf { ((it.value - thr) / 8f).coerceIn(0f, 1f).toDouble() }
         heardPrev = keys
         dropScore = dropScore * 0.85 + lost
         val n = heard.size

@@ -9,24 +9,28 @@ import kotlin.math.abs
  */
 object AppDiag {
     private class E(val ms: Long, val thr: Double, val auto: Boolean, val heard: Int, val used: Int, val hCon: Boolean,
-                    val hacc: Double, val jump: Double, val freeDh: Double)
+                    val hacc: Double, val jump: Double, val freeDh: Double, val outJump: Double = Double.NaN)
     private class T(val ms: Long, val from: Double, val to: Double, val sats: Int)
-    private class L(val ms: Long, val q: Float, val lost: Int)
+    private class L(val ms: Long, val q: Float, val lost: Double)
 
     private const val KEEP_MS = 30 * 60_000L
     private val eps = ArrayDeque<E>()
     private val thrs = ArrayDeque<T>()
     private val links = ArrayDeque<L>()
     private var prevLat = Double.NaN; private var prevLon = Double.NaN
+    private var oLat = Double.NaN; private var oLon = Double.NaN
 
     private fun <X> trim(q: ArrayDeque<X>, ms: (X) -> Long, now: Long) { while (q.isNotEmpty() && now - ms(q.first()) > KEEP_MS) q.removeFirst() }
 
     /** Programos padėtis apskaičiuota. */
-    @Synchronized fun pos(heard: Int, sol: PositionSolver.Solution, hCon: Boolean) {
+    /** sol – sprendinys, out – išlyginta padėtis (tokia perduodama kitoms programoms). */
+    @Synchronized fun pos(heard: Int, sol: PositionSolver.Solution, hCon: Boolean, out: PositionSolver.Solution) {
         val now = System.currentTimeMillis()
         val jump = if (prevLat.isNaN()) 0.0 else PositionSolver.horizDist(prevLat, prevLon, sol.lat, sol.lon)
         prevLat = sol.lat; prevLon = sol.lon
-        eps.addLast(E(now, CnoMask.min, CnoMask.auto, heard, sol.sats, hCon, sol.hacc, jump, KnownHeight.freeDh))
+        val oj = if (oLat.isNaN()) 0.0 else PositionSolver.horizDist(oLat, oLon, out.lat, out.lon)
+        oLat = out.lat; oLon = out.lon
+        eps.addLast(E(now, CnoMask.min, CnoMask.auto, heard, sol.sats, hCon, sol.hacc, jump, KnownHeight.freeDh, oj))
         trim(eps, { it.ms }, now)
     }
 
@@ -42,7 +46,7 @@ object AppDiag {
         thrs.addLast(T(now, from, to, sats)); trim(thrs, { it.ms }, now)
     }
 
-    @Synchronized fun link(q: Float?, lost: Int) {
+    @Synchronized fun link(q: Float?, lost: Double) {
         val now = System.currentTimeMillis()
         if (links.isNotEmpty() && now - links.last().ms < 900L) return
         links.addLast(L(now, q ?: Float.NaN, lost)); trim(links, { it.ms }, now)
@@ -63,6 +67,9 @@ object AppDiag {
                 ok.map { it.used }.average(), ok.minOf { it.used }, ok.maxOf { it.used }, eps.map { it.heard }.average()))
             appendLine("Tikslumo įvertis: mediana %.1f m, 90 %% %.1f m; šuoliai tarp epochų: > 5 m – %d, > 20 m – %d, didžiausias %.0f m".format(Locale.US,
                 q(acc, 0.5), q(acc, 0.9), ok.count { it.jump > 5.0 }, ok.count { it.jump > 20.0 }, ok.maxOf { it.jump }))
+            val oj = ok.map { it.outJump }.filter { !it.isNaN() }
+            if (oj.isNotEmpty()) appendLine("Išlyginta padėtis (kitoms programoms): šuoliai > 2 m – %d, > 5 m – %d, didžiausias %.1f m".format(Locale.US,
+                oj.count { it > 2.0 }, oj.count { it > 5.0 }, oj.maxOrNull() ?: 0.0))
             val hc = ok.filter { it.hCon }
             appendLine("Su žinomu aukščiu: ${hc.size} epochų (${pct(hc.size, ok.size)}), iš jų iš 3–4 palydovų ${hc.count { it.used <= 4 }}" +
                 (if (hc.isNotEmpty()) "; tikslumas su aukščiu mediana %.1f m, be jo %.1f m".format(Locale.US,
@@ -76,7 +83,7 @@ object AppDiag {
             if (CnoMask.auto) "automatinis" else "rankinis", th.average(), th.minOrNull() ?: 0.0, th.maxOrNull() ?: 0.0, thrs.size))
         thrs.toList().takeLast(12).forEach { appendLine("  ${hms(it.ms)} %.0f → %.0f (tinkamų palydovų %d)".format(Locale.US, it.from, it.to, it.sats)) }
         val lq = links.filter { !it.q.isNaN() }
-        if (lq.isNotEmpty()) appendLine("NLO spalva: vid. %.0f; geltona (> 38) %s, žydra (31–38) %s, mėlyna (23–30) %s, juoda (≤ 22) %s; dingusių palydovų iš viso %d".format(Locale.US,
+        if (lq.isNotEmpty()) appendLine("NLO spalva: vid. %.0f; geltona (> 38) %s, žydra (31–38) %s, mėlyna (23–30) %s, juoda (≤ 22) %s; stiprių palydovų dingimų (svertinai) %.0f".format(Locale.US,
             lq.map { it.q.toDouble() }.average(), pct(lq.count { it.q > 38f }, lq.size), pct(lq.count { it.q > 30f && it.q <= 38f }, lq.size),
             pct(lq.count { it.q > 22f && it.q <= 30f }, lq.size), pct(lq.count { it.q <= 22f }, lq.size), links.sumOf { it.lost }))
     }

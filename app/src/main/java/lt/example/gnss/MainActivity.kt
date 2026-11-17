@@ -7926,6 +7926,7 @@ class MainActivity : AppCompatActivity() {
         // matuojant ženklas virpa, baigus – vibracija; dar kartą paspaudus – nutraukti; ilgai palaikius – pamiršti išmatuotą žemę
         run {
             val gb = GroundIcon(this).apply { alpha = 0.85f; hasGround = KnownHeight.hasMeasuredGround }
+            var gFailMs = 0L
             val shake = android.animation.ObjectAnimator.ofFloat(gb, "translationX", 0f, 1.6f * dp, -1.6f * dp, 0f).apply {
                 duration = 260L; repeatCount = android.animation.ValueAnimator.INFINITE }
             fun buzz(pattern: LongArray) = try { (getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.let { v ->
@@ -7942,7 +7943,7 @@ class MainActivity : AppCompatActivity() {
                 if (KnownHeight.gMeasuring) gb.progress = KnownHeight.gProgress
                 else {
                     if (gb.progress >= 0f) { shake.cancel(); gb.translationX = 0f; gb.progress = -1f
-                        if (LiveRtk.groundDone) buzz(longArrayOf(0, 60, 80, 60, 80, 120)) else buzz(longArrayOf(0, 250)) }
+                        if (LiveRtk.groundDone) buzz(longArrayOf(0, 60, 80, 60, 80, 120)) else { buzz(longArrayOf(0, 250)); gFailMs = System.currentTimeMillis() } }
                     LiveRtk.groundDone = false
                     gb.hasGround = KnownHeight.hasMeasuredGround
                 }
@@ -7959,6 +7960,8 @@ class MainActivity : AppCompatActivity() {
                 val dem = KnownHeight.groundMsl()
                 when {
                     KnownHeight.gMeasuring -> { gLbl.alpha = 0.9f; gLbl.text = if (live.isNaN()) "…" else "%.0f m".format(Locale.US, live) }
+                    KnownHeight.gResult.startsWith("Žemės matavimas nebaigtas") && System.currentTimeMillis() - gFailMs < 8_000L ->
+                        { gLbl.alpha = 1f; gLbl.text = "\u2715" }
                     meas != null -> { gLbl.alpha = 1f; gLbl.text = "%.0f m".format(Locale.US, meas) }
                     dem != null -> { gLbl.alpha = 0.5f; gLbl.text = "~%.0f m".format(Locale.US, dem) }
                     else -> gLbl.text = ""

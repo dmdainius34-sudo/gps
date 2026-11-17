@@ -34,8 +34,14 @@ object CnoMask {
     }
 
     /** PDOP su vienu bendru laikrodžiu (apytiksliai – geometrijai įvertinti). */
-    fun pdop(s: List<S>): Double {
-        if (s.size < 4) return Double.MAX_VALUE
+    fun pdop(s: List<S>): Double = dop(s)?.let { sqrt(it[0] + it[1] + it[2]) } ?: Double.MAX_VALUE
+
+    /** VDOP (vietinis zenitas) su vienu bendru laikrodžiu. */
+    fun vdop(s: List<S>): Double = dop(s)?.let { sqrt(it[2]) } ?: Double.MAX_VALUE
+
+    /** (QEE, QNN, QUU) – kovariacijos įstrižainė ENU ašyse; null – geometrija išsigimusi. */
+    private fun dop(s: List<S>): DoubleArray? {
+        if (s.size < 4) return null
         val a = Array(4) { DoubleArray(8) }
         for (p in s) {
             val el = Math.toRadians(p.elDeg); val az = Math.toRadians(p.azDeg)
@@ -46,12 +52,12 @@ object CnoMask {
         for (c in 0..3) {
             var p = c
             for (k in c + 1..3) if (abs(a[k][c]) > abs(a[p][c])) p = k
-            if (abs(a[p][c]) < 1e-12) return Double.MAX_VALUE
+            if (abs(a[p][c]) < 1e-12) return null
             val t = a[c]; a[c] = a[p]; a[p] = t
             val d = a[c][c]; for (j in 0..7) a[c][j] /= d
             for (k in 0..3) if (k != c) { val f = a[k][c]; if (f != 0.0) for (j in 0..7) a[k][j] -= f * a[c][j] }
         }
-        return sqrt((a[0][4] + a[1][5] + a[2][6]).coerceAtLeast(0.0))
+        return doubleArrayOf(a[0][4].coerceAtLeast(0.0), a[1][5].coerceAtLeast(0.0), a[2][6].coerceAtLeast(0.0))
     }
 
     private var upN = 0

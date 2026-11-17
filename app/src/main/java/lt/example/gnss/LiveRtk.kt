@@ -232,6 +232,18 @@ object LiveRtk {
     @Volatile var sppSource = ""
         private set
 
+    /** Sprendinio VDOP pagal panaudotų palydovų kryptis (virš 10°). */
+    private fun vdopOf(f: Sp3V5.Fit): Double {
+        val x = f.x
+        val s = f.sats.mapNotNull { st ->
+            val dx = x[0] - st.rp[0]; val dy = x[1] - st.rp[1]; val dz = x[2] - st.rp[2]
+            val rho = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+            val l = Sp3Solver.look(x, st.rp, rho)
+            if (l[4] < Math.toRadians(10.0)) null else CnoMask.S("", 40.0, Math.toDegrees(l[4]), Math.toDegrees(l[3]))
+        }
+        return CnoMask.vdop(s).let { if (it.isInfinite() || it > 1e6) 30.0 else it }
+    }
+
     private fun spp(ep: Sp3V5.Ep) {
         val now = System.currentTimeMillis()
         // SP3 (tiksliausia), o jei jo nėra ar nebeapima – efemeridės iš palydovų žinučių (ar BRDC): padėtis veikia ir be interneto
@@ -256,7 +268,7 @@ object LiveRtk {
             else Sp3V5.solveSats(ep.tow, prepareBroadcast(ep.t, obs), isb = true, raim = true, hCon = hc)
         } catch (_: Exception) { null }
         // žinomas aukštis (įvestas ranka): kai palydovų pakanka – patikra, ar jis čia tinka (be barometro kitaip nežinoma)
-        val free = if (obs.size >= 6 && KnownHeight.deviceMsl() != null) fit(null)?.also { KnownHeight.checkFree(it.sol.lat, it.sol.lon, it.sol.h) } else null
+        val free = if (obs.size >= 6 && KnownHeight.deviceMsl() != null) fit(null)?.also { KnownHeight.checkFree(it.sol.lat, it.sol.lon, it.sol.h, vdopOf(it)) } else null
         val ref = sppLast?.takeIf { now - sppMs < 60_000L }?.let { it.lat to it.lon } ?: KnownHeight.lastLatLon()
         val hc = ref?.let { KnownHeight.constraint(it.first, it.second) }
         if (obs.size < (if (hc != null) 3 else 5)) { AppDiag.noPos(obs.size); return }

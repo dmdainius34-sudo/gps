@@ -64,9 +64,9 @@ object KnownHeight {
     fun measuredGround(): Double? = groundNear()
     private const val G_MS = 180_000L
     private val gH = ArrayList<Double>(); private val gFix = ArrayList<Double>()
-    private var gStart = 0L; private var gLat0 = Double.NaN; private var gLon0 = Double.NaN
+    private var gStart = 0L; private var gLat0 = Double.NaN; private var gLon0 = Double.NaN; private var gWalk = 0
 
-    @Synchronized fun startGround(now: Long) { gH.clear(); gFix.clear(); gStart = now; gLat0 = Double.NaN; gProgress = 0f; gLiveMsl = Double.NaN; gMeasuring = true; gResult = "Žemė matuojama…" }
+    @Synchronized fun startGround(now: Long) { gH.clear(); gFix.clear(); gStart = now; gWalk = 0; gLat0 = Double.NaN; gProgress = 0f; gLiveMsl = Double.NaN; gMeasuring = true; gResult = "Žemė matuojama…" }
     @Synchronized fun cancelGround(why: String) { if (!gMeasuring) return; gMeasuring = false; gProgress = 0f; gResult = "Žemės matavimas nebaigtas: $why" }
 
     /** Išmatuotą žemę pamiršti – vėl naudojamas interneto žemėlapis. */
@@ -85,9 +85,14 @@ object KnownHeight {
     @Synchronized fun groundSample(now: Long, lat: Double, lon: Double, hEll: Double, fix: Boolean, walking: Boolean): Boolean {
         if (!gMeasuring) return false
         if (gLat0.isNaN()) { gLat0 = lat; gLon0 = lon }
-        val d = PositionSolver.horizDist(gLat0, gLon0, lat, lon)
-        if (walking) { cancelGround("pajudėjote"); return false }
-        if (d > 25.0 && !fix) { cancelGround("padėtis nutolo %.0f m".format(Locale.US, d)); return false }
+        // nuėjus (žingsniai ≥ 5 s iš eilės): jei jau ≥ 60 mėginių – baigiama su turimais, kitaip nutraukiama.
+        // Pavienių padėties šuolių nežiūrima – programos padėtis be glodinimo kartais peršoka dešimtis metrų.
+        gWalk = if (walking) gWalk + 1 else 0
+        if (gWalk >= 5) {
+            if (gFix.size + gH.size >= 60) return finishGround(lat, lon)
+            cancelGround("pajudėjote per anksti"); return false
+        }
+        if (walking) return false
         if (fix) gFix.add(hEll) else gH.add(hEll)
         gProgress = ((now - gStart).toFloat() / G_MS).coerceIn(0f, 1f)
         Geoid.undulation(lat, lon)?.let { n ->
@@ -99,7 +104,7 @@ object KnownHeight {
     }
 
     private fun finishGround(lat: Double, lon: Double): Boolean {
-        val useFix = gFix.size >= 30
+        val useFix = gFix.size >= 30 || (gFix.size >= 10 && gFix.size * 3 >= gH.size)
         val l = (if (useFix) gFix else gH).sorted()
         val med = l[l.size / 2]
         val mad = l.map { abs(it - med) }.sorted()[l.size / 2].coerceAtLeast(0.5)
@@ -131,13 +136,23 @@ object KnownHeight {
     @Volatile var freeDh = Double.NaN
         private set
     private var dhAvg = Double.NaN; private var dhCnt = 0
-    @Synchronized fun checkFree(lat: Double, lon: Double, h: Double) {
+    /**
+     * vdop – kiek palydovų išsidėstymas leidžia pasitikėti aukščiu be apribojimo. Kabinoje stogas užstoja aukštus palydovus:
+     * VDOP didelis, aukštis be apribojimo gali klysti ir 50 m – tada nesutapimas nieko nereiškia (ten žinomas aukštis labiausiai reikalingas).
+     * Riba: max(30 m, 3 · 6 m · VDOP), vidurkinant ~20 s.
+     */
+    @Volatile var vdopAvg = Double.NaN
+        private set
+    @Synchronized fun checkFree(lat: Double, lon: Double, h: Double, vdop: Double = 1.5) {
         val h0 = h0(lat, lon) ?: return
         val dh = h - h0
         dhAvg = if (dhAvg.isNaN()) dh else dhAvg * 0.95 + dh * 0.05
+        val v = vdop.coerceIn(0.5, 30.0)
+        vdopAvg = if (vdopAvg.isNaN()) v else vdopAvg * 0.95 + v * 0.05
         dhCnt++; freeDh = dhAvg
-        if (dhCnt >= 20 && abs(dhAvg) > 30.0) conflict = true
-        else if (abs(dhAvg) < 15.0) conflict = false
+        val lim = maxOf(30.0, 18.0 * vdopAvg)
+        if (dhCnt >= 20 && abs(dhAvg) > lim) conflict = true
+        else if (abs(dhAvg) < lim / 2) conflict = false
     }
 
     /** Aukščio apribojimas programos padėčiai (vieta lat, lon – paskutinė žinoma) arba null. */
@@ -236,9 +251,9 @@ object KnownHeight {
         if (msl == null) groundNear()?.let { append("; žemė išmatuota čia: %.1f m virš jūros (%s)".format(Locale.US, it, mSrc)) }
             ?: run { if (demStatus.isNotEmpty()) append("; $demStatus") }
         if (gResult.isNotEmpty()) append("; $gResult")
-        if (!freeDh.isNaN()) append("; programos padėtis be aukščio %+.0f m nuo įvesto".format(Locale.US, freeDh))
+        if (!freeDh.isNaN()) append("; programos padėtis be aukščio %+.0f m nuo įvesto (VDOP %.1f, riba ±%.0f m)".format(Locale.US, freeDh, vdopAvg, maxOf(30.0, 18.0 * vdopAvg)))
         append(when {
-            conflict -> "; NENAUDOJAMAS: programos padėtis daugiau nei 30 m kitame aukštyje (nulipote?) – pataisykite arba ištrinkite"
+            conflict -> "; NENAUDOJAMAS: programos padėtis per toli kitame aukštyje (nulipote?) – pataisykite arba ištrinkite"
             active -> "; naudojamas programos padėtyje ir RTK filtre"
             demSuspect -> "; NENAUDOJAMAS: GNSS aukštis nuo DEM etalono skiriasi > 10 m (DEM su pastatais ar netikslus, arba neteisingas aukštis virš žemės) – įveskite aukštį virš jūros"
             else -> "; dar nenaudojamas (laukiama žemės aukščio)"

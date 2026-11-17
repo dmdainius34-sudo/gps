@@ -120,6 +120,8 @@ object KnownHeight {
         val sd = sqrt(ins.sumOf { (it - mean) * (it - mean) } / ins.size)
         // gretimų sekundžių klaidos koreliuotos (~30 s): nepriklausomų mėginių ~ n/30
         val sig = if (useFix) 0.1 else maxOf(2.0, sd / sqrt(maxOf(1.0, ins.size / 30.0)))
+        // per didelė sklaida (kambaryje, kabinoje: atspindžiai, užstoti aukšti palydovai) – toks matavimas blogesnis už žemėlapį, neįsimenamas
+        if (!useFix && sig > 6.0) { cancelGround("per didelė sklaida (σ ≈ %.0f m) – čia patikimai neišmatuojama, matuokite lauke po atviru dangumi".format(Locale.US, sig)); return false }
         val n = Geoid.undulation(lat, lon) ?: run { cancelGround("nėra geoido"); return false }
         val g = mean - n - gAgl
         val src = (if (useFix) "RTK FIX, ${ins.size} mėg." else "programos padėtis, ${ins.size} mėg. per ${(G_MS / 60_000)} min.") +

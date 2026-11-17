@@ -2601,7 +2601,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /**
      * Andromeda (M31): tikra kryptis (RA 00h42m44s, Dec +41°16′), atstumas 765 kpc, disko skersmuo ~42 kpc,
-     * tikras pasvirimas: polinkis 77°, didžiosios ašies pozicijos kampas 38° (nuo šiaurės į rytus). Matoma atitolinus už žvaigždžių.
+     * tikras pasvirimas: polinkis 77°, didžiosios ašies pozicijos kampas 38° (nuo šiaurės į rytus). Prie Žemės – danguje (fone),
+     * atitolinus už žvaigždžių – tikroje 3D vietoje.
      * Toliau nei piešimo riba – todėl dedama arčiau ta pačia kryptimi nuo kameros, sumažinta proporcingai (kampinis dydis tikras).
      */
     private var m31Tex = 0
@@ -2640,7 +2641,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val dust = 1.0 - 0.45 * kotlin.math.exp(-((r - 0.40) / 0.03).let { it * it }) - 0.35 * kotlin.math.exp(-((r - 0.62) / 0.03).let { it * it })
             val edge = (1.0 - r).coerceIn(0.0, 0.15) / 0.15
             val speck = if (rnd.nextFloat() < 0.04f * disk.toFloat() + 0.02f * ring.toFloat()) 0.5 else 0.0
-            val lum = ((bulge * 1.6 + disk * (0.45 + 0.25 * arm) + ring * 0.35 + speck) * dust * edge).coerceIn(0.0, 1.0)
+            val lum = ((bulge * 1.8 + disk * (0.6 + 0.3 * arm) + ring * 0.45 + speck) * dust * edge).coerceIn(0.0, 1.0)
             val warm = (bulge * 2.0).coerceIn(0.0, 1.0)
             val cr = (lum * (0.80 + 0.20 * warm) * 255).toInt().coerceIn(0, 255)
             val cg = (lum * (0.84 + 0.10 * warm) * 255).toInt().coerceIn(0, 255)
@@ -2651,21 +2652,34 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         return uploadTexture(bmp)
     }
     private fun drawAndromeda() {
-        val a0 = sstep(0.4f, 0.9f, collapse()); if (a0 < 0.01f) return
         if (m31Tex == 0) m31Tex = makeM31Texture()
-        val kpc = GAL_S.toDouble()
-        val trueP = DoubleArray(3) { fP[it] + m31Dir[it] * 765.0 * kpc }
-        val d = DoubleArray(3) { trueP[it] - camPos[it] }
-        val dl = kotlin.math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
-        val farLim = (zoom + GALAXY_DEPTH) * 0.8
-        val k = if (dl > farLim) farLim / dl else 1.0                    // arčiau ta pačia kryptimi, tas pats kampinis dydis
-        val c = FloatArray(3) { (camPos[it] + d[it] * k).toFloat() }
-        val rad = (21.0 * kpc * k).toFloat()
         val (ax, cx) = m31Axes
+        val av = FloatArray(3) { ax[it].toFloat() }; val cv = FloatArray(3) { cx[it].toFloat() }
+        val far = sstep(0.4f, 0.9f, collapse())                          // 0 – danguje (fone), 1 – tikroje 3D vietoje
+        val near = (1f - far) * bgFade()
         System.arraycopy(mvpI, 0, mvp, 0, 16)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
-        billboardQuad(c, FloatArray(3) { ax[it].toFloat() }, FloatArray(3) { cx[it].toFloat() }, rad, rad, m31Tex, 1f, 1f, 1f, 0.9f * a0)
+        // danguje (prie Žemės): fone, tikroje vietoje ir tikro kampinio dydžio (~3,1°), su švelniu švytėjimu, kad būtų lengva rasti
+        if (near > 0.01f) {
+            val c = FloatArray(3) { (camPos[it] + m31Dir[it] * 50.0).toFloat() }
+            val rad = (50.0 * kotlin.math.tan(Math.toRadians(1.57))).toFloat()
+            if (starTex != 0) billboard(c, eyeI, rad * 1.4f, rad * 1.4f, starTex, 0.75f, 0.8f, 1f, 0.18f * near)
+            billboardQuad(c, av, cv, rad, rad, m31Tex, 1f, 1f, 1f, near)
+        }
+        // atitolinus: tikra vieta (765 kpc), toliau nei piešimo riba – arčiau ta pačia kryptimi, tas pats kampinis dydis
+        if (far > 0.01f) {
+            val kpc = GAL_S.toDouble()
+            val trueP = DoubleArray(3) { fP[it] + m31Dir[it] * 765.0 * kpc }
+            val d = DoubleArray(3) { trueP[it] - camPos[it] }
+            val dl = kotlin.math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+            val farLim = (zoom + GALAXY_DEPTH) * 0.8
+            val k = if (dl > farLim) farLim / dl else 1.0
+            val c = FloatArray(3) { (camPos[it] + d[it] * k).toFloat() }
+            val rad = (21.0 * kpc * k).toFloat()
+            if (starTex != 0) billboard(c, eyeI, rad * 1.4f, rad * 1.4f, starTex, 0.75f, 0.8f, 1f, 0.18f * far)
+            billboardQuad(c, av, cv, rad, rad, m31Tex, 1f, 1f, 1f, far)
+        }
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }

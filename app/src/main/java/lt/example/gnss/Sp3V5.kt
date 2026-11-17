@@ -203,8 +203,12 @@ object Sp3V5 {
      * Svertiniai MKM su atmosferos pataisomis ir 10° kauke; isb – atskiras laikrodis kiekvienai konsteliacijai;
      * raim – jei didžiausia normuota liekana > 3σ ir lieka ≥ 5 palydovai, palydovas atmetamas ir sprendžiama iš naujo.
      */
-    fun solve(week: Int, tow: Double, obs: List<Ob>, sp3: Sp3Reader, isb: Boolean, raim: Boolean, weighted: Boolean = true): Fit? {
-        var sats = prepare(week * W + tow, obs, sp3)
+    fun solve(week: Int, tow: Double, obs: List<Ob>, sp3: Sp3Reader, isb: Boolean, raim: Boolean, weighted: Boolean = true): Fit? =
+        solveSats(tow, prepare(week * W + tow, obs, sp3), isb, raim, weighted)
+
+    /** Tas pats sprendinys iš jau paruoštų palydovų (pvz. iš transliuojamų efemeridžių, kai SP3 nėra). */
+    fun solveSats(tow: Double, sats0: List<SatEp>, isb: Boolean, raim: Boolean, weighted: Boolean = true): Fit? {
+        var sats = sats0
         val dropped = ArrayList<String>()
         while (true) {
             val f = lsq(sats, tow, isb, weighted) ?: return null

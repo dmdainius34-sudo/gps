@@ -137,7 +137,7 @@ object LiveRtk {
                 target = spp; tau = TAU_RETURN
                 tAcc = minOf(spp.hacc, oFixAcc + 0.1 * (now - oFixMs) / 1000.0); src = "po RTK FIX (grįžtama palaipsniui)"
             }
-            spp != null -> { target = spp; tau = 3.0; tAcc = spp.hacc; src = "programa (SP3)" }
+            spp != null -> { target = spp; tau = 3.0; tAcc = spp.hacc; src = "programa ($sppSource)" }
             else -> {
                 // nėra naujo sprendinio: tęsiama pagal greitį iki COAST_MS, toliau – vieta grąžinama lustui (sargas)
                 if (oLat.isNaN() || now - oTargetMs > COAST_MS) return
@@ -207,10 +207,14 @@ object LiveRtk {
         return engine.fixNote
     }
 
+    /** Iš ko skaičiuota programos padėtis: „SP3“ arba „efemeridės iš palydovų“. */
+    @Volatile var sppSource = ""
+        private set
+
     private fun spp(ep: Sp3V5.Ep) {
         val now = System.currentTimeMillis()
-        val r = Sp3Live.reader ?: return
-        if (!Sp3Solver.inRange(r, ep.t)) return
+        // SP3 (tiksliausia), o jei jo nėra ar nebeapima – efemeridės iš palydovų žinučių (ar BRDC): padėtis veikia ir be interneto
+        val r = Sp3Live.reader?.takeIf { Sp3Solver.inRange(it, ep.t) }
         val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && it.cn0 >= CnoMask.min }
             .map { m -> DualFreq.iono(m, ep.t)?.let { i -> Sp3V5.Ob(m.sys, m.svid, m.pr - i, m.cn0, m.prr, ifree = true) } ?: Sp3V5.Ob(m.sys, m.svid, m.pr, m.cn0, m.prr) }
             .let { l ->
@@ -220,7 +224,11 @@ object LiveRtk {
             }
         DualFreq.lastUsed = obs.count { it.ifree }; DualFreq.lastTotal = obs.size
         if (obs.size < 5) return
-        val f = try { Sp3V5.solve(ep.week, ep.tow, obs, r, isb = true, raim = true) } catch (_: Exception) { null } ?: return
+        val f = try {
+            if (r != null) Sp3V5.solve(ep.week, ep.tow, obs, r, isb = true, raim = true)
+            else Sp3V5.solveSats(ep.tow, prepareBroadcast(ep.t, obs), isb = true, raim = true)
+        } catch (_: Exception) { null } ?: return
+        sppSource = if (r != null) "SP3" else "efemeridės iš palydovų"
         val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }
         val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, moving)
         val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
@@ -266,13 +274,21 @@ object LiveRtk {
         val r = Sp3Live.reader
         if (r != null && Sp3Solver.inRange(r, t)) { source = "SP3"; return Sp3V5.prepare(t, obs, r) }
         source = "transliuojamos efemeridės"
+        return prepareBroadcast(t, obs)
+    }
+
+    /** Palydovų būsena iš transliuojamų efemeridžių (iš palydovų žinučių arba BRDC failo): padėtis, greitis (±0,5 s), laikrodis ir jo dreifas. */
+    private fun prepareBroadcast(t: Double, obs: List<Sp3V5.Ob>): List<Sp3V5.SatEp> {
         val out = ArrayList<Sp3V5.SatEp>()
         for (o in obs) {
-            var tSv = t - o.pr / C
+            val tSv = t - o.pr / C
             var st = state(o.sys, o.svid, tSv) ?: continue
             val tTx = tSv - st.second
             st = state(o.sys, o.svid, tTx) ?: continue
-            out.add(Sp3V5.SatEp(o.sys, o.svid, st.first, DoubleArray(3), o.pr + C * st.second, t - tTx, o.cn0, 0.0, o.prr))
+            val a = state(o.sys, o.svid, tTx - 0.5); val b = state(o.sys, o.svid, tTx + 0.5)
+            val vel = if (a != null && b != null) DoubleArray(3) { b.first[it] - a.first[it] } else DoubleArray(3)
+            val drift = if (a != null && b != null) (b.second - a.second) * C else 0.0
+            out.add(Sp3V5.SatEp(o.sys, o.svid, st.first, vel, o.pr + C * st.second, t - tTx, o.cn0, drift, o.prr).also { it.ifree = o.ifree })
         }
         return out
     }

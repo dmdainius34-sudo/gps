@@ -6207,6 +6207,7 @@ class DraggablePanel(
             (avg - 3.0 * dropScore - (if (n < 4) 14.0 else if (n < 6) 4.0 else 0.0)).toFloat()
         }
         shimmer.setSignal(q)
+        TurnHint.q = q
         AppDiag.link(q, lost)
     }
     /** Signalo slenkstis programos skaičiavimui: slankiklis po kriokliu, riba krioklyje – juoda linija, kairėje – išmetami. */
@@ -7034,6 +7035,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fsBtn: TextView
     private var toolCol: View? = null
     private lateinit var satCountView: TextView
+    private var turnView: TurnHintView? = null
     private var readyView: TextView? = null
     private var cabinView: CabinMapView? = null
     private var readyLast: Boolean? = null
@@ -7332,6 +7334,13 @@ class MainActivity : AppCompatActivity() {
             OverlayBus.avg = if (used.isNotEmpty()) avg.toFloat() else null
             OverlayBus.peak = top4Avg(list)
             sharePanel?.setSats(list)
+            try {
+                val now = System.currentTimeMillis()
+                val ts = list.filter { it.const != "SBS" }.distinctBy { it.const to it.svid }
+                    .map { TurnHint.S(it.az.toDouble(), it.elev.toDouble(), it.cn0.toDouble(), it.cn0 > 0f || it.eph || it.alm) }
+                TurnHint.learn(now, hd, ts)
+                turnView?.hint = if (TurnHint.quality(now, TurnHint.q)) TurnHint.advice(now, hd, ts) else null
+            } catch (_: Exception) {}
             sharePanel?.setSignal(
                 if (used.isNotEmpty()) avg.toFloat() else null,
                 top4Avg(list)
@@ -7829,6 +7838,12 @@ class MainActivity : AppCompatActivity() {
             val pd = (8 * resources.displayMetrics.density).toInt(); setPadding(pd, pd, pd, pd)
         }
         skyHolder.addView(satCountView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START))
+        // patarimas, kaip pasukti ar kur patraukti planšetę, kai NLO pamėlynuoja (TurnHint)
+        turnView = TurnHintView(this).also { tv ->
+            tv.visibility = View.GONE
+            val d = resources.displayMetrics.density
+            skyHolder.addView(tv, FrameLayout.LayoutParams((76 * d).toInt(), (92 * d).toInt(), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = (44 * d).toInt() })
+        }
         readyView = TextView(this).apply {
             textSize = 13f; text = "● Šyla"
             setOnClickListener { toggleChipCard() }

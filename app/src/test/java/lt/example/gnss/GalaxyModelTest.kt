@@ -302,3 +302,37 @@ class DopplerSmoothTest {
         assertEquals(22_300_000.0, out, 1e-6)
     }
 }
+
+/** Patarimas planšetei: išmoksta, kad kita kryptis geresnė, ir pasiūlo pasukti; kitaip – rodo stipriausių signalų pusę. */
+class TurnHintTest {
+    private fun sats(base: Double) = (0 until 8).map { TurnHint.S(it * 45.0, 40.0, base + (it % 2), true) }
+
+    @Test fun suggestsBetterHeading() {
+        TurnHint.reset()
+        var t = 0L
+        repeat(20) { TurnHint.learn(t, 100.0, sats(36.0)); t += 1000 }   // atsukus į 100° – stipru
+        repeat(10) { TurnHint.learn(t, 10.0, sats(28.0)); t += 1000 }    // dabar 10° – silpna
+        val h = TurnHint.advice(t, 10.0, sats(28.0))
+        assert(h is TurnHint.Hint.Turn) { "turėjo pasiūlyti pasukti: $h" }
+        assertEquals(95.0, (h as TurnHint.Hint.Turn).deg, 1.0)
+    }
+
+    @Test fun pointsToStrongSide() {
+        TurnHint.reset()
+        val s = (0 until 16).map { TurnHint.S((it / 2) * 45.0 + 5.0 + (it % 2) * 20.0, 40.0, if (it / 2 == 2) 38.0 else 24.0, true) }
+        TurnHint.learn(0L, 0.0, s)
+        val h = TurnHint.advice(1000L, 0.0, s)
+        assert(h is TurnHint.Hint.Toward) { "turėjo rodyti stipriausią pusę: $h" }
+        assertEquals(112.5, (h as TurnHint.Hint.Toward).relDeg, 0.1)
+    }
+
+    @Test fun showsOnlyAfterTenSecondsBlue() {
+        TurnHint.reset()
+        val t0 = 1_000_000L
+        assertEquals(false, TurnHint.quality(t0, 25f))
+        assertEquals(false, TurnHint.quality(t0 + 9_000L, 25f))
+        assertEquals(true, TurnHint.quality(t0 + 10_000L, 25f))
+        assertEquals(true, TurnHint.quality(t0 + 12_000L, 35f))
+        assertEquals(false, TurnHint.quality(t0 + 17_000L, 35f))
+    }
+}

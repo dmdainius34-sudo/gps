@@ -153,3 +153,68 @@ class DeviceTurnIcon(ctx: Context) : View(ctx) {
         c.drawText("N", cx, cy - r * 0.48f, nTxt)
     }
 }
+
+/**
+ * Patarimas planšetei (TurnHint): lenkta rodyklė aplink planšetę – pasukti tiek laipsnių; tiesi rodyklė – stipriausių signalų pusė.
+ * Apačioje – kiek dB-Hz geriau. Bakstelėjus – paslepiama 2 min.
+ */
+class TurnHintView(ctx: Context) : View(ctx) {
+    private val dp = ctx.resources.displayMetrics.density
+    private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x88000000.toInt() }
+    private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFF38BDF8.toInt() }
+    private val ln = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFFFFFFFF.toInt(); strokeCap = Paint.Cap.ROUND }
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFDE047.toInt() }
+    private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); textAlign = Paint.Align.CENTER; isFakeBoldText = true }
+    private var hiddenUntil = 0L
+    var hint: TurnHint.Hint? = null
+        set(v) {
+            field = v
+            visibility = if (v == null || System.currentTimeMillis() < hiddenUntil) GONE else VISIBLE
+            invalidate()
+        }
+
+    init { setOnClickListener { hiddenUntil = System.currentTimeMillis() + 120_000L; visibility = GONE } }
+
+    override fun onDraw(c: Canvas) {
+        val h = hint ?: return
+        val w = width.toFloat(); val ht = height.toFloat(); val cx = w / 2; val r = minOf(w, ht * 0.82f) / 2; val cy = r + 2 * dp
+        c.drawCircle(cx, cy, r, bg)
+        ring.strokeWidth = 2f * dp; c.drawCircle(cx, cy, r - dp, ring)
+        ln.strokeWidth = 2.2f * dp
+        // planšetė centre
+        val pw = r * 0.36f; val ph = r * 0.56f
+        c.drawRoundRect(RectF(cx - pw / 2, cy - ph / 2, cx + pw / 2, cy + ph / 2), r * 0.08f, r * 0.08f, ln)
+        when (h) {
+            is TurnHint.Hint.Turn -> {
+                val cw = h.deg > 0
+                val sweep = (kotlin.math.abs(h.deg).toFloat()).coerceIn(30f, 300f)
+                val ar = r * 0.72f
+                val start = -90f
+                c.drawArc(RectF(cx - ar, cy - ar, cx + ar, cy + ar), start, if (cw) sweep else -sweep, false, ln)
+                val end = Math.toRadians((start + if (cw) sweep else -sweep).toDouble())
+                val tx = cx + ar * cos(end).toFloat(); val ty = cy + ar * sin(end).toFloat()
+                // rodyklės smaigalys – liestinės kryptimi
+                val tang = end + if (cw) Math.PI / 2 else -Math.PI / 2
+                val hl = r * 0.26f
+                val p = Path().apply {
+                    moveTo(tx + hl * cos(tang).toFloat(), ty + hl * sin(tang).toFloat())
+                    lineTo(tx + hl * 0.6f * cos(tang + 2.4).toFloat(), ty + hl * 0.6f * sin(tang + 2.4).toFloat())
+                    lineTo(tx + hl * 0.6f * cos(tang - 2.4).toFloat(), ty + hl * 0.6f * sin(tang - 2.4).toFloat())
+                    close()
+                }
+                c.drawPath(p, fill)
+                txt.textSize = r * 0.34f
+                c.drawText("%d°".format(kotlin.math.abs(h.deg).toInt()), cx, cy + r * 0.12f, txt)
+            }
+            is TurnHint.Hint.Toward -> {
+                c.save(); c.rotate(h.relDeg.toFloat(), cx, cy)
+                c.drawLine(cx, cy + r * 0.1f, cx, cy - r * 0.62f, ln)
+                val p = Path().apply { moveTo(cx, cy - r * 0.92f); lineTo(cx - r * 0.22f, cy - r * 0.56f); lineTo(cx + r * 0.22f, cy - r * 0.56f); close() }
+                c.drawPath(p, fill)
+                c.restore()
+            }
+        }
+        txt.textSize = 11f * dp
+        c.drawText("+%.0f dB".format(java.util.Locale.US, h.gainDb), cx, ht - 2 * dp, txt)
+    }
+}

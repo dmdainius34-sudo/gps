@@ -6148,8 +6148,43 @@ class DraggablePanel(
     private var lastPanelSats: List<Sat> = emptyList()
     fun setSats(list: List<Sat>) {
         lastPanelSats = list
+        autoCno(list)
         linkQuality(list)
         if (panel.visibility == VISIBLE) { cnoFall.addSample(list); cnoInfo() }
+    }
+    /** Automatinis slenkstis: aukščiausias, prie kurio programai lieka pakankamai palydovų po visą dangų (žr. CnoMask). */
+    private var autoMs = 0L
+    private fun autoCno(list: List<Sat>) {
+        val now = System.currentTimeMillis()
+        if (now - autoMs < 900L) return
+        autoMs = now
+        val s = list.filter { it.cn0 > 0f && it.const in setOf("GPS", "GAL", "BDS", "QZS") && (it.eph || it.used) }
+            .distinctBy { it.const to it.svid }
+            .map { CnoMask.S(it.const, it.cn0.toDouble(), it.elev.toDouble(), it.az.toDouble()) }
+        if (CnoMask.autoStep(s)) {
+            cnoSeek.progress = (CnoMask.min - CnoMask.LO).toInt().coerceIn(0, 25)
+            cnoFall.threshold = CnoMask.min.toFloat(); cnoFall.invalidate()
+        }
+    }
+    /** „A“ – automatinis slenkstis įjungtas (geltonas) / išjungtas (pilkas). */
+    private val cnoAuto = TextView(context).apply {
+        text = "A"; textSize = 15f; gravity = Gravity.CENTER
+        setTypeface(typeface, android.graphics.Typeface.BOLD)
+        fun paint() {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(if (CnoMask.auto) 0xFFFACC15.toInt() else 0x33000000)
+                setStroke((1.5f * density).toInt(), if (CnoMask.auto) 0xFF111827.toInt() else 0x66000000)
+            }
+            setTextColor(if (CnoMask.auto) 0xFF111827.toInt() else 0x99000000.toInt())
+        }
+        paint()
+        setOnClickListener {
+            CnoMask.auto = !CnoMask.auto
+            context.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("cno_auto", CnoMask.auto).apply()
+            paint(); cnoInfo()
+        }
+        tag = Runnable { paint() }
     }
     /**
      * Ryšio kokybė NLO fonui – pagal tai, ką programa iš tikro „girdi“ (palydovai virš slenksčio, neužtildyti):
@@ -6176,7 +6211,8 @@ class DraggablePanel(
     private fun cnoInfo() {
         val u = lastPanelSats.filter { it.used }.distinctBy { it.const to it.svid }
         val k = u.count { it.cn0 >= CnoMask.min }
-        cnoLbl.text = "Riba %.0f dB-Hz: skaičiuojama %d iš %d; realus tikslumas %s".format(java.util.Locale.US, CnoMask.min, k, u.size,
+        cnoLbl.text = "Riba %.0f dB-Hz%s: skaičiuojama %d iš %d; realus tikslumas %s".format(java.util.Locale.US, CnoMask.min,
+            if (CnoMask.auto) " (auto)" else "", k, u.size,
             Readiness.realAcc().let { if (it.isNaN()) "—" else "~%.0f m".format(java.util.Locale.US, it) })
     }
     private val cnoSeek = android.widget.SeekBar(context).apply {
@@ -6184,8 +6220,11 @@ class DraggablePanel(
         setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: android.widget.SeekBar, v: Int, user: Boolean) {
                 if (!user) return
+                // pajudinus ranka – automatika išjungiama (įjungiama vėl mygtuku „A“)
+                if (CnoMask.auto) { CnoMask.auto = false; (cnoAuto.tag as? Runnable)?.run() }
                 CnoMask.min = 15.0 + v; cnoFall.threshold = CnoMask.min.toFloat(); cnoFall.invalidate(); cnoInfo()
-                context.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putFloat("cno_min", CnoMask.min.toFloat()).apply()
+                context.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putFloat("cno_min", CnoMask.min.toFloat())
+                    .putBoolean("cno_auto", false).apply()
             }
             override fun onStartTrackingTouch(sb: android.widget.SeekBar) {}
             override fun onStopTrackingTouch(sb: android.widget.SeekBar) {}
@@ -6528,7 +6567,12 @@ class DraggablePanel(
         panel.addView(inputRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         panel.addView(sp3Status, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(cnoFall, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        bodyInner.addView(cnoSeek, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        bodyInner.addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            val s = (30 * density).toInt()
+            addView(cnoAuto, LinearLayout.LayoutParams(s, s).apply { marginStart = (4 * density).toInt() })
+            addView(cnoSeek, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(cnoLbl, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(fixBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(msgInput, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -6713,7 +6757,8 @@ class DraggablePanel(
                 touchOnControl = inside(questionInput, ev.rawX, ev.rawY) ||
                     inside(alphaSeek, ev.rawX, ev.rawY) || inside(rawSecs, ev.rawX, ev.rawY) ||
                     inside(envSpinner, ev.rawX, ev.rawY) || inside(aglInput, ev.rawX, ev.rawY) ||
-                    inside(mslInput, ev.rawX, ev.rawY) || inside(coordInput, ev.rawX, ev.rawY)
+                    inside(mslInput, ev.rawX, ev.rawY) || inside(coordInput, ev.rawX, ev.rawY) ||
+                    inside(cnoSeek, ev.rawX, ev.rawY) || inside(cnoAuto, ev.rawX, ev.rawY)
                 if (touchOnControl) return false
             }
             MotionEvent.ACTION_MOVE -> {
@@ -7613,6 +7658,7 @@ class MainActivity : AppCompatActivity() {
         // mažiausias signalo stiprumas programos skaičiavime (lusto padėties neveikia)
         val cnoSp = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
         CnoMask.min = cnoSp.getFloat("cno_min", 20f).toDouble()
+        CnoMask.auto = cnoSp.getBoolean("cno_auto", true)
         // signalo slenkstis reguliuojamas NLO meniu po C/N0 kriokliu (slankiklis ir juoda riba krioklyje)
         SignalHeading.autoFix = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sig_heading_fix", true)
         SignalHeading.mapClean = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("cabin_clean_v2", false)

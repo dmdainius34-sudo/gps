@@ -232,3 +232,33 @@ class KnownHeightSppTest {
         assertEquals(3, f.sol.sats)
     }
 }
+
+/** Automatinis signalo slenkstis: atvirame danguje kyla, kai stiprių daug; kai jų mažai – nusileidžia, kad padėtis išliktų. */
+class CnoAutoTest {
+    private fun sky(cn0: (Int) -> Double, n: Int, sys: String = "GPS") =
+        (0 until n).map { CnoMask.S(sys, cn0(it), 20.0 + (it * 37) % 60, (it * 360.0 / n)) }
+
+    @Test fun openSkyRaises() {
+        val s = sky({ 42.0 }, 10) + sky({ 25.0 }, 6, "GAL")
+        assertEquals(40.0, CnoMask.target(s), 0.0)
+    }
+
+    @Test fun fewStrongStaysLow() {
+        // 3 stiprūs ir 6 vidutiniai: aukštas slenkstis paliktų tik 3 – padėties nebūtų
+        val s = sky({ if (it < 3) 42.0 else 30.0 }, 9)
+        val t = CnoMask.target(s)
+        assert(t <= 30.0) { "slenkstis $t" }
+    }
+
+    @Test fun dropsAtOnceRisesSlowly() {
+        CnoMask.auto = true; CnoMask.min = 20.0
+        val strong = sky({ 42.0 }, 10)
+        repeat(9) { CnoMask.autoStep(strong) }
+        assertEquals(20.0, CnoMask.min, 0.0)          // dar nekyla – laukiama ~10 s
+        CnoMask.autoStep(strong)
+        assertEquals(21.0, CnoMask.min, 0.0)          // po 1 dB
+        CnoMask.autoStep(sky({ if (it < 3) 42.0 else 18.0 }, 10))
+        assert(CnoMask.min <= 18.0) { "turėjo nukristi iš karto: ${CnoMask.min}" }
+        CnoMask.min = 20.0
+    }
+}

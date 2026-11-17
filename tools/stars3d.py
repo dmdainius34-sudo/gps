@@ -18,7 +18,17 @@ for r in rows:
         mag = float(r['mag']); dist = float(r['dist'])
         if r.get('proper', '') == 'Sol' or dist <= 0 or dist >= 99999 or mag > 6.5:
             continue
-        x, y, z = float(r['x']), float(r['y']), float(r['z'])
+        # HYG v3: x, y, z; v4: x0, y0, z0; kitaip – iš RA (val.), Dec (°) ir atstumo
+        def g(*names):
+            for n in names:
+                if r.get(n) not in (None, ''):
+                    return float(r[n])
+            return None
+        x, y, z = g('x', 'x0'), g('y', 'y0'), g('z', 'z0')
+        if x is None or y is None or z is None:
+            import math
+            ra = math.radians(float(r['ra']) * 15.0); de = math.radians(float(r['dec']))
+            x, y, z = dist * math.cos(de) * math.cos(ra), dist * math.cos(de) * math.sin(ra), dist * math.sin(de)
         am = float(r['absmag'])
         ci = float(r['ci']) if r.get('ci') not in (None, '') else 0.6
         out.append((x, y, z, am, ci))

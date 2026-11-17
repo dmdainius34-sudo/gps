@@ -44,13 +44,27 @@ jobs:
       - name: 3D žvaigždžių laukas (HYG katalogas, CC BY-SA 4.0)
         continue-on-error: true
         run: |
-          for U in https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/CURRENT/hygdata_v41.csv.gz \
-                   https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/v4/hygdata_v41.csv.gz \
-                   https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/v3/hygdata_v38.csv.gz \
-                   https://raw.githubusercontent.com/astronexus/HYG-Database/master/hygdata_v3.csv; do
-            curl -sSL -m 300 -o hyg.bin -w "$U -> HTTP %{http_code} %{size_download}\n" "$U" || true
-            if [ -s hyg.bin ] && [ "$(stat -c%s hyg.bin)" -gt 1000000 ]; then python3 tools/stars3d.py hyg.bin app/src/main/assets/stars3d.csv && break; fi
-          done
+          R=astronexus/HYG-Database
+          B=$(curl -sS -m 60 "https://api.github.com/repos/$R" | python3 -c "import sys,json;print(json.load(sys.stdin).get('default_branch','main'))" || echo main)
+          curl -sS -m 120 "https://api.github.com/repos/$R/git/trees/$B?recursive=1" -o tree.json || true
+          P=$(python3 - <<'PY'
+          import json, re
+          try:
+              t = [x['path'] for x in json.load(open('tree.json')).get('tree', []) if re.search(r'hyg(data)?_v\d+\.csv(\.gz)?$', x['path'])]
+          except Exception:
+              t = []
+          t.sort(key=lambda p: [int(n) for n in re.findall(r'\d+', p.split('/')[-1])])
+          print(t[-1] if t else '')
+          PY
+          )
+          echo "HYG šaka: $B, failas: ${P:-nerastas}"
+          if [ -n "$P" ]; then
+            curl -sSL -m 300 -o hyg.bin -w "HTTP %{http_code} %{size_download}\n" "https://raw.githubusercontent.com/$R/$B/$P"
+            # Git LFS rodyklė (mažas tekstinis failas) – tikras failas per media.githubusercontent.com
+            if [ "$(stat -c%s hyg.bin)" -lt 100000 ]; then head -c 200 hyg.bin; echo
+              curl -sSL -m 300 -o hyg.bin -w "LFS HTTP %{http_code} %{size_download}\n" "https://media.githubusercontent.com/media/$R/$B/$P"; fi
+            python3 tools/stars3d.py hyg.bin app/src/main/assets/stars3d.csv
+          fi
           ls -la app/src/main/assets/stars3d.csv || echo "stars3d.csv nesukurtas – programa veiks be 3D žvaigždžių lauko"
 
       - name: Build debug APK

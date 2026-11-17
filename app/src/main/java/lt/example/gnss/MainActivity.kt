@@ -2944,14 +2944,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         // Su gylio testu: Žemės rutulys uždengia orbitos dalį, einančią per jį ir už jo
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
-        drawLines(seg, 1f, 0.82f, 0.3f, 0.75f)
-        drawLines(ticks, 1f, 0.9f, 0.5f, 0.95f)
+        GLES20.glLineWidth(1f * density)                                    // plona mėlyna orbitos linija
+        drawLines(seg, 0.35f, 0.62f, 1f, 0.7f)
+        drawLines(ticks, 0.55f, 0.75f, 1f, 0.9f)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         for ((p, mo) in labels) {
             val tex = monthTex.getOrPut(mo) { makeTexture(MONTHS_LT[mo], 0xFFFFFFFF.toInt(), 64) }
             // einamasis mėnuo (Žemė dabar tarp šios ir kitos žymės) – ryškesnis
             val cur = mo == monthNow
-            billboard(p, eyeI, if (cur) 0.2f else 0.16f, if (cur) 0.1f else 0.08f, tex, 1f, if (cur) 1f else 0.85f, if (cur) 1f else 0.45f, if (cur) 1f else 0.8f)
+            val ls = (sDist / 3.6).toFloat()                                // užrašai didėja kartu su orbita
+            billboard(p, eyeI, (if (cur) 0.2f else 0.16f) * ls, (if (cur) 0.1f else 0.08f) * ls, tex, if (cur) 1f else 0.6f, if (cur) 1f else 0.78f, 1f, if (cur) 1f else 0.8f)
         }
     }
 
@@ -3800,7 +3802,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     /** Mastelio režimo stadijos: Žemė (iki ~3), Saulės sistema (iki SOLAR_ZOOM), galaktika (iki GALAXY_ZOOM). */
-    private val SOLAR_ZOOM = 9f
+    private val SOLAR_ZOOM = 18f
     private val GALAXY_ZOOM = 30_000f
     private val GALAXY_DEPTH = 20_000f
     private fun maxZoomOut(): Float = GALAXY_ZOOM
@@ -3855,7 +3857,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         else -> null
     }
     private fun bodyRadius(id: Int): Double = when (id) {
-        1 -> 0.12
+        1 -> 0.24
         2 -> 0.10
         else -> EARTH_R.toDouble()
     }
@@ -4928,7 +4930,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var sunProg = 0
     // GEO palydovai (~36 000 km) scenoje yra ~1,6 vnt. nuo stebėtojo; Saulė – toliau, už jų
     /** Vietinis mastelis (Žemės spindulys 0,25): GNSS orbitos tikros (GEO 1,65), Mėnulis 1,9, Saulė 3,6 (spindulys 0,5, korona iki 1,0) – kūnai nesikerta. */
-    private val SUN_DIST = 3.6
+    /** Saulė dvigubai toliau nei anksčiau (erdvė didesnė), bet ir dvigubai didesnė – ekrane tokio pat dydžio. */
+    private val SUN_DIST = 7.2
     private val sunMat = FloatArray(16)
     private val sunMvp = FloatArray(16)
 
@@ -4971,8 +4974,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawSun3D(sp: FloatArray, t: Float) {
         if (earthPos == null) return
         if (sunProg == 0) sunProg = program(SUN_VS, SUN_FS)
-        // spindulys 2× Žemės (0,5 scenos vnt.)
-        val k = 2.0f
+        // spindulys 4× Žemės (1,0 scenos vnt.) – kartu su dvigubai didesniu atstumu
+        val k = 4.0f
         // tikra Saulės orientacija: IAU ašis ir Carringtono sukimasis (tinklelio u = 0,5 – nulinis dienovidinis)
         val ax = SunFrame.axes(System.currentTimeMillis())
         java.util.Arrays.fill(sunMat, 0f)
@@ -7776,13 +7779,11 @@ class MainActivity : AppCompatActivity() {
                 baro.reset(); zeroSet = false; baroLbl.visibility = View.GONE; render()
                 try { (getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.let { v ->
                     if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 40, 60, 40), -1)) else @Suppress("DEPRECATION") v.vibrate(80) } } catch (_: Exception) {}
-                Toast.makeText(this@MainActivity, "Barometras: pradinė būsena (nulis panaikintas)", Toast.LENGTH_SHORT).show()
                 true
             }
             baroBtn.setOnClickListener {
                 keyHaptic(baroBtn)
                 baro.calibrateZero(); zeroSet = true; baroLbl.visibility = View.VISIBLE; baroLbl.text = "0.0 m"; render()
-                Toast.makeText(this@MainActivity, "Barometras: nulis čia – rodoma, kiek pakilsite ar nusileisite", Toast.LENGTH_SHORT).show()
             }
             baroRow.post(tick)
             skyHolder.addView(baroRow, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {

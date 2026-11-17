@@ -297,14 +297,33 @@ class Barometer(context: Context) : SensorEventListener {
     override fun onAccuracyChanged(s: Sensor?, accuracy: Int) {}
 
     fun altitude(): Double? {
+        refHpa(System.currentTimeMillis())?.let { mslpHpa = it }
         val p = stationHpa ?: return null
         return rawAltitude(p) + offsetM
     }
 
     private fun rawAltitude(p: Double): Double {
-        val sea = mslpHpa ?: SensorManager.PRESSURE_STANDARD_ATMOSPHERE.toDouble()
+        val sea = refHpa(System.currentTimeMillis()) ?: mslpHpa ?: SensorManager.PRESSURE_STANDARD_ATMOSPHERE.toDouble()
         return SensorManager.getAltitude(sea.toFloat(), p.toFloat()).toDouble()
     }
+
+    // ---- Oro slėgio pokyčio pataisa ----
+    // Jūros lygio slėgis (Open-Meteo) imamas valandine eilute ir interpoliuojamas tolygiai pagal laiką: oras keičia slėgį lėtai
+    // (iki kelių hPa per valandą), todėl lipant į kraną (kelios minutės) pataisa pakinta vos dešimtadaliais metro, o per valandas
+    // atima orų sukeltą dreifą. Gavus naują prognozę, skirtumas suvedamas palaipsniui per 15 min – be šuolių.
+    @Volatile private var series: List<Pair<Long, Double>> = emptyList()
+    @Volatile private var blendFrom = 0.0
+    @Volatile private var blendT0 = 0L
+
+    private fun interp(ser: List<Pair<Long, Double>>, t: Long): Double? {
+        if (ser.size < 2 || t < ser.first().first || t > ser.last().first) return null
+        val i = ser.indexOfFirst { it.first >= t }.coerceAtLeast(1)
+        val (t0, p0) = ser[i - 1]; val (t1, p1) = ser[i]
+        return if (t1 == t0) p0 else p0 + (p1 - p0) * (t - t0).toDouble() / (t1 - t0)
+    }
+
+    /** Orų jūros lygio slėgis dabar (hPa), tolygiai kintantis; null – duomenų nėra. */
+    fun refHpa(t: Long): Double? = interp(series, t)?.let { it + blendFrom * (1.0 - (t - blendT0) / 900_000.0).coerceIn(0.0, 1.0) }
 
     fun updateMslp(lat: Double, lon: Double) {
         val now = System.currentTimeMillis()
@@ -314,10 +333,16 @@ class Barometer(context: Context) : SensorEventListener {
         fetching = true
         Thread {
             try {
-                val url = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=pressure_msl"
-                val cur = JSONObject(URL(url).readText()).getJSONObject("current")
-                mslpHpa = cur.getDouble("pressure_msl")
-                mslpSource = "Open-Meteo"
+                val url = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&hourly=pressure_msl&past_days=1&forecast_days=2&timeformat=unixtime"
+                val hr = JSONObject(URL(url).readText()).getJSONObject("hourly")
+                val ts = hr.getJSONArray("time"); val ps = hr.getJSONArray("pressure_msl")
+                val ser = (0 until minOf(ts.length(), ps.length())).mapNotNull { i -> if (ps.isNull(i)) null else ts.getLong(i) * 1000L to ps.getDouble(i) }
+                val t = System.currentTimeMillis()
+                val old = refHpa(t); val nw = interp(ser, t)
+                blendFrom = if (old != null && nw != null) old - nw else 0.0; blendT0 = t
+                series = ser
+                mslpHpa = refHpa(t) ?: ser.lastOrNull()?.second
+                mslpSource = "Open-Meteo (valandinis, tolygiai pagal laiką)"
                 lastLat = lat
                 lastLon = lon
                 lastFetch = now

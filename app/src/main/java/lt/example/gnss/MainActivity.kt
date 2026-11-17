@@ -6944,21 +6944,14 @@ class MainActivity : AppCompatActivity() {
             )
 
             satText = SpannableStringBuilder().apply {
-                appendLine("Signalų matoma ${cnt.sigVisible}, naudojama ${cnt.sigUsed}")
-                appendLine("Palydovų matoma ${cnt.satVisible}, naudojama ${cnt.satUsed}")
-                appendLine("Vidutinis C/N0 (naudojami): ${fx(avg)} dB-Hz")
-                appendLine("Maks. C/N0: ${fx(max.toDouble())} dB-Hz")
+                // ekrane – tik tai, kas svarbu tikslumui; visa smulkmė lieka ataskaitoje (ZIP)
+                appendLine("Palydovų ${cnt.satVisible}, padėčiai naudojama ${cnt.satUsed}")
+                val q = when { avg >= 40 -> "stiprus"; avg >= 32 -> "vidutinis"; avg > 0 -> "silpnas (patalpa, kabina ar kliūtys)"; else -> "—" }
+                appendLine("Signalas: vidutiniškai ${fx(avg)} dB-Hz – $q; stipriausias ${fx(max.toDouble())}")
                 val sbsAll = list.count { it.const == "SBS" }
                 val sbsUsed = list.count { it.const == "SBS" && it.used }
-                appendLine("SBAS (EGNOS) matomi: $sbsAll, naudojami: $sbsUsed")
-                appendLine(
-                    "SBAS pataisos: " + when {
-                        sbsUsed > 0 -> "taip (SBAS palydovas naudojamas fiksui)"
-                        sbsAll > 0 -> "matomas, bet fiksui nenaudojamas"
-                        else -> "SBAS palydovų nematyti"
-                    }
-                )
-                append("Pagal konstelaciją:\n")
+                if (sbsAll > 0) appendLine("EGNOS pataisos: " + if (sbsUsed > 0) "naudojamos" else "matomos, bet nenaudojamos")
+                append("Pagal sistemą (palydovai, signalai):\n")
                 for ((const, a) in cnt.perConst) {
                     val start = length
                     append("$const=${a[0]} (${a[2]} sign.)   ")
@@ -7997,8 +7990,6 @@ class MainActivity : AppCompatActivity() {
         }
         sb.append("\n=== PALYDOVAI ===\n")
         sb.append(satText)
-        sb.append("\n\n=== NEAPDOROTI MATAVIMAI (paskutinis GNSS ciklas) ===\n")
-        sb.append(measText)
         info.text = sb
     }
 
@@ -8060,21 +8051,29 @@ class MainActivity : AppCompatActivity() {
     private fun toggleCalibDrum() {
         calDrum?.let { (it.parent as? ViewGroup)?.removeView(it); calDrum = null; return }
         val keys = listOf("north", "sun", "moon", "polaris", "orion", "log")
-        val icons = listOf("N", "\uD83C\uDF1E", "\uD83C\uDF16", "\uD83C\uDF1F", "\u2728", "\uD83D\uDCD3")
+        val icons = keys                                       // piešti paveikslėliai (CalibDrum.drawIcon)
         val names = listOf("Šiaurė", "Saulė", "Mėnulis", "Šiaurinė žvaigždė", "Orionas", "Žurnalas")
         val sp = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
         fun st(i: Int) = when (val k = keys[i]) {
-            "north" -> "planšetė į šiaurę · ±3–5°"
+            "north" -> "į šiaurę"
             "orion" -> targetStatusShort("betelgeuse")
-            "log" -> "peržiūra, šiaurės atkūrimas"
+            "log" -> "peržiūra"
             else -> targetStatusShort(k)
         }
         val dp = resources.displayMetrics.density
-        val drum = CalibDrum(this, icons, names, ::st, sp.getInt("drum_last", 1).coerceIn(0, keys.size - 1)) { i ->
+        // tikra Mėnulio fazė paveikslėliui: apšviesta dalis ir ar ji didėja (jaunatis – apšviesta dešinė)
+        fun moonK(ms: Long): Double {
+            val (maz, mel) = SunCal.targetAzEl("moon", ms, obsLatNow, obsLonNow); val (saz, sel) = SunCal.sunAzEl(ms, obsLatNow, obsLonNow)
+            fun v(az: Double, el: Double) = doubleArrayOf(kotlin.math.cos(Math.toRadians(el)) * kotlin.math.sin(Math.toRadians(az)), kotlin.math.cos(Math.toRadians(el)) * kotlin.math.cos(Math.toRadians(az)), kotlin.math.sin(Math.toRadians(el)))
+            return MoonShape.illuminated(kotlin.math.acos(MoonShape.dot(v(maz, mel), v(saz, sel)).coerceIn(-1.0, 1.0)))
+        }
+        val nowMs = System.currentTimeMillis()
+        val k0 = moonK(nowMs); val wax = moonK(nowMs + 6 * 3_600_000L) > k0
+        val drum = CalibDrum(this, icons, names, ::st, sp.getInt("drum_last", 1).coerceIn(0, keys.size - 1), { i ->
             sp.edit().putInt("drum_last", i).apply()
             calDrum?.let { (it.parent as? ViewGroup)?.removeView(it) }; calDrum = null
             openCalib(keys[i])
-        }
+        }, k0, wax)
         calDrum = drum
         // 🧭 – ketvirtas mygtukas (viršus 10 dp + 3 × (32 + 6) dp), jo centras ~140 dp; būgnas – kairiau nuo mygtukų stulpelio
         val h = (drum.itemH * 5).toInt()

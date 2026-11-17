@@ -19,7 +19,9 @@ import kotlin.math.roundToInt
  */
 @SuppressLint("ViewConstructor")
 class CalibDrum(ctx: Context, private val icons: List<String>, private val names: List<String>,
-                private val status: (Int) -> String, start: Int, private val onPick: (Int) -> Unit) : View(ctx) {
+                private val status: (Int) -> String, start: Int, private val onPick: (Int) -> Unit,
+                /** Mėnulio apšviesta dalis 0..1 ir ar jaunatis (apšviesta dešinė pusė) – paveikslėlis rodo tikrą fazę. */
+                private val moonK: Double = 0.5, private val moonWax: Boolean = true) : View(ctx) {
     private val dp = ctx.resources.displayMetrics.density
     val itemH = 50 * dp
     private val n = icons.size
@@ -59,15 +61,12 @@ class CalibDrum(ctx: Context, private val icons: List<String>, private val names
             ring.strokeWidth = (if (center) 2.5f else 1.2f) * dp
             ring.color = if (center) Color.argb(a, 250, 204, 21) else Color.argb((a * 0.6).toInt(), 255, 255, 255)
             c.drawCircle(cx, y, r, ring)
-            icon.textSize = 22 * dp * sc; icon.alpha = a
-            icon.color = if (icons[i] == "N") Color.argb(a, 239, 68, 68) else Color.argb(a, 255, 255, 255)
-            icon.isFakeBoldText = icons[i] == "N"
-            c.drawText(icons[i], cx, y - (icon.descent() + icon.ascent()) / 2, icon)
+            drawIcon(c, icons[i], cx, y, r, a)
         }
         // centrinio pavadinimas ir būsena – kairėje, permatomoje juostelėje
         val i = current
         label.textSize = 14 * dp; small.textSize = 11 * dp
-        val st = status(i).let { if (it.length > 34) it.take(33) + "…" else it }
+        val st = status(i).let { if (it.length > 26) it.take(25) + "…" else it }
         val right = cx - 30 * dp
         val w = maxOf(label.measureText(names[i]), small.measureText(st)) + 16 * dp
         c.drawRoundRect(RectF(right - w, cy - 22 * dp, right + 6 * dp, cy + 22 * dp), 10 * dp, 10 * dp, pill)
@@ -87,6 +86,72 @@ class CalibDrum(ctx: Context, private val icons: List<String>, private val names
                 val diff = target - offset
                 if (abs(diff) > 0.5f) { offset += diff * 0.25f; invalidate() } else { offset = target; lastT = 0L }
             }
+        }
+    }
+
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
+    private fun col(a: Int, rgb: Int) = (a shl 24) or (rgb and 0xFFFFFF)
+
+    /** Piešti paveikslėliai (ne šriftas): kompaso rodyklė, Saulė su spinduliais, tikros fazės Mėnulis, Šiaurinė žvaigždė, Oriono žvaigždynas, užrašų knygelė. */
+    private fun drawIcon(c: Canvas, key: String, x: Float, y: Float, r: Float, a: Int) {
+        fill.shader = null; fill.style = Paint.Style.FILL
+        when (key) {
+            "north" -> {
+                val l = r * 0.78f; val w = r * 0.24f
+                val n = android.graphics.Path().apply { moveTo(x, y - l); lineTo(x + w, y); lineTo(x - w, y); close() }
+                val s = android.graphics.Path().apply { moveTo(x, y + l); lineTo(x + w, y); lineTo(x - w, y); close() }
+                fill.color = col(a, 0xEF4444); c.drawPath(n, fill)
+                fill.color = col(a, 0xE5E7EB); c.drawPath(s, fill)
+                fill.color = col(a, 0x111827); c.drawCircle(x, y, r * 0.07f, fill)
+            }
+            "sun" -> {
+                line.color = col(a, 0xFBBF24); line.strokeWidth = r * 0.09f
+                for (k in 0 until 12) { val t = Math.PI * k / 6; val cs = cos(t).toFloat(); val sn = kotlin.math.sin(t).toFloat()
+                    c.drawLine(x + cs * r * 0.58f, y + sn * r * 0.58f, x + cs * r * (if (k % 2 == 0) 0.88f else 0.76f), y + sn * r * (if (k % 2 == 0) 0.88f else 0.76f), line) }
+                fill.shader = android.graphics.RadialGradient(x - r * 0.12f, y - r * 0.12f, r * 0.5f, col(a, 0xFFF7AE), col(a, 0xF59E0B), android.graphics.Shader.TileMode.CLAMP)
+                c.drawCircle(x, y, r * 0.44f, fill); fill.shader = null
+            }
+            "moon" -> {
+                val R = r * 0.62f
+                fill.color = col((a * 0.35).toInt(), 0x9CA3AF); c.drawCircle(x, y, R, fill)          // neapšviesta dalis
+                val k = moonK.coerceIn(0.0, 1.0); val ax = (R * kotlin.math.abs(1 - 2 * k)).toFloat()
+                val p = android.graphics.Path()
+                p.arcTo(RectF(x - R, y - R, x + R, y + R), -90f, 180f)                                 // apšviestas kraštas (dešinėje)
+                p.arcTo(RectF(x - ax, y - R, x + ax, y + R), 90f, if (k < 0.5) -180f else 180f)        // terminatorius
+                p.close()
+                c.save(); if (!moonWax) c.scale(-1f, 1f, x, y)
+                fill.color = col(a, 0xF3F4F6); c.drawPath(p, fill); c.restore()
+            }
+            "polaris" -> {
+                fill.shader = android.graphics.RadialGradient(x, y, r * 0.55f, col((a * 0.7).toInt(), 0xBFDBFE), col(0, 0xBFDBFE), android.graphics.Shader.TileMode.CLAMP)
+                c.drawCircle(x, y, r * 0.55f, fill); fill.shader = null
+                fill.color = col(a, 0xFFFFFF)
+                val sp = android.graphics.Path(); val L = r * 0.8f; val S = r * 0.12f
+                sp.moveTo(x, y - L); sp.lineTo(x + S, y - S); sp.lineTo(x + L, y); sp.lineTo(x + S, y + S)
+                sp.lineTo(x, y + L); sp.lineTo(x - S, y + S); sp.lineTo(x - L, y); sp.lineTo(x - S, y - S); sp.close()
+                c.drawPath(sp, fill)
+            }
+            "orion" -> {
+                fun st(dx: Float, dy: Float, rr: Float, rgb: Int) { fill.color = col(a, rgb); c.drawCircle(x + dx * r, y + dy * r, rr * r, fill) }
+                line.color = col((a * 0.35).toInt(), 0xFFFFFF); line.strokeWidth = r * 0.04f
+                val pts = floatArrayOf(-0.38f, -0.55f, 0.36f, -0.5f, 0.12f, -0.05f, -0.12f, 0.05f, 0.42f, 0.55f, -0.36f, 0.58f)
+                c.drawLine(x - 0.38f * r, y - 0.55f * r, x - 0.12f * r, y + 0.05f * r, line); c.drawLine(x + 0.36f * r, y - 0.5f * r, x + 0.12f * r, y - 0.05f * r, line)
+                c.drawLine(x + 0.12f * r, y - 0.05f * r, x + 0.42f * r, y + 0.55f * r, line); c.drawLine(x - 0.12f * r, y + 0.05f * r, x - 0.36f * r, y + 0.58f * r, line)
+                st(pts[0], pts[1], 0.11f, 0xFB923C)           // Betelgeizė
+                st(pts[2], pts[3], 0.08f, 0xE0E7FF)           // Belatriksė
+                st(0.12f, -0.05f, 0.07f, 0xFFFFFF); st(0f, 0f, 0.07f, 0xFFFFFF); st(-0.12f, 0.05f, 0.07f, 0xFFFFFF)   // juosta
+                st(pts[8], pts[9], 0.11f, 0x93C5FD)           // Rigelis
+                st(pts[10], pts[11], 0.07f, 0xE0E7FF)         // Saifas
+            }
+            "log" -> {
+                val bw = r * 0.62f; val bh = r * 0.8f
+                fill.color = col(a, 0xFDE68A); c.drawRoundRect(RectF(x - bw, y - bh, x + bw, y + bh), r * 0.1f, r * 0.1f, fill)
+                fill.color = col(a, 0xB45309); c.drawRect(x - bw, y - bh, x - bw + r * 0.18f, y + bh, fill)
+                line.color = col(a, 0x92400E); line.strokeWidth = r * 0.06f
+                for (k in 0..3) { val yy = y - bh * 0.5f + k * bh * 0.33f; c.drawLine(x - bw + r * 0.32f, yy, x + bw - r * 0.15f, yy, line) }
+            }
+            else -> { icon.textSize = 20 * dp; icon.color = col(a, 0xFFFFFF); c.drawText(key, x, y - (icon.descent() + icon.ascent()) / 2, icon) }
         }
     }
 

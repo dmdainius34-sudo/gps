@@ -3242,31 +3242,58 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.25f)
         bindPos(colorProg, floatBuf(floatArrayOf(sp[0], sp[1], sp[2], pin[0], pin[1], pin[2])))
         GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
-        // juosta, nukreipta į kamerą: u – bitų indeksas; palydovo gale naujausias bitas, stebėtojo – seniausias
+        // juosta: u – bitų indeksas; palydovo gale naujausias bitas, stebėtojo – seniausias.
+        // Juosta sukasi aplink savo ašį (banga), iš palydovo išnyra plonėdama (ne kvadratu), o prie smeigtuko
+        // siaurėja ir baigiasi ties galvutės kraštu – srautai „suteka“ į apvalią galvutę.
         val dx = pin[0] - sp[0]; val dy = pin[1] - sp[1]; val dz = pin[2] - sp[2]
+        val len = sqrt(dx * dx + dy * dy + dz * dz); if (len < 1e-6f) return
+        val ax = floatArrayOf(dx / len, dy / len, dz / len)
         var sx = dy * eyeI[2] - dz * eyeI[1]; var sy = dz * eyeI[0] - dx * eyeI[2]; var sz = dx * eyeI[1] - dy * eyeI[0]
         val sl = sqrt(sx * sx + sy * sy + sz * sz); if (sl < 1e-6f) return
+        sx /= sl; sy /= sl; sz /= sl
+        val ux = ax[1] * sz - ax[2] * sy; val uy = ax[2] * sx - ax[0] * sz; val uz = ax[0] * sy - ax[1] * sx   // ašis × šonas
         val w = 0.022f
-        sx = sx / sl * w; sy = sy / sl * w; sz = sz / sl * w
+        // smeigtuko galvutės spindulys pasaulio vienetais (galvutė piešiama taškais ekrane)
+        val pdx = pin[0] - camPos[0]; val pdy = pin[1] - camPos[1]; val pdz = pin[2] - camPos[2]
+        val camDist = sqrt(pdx * pdx + pdy * pdy + pdz * pdz)
+        val headPx = (22f - 18f * galFade()) * density / 2f
+        val headR = headPx * 2f * camDist * kotlin.math.tan(Math.toRadians(20.0)).toFloat() / maxOf(lastH, 1).toFloat()
+        val fEnd = (1f - headR / len).coerceIn(0.5f, 1f)
         val span = bt.n - BIT_WINDOW
         val k = BIT_WINDOW + (((System.currentTimeMillis() - m.tMs) / 1000.0 * m.rate) % span).toFloat()
+        val phase = ((System.currentTimeMillis() % 4000L) / 4000.0 * 2 * Math.PI).toFloat()
         // juosta dalimis: kiekviena dalis – bitų grupė; tarpas, jei grupė „prarasta“ (tikimybė auga silpnėjant signalui)
-        val segs = 16; val pGap = (1f - q) * 0.55f
+        val segs = 16; val sub = 3; val pGap = (1f - q) * 0.55f
         val per = BIT_WINDOW.toFloat() / segs
         val pos = ArrayList<Float>(); val uv = ArrayList<Float>()
         val salt = key.hashCode()
+        fun sstep(e0: Float, e1: Float, x: Float): Float { val t = ((x - e0) / (e1 - e0)).coerceIn(0f, 1f); return t * t * (3 - 2 * t) }
+        /** Juostos kraštas ties t (0 – palydovas, 1 – galvutės kraštas), sgn – kuri pusė. */
+        fun pt(t: Float, sgn: Float): FloatArray {
+            val env = sstep(0f, 0.1f, t) * (1f - 0.65f * sstep(0.88f, 1f, t))      // išnyra plona, prie galvutės siaurėja
+            val ang = (t * 6f * Math.PI).toFloat() - phase                           // 3 apsisukimai per ilgį, bėga link stebėtojo
+            val ca = kotlin.math.cos(ang); val sa = kotlin.math.sin(ang)
+            val f = t * fEnd
+            val hr = w * 0.5f * env                                                   // spiralės spindulys (banga aplink ašį)
+            val hw = w * env
+            return floatArrayOf(
+                sp[0] + dx * f + (ca * sx + sa * ux) * hr * 0.6f + (ca * ux - sa * sx) * hw * sgn,
+                sp[1] + dy * f + (ca * sy + sa * uy) * hr * 0.6f + (ca * uy - sa * sy) * hw * sgn,
+                sp[2] + dz * f + (ca * sz + sa * uz) * hr * 0.6f + (ca * uz - sa * sz) * hw * sgn)
+        }
         for (j in 0 until segs) {
             val bitA = k - j * per; val bitB = k - (j + 1) * per
             val grp = kotlin.math.floor(bitA / per).toInt()
             val h = ((grp * 1103515245 + salt * 12345) ushr 8) and 0xFFFF
             if (h / 65535f < pGap) continue
-            val fa = j.toFloat() / segs; val fb = (j + 1).toFloat() / segs
-            fun pt(f: Float, sgn: Float) = floatArrayOf(sp[0] + dx * f + sgn * sx, sp[1] + dy * f + sgn * sy, sp[2] + dz * f + sgn * sz)
-            val a0 = pt(fa, -1f); val a1 = pt(fa, 1f); val b0 = pt(fb, -1f); val b1 = pt(fb, 1f)
-            val ua = bitA / bt.n; val ub = bitB / bt.n
-            for ((v, t) in listOf(a0 to floatArrayOf(ua, 1f), a1 to floatArrayOf(ua, 0f), b0 to floatArrayOf(ub, 1f),
-                                  a1 to floatArrayOf(ua, 0f), b1 to floatArrayOf(ub, 0f), b0 to floatArrayOf(ub, 1f))) {
-                v.forEach { pos.add(it) }; t.forEach { uv.add(it) }
+            for (si in 0 until sub) {
+                val fa = (j * sub + si).toFloat() / (segs * sub); val fb = (j * sub + si + 1).toFloat() / (segs * sub)
+                val a0 = pt(fa, -1f); val a1 = pt(fa, 1f); val b0 = pt(fb, -1f); val b1 = pt(fb, 1f)
+                val ua = (bitA - (bitA - bitB) * si / sub) / bt.n; val ub = (bitA - (bitA - bitB) * (si + 1) / sub) / bt.n
+                for ((v, tt) in listOf(a0 to floatArrayOf(ua, 1f), a1 to floatArrayOf(ua, 0f), b0 to floatArrayOf(ub, 1f),
+                                      a1 to floatArrayOf(ua, 0f), b1 to floatArrayOf(ub, 0f), b0 to floatArrayOf(ub, 1f))) {
+                    v.forEach { pos.add(it) }; tt.forEach { uv.add(it) }
+                }
             }
         }
         if (pos.isEmpty()) return

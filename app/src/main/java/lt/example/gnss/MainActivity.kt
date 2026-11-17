@@ -7510,8 +7510,6 @@ class MainActivity : AppCompatActivity() {
         leftCol = left
         left.addView(modeSpinner, LinearLayout.LayoutParams(mw, ww))
         // „Nulis čia“ – mažas barometro mygtukas 3D vaizdo apačioje kairėje
-        left.addView(btnGps, LinearLayout.LayoutParams(mw, ww))
-        left.addView(btnReset, LinearLayout.LayoutParams(mw, ww))
         val btnSouth = Button(this).apply {
             text = "Pietų vaizdas (apversti Žemę)"
             setOnClickListener {
@@ -7519,7 +7517,6 @@ class MainActivity : AppCompatActivity() {
                 if (::skyDome.isInitialized) skyDome.setSouthUp(southUpOn)
             }
         }
-        left.addView(btnSouth, LinearLayout.LayoutParams(mw, ww))
         val btnResetN = Button(this).apply {
             text = "Atstatyti šiaurę (3D)"
             setOnClickListener { if (::skyDome.isInitialized) skyDome.resetNorth() }

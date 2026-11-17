@@ -2351,6 +2351,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawCmb()
         drawVignette()
         drawBrightGlow()
+        drawBigDipper()
         drawStarCollapse(covers = true)
         drawStars3d()
         drawGalaxy3d()
@@ -2621,6 +2622,46 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             billboard(bg, eyeI, halo, halo, starTex, s.rgb[0], s.rgb[1], s.rgb[2], (0.10f + 0.07f * bright) * tw * a0)
             val core = 50f * (0.0035f + 0.0016f * bright)
             billboard(bg, eyeI, core, core, starTex, 1f, 1f, 1f, (0.35f + 0.12f * bright) * tw * a0)
+        }
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    /**
+     * Grįžulo Ratai (tik „samtis“, ne visas Didysis Lokys): 7 žvaigždės paryškintos, sujungtos plonomis auksinėmis linijomis
+     * (linijos nesiekia pačių žvaigždžių, kad jų neuždengtų). Fone, tikrose J2000 kryptyse, kartu su kitomis ryškiomis žvaigždėmis.
+     */
+    private val dipperNames = listOf("Alkaid", "Mizar", "Alioth", "Megrez", "Dubhe", "Merak", "Phecda")
+    private val dipperLinks = listOf("Alkaid" to "Mizar", "Mizar" to "Alioth", "Alioth" to "Megrez", "Megrez" to "Dubhe",
+        "Dubhe" to "Merak", "Merak" to "Phecda", "Phecda" to "Megrez")
+    private val dipperStars by lazy { NearStars.list.filter { it.name in dipperNames }.associateBy { it.name } }
+    private fun drawBigDipper() {
+        if (starTex == 0) return
+        val a0 = bgFade(); if (a0 < 0.01f) return
+        val st = dipperStars; if (st.size < 7) return
+        fun bg(n: String) = FloatArray(3) { camPos[it] + st.getValue(n).dir[it] * 50f }
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        val seg = ArrayList<Float>()
+        for ((p, q) in dipperLinks) {
+            val a = bg(p); val b = bg(q)
+            val d = FloatArray(3) { b[it] - a[it] }; val l = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]); if (l < 1.2f) continue
+            val g = 0.55f / l
+            for (k in 0..2) seg.add(a[k] + d[k] * g); for (k in 0..2) seg.add(b[k] - d[k] * g)
+        }
+        GLES20.glLineWidth(1.6f * density)
+        drawLines(seg.toFloatArray(), 1f, 0.84f, 0.45f, 0.55f * a0)
+        GLES20.glLineWidth(1f)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        val sec = android.os.SystemClock.uptimeMillis() / 1000.0
+        for ((i, n) in dipperNames.withIndex()) {
+            val s = st.getValue(n); val c = bg(n)
+            val tw = (0.85 + 0.15 * sin(sec * (1.1 + i * 0.27) + i * 1.9)).toFloat()
+            val halo = 50f * 0.024f
+            billboard(c, eyeI, halo, halo, starTex, 1f, 0.88f, 0.6f, 0.30f * tw * a0)
+            val core = 50f * 0.0075f
+            billboard(c, eyeI, core, core, starTex, s.rgb[0], s.rgb[1], s.rgb[2], 0.95f * tw * a0)
+            billboard(c, eyeI, core * 0.5f, core * 0.5f, starTex, 1f, 1f, 1f, 0.9f * a0)
         }
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)

@@ -1504,7 +1504,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.showNavBits = calPrefs.getBoolean("nav_bits", true)
         renderer.showGrid = calPrefs.getBoolean("grid", true)
         renderer.showSunGrid = calPrefs.getBoolean("sun_grid", true)
-        renderer.showLasco = false
+        renderer.showLasco = calPrefs.getBoolean("sun_lasco", true)
         renderer.obstacleMode = calPrefs.getInt("obst_mode", 1)
         // atidarius – visada stebėtojo vaizdas: horizontas pagal žemę ir prietaisą, kryptis – pagal šiaurę
         renderer.followDevice = false; renderer.freeView = false
@@ -4843,8 +4843,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         java.util.Arrays.fill(sunMat, 0f)
         for (i in 0..2) { sunMat[i] = (ax[0][i] * k).toFloat(); sunMat[4 + i] = (ax[1][i] * k).toFloat(); sunMat[8 + i] = (ax[2][i] * k).toFloat() }
         // tikras NASA SDO vaizdas, jei atsisiųstas (perkeliamas į GL tekstūrą)
-        if (!SunImage.enabled) sunReal = false
-        SunImage.map?.takeIf { SunImage.enabled }?.let { m -> if (SunImage.version != sunImgVer) { sunImgVer = SunImage.version
+        SunImage.map?.let { m -> if (SunImage.version != sunImgVer) { sunImgVer = SunImage.version
             if (sunImgTex != 0) GLES20.glDeleteTextures(1, intArrayOf(sunImgTex), 0)
             sunImgTex = uploadTexture(m.copy(m.config ?: Bitmap.Config.ARGB_8888, false))
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sunImgTex)
@@ -4913,7 +4912,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var lascoTex = 0
     private var lascoTexs = IntArray(0)
     private var lascoVer = -1
-    @Volatile var showLasco = false
+    @Volatile var showLasco = true
     /** Išmetimų žiedo išorinis spindulys (Saulės spinduliais): koronografo laukas 2,3–5,8 R suspaudžiamas į 1,0–1,8 R. */
     private val LASCO_OUT = 1.8
     /**
@@ -7367,9 +7366,22 @@ class MainActivity : AppCompatActivity() {
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_grid", true)
             setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.setSunGrid(on) }
         }, LinearLayout.LayoutParams(mw, ww))
-        // Tikras Saulės vaizdas (SDO) ir Saulės išmetimai (LASCO, DONKI) pašalinti – nepadeda modeliui, tik apkrauna vaizdą ir ryšį
-        SunImage.enabled = false; Lasco.enabled = false
-        if (::skyDome.isInitialized) skyDome.setLasco(false)
+        SunImage.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_sdo", true)
+        left.addView(CheckBox(this).apply {
+            text = "Tikras Saulės vaizdas (NASA SDO, kas 30 min.)"
+            isChecked = SunImage.enabled
+            setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_sdo", on).apply(); SunImage.enabled = on
+                if (on) SunImage.refresh(this@MainActivity) }
+        }, LinearLayout.LayoutParams(mw, ww))
+        Lasco.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_lasco", true)
+        if (::skyDome.isInitialized) skyDome.setLasco(Lasco.enabled)
+        left.addView(CheckBox(this).apply {
+            text = "Saulės išmetimai: SOHO LASCO C2 tūris ir NASA DONKI 3D kryptys (kas 15–30 min.)"
+            isChecked = Lasco.enabled
+            setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_lasco", on).apply(); Lasco.enabled = on
+                if (::skyDome.isInitialized) skyDome.setLasco(on)
+                if (on) { Lasco.refresh(this@MainActivity); Donki.refresh(this@MainActivity) } }
+        }, LinearLayout.LayoutParams(mw, ww))
         Uvi.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("uv_layer", false)
         left.addView(CheckBox(this).apply {
             text = "Saulės patikra pagal UV indeksą (Open-Meteo): kryžiai ant gaublio"

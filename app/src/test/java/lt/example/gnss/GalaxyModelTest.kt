@@ -274,3 +274,31 @@ class CnoAutoTest {
         CnoMask.min = 20.0
     }
 }
+
+/** Glodinimas pagal Doplerį: triukšmingas kodas (±10 m) + tikslus Doppler – po minutės triukšmas kelis kartus mažesnis, judėjimas nevėluoja. */
+class DopplerSmoothTest {
+    @Test fun reducesNoise() {
+        val sm = Sp3V5.Smoother(doppler = true, useAdr = false)
+        val rnd = java.util.Random(7)
+        val v = -420.0                                   // palydovas artėja 420 m/s
+        var rawSq = 0.0; var smSq = 0.0; var n = 0
+        for (k in 0 until 180) {
+            val t = 1000.0 + k
+            val truth = 22_000_000.0 + v * k
+            val noise = rnd.nextGaussian() * 10.0
+            val m = Sp3V5.M('G', 5, truth + noise, 30.0, Sp3V5.STATE_TOW_DECODED, 0, null, 0, v + rnd.nextGaussian() * 0.05)
+            val out = sm.apply(m, t)
+            if (k >= 60) { rawSq += noise * noise; smSq += (out - truth) * (out - truth); n++ }
+        }
+        val rawRms = kotlin.math.sqrt(rawSq / n); val smRms = kotlin.math.sqrt(smSq / n)
+        assert(smRms < rawRms / 2.5) { "glodinta %.2f m, neglodinta %.2f m".format(smRms, rawRms) }
+    }
+
+    @Test fun restartsOnJump() {
+        val sm = Sp3V5.Smoother(doppler = true, useAdr = false)
+        for (k in 0 until 30) sm.apply(Sp3V5.M('G', 5, 22_000_000.0, 30.0, Sp3V5.STATE_TOW_DECODED, 0, null, 0, 0.0), 1000.0 + k)
+        // laikrodžio šuolis 300 km – kodas šoka, Doppler ne: glodinimas turi prasidėti iš naujo ir grąžinti naują kodą
+        val out = sm.apply(Sp3V5.M('G', 5, 22_300_000.0, 30.0, Sp3V5.STATE_TOW_DECODED, 0, null, 0, 0.0), 1030.0)
+        assertEquals(22_300_000.0, out, 1e-6)
+    }
+}

@@ -181,6 +181,12 @@ object LiveRtk {
         private set
     @Volatile private var sppMs = 0L
     private var sppIn: Set<String> = emptySet()
+    /**
+     * Pseudoatstumų glodinimas pagal Doplerį (Hatch, langas 100 s): atstumo pokytis tarp epochų imamas iš Doplerio (tikslus,
+     * mažai triukšmo), o pats atstumas – vis lėčiau vidurkinamas kodas. Fazė (ADR) nenaudojama – planšetėje ji kabinoje trūkinėja.
+     * Šuolis (kodas − integruotas Doppler nesutampa) ar > 1,5 s pertrauka – palydovo glodinimas pradedamas iš naujo.
+     */
+    private val sppSmooth = Sp3V5.Smoother(doppler = true, useAdr = false)
     /** Paskutinė programos padėtis skaičiuota su žinomu aukščiu. */
     @Volatile var sppHeightCon = false
         private set
@@ -230,14 +236,17 @@ object LiveRtk {
         val r = Sp3Live.reader?.takeIf { Sp3Solver.inRange(it, ep.t) }
         // slenkstis su 3 dB histereze kiekvienam palydovui: įeina nuo slenksčio, išeina tik nukritęs 3 dB žemiau –
         // ties slenksčiu mirgantys palydovai nekaitalioja rinkinio (kiekvienas pasikeitimas pastumia padėtį)
+        val sm = HashMap<Int, Double>()
+        for (m in ep.meas) if (m.sys != 'R' && (m.state and Sp3V5.STATE_TOW_DECODED) != 0) sm[m.key] = sppSmooth.apply(m, ep.t)
+        fun pr(m: Sp3V5.M) = sm[m.key] ?: m.pr
         val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 &&
                 (it.cn0 >= CnoMask.min || (it.cn0 >= CnoMask.min - 3.0 && (it.sys.toString() + it.svid) in sppIn)) }
             .also { l -> sppIn = l.map { it.sys.toString() + it.svid }.toSet() }
-            .map { m -> DualFreq.iono(m, ep.t)?.let { i -> Sp3V5.Ob(m.sys, m.svid, m.pr - i, m.cn0, m.prr, ifree = true) } ?: Sp3V5.Ob(m.sys, m.svid, m.pr, m.cn0, m.prr) }
+            .map { m -> DualFreq.iono(m, ep.t)?.let { i -> Sp3V5.Ob(m.sys, m.svid, pr(m) - i, m.cn0, m.prr, ifree = true) } ?: Sp3V5.Ob(m.sys, m.svid, pr(m), m.cn0, m.prr) }
             .let { l ->
                 // L1+L5 palydovams reikia savo laikrodžio – verta tik kai sistemoje jų ≥ 3, kitaip lieka įprastas L1 su Klobuchar
                 val few = l.filter { it.ifree }.groupingBy { it.sys }.eachCount().filterValues { it < 3 }.keys
-                l.map { o -> if (o.ifree && o.sys in few) ep.meas.first { it.sys == o.sys && it.svid == o.svid }.let { m -> Sp3V5.Ob(m.sys, m.svid, m.pr, m.cn0, m.prr) } else o }
+                l.map { o -> if (o.ifree && o.sys in few) ep.meas.first { it.sys == o.sys && it.svid == o.svid }.let { m -> Sp3V5.Ob(m.sys, m.svid, pr(m), m.cn0, m.prr) } else o }
             }
         DualFreq.lastUsed = obs.count { it.ifree }; DualFreq.lastTotal = obs.size
         fun fit(hc: Sp3V5.HCon?) = try {
@@ -256,7 +265,8 @@ object LiveRtk {
         val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, moving)
         val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
         sppLast = sol; sppMs = now
-        AppDiag.pos(obs.size, f.sol, hc != null, sol)
+        AppDiag.pos(obs.size, f.sol, hc != null, sol,
+            obs.map { sppSmooth.dopHatch.count(it.sys.code * 1000 + it.svid).toDouble() }.average(), sppSmooth.dopHatch.restarts)
         sppUsedKeys = f.sats.map { constOf(it.sys) + it.svid }.toSet()
         try { DopplerVel.solve(f.sats, f.x)?.let { velLast = it; velMs = now } } catch (_: Exception) {}
     }

@@ -140,13 +140,13 @@ object Sp3V5 {
     fun accept(m: M) = (if (m.sys == 'R') m.state and STATE_GLO_TOD_DECODED != 0 else m.state and STATE_TOW_DECODED != 0) && m.mp != 1 && m.cn0 >= 20.0
 
     /** Glodinimas: ADR (fazė), kitaip integruotas Doppler; tas pats Hatch langas ir paleidimo iš naujo taisyklės. */
-    class Smoother(val doppler: Boolean) {
+    class Smoother(val doppler: Boolean, val useAdr: Boolean = true) {
         val adrHatch = Sp3V4.Hatch(); val dopHatch = Sp3V4.Hatch()
         private val acc = HashMap<Int, DoubleArray>()        // [integralas, paskutinis prr, paskutinis t]
         var nAdr = 0; var nDop = 0; var nNone = 0
 
         fun apply(m: M, t: Double): Double {
-            val adrOk = m.adr != null && (m.adrState and Sp3V4.ADR_VALID) != 0 &&
+            val adrOk = useAdr && m.adr != null && (m.adrState and Sp3V4.ADR_VALID) != 0 &&
                 (m.adrState and (Sp3V4.ADR_RESET or Sp3V4.ADR_CYCLE_SLIP)) == 0
             if (adrOk) { nAdr++; return adrHatch.update(m.key, m.pr, m.adr, m.adrState, t) }
             if (doppler && m.prr != null) {

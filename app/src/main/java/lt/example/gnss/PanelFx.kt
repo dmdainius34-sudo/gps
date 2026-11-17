@@ -82,6 +82,10 @@ class CnoFallView(ctx: Context) : View(ctx) {
     private val grid = Paint().apply { color = 0x33000000; strokeWidth = 1f }
     // automatinė skalė (jautriau): rodomas dabartinių signalų intervalas ±2 dB, keičiamas sklandžiai
     private var lo = 15f; private var hi = 48f
+    /** Programos signalo slenkstis (dB-Hz): juoda vertikali riba, kairėje – išmetami signalai (pilkai pritemdyta). */
+    var threshold = 20f
+    private val shade = Paint().apply { color = 0x33000000 }
+    private val thr = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF000000.toInt() }
 
     fun addSample(sats: List<Sat>) {
         val m = sats.filter { it.cn0 > 0f }.associate { (it.const + it.svid) to (it.cn0 to constColor(it.const)) }
@@ -103,6 +107,9 @@ class CnoFallView(ctx: Context) : View(ctx) {
         txt.textAlign = Paint.Align.RIGHT; c.drawText("%.0f dB-Hz stiprūs".format(java.util.Locale.US, hi), w - 2 * dp, 10 * dp, txt); txt.textAlign = Paint.Align.LEFT
         fun xOf(db: Float) = ((db - lo) / (hi - lo)).coerceIn(0f, 1f) * w
         var g = (kotlin.math.ceil(lo / 5f) * 5f); while (g < hi) { val x = xOf(g); c.drawLine(x, top, x, h, grid); g += 5f }
+        // slenkstis: kairėje išmetami signalai
+        val tx = ((threshold - lo) / (hi - lo)) * w
+        if (tx > 0f) { c.drawRect(0f, top, minOf(tx, w), h, shade); if (tx <= w) { thr.strokeWidth = 2f * dp; c.drawLine(tx, top, tx, h, thr) } }
         // kiekvieno palydovo pėdsakas – linija per eilutes (sukant prietaisą matomi antenos svyravimai)
         val keys = rows.firstOrNull()?.keys ?: return
         for (k in keys) {

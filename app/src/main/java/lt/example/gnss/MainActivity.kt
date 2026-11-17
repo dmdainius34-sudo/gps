@@ -6124,8 +6124,29 @@ class DraggablePanel(
         addUpdateListener { shimmer.t = it.animatedFraction; shimmer.invalidateSelf() }
     }
     /** C/N0 krioklys meniu viršuje: kairėje silpni, dešinėje stiprūs, eilutės leidžiasi žemyn. */
-    private val cnoFall = CnoFallView(context)
-    fun setSats(list: List<Sat>) { if (panel.visibility == VISIBLE) cnoFall.addSample(list) }
+    private val cnoFall = CnoFallView(context).apply { threshold = CnoMask.min.toFloat() }
+    private var lastPanelSats: List<Sat> = emptyList()
+    fun setSats(list: List<Sat>) { lastPanelSats = list; if (panel.visibility == VISIBLE) { cnoFall.addSample(list); cnoInfo() } }
+    /** Signalo slenkstis programos skaičiavimui: slankiklis po kriokliu, riba krioklyje – juoda linija, kairėje – išmetami. */
+    private val cnoLbl = TextView(context).apply { textSize = 11f; setTextColor(0xFF111827.toInt()) }
+    private fun cnoInfo() {
+        val u = lastPanelSats.filter { it.used }.distinctBy { it.const to it.svid }
+        val k = u.count { it.cn0 >= CnoMask.min }
+        cnoLbl.text = "Riba %.0f dB-Hz: skaičiuojama %d iš %d; realus tikslumas %s".format(java.util.Locale.US, CnoMask.min, k, u.size,
+            Readiness.realAcc().let { if (it.isNaN()) "—" else "~%.0f m".format(java.util.Locale.US, it) })
+    }
+    private val cnoSeek = android.widget.SeekBar(context).apply {
+        max = 25; progress = (CnoMask.min - 15).toInt().coerceIn(0, 25)
+        setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: android.widget.SeekBar, v: Int, user: Boolean) {
+                if (!user) return
+                CnoMask.min = 15.0 + v; cnoFall.threshold = CnoMask.min.toFloat(); cnoFall.invalidate(); cnoInfo()
+                context.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putFloat("cno_min", CnoMask.min.toFloat()).apply()
+            }
+            override fun onStartTrackingTouch(sb: android.widget.SeekBar) {}
+            override fun onStopTrackingTouch(sb: android.widget.SeekBar) {}
+        })
+    }
 
     private val panel = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
@@ -6463,6 +6484,8 @@ class DraggablePanel(
         panel.addView(inputRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         panel.addView(sp3Status, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(cnoFall, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        bodyInner.addView(cnoSeek, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        bodyInner.addView(cnoLbl, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(fixBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(msgInput, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(pkBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -6994,7 +7017,6 @@ class MainActivity : AppCompatActivity() {
         margins(toolCol, m, m + t, m + r, m)
     }
 
-    private var cnoRefresh: (() -> Unit)? = null
     private var immersive = false
     /** ⛶ – paslėpti ar parodyti sistemos juostas (3D lieka per visą ekraną). */
     private fun toggleImmersive() {
@@ -7199,7 +7221,6 @@ class MainActivity : AppCompatActivity() {
             CabinMap.learnStatus(if (HeadingTrust.trusted) hd else null, list)
             cabinView?.let { it.heading = hd; it.sats = list; it.invalidate() }
             lastSats = list
-            cnoRefresh?.invoke()
             satMap.clear()
             for (x in list) satMap[x.const + x.svid] = x
             skyView.sats = list
@@ -7549,27 +7570,7 @@ class MainActivity : AppCompatActivity() {
         // mažiausias signalo stiprumas programos skaičiavime (lusto padėties neveikia)
         val cnoSp = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
         CnoMask.min = cnoSp.getFloat("cno_min", 20f).toDouble()
-        val cnoLabel = TextView(this).apply { textSize = 13f }
-        fun cnoText() {
-            val u = lastSats.filter { it.used }.distinctBy { it.const to it.svid }
-            val left2 = u.count { it.cn0 >= CnoMask.min }
-            cnoLabel.text = "Mažiausias signalas mano skaičiavime: %.0f dB-Hz (lieka %d iš %d naudojamų palydovų; realus tikslumas %s)".format(
-                Locale.US, CnoMask.min, left2, u.size, Readiness.realAcc().let { if (it.isNaN()) "—" else "~%.0f m".format(Locale.US, it) })
-        }
-        cnoText()
-        cnoRefresh = { cnoText() }                    // atnaujinama su kiekvienu palydovų sąrašu (ne tik judinant slankiklį)
-        left.addView(cnoLabel, LinearLayout.LayoutParams(mw, ww))
-        left.addView(android.widget.SeekBar(this).apply {
-            max = 25; progress = (CnoMask.min - 15).toInt().coerceIn(0, 25)
-            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: android.widget.SeekBar, v: Int, user: Boolean) {
-                    CnoMask.min = 15.0 + v; cnoText()
-                    if (user) cnoSp.edit().putFloat("cno_min", CnoMask.min.toFloat()).apply()
-                }
-                override fun onStartTrackingTouch(sb: android.widget.SeekBar) {}
-                override fun onStopTrackingTouch(sb: android.widget.SeekBar) { cnoText() }
-            })
-        }, LinearLayout.LayoutParams(mw, ww))
+        // signalo slenkstis reguliuojamas NLO meniu po C/N0 kriokliu (slankiklis ir juoda riba krioklyje)
         SignalHeading.autoFix = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sig_heading_fix", true)
         SignalHeading.mapClean = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("cabin_clean_v2", false)
         left.addView(CheckBox(this).apply {

@@ -7239,25 +7239,6 @@ class MainActivity : AppCompatActivity() {
         left.addView(btnZero, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnGps, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnReset, LinearLayout.LayoutParams(mw, ww))
-        val btnSaveN = Button(this).apply {
-            text = "Įrašyti šiaurę (planšetė į šiaurę arba 3D pasukite N)"
-            setOnClickListener {
-                if (!::skyDome.isInitialized) return@setOnClickListener
-                val d = -skyDome.northPreviewDeg()
-                val h = skyDome.headingDeg()
-                android.app.AlertDialog.Builder(this@MainActivity).setTitle("Įrašyti šiaurę")
-                    .setMessage(("1) Planšetė dabar nukreipta į tikrąją šiaurę (nugarėlė, gulint – viršutinis kraštas): dabartinė kryptis %s taps 0°.\n" +
-                        "2) Arba pirštu pasuktas vaizdas: šiaurė bus pataisyta %+.1f° (aplink jūsų vertikalę).\n\n" +
-                        "Laukiamas tikslumas apie ±3–5° (akimis). Tiksliau – per kamerą pagal Saulę ar Mėnulį (±0,3°).").format(Locale.US,
-                        h?.let { "%.0f°".format(Locale.US, it) } ?: "nežinoma", d))
-                    .setPositiveButton("Planšetė į šiaurę") { _, _ ->
-                        val c = skyDome.northHere()
-                        Toast.makeText(this@MainActivity, if (c == null) "Krypties jutikliai dar neparuošti" else "Šiaurė nustatyta pagal planšetės kryptį (pataisa %+.1f°)".format(Locale.US, c), Toast.LENGTH_LONG).show()
-                    }
-                    .setNeutralButton("Pirštu pasuktas vaizdas") { _, _ -> skyDome.saveNorth() }
-                    .setNegativeButton("Atšaukti", null).show().also { WinUtil.draggable(it) }
-            }
-        }
         val btnSouth = Button(this).apply {
             text = "Pietų vaizdas (apversti Žemę)"
             setOnClickListener {
@@ -7270,13 +7251,7 @@ class MainActivity : AppCompatActivity() {
             text = "Atstatyti šiaurę (3D)"
             setOnClickListener { if (::skyDome.isInitialized) skyDome.resetNorth() }
         }
-        left.addView(btnSaveN, LinearLayout.LayoutParams(mw, ww))
-        val btnSun = Button(this).apply {
-            text = "Kalibruoti pagal orientyrą: Saulė, Mėnulis, Šiaurinė žvaigždė, Orionas…"
-            setOnClickListener { showTargetChooser() }
-        }
-        left.addView(btnSun, LinearLayout.LayoutParams(mw, ww))
-        left.addView(Button(this).apply { text = "Kalibravimų žurnalas (peržiūra, trynimas, šiaurės atkūrimas)…"; setOnClickListener { showSunLogDialog() } }, LinearLayout.LayoutParams(mw, ww))
+        // šiaurės įrašymas, kalibravimas pagal orientyrus ir žurnalas – mažame 🧭 mygtuke ant 3D vaizdo (būgnas)
         SunCal.autoFix = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_log_fix", true)
         left.addView(CheckBox(this).apply {
             text = "Šiaurės pataisa pagal Saulės žurnalą ir magnetometrą (kai nuokrypis > 2° ir 30 s stabilus)"
@@ -7532,10 +7507,11 @@ class MainActivity : AppCompatActivity() {
             setLevel(on); if (on) setFollow(false)
             Toast.makeText(this@MainActivity, if (on) "Sklandus sukimas 360°: horizontas lieka lygus" else "Sklandus sukimas išjungtas", Toast.LENGTH_SHORT).show()
         }
+        val calBtn = small("\uD83E\uDDED", 15f).apply { alpha = 0.85f; setOnClickListener { showCalibDrum() } }   // 🧭
         val tools = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val gap = (6 * dp).toInt()
-            for (b in listOf(fsBtn, followBtn, levelBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
+            for (b in listOf(fsBtn, followBtn, levelBtn, calBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
         }
         toolCol = tools
         skyHolder.addView(tools, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
@@ -8043,6 +8019,83 @@ class MainActivity : AppCompatActivity() {
         val view = skyDome.headingDeg() ?: return null
         val tr = SunCal.trueFromMag(e, mag.first, skyDome.declinationDeg())
         return SunCal.wrap(view - tr) to e
+    }
+
+    /** Šiaurės įrašymas: planšetė nukreipta į šiaurę arba pirštu pasuktas 3D vaizdas. */
+    private fun showNorthDialog() {
+        if (!::skyDome.isInitialized) return
+        val d = -skyDome.northPreviewDeg()
+        val h = skyDome.headingDeg()
+        android.app.AlertDialog.Builder(this).setTitle("Įrašyti šiaurę")
+            .setMessage(("1) Planšetė dabar nukreipta į tikrąją šiaurę (nugarėlė, gulint – viršutinis kraštas): dabartinė kryptis %s taps 0°.\n" +
+                "2) Arba pirštu pasuktas vaizdas: šiaurė bus pataisyta %+.1f° (aplink jūsų vertikalę).\n\n" +
+                "Laukiamas tikslumas apie ±3–5° (akimis). Tiksliau – per kamerą pagal Saulę ar Mėnulį (±0,3°).").format(Locale.US,
+                h?.let { "%.0f°".format(Locale.US, it) } ?: "nežinoma", d))
+            .setPositiveButton("Planšetė į šiaurę") { _, _ ->
+                val c = skyDome.northHere()
+                Toast.makeText(this, if (c == null) "Krypties jutikliai dar neparuošti" else "Šiaurė nustatyta pagal planšetės kryptį (pataisa %+.1f°)".format(Locale.US, c), Toast.LENGTH_LONG).show()
+            }
+            .setNeutralButton("Pirštu pasuktas vaizdas") { _, _ -> skyDome.saveNorth() }
+            .setNegativeButton("Atšaukti", null).show().also { WinUtil.draggable(it) }
+    }
+
+    /** Orientyro būsena trumpai: kur jis dabar ir ar galima kalibruoti. */
+    private fun targetStatus(key: String): String {
+        val now = System.currentTimeMillis()
+        val (az, el) = SunCal.targetAzEl(key, now, obsLatNow, obsLonNow)
+        return when {
+            el < SunCal.MIN_EL -> "po horizontu (%.0f°)".format(Locale.US, el)
+            SunCal.isStar(key) && SunCal.sunAzEl(now, obsLatNow, obsLonNow).second > -6.0 -> "dar per šviesu – laukite sutemų"
+            el > SunCal.MAX_EL -> "per aukštai (%.0f°), tikslumas būtų %s".format(Locale.US, el, SunCal.accText(el, true))
+            else -> "az %.0f° (%s), aukštis %.0f°; tikslumas %s".format(Locale.US, az, compass(az), el, SunCal.accText(el))
+        }
+    }
+
+    /**
+     * Kalibravimo „būgnas“: paveikslėliai sukami aukštyn–žemyn (N, Saulė, Mėnulis, Šiaurinė žvaigždė, Orionas, žurnalai);
+     * po būgnu – pasirinkto orientyro būsena, „Atidaryti“ – jo kalibravimas.
+     */
+    private fun showCalibDrum() {
+        val items = listOf(
+            "N    Šiaurė" to "north", "\uD83C\uDF1E   Saulė" to "sun", "\uD83C\uDF16   Mėnulis" to "moon",
+            "\uD83C\uDF1F   Šiaurinė žvaigždė" to "polaris", "\u2728   Orionas" to "orion", "\uD83D\uDCD3   Žurnalai" to "log")
+        val dp = resources.displayMetrics.density
+        val info = TextView(this).apply { setPadding((16 * dp).toInt(), (6 * dp).toInt(), (16 * dp).toInt(), 0); textSize = 13f; gravity = Gravity.CENTER }
+        val np = android.widget.NumberPicker(this).apply {
+            minValue = 0; maxValue = items.size - 1; displayedValues = items.map { it.first }.toTypedArray()
+            wrapSelectorWheel = true; descendantFocusability = android.widget.NumberPicker.FOCUS_BLOCK_DESCENDANTS
+            if (Build.VERSION.SDK_INT >= 29) textSize = 22 * dp
+            value = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getInt("drum_last", 1).coerceIn(0, items.size - 1)
+        }
+        fun describe(i: Int) {
+            info.text = when (val k = items[i].second) {
+                "north" -> "Planšetę nukreipkite į tikrąją šiaurę arba pirštu pasukite 3D vaizdą (±3–5°)"
+                "orion" -> "Betelgeizė, Rigelis, Belatriksė, Alnilamas – pasirinksite žvaigždę"
+                "log" -> "Kalibravimų žurnalas: peržiūra, trynimas, šiaurės atkūrimas"
+                else -> targetStatus(k)
+            }
+        }
+        describe(np.value)
+        np.setOnValueChangedListener { _, _, v -> describe(v) }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, (8 * dp).toInt(), 0, 0); addView(np); addView(info) }
+        fun open(i: Int) {
+            getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putInt("drum_last", i).apply()
+            when (val k = items[i].second) {
+                "north" -> showNorthDialog()
+                "log" -> showSunLogDialog()
+                "orion" -> {
+                    val stars = listOf("betelgeuse", "rigel", "bellatrix", "alnilam")
+                    android.app.AlertDialog.Builder(this).setTitle("\u2728 Orionas – kuri žvaigždė?")
+                        .setItems(stars.map { SunCal.target(it).name + " – " + targetStatus(it) }.toTypedArray()) { _, j -> showAimDialog(stars[j]) }
+                        .setNegativeButton("Atšaukti", null).show().also { WinUtil.draggable(it) }
+                }
+                else -> showAimDialog(k)
+            }
+        }
+        val dlg = android.app.AlertDialog.Builder(this).setTitle("Kalibravimas").setView(box)
+            .setPositiveButton("Atidaryti") { _, _ -> open(np.value) }.setNegativeButton("Uždaryti", null).create()
+        dlg.show(); WinUtil.draggable(dlg)
     }
 
     /** Orientyrų sąrašas su dabartine padėtimi; pasirinkus – taikiklis. */

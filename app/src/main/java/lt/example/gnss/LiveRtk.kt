@@ -181,6 +181,8 @@ object LiveRtk {
         private set
     @Volatile private var sppMs = 0L
     private var sppIn: Set<String> = emptySet()
+    /** „Čia žemė“ matavimas ką tik baigtas (UI pasiima ir nuima). */
+    @Volatile var groundDone = false
     /**
      * Pseudoatstumų glodinimas pagal Doplerį (Hatch, langas 100 s): atstumo pokytis tarp epochų imamas iš Doplerio (tikslus,
      * mažai triukšmo), o pats atstumas – vis lėčiau vidurkinamas kodas. Fazė (ADR) nenaudojama – planšetėje ji kabinoje trūkinėja.
@@ -259,6 +261,10 @@ object LiveRtk {
         val hc = ref?.let { KnownHeight.constraint(it.first, it.second) }
         if (obs.size < (if (hc != null) 3 else 5)) { AppDiag.noPos(obs.size); return }
         val f = (if (hc != null) fit(hc) else free ?: fit(null)) ?: run { AppDiag.noPos(obs.size); return }
+        // „Čia žemė“: matuojama programos padėtimi be aukščio apribojimo
+        if (KnownHeight.gMeasuring) (if (hc == null) f else free ?: fit(null))?.let {
+            if (KnownHeight.groundSample(now, it.sol.lat, it.sol.lon, it.sol.h, false, Steps.walking())) groundDone = true
+        }
         sppHeightCon = hc != null
         sppSource = if (r != null) "SP3" else "efemeridės iš palydovų"
         val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }
@@ -297,6 +303,8 @@ object LiveRtk {
                 (prev == null || PositionSolver.horizDist(prev.lat, prev.lon, sol.lat, sol.lon) < maxOf(1.0, 4 * sol.hacc) || held >= 10)
             val nowMs = System.currentTimeMillis()
             if (engine.lastFix && sol.hacc < 0.5) FixPoints.onFix(sol, nowMs)
+            if (engine.lastFix && sol.hacc < 0.5 && KnownHeight.gMeasuring &&
+                KnownHeight.groundSample(nowMs, sol.lat, sol.lon, sol.h, true, Steps.walking())) groundDone = true
             if (ok) { pushed = sol; held = 0; pushedN++; lastFixSol = sol; lastFixMs = nowMs; fixOut = sol; fixOutMs = nowMs }
             else { held++; heldN++ }
             // kitoms programoms perduodama tik per bendrą išvestį (outTick)

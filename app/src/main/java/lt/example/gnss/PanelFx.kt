@@ -218,3 +218,33 @@ class TurnHintView(ctx: Context) : View(ctx) {
         c.drawText("+%.0f dB".format(java.util.Locale.US, h.gainDb), cx, ht - 2 * dp, txt)
     }
 }
+
+/** „Čia žemė“: įžeminimo ženklas permatomame skritulyje; matuojant – geltonas eigos lankas, išmatavus – žalias taškelis. */
+class GroundIcon(ctx: Context) : View(ctx) {
+    private val dp = ctx.resources.displayMetrics.density
+    private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x44000000 }
+    private val ln = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFFFFFFFF.toInt(); strokeCap = Paint.Cap.ROUND }
+    private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFFFACC15.toInt(); strokeCap = Paint.Cap.ROUND }
+    private val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF22C55E.toInt() }
+    /** < 0 – nematuojama; 0..1 – matavimo eiga. */
+    var progress = -1f
+        set(v) { if (field != v) { field = v; invalidate() } }
+    var hasGround = false
+        set(v) { if (field != v) { field = v; invalidate() } }
+
+    override fun onDraw(c: Canvas) {
+        val w = width.toFloat(); val h = height.toFloat(); val cx = w / 2; val cy = h / 2; val r = minOf(w, h) / 2
+        c.drawCircle(cx, cy, r, bg)
+        ln.strokeWidth = 1.8f * dp
+        // įžeminimo ženklas: stulpelis ir trys mažėjantys brūkšniai
+        c.drawLine(cx, cy - r * 0.5f, cx, cy, ln)
+        c.drawLine(cx - r * 0.48f, cy, cx + r * 0.48f, cy, ln)
+        c.drawLine(cx - r * 0.3f, cy + r * 0.2f, cx + r * 0.3f, cy + r * 0.2f, ln)
+        c.drawLine(cx - r * 0.12f, cy + r * 0.4f, cx + r * 0.12f, cy + r * 0.4f, ln)
+        if (progress >= 0f) {
+            arc.strokeWidth = 2.6f * dp
+            val m = arc.strokeWidth
+            c.drawArc(RectF(m, m, w - m, h - m), -90f, 360f * progress.coerceIn(0.02f, 1f), false, arc)
+        } else if (hasGround) c.drawCircle(cx + r * 0.62f, cy - r * 0.62f, r * 0.17f, dot)
+    }
+}

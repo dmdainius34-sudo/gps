@@ -7922,6 +7922,36 @@ class MainActivity : AppCompatActivity() {
             skyHolder.addView(baroRow, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
                 val m = (10 * dp).toInt(); setMargins(m, m, m, m + (44 * dp).toInt()) })
         }
+        // „Čia žemė“: virš barometro – stovint ant žemės paspausti, programa ~3 min. išmatuoja žemės aukštį (vietoj interneto žemėlapio);
+        // matuojant ženklas virpa, baigus – vibracija; dar kartą paspaudus – nutraukti; ilgai palaikius – pamiršti išmatuotą žemę
+        run {
+            val gb = GroundIcon(this).apply { alpha = 0.85f; hasGround = KnownHeight.hasMeasuredGround }
+            val shake = android.animation.ObjectAnimator.ofFloat(gb, "translationX", 0f, 1.6f * dp, -1.6f * dp, 0f).apply {
+                duration = 260L; repeatCount = android.animation.ValueAnimator.INFINITE }
+            fun buzz(pattern: LongArray) = try { (getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.let { v ->
+                if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createWaveform(pattern, -1)) else @Suppress("DEPRECATION") v.vibrate(pattern.sum()) } } catch (_: Exception) {}
+            gb.setOnClickListener {
+                keyHaptic(gb)
+                if (KnownHeight.gMeasuring) KnownHeight.cancelGround("nutraukta") else { KnownHeight.startGround(System.currentTimeMillis()); shake.start() }
+            }
+            gb.setOnLongClickListener {
+                KnownHeight.clearGround(); shake.cancel(); gb.translationX = 0f; gb.progress = -1f; gb.hasGround = false
+                buzz(longArrayOf(0, 40, 60, 40)); true
+            }
+            val tick = object : Runnable { override fun run() {
+                if (KnownHeight.gMeasuring) gb.progress = KnownHeight.gProgress
+                else {
+                    if (gb.progress >= 0f) { shake.cancel(); gb.translationX = 0f; gb.progress = -1f
+                        if (LiveRtk.groundDone) buzz(longArrayOf(0, 60, 80, 60, 80, 120)) else buzz(longArrayOf(0, 250)) }
+                    LiveRtk.groundDone = false
+                    gb.hasGround = KnownHeight.hasMeasuredGround
+                }
+                gb.postDelayed(this, 500L)
+            } }
+            gb.post(tick)
+            skyHolder.addView(gb, FrameLayout.LayoutParams(bSize, bSize, Gravity.BOTTOM or Gravity.START).apply {
+                val m = (10 * dp).toInt(); setMargins(m, m, m, m + (44 * dp).toInt() + (if (baro.hasSensor) bSize + (8 * dp).toInt() else 0)) })
+        }
         toolCol = tools
         skyHolder.addView(tools, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
             val m = (10 * dp).toInt()

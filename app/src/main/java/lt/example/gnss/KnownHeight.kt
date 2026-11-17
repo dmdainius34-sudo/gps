@@ -25,12 +25,91 @@ object KnownHeight {
     @Volatile private var busy = false
     @Volatile private var lastLat = Double.NaN; @Volatile private var lastLon = Double.NaN
 
+    @Volatile private var appCtx: Context? = null
+
     fun load(ctx: Context) {
+        appCtx = ctx.applicationContext
         val p = ctx.getSharedPreferences("known_ref", Context.MODE_PRIVATE)
         fun d(k: String) = p.getString(k, "")?.trim()?.replace(',', '.')?.toDoubleOrNull()
         val a = d("agl")?.takeIf { it in -100.0..1000.0 }; val m = d("msl")?.takeIf { it in -500.0..9000.0 }
-        if (a != agl || m != msl) { dhAvg = Double.NaN; dhCnt = 0; conflict = false }   // nauja vertė – patikra iš naujo
+        val g = p.getFloat("g_msl", Float.NaN).toDouble()
+        if (a != agl || m != msl || !(g == mGround || (g.isNaN() && mGround.isNaN()))) { dhAvg = Double.NaN; dhCnt = 0; conflict = false }   // nauja vertė – patikra iš naujo
         agl = a; msl = m
+        mGround = g; mLat = p.getFloat("g_lat", Float.NaN).toDouble(); mLon = p.getFloat("g_lon", Float.NaN).toDouble()
+        mSigma = p.getFloat("g_sig", 3f).toDouble(); mSrc = p.getString("g_src", "") ?: ""
+    }
+
+    // ---- „Čia žemė“: žemės aukštis, išmatuotas pačios programos (vietoj interneto žemėlapio) ----
+    @Volatile private var mGround = Double.NaN
+    @Volatile private var mLat = Double.NaN; @Volatile private var mLon = Double.NaN
+    @Volatile private var mSigma = 3.0; @Volatile private var mSrc = ""
+    /** Išmatuota žemė, jei ji šioje vietoje (≤ 300 m). */
+    private fun groundNear(): Double? = mGround.takeIf { !it.isNaN() &&
+        (lastLat.isNaN() || PositionSolver.horizDist(lastLat, lastLon, mLat, mLon) < 300.0) }
+    val hasMeasuredGround get() = groundNear() != null
+    /** Žemės paviršiaus aukštis virš jūros: išmatuotas čia, kitaip – interneto žemėlapis (jei neįtartinas). */
+    fun groundMsl(): Double? = groundNear() ?: ground.takeIf { !it.isNaN() && !demSuspect }
+
+    @Volatile var gMeasuring = false
+        private set
+    /** Matavimo eiga 0..1. */
+    @Volatile var gProgress = 0f
+        private set
+    @Volatile var gResult = ""
+        private set
+    private const val G_MS = 180_000L
+    private val gH = ArrayList<Double>(); private val gFix = ArrayList<Double>()
+    private var gStart = 0L; private var gLat0 = Double.NaN; private var gLon0 = Double.NaN
+
+    @Synchronized fun startGround(now: Long) { gH.clear(); gFix.clear(); gStart = now; gLat0 = Double.NaN; gProgress = 0f; gMeasuring = true; gResult = "Žemė matuojama…" }
+    @Synchronized fun cancelGround(why: String) { if (!gMeasuring) return; gMeasuring = false; gProgress = 0f; gResult = "Žemės matavimas nebaigtas: $why" }
+
+    /** Išmatuotą žemę pamiršti – vėl naudojamas interneto žemėlapis. */
+    @Synchronized fun clearGround() {
+        cancelGround("atšaukta")
+        appCtx?.getSharedPreferences("known_ref", Context.MODE_PRIVATE)?.edit()?.remove("g_msl")?.remove("g_lat")?.remove("g_lon")
+            ?.remove("g_sig")?.remove("g_src")?.apply()
+        mGround = Double.NaN; dhAvg = Double.NaN; dhCnt = 0; conflict = false; gResult = "Išmatuota žemė pašalinta – naudojamas interneto žemėlapis"
+    }
+
+    /**
+     * Aukščio mėginys matuojant žemę (elipsoidinis, m): programos padėtis be aukščio apribojimo kas sekundę arba RTK FIX.
+     * Pajudėjus (žingsniai) ar nutolus > 25 m – matavimas nutraukiamas. Baigiama po 3 min. (≥ 100 mėg.) arba po 30 FIX.
+     * Grąžina true, kai baigta sėkmingai.
+     */
+    @Synchronized fun groundSample(now: Long, lat: Double, lon: Double, hEll: Double, fix: Boolean, walking: Boolean): Boolean {
+        if (!gMeasuring) return false
+        if (gLat0.isNaN()) { gLat0 = lat; gLon0 = lon }
+        val d = PositionSolver.horizDist(gLat0, gLon0, lat, lon)
+        if (walking) { cancelGround("pajudėjote"); return false }
+        if (d > 25.0 && !fix) { cancelGround("padėtis nutolo %.0f m".format(Locale.US, d)); return false }
+        if (fix) gFix.add(hEll) else gH.add(hEll)
+        gProgress = ((now - gStart).toFloat() / G_MS).coerceIn(0f, 1f)
+        if (gFix.size >= 30 || (now - gStart >= G_MS && gH.size >= 100)) return finishGround(lat, lon)
+        return false
+    }
+
+    private fun finishGround(lat: Double, lon: Double): Boolean {
+        val useFix = gFix.size >= 30
+        val l = (if (useFix) gFix else gH).sorted()
+        val med = l[l.size / 2]
+        val mad = l.map { abs(it - med) }.sorted()[l.size / 2].coerceAtLeast(0.5)
+        val ins = l.filter { abs(it - med) <= 3 * mad }
+        val mean = ins.average()
+        val sd = sqrt(ins.sumOf { (it - mean) * (it - mean) } / ins.size)
+        // gretimų sekundžių klaidos koreliuotos (~30 s): nepriklausomų mėginių ~ n/30
+        val sig = if (useFix) 0.1 else maxOf(2.0, sd / sqrt(maxOf(1.0, ins.size / 30.0)))
+        val n = Geoid.undulation(lat, lon) ?: run { cancelGround("nėra geoido"); return false }
+        val g = mean - n
+        val src = if (useFix) "RTK FIX, ${ins.size} mėg." else "programos padėtis, ${ins.size} mėg. per ${(G_MS / 60_000)} min."
+        appCtx?.getSharedPreferences("known_ref", Context.MODE_PRIVATE)?.edit()
+            ?.putFloat("g_msl", g.toFloat())?.putFloat("g_lat", lat.toFloat())?.putFloat("g_lon", lon.toFloat())
+            ?.putFloat("g_sig", sig.toFloat())?.putString("g_src", src)?.apply()
+        mGround = g; mLat = lat; mLon = lon; mSigma = sig; mSrc = src
+        dhAvg = Double.NaN; dhCnt = 0; conflict = false
+        gMeasuring = false; gProgress = 1f
+        gResult = "Žemė išmatuota: %.1f m virš jūros (%s, σ ≈ %.1f m)".format(Locale.US, g, src, sig)
+        return true
     }
 
     /**
@@ -67,13 +146,13 @@ object KnownHeight {
      */
     @Volatile var demSuspect = false
         private set
-    val active get() = (msl != null || (agl != null && !ground.isNaN() && !demSuspect)) && !conflict
+    val active get() = (msl != null || (agl != null && groundMsl() != null)) && !conflict
 
     /** Prietaiso aukštis virš jūros, m. */
-    fun deviceMsl(): Double? = msl ?: agl?.let { a -> if (ground.isNaN()) null else ground + a }
+    fun deviceMsl(): Double? = msl ?: agl?.let { a -> groundMsl()?.let { it + a } }
 
     /** σ: įvestas aukštis virš jūros – 0,3 m; DEM (Copernicus GLO-90, ~1–2 m) + aukštis virš žemės – 2 m. */
-    fun sigma() = if (msl != null) 0.3 else 2.0
+    fun sigma() = if (msl != null) 0.3 else groundNear()?.let { sqrt(mSigma * mSigma + 0.3 * 0.3) } ?: 2.0
 
     /** Elipsoidinis aukštis h0 vietoje (lat, lon), m. */
     fun h0(lat: Double, lon: Double): Double? {
@@ -84,7 +163,7 @@ object KnownHeight {
 
     /** Žemės paviršiaus aukštis iš DEM (kai įvestas tik aukštis virš žemės); persiunčiama pasislinkus > 100 m. */
     private fun refreshDem(lat: Double, lon: Double) {
-        if (agl == null || msl != null || busy) return
+        if (agl == null || msl != null || busy || groundNear() != null) return
         if (!gLat.isNaN() && abs(lat - gLat) * 111_320 < 100 && abs(lon - gLon) * 111_320 * cos(Math.toRadians(lat)) < 100) return
         busy = true
         Thread {
@@ -145,7 +224,9 @@ object KnownHeight {
         val dm = deviceMsl()
         if (dm != null) append("; prietaisas %.2f m virš jūros (σ %.1f m)".format(Locale.US, dm, sigma()))
         if (!lastLat.isNaN()) h0(lastLat, lastLon)?.let { append(", elipsoidinis %.2f m".format(Locale.US, it)) }
-        if (demStatus.isNotEmpty() && msl == null) append("; $demStatus")
+        if (msl == null) groundNear()?.let { append("; žemė išmatuota čia: %.1f m virš jūros (%s)".format(Locale.US, it, mSrc)) }
+            ?: run { if (demStatus.isNotEmpty()) append("; $demStatus") }
+        if (gResult.isNotEmpty()) append("; $gResult")
         if (!freeDh.isNaN()) append("; programos padėtis be aukščio %+.0f m nuo įvesto".format(Locale.US, freeDh))
         append(when {
             conflict -> "; NENAUDOJAMAS: programos padėtis daugiau nei 30 m kitame aukštyje (nulipote?) – pataisykite arba ištrinkite"

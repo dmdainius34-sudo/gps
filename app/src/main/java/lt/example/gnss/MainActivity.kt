@@ -2191,7 +2191,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         monthTex.clear()
         labelTex.clear()
         wideLabels.clear()
-        galProg = 0; galBuf = null; coverTex = 0; polRingTex = 0
+        galProg = 0; galBuf = null; coverTex = 0
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
         glowProg = 0
@@ -2594,20 +2594,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * Prie Žemės – savo vietoje danguje (fone), atitolinus – tikroje 3D vietoje (433 šm nuo Saulės, ta pati kryptis),
      * galaktikos mastelyje – šalia Saulės, su plona linija nuo Saulės, kad matytųsi kryptis disko atžvilgiu (26° virš jo).
      * Žybčioja tikru cefeidės ritmu, tik 1 para = 1 sekundė (3,97 s ciklas): greitai šviesėja, lėtai temsta.
-     * Dydis ekrane pastovus (skaičiuojamas nuo atstumo iki kameros), aplink – žiedas, kad būtų lengva rasti.
+     * Dydis ekrane pastovus (skaičiuojamas nuo atstumo iki kameros). Spalva tikra – F7 supermilžinės (Polaris Aa) balta su vos gelsvu atspalviu.
      */
-    private var polRingTex = 0
     private val polaris by lazy { NearStars.list.firstOrNull { it.name == "Polaris" } }
-    private fun makeRingTexture(): Int {
-        val n = 64; val bmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888)
-        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 3f; color = 0xFFFFFFFF.toInt() }
-        Canvas(bmp).drawCircle(n / 2f, n / 2f, n / 2f - 3f, p)
-        return uploadTexture(bmp)
-    }
     private fun drawPolarisBeacon() {
         val s = polaris ?: return
         if (starTex == 0) return
-        if (polRingTex == 0) polRingTex = makeRingTexture()
         val w = 1f - bgFade()                                             // 0 – danguje (fone), 1 – tikroje 3D vietoje
         val dist3 = (s.ly * 0.3066 / 1000.0 * GAL_S).toFloat()           // šm -> pc -> kpc -> scenos vnt.
         val pBg = FloatArray(3) { camPos[it] + s.dir[it] * 50f }
@@ -2625,16 +2617,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (w > 0.3f) {
             GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
             GLES20.glLineWidth(1f)
-            drawLines(floatArrayOf(fP[0], fP[1], fP[2], p3[0], p3[1], p3[2]), 1f, 0.9f, 0.6f, 0.35f * (w - 0.3f) / 0.7f)
+            drawLines(floatArrayOf(fP[0], fP[1], fP[2], p3[0], p3[1], p3[2]), 1f, 0.95f, 0.88f, 0.35f * (w - 0.3f) / 0.7f)
         }
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        // tikra spalva: F7 Ib supermilžinė (B−V ≈ 0,60) – balta su vos gelsvu atspalviu
         val halo = dc * 0.035f * (0.7f + 0.3f * lum)
-        billboard(p, eyeI, halo, halo, starTex, 1f, 0.9f, 0.6f, 0.45f * b)
+        billboard(p, eyeI, halo, halo, starTex, 1f, 0.95f, 0.88f, 0.45f * b)
         val core = dc * 0.009f
-        billboard(p, eyeI, core, core, starTex, 1f, 0.97f, 0.85f, b)
+        billboard(p, eyeI, core, core, starTex, 1f, 0.97f, 0.93f, b)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-        val ring = dc * 0.028f
-        billboard(p, eyeI, ring, ring, polRingTex, 1f, 0.85f, 0.45f, 0.55f)
         GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 
@@ -3956,6 +3947,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Kameros padėtis sideralinėje erdvėje (Saulės ir švytėjimo šešėliuoklėms). */
     private var camPos = floatArrayOf(0f, 0f, 3f)
     private var headingSm = Double.NaN
+    /** Kameros vietos kryptis (už stebėtojo): arti – sutampa su žiūrėjimo kryptimi, toli (žvaigždės, galaktika) – sustingsta. */
+    private var posHeading = Double.NaN
+    private var posPhi = Double.NaN
     private var rollSm = Double.NaN
     /** Vaizdo iš viršaus dalis 0..1 (planšetė paguldyta ekranu į viršų), sušvelninta laike. */
     private var topSm = Double.NaN
@@ -4142,7 +4136,20 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val phi = -Math.PI / 2 * topSm + Math.PI / 2 * botSm
         val look = DoubleArray(3) { cos(phi) * f[it] + sin(phi) * up[it] }
         val camUp = DoubleArray(3) { -sin(phi) * f[it] + cos(phi) * up[it] }
-        val eye = FloatArray(3) { (head[it] - look[it] * dist).toFloat() }
+        // Arti (iki Saulės sistemos) kamera sukasi už stebėtojo kartu su telefonu – stebėtojas lieka ekrano viduryje.
+        // Toli (žvaigždės, galaktika) kameros vieta sustingsta: sukant telefoną galaktika lieka vietoje, sukasi tik žiūrėjimo kryptis.
+        val freeze = sstep(0f, 0.3f, collapse()).toDouble()
+        if (posHeading.isNaN()) { posHeading = headingSm; posPhi = phi }
+        else {
+            var d = headingSm - posHeading
+            while (d > Math.PI) d -= 2 * Math.PI
+            while (d < -Math.PI) d += 2 * Math.PI
+            posHeading += (1.0 - freeze) * d
+            posPhi += (1.0 - freeze) * (phi - posPhi)
+        }
+        val fPos = DoubleArray(3) { sin(posHeading) * east[it] + cos(posHeading) * north[it] }
+        val lookPos = DoubleArray(3) { cos(posPhi) * fPos[it] + sin(posPhi) * up[it] }
+        val eye = FloatArray(3) { (head[it] - lookPos[it] * dist).toFloat() }
         camPos = eye
         val lookV = FloatArray(16)
         Matrix.setLookAtM(lookV, 0, eye[0], eye[1], eye[2],

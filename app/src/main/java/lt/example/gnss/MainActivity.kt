@@ -4394,8 +4394,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var moonVbo: FloatBuffer? = null           // x, y, z, u, v, nx, ny, nz
     private var moonIdx: java.nio.ShortBuffer? = null
     private var moonIdxCount = 0
-    /** Reljefo išryškinimas: tikras ±10 km prie 1737 km spindulio (0,6 %) būtų nematomas. */
-    private val MOON_RELIEF_X = 10.0
+    /**
+     * Reljefas tik šešėliams (normalėms): tikras ±10 km prie 1737 km spindulio (0,6 %) būtų nematomas, todėl šlaitai išryškinami ×6.
+     * Pats rutulys – tikros formos (be išryškinimo), kad kraštas būtų lygus kaip tikro Mėnulio, o ne gumbuotas.
+     */
+    private val MOON_RELIEF_X = 6.0
 
     /**
      * assets/moon_height.bin – 720×360 int16 LE, aukštis metrais nuo 1737,4 km (eilutės nuo šiaurės, stulpeliai nuo −180°).
@@ -4431,6 +4434,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val r = r0 * (1.0 + MOON_RELIEF_X * height(latD, lonD) / 1_737_400.0)
             val i = st * (slices + 1) + sl
             p[i][0] = r * cos(la) * cos(lo); p[i][1] = r * cos(la) * sin(lo); p[i][2] = r * sin(la)
+            // viršūnė – ant lygaus rutulio (išryškintas tik šlaitų polinkis, ne kraštas)
+            data[i * 8] = (r0 * cos(la) * cos(lo)).toFloat(); data[i * 8 + 1] = (r0 * cos(la) * sin(lo)).toFloat(); data[i * 8 + 2] = (r0 * sin(la)).toFloat()
             data[i * 8 + 3] = sl.toFloat() / slices; data[i * 8 + 4] = (stacks - st).toFloat() / stacks
         }
         for (st in 0..stacks) for (sl in 0..slices) {
@@ -4444,7 +4449,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             var nl = kotlin.math.sqrt(nx * nx + ny * ny + nz * nz)
             if (st == 0 || st == stacks || nl < 1e-12) { nx = p[i][0]; ny = p[i][1]; nz = p[i][2]; nl = kotlin.math.sqrt(nx * nx + ny * ny + nz * nz) }
             if (nx * p[i][0] + ny * p[i][1] + nz * p[i][2] < 0) { nx = -nx; ny = -ny; nz = -nz }
-            for (k in 0..2) data[i * 8 + k] = p[i][k].toFloat()
             data[i * 8 + 5] = (nx / nl).toFloat(); data[i * 8 + 6] = (ny / nl).toFloat(); data[i * 8 + 7] = (nz / nl).toFloat()
         }
         val idx = ShortArray(stacks * slices * 6)
@@ -5840,13 +5844,18 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 // opozicijos efektas: kai Saulė už stebėtojo nugaros, regolitas šviečia ryškiau
                 float g = acos(clamp(dot(l, v), -1.0, 1.0));
                 float opp = 1.0 + 0.4 * exp(-g / 0.12);
-                vec3 t = texture2D(uTex, vUV).rgb;
-                vec3 day = t * 1.9 * ls * opp;
-                // Žemės šviesa nakties pusėje (melsva), kai Žemė apšviesta ir matoma iš Mėnulio
+                // LROC žemėlapis labai šviesus ir mažo kontrasto (vid. ~0,75): tikrame Mėnulyje jūros (maria) ~2 kartus tamsesnės už
+                // aukštumas – kontrastas ištempiamas, spalvos beveik pilkos su vos šiltu atspalviu (kaip žiūrint akimis)
+                vec3 t0 = texture2D(uTex, vUV).rgb;
+                float y = dot(t0, vec3(0.299, 0.587, 0.114));
+                float yc = clamp((y - 0.75) * 1.4 + 0.6, 0.04, 1.0);
+                vec3 t = mix(vec3(yc), t0 * (yc / max(y, 0.01)), 0.35) * vec3(1.0, 0.975, 0.93);
+                vec3 day = t * 0.9 * ls * opp;
+                // Žemės šviesa nakties pusėje (pelenų šviesa, melsva), kai Žemė apšviesta ir matoma iš Mėnulio
                 float es = max(dot(s, normalize(uEarth - vW)), 0.0);
-                vec3 night = t * vec3(0.55, 0.65, 0.9) * 0.07 * es;
+                vec3 night = t * vec3(0.55, 0.65, 0.9) * 0.05 * es;
                 vec3 c = day + night;
-                c = vec3(1.0) - exp(-c * 1.25);              // švelnus tonų suspaudimas (HDR)
+                c = c / (vec3(1.0) + 0.25 * c);               // švelnus tonų suspaudimas, kontrastas išlieka
                 gl_FragColor = vec4(c, 1.0);
             }
         """

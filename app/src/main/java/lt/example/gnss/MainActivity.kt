@@ -1532,6 +1532,13 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         if (stableNorth) calPrefs.edit().putFloat("decl0", declDeg).apply()
     }
 
+    /** Planšetė dabar nukreipta į tikrąją šiaurę (nugarėlė; gulint – viršutinis kraštas): ši kryptis tampa 0°. */
+    fun northHere(): Double? {
+        val h = headingDeg() ?: return null
+        val r = calibrateTo(0.0, 0.0, System.currentTimeMillis(), "šiaurė (planšetė nukreipta ranka)", h)
+        return -r.third
+    }
+
     /** Kiek laipsnių būtų pataisyta šiaurė, jei dabar spaustumėte „Įrašyti šiaurę“. */
     fun northPreviewDeg(): Double = Math.toDegrees(renderer.northDeltaRad())
 
@@ -7233,13 +7240,22 @@ class MainActivity : AppCompatActivity() {
         left.addView(btnGps, LinearLayout.LayoutParams(mw, ww))
         left.addView(btnReset, LinearLayout.LayoutParams(mw, ww))
         val btnSaveN = Button(this).apply {
-            text = "Įrašyti šiaurę (3D: pasukite N į tikrąją šiaurę)"
+            text = "Įrašyti šiaurę (planšetė į šiaurę arba 3D pasukite N)"
             setOnClickListener {
                 if (!::skyDome.isInitialized) return@setOnClickListener
                 val d = -skyDome.northPreviewDeg()
-                android.app.AlertDialog.Builder(this@MainActivity).setTitle("Įrašyti šiaurę?")
-                    .setMessage("Šiaurė bus pataisyta %+.1f° (pasukimas aplink jūsų vertikalę, planšetės pakreipimas neįskaitomas).\nLaukiamas tikslumas apie ±3° – tai akimis nustatyta kryptis. Tiksliau: kalibravimas pagal Saulę ar Mėnulį per kamerą (±0,3°).".format(Locale.US, d))
-                    .setPositiveButton("Įrašyti") { _, _ -> skyDome.saveNorth() }.setNegativeButton("Atšaukti", null).show().also { WinUtil.draggable(it) }
+                val h = skyDome.headingDeg()
+                android.app.AlertDialog.Builder(this@MainActivity).setTitle("Įrašyti šiaurę")
+                    .setMessage(("1) Planšetė dabar nukreipta į tikrąją šiaurę (nugarėlė, gulint – viršutinis kraštas): dabartinė kryptis %s taps 0°.\n" +
+                        "2) Arba pirštu pasuktas vaizdas: šiaurė bus pataisyta %+.1f° (aplink jūsų vertikalę).\n\n" +
+                        "Laukiamas tikslumas apie ±3–5° (akimis). Tiksliau – per kamerą pagal Saulę ar Mėnulį (±0,3°).").format(Locale.US,
+                        h?.let { "%.0f°".format(Locale.US, it) } ?: "nežinoma", d))
+                    .setPositiveButton("Planšetė į šiaurę") { _, _ ->
+                        val c = skyDome.northHere()
+                        Toast.makeText(this@MainActivity, if (c == null) "Krypties jutikliai dar neparuošti" else "Šiaurė nustatyta pagal planšetės kryptį (pataisa %+.1f°)".format(Locale.US, c), Toast.LENGTH_LONG).show()
+                    }
+                    .setNeutralButton("Pirštu pasuktas vaizdas") { _, _ -> skyDome.saveNorth() }
+                    .setNegativeButton("Atšaukti", null).show().also { WinUtil.draggable(it) }
             }
         }
         val btnSouth = Button(this).apply {

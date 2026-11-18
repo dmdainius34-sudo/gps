@@ -147,6 +147,8 @@ object Rtk {
         private var f: Filter? = null
         private var lastT = Double.NaN; private var t0 = Double.NaN
         private val lastAdr = HashMap<String, DoubleArray>()          // id -> [ADR, Doppler, t]
+        /** Paskutinio filtro paleidimo iš naujo laikas (nuklydus) – 10 s po jo sveikųjų nebandoma. */
+        private var resetAtT = Double.NaN
         var lastSigH = Double.NaN
             private set
         /** Kabinos kaukė: true – palydovą (azimutas, aukštis °) šioje epochoje nenaudoti. */
@@ -340,7 +342,9 @@ object Rtk {
         val posSig = sqrt(ff.p[0][0] + ff.p[1][1] + ff.p[2][2])
         // filtras nuklydo (kodo inovacijų mediana > 30 m, nors σ maža) – iš naujo
         val codeV = dds.filter { it.key % 2 == 0 }.map { abs(it.v) }.sorted()
-        if (codeV.size >= 4 && posSig < 5.0 && codeV[codeV.size / 2] > 30.0) { f = null; lastAdr.clear(); run.resets++; return null }
+        // Filtras paleidžiamas iš naujo, bet fazės tęstinumas (lastAdr, lockN) išsaugomas – pati fazė nenutrūko; kabinoje tokie
+        // paleidimai (~50 per 16 min.) anksčiau nukirsdavo visų palydovų fazę vienu metu. Sveikųjų nebandoma 10 s po paleidimo.
+        if (codeV.size >= 4 && posSig < 5.0 && codeV[codeV.size / 2] > 30.0) { f = null; resetAtT = t; run.resets++; return null }
         val keep = dds.filter { d ->
             val isCode = d.key % 2 == 0
             if (isCode && posSig < 5.0 && abs(d.v) > maxOf(15.0, 4 * d.sI)) { run.codeRej++; false }
@@ -379,7 +383,7 @@ object Rtk {
         // ---- sveikųjų dviprasmybių sprendimas (LAMBDA, dvigubi skirtumai, dalinis, ratio testas) ----
         var xOut = doubleArrayOf(ff.x[0], ff.x[1], ff.x[2]); var pOut: Array<DoubleArray>? = null
         lastFix = false; lastRatio = 0.0; lastNFix = 0
-        if (ambRes) {
+        if (ambRes && (resetAtT.isNaN() || t - resetAtT > 10.0)) {
             val pairs = ArrayList<IntArray>()                         // [ki, kr]
             for (sy in listOf('G', 'E')) {
                 val cand = geo.filter { it.o.sys == sy && it.o.arOk && (lockN[it.o.id] ?: 0) >= 5 && it.el >= Math.toRadians(15.0) && it.o.id in ff.idx && masks[it.o.id] != true }

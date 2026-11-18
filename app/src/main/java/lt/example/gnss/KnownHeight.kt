@@ -194,8 +194,11 @@ object KnownHeight {
     /** Prietaiso aukštis virš jūros, m. */
     fun deviceMsl(): Double? = msl ?: agl?.let { a -> groundMsl()?.let { it + a } }
 
-    /** σ: įvestas aukštis virš jūros – 0,3 m; DEM (Copernicus GLO-90, ~1–2 m) + aukštis virš žemės – 2 m. */
-    fun sigma() = if (msl != null) 0.3 else groundNear()?.let { sqrt(mSigma * mSigma + 0.3 * 0.3) } ?: 2.0
+    /**
+     * σ: įvestas aukštis virš jūros – 2 m (dažnai jis pats išmatuotas ±3–5 m; 0,3 m buvo per griežta ir kabinoje „išmušdavo“ RTK filtrą);
+     * išmatuota žemė + aukštis virš žemės – žemės σ; DEM (Copernicus GLO-90) + aukštis virš žemės – 2 m.
+     */
+    fun sigma() = if (msl != null) 2.0 else groundNear()?.let { sqrt(mSigma * mSigma + 0.3 * 0.3) } ?: 2.0
 
     /** Elipsoidinis aukštis h0 vietoje (lat, lon), m. */
     fun h0(lat: Double, lon: Double): Double? {

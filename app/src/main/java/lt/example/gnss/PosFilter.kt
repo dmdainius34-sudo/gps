@@ -14,6 +14,9 @@ object PosFilter {
     private var lat0 = Double.NaN; private var lon0 = Double.NaN
     private val win = ArrayDeque<P>()
     private var sn = Double.NaN; private var se = 0.0; private var sh = 0.0; private var lastMs = 0L
+    private var farN = 0
+    /** Judant: kiek naujas sprendinys pastumia išlygintą vietą (likusi dalis – pagal Doplerio greitį). */
+    @Volatile var moveGain = 0.5
     private const val M = 111_320.0
 
     @Synchronized fun reset() { win.clear(); sn = Double.NaN; lat0 = Double.NaN }
@@ -29,8 +32,23 @@ object PosFilter {
         if (moving) {
             win.clear()
             if (vel != null && !sn.isNaN()) { sn += vel[0] * dt; se += vel[1] * dt }
-            if (sn.isNaN() || sqrt((p.n - sn).let { it * it } + (p.e - se).let { it * it }) > 50.0 * dt + 3 * real) { sn = p.n; se = p.e; sh = p.h }
-            else { sn += 0.5 * (p.n - sn); se += 0.5 * (p.e - se); sh += 0.5 * (p.h - sh) }
+            val dist = if (sn.isNaN()) 0.0 else sqrt((p.n - sn).let { it * it } + (p.e - se).let { it * it })
+            if (sn.isNaN()) { sn = p.n; se = p.e; sh = p.h; farN = 0 }
+            else if (dist > 50.0 * dt + 3 * real) {
+                // neįmanomas šuolis: pavienis – atmetamas (vieta lieka, kur buvo); tik 3 iš eilės – tikras persikėlimas
+                farN++
+                if (farN >= 3) { sn = p.n; se = p.e; sh = p.h; farN = 0 }
+            } else {
+                farN = 0
+                // didelis nuokrypis sveriamas mažiau (Huberio svoris): atspindžio „šuolis“ pastumia tik dalį
+                val lim = 5.0 + 3 * real
+                // lėtai (kranas sukasi, einama; < 3 m/s) – stipresnis išlyginimas: kabinos atspindžių triukšmas didesnis už tikrą judesį;
+                // greitai (automobilis) – 0,5, kad nevėluotų (GSDC: kabinoje šuolių > 5 m 165 → 0, automobilyje p95 nepablogėja)
+                val spd = vel?.let { sqrt(it[0] * it[0] + it[1] * it[1]) }
+                val g0 = if (spd != null && spd < 3.0) minOf(moveGain, 0.2) else moveGain
+                val g = if (dist <= lim) g0 else g0 * lim / dist
+                sn += g * (p.n - sn); se += g * (p.e - se); sh += 0.5 * (p.h - sh)
+            }
             out = doubleArrayOf(sn, se, sh, real)
         } else {
             win.addLast(p); while (win.size > 600) win.removeFirst()

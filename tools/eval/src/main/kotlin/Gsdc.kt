@@ -54,6 +54,7 @@ val agg = LinkedHashMap<String, MutableList<DoubleArray>>()
 fun run(rows: List<Row>, gt: Map<Long, Gt>, o: Opt): String {
     val sm = Sp3V5.Smoother(doppler = true, useAdr = o.adr, dopWindow = when (o.smooth) { 2 -> 100; 4 -> 20; 5 -> 50; 6 -> 100; else -> 20 })
     PosFilter.reset(); CnoMask.min = o.thr; CnoMask.auto = o.autoThr
+    PosFilter.moveGain = when { o.name.startsWith("D2") -> 0.2; o.name.startsWith("D1") -> 0.1; else -> 0.5 }
     var inSet = emptySet<String>()
     val dualTmp = HashMap<Int, Pair<Double, Double>>()
     var prevTd: Map<Int, DoubleArray>? = null; var prevTdMs = 0L; var outX: DoubleArray? = null; var tdHit = 0; var tdMiss = 0
@@ -181,11 +182,9 @@ fun wlsBaseline(rows: List<Row>, gt: Map<Long, Gt>): String {
 fun main(args: Array<String>) {
     if (args.isNotEmpty() && args[0] == "own") { for (d in args.drop(1)) Own.main(File(d), null); return }
     val opts = listOf(
-        Opt("D  Doppler 20 s + išlyg. (dabar)", 1, false, true, false, 20.0, velPred = true),
-        Opt("F  TDCP poslinkis, K=0.5", 1, false, false, false, 20.0, tdcpK = 0.5),
-        Opt("F  TDCP poslinkis, K=0.2", 1, false, false, false, 20.0, tdcpK = 0.2),
-        Opt("F  TDCP poslinkis, K=0.1", 1, false, false, false, 20.0, tdcpK = 0.1),
-        Opt("F  TDCP poslinkis, K=0.05", 1, false, false, false, 20.0, tdcpK = 0.05),
+        Opt("D  K=0.5 (dabar)", 1, false, true, false, 20.0, velPred = true),
+        Opt("D2 K=0.2", 1, false, true, false, 20.0, velPred = true),
+        Opt("D1 K=0.1", 1, false, true, false, 20.0, velPred = true),
     )
     for (dir in args) {
         val rows = readGsdc(File(dir, "device_gnss.csv")); val gt = readGt(File(dir, "ground_truth.csv"))

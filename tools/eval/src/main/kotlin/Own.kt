@@ -10,9 +10,10 @@ object Own {
     class Res(val name: String, val p50: Double, val p95: Double, val jumps: Int, val n: Int, val none: Int)
 
     fun run(raw: File, sp3: Sp3Reader, truth: Pair<Double, Double>?, thr: Double, smooth: Boolean, filter: Boolean, name: String,
-            hMsl: Double? = null, geoidN: Double = 24.89): Pair<Res, List<DoubleArray>> {
+            hMsl: Double? = null, geoidN: Double = 24.89, forceMove: Boolean = false): Pair<Res, List<DoubleArray>> {
         val sm = Sp3V5.Smoother(doppler = true, useAdr = false, dopWindow = 20)
         PosFilter.reset(); CnoMask.min = thr; CnoMask.auto = false
+        PosFilter.moveGain = when { name.startsWith("M2") -> 0.2; name.startsWith("M1") -> 0.1; else -> 0.5 }
         val sols = ArrayList<DoubleArray>(); var none = 0
         var vel: DopplerVel.Vel? = null
         Sp3V5.readRaw(raw.bufferedReader(), glo = false) { ep ->
@@ -30,7 +31,7 @@ object Own {
             if (filter) {
                 val v = vel
                 val vNE = v?.let { doubleArrayOf(it.speedH * Math.cos(Math.toRadians(it.courseDeg)), it.speedH * Math.sin(Math.toRadians(it.courseDeg))) }
-                val mv = v != null && v.speedH > 1.5 && v.sigma < 1.0
+                val mv = forceMove || (v != null && v.speedH > 1.5 && v.sigma < 1.0)
                 val q = PosFilter.step(ep.timeMs, lat, lon, f.sol.h, f.sol.hacc, mv, vNE); lat = q[0]; lon = q[1]
             }
             sols.add(doubleArrayOf(lat, lon, f.sol.h, ep.timeMs.toDouble(), f.sol.sats.toDouble()))
@@ -59,11 +60,14 @@ object Own {
             Quad(20.0, true, true, "+ išlyginimas (kaip programoje)"),
             Quad(25.0, true, true, "slenkstis 25 + glod. + išlyg."),
             Quad(30.0, true, true, "slenkstis 30 + glod. + išlyg."),
+            Quad(20.0, true, true, "M  judant, K=0.5"),
+            Quad(20.0, true, true, "M2 judant, K=0.2"),
+            Quad(20.0, true, true, "M1 judant, K=0.1"),
             Quad(20.0, true, true, "H222 kaip programoje + aukštis 222"),
             Quad(20.0, true, true, "H172 kaip programoje + aukštis 172"),
         )) {
             val hm = when { nm.startsWith("H222") -> 222.0; nm.startsWith("H172") -> 172.0; else -> null }
-            val (r, sols) = run(raw, sp3, truth, thr, sm, fl, nm, hm)
+            val (r, sols) = run(raw, sp3, truth, thr, sm, fl, nm, hm, forceMove = nm.startsWith("M"))
             if (hm != null) { val base = run(raw, sp3, truth, 20.0, true, true, "x").second
                 val m1 = sols.map { it[0] }.sorted()[sols.size / 2] to sols.map { it[1] }.sorted()[sols.size / 2]
                 val m0 = base.map { it[0] }.sorted()[base.size / 2] to base.map { it[1] }.sorted()[base.size / 2]

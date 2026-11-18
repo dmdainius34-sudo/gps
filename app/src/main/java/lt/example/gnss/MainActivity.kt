@@ -2557,8 +2557,14 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var galProg = 0
     private var galBuf: FloatBuffer? = null
     private var galN = 0
-    /** Scenos vienetų kpc: Saulė–centras ≈ 4 100 vnt., artimiausi galaktikos taškai ~10 vnt. – Saulės sistema (Saulė 3,6 vnt.) tampa viena iš žvaigždžių. */
+    /** Saulės aplinkos žvaigždžių (ir Šiaurinės, artimų žvaigždžių) mastelis, vnt./kpc: atitolinus jos sutraukiamos į tašką – Saulės vietą. */
     private val GAL_S = 500f
+    /**
+     * Paukščių Tako modelio mastelis (vnt./kpc) – daug didesnis už žvaigždžių: atitolinus iki galo kamera tik ~0,5 kpc už Saulės,
+     * t. y. galaktikos viduje. Kryptys kaip iš Saulės (paklaida ≤ ~3,5°): centras (Šaulys) – tik atsisukus į pietus
+     * (Lietuvoje jis ne aukščiau ~6° virš horizonto, dažniausiai po juo), už jo – tolimasis kraštas; į šiaurę – blankus išorinis diskas.
+     */
+    private val GAL_G = 60_000f
 
     /** Taškai pusiaujo (sideralinėje) erdvėje, Saulė – koordinačių pradžioje; stebėtojo poslinkis (fP) pridedamas šešėliuoklyje. */
     private fun buildGalaxy() {
@@ -2568,7 +2574,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val dst = FloatArray(src.size)
         for (i in 0 until galN) {
             val o = i * 7
-            val x = (src[o] + GalaxyModel.R_SUN).toFloat() * GAL_S; val y = src[o + 1] * GAL_S; val z = src[o + 2] * GAL_S
+            val x = (src[o] + GalaxyModel.R_SUN).toFloat() * GAL_G; val y = src[o + 1] * GAL_G; val z = src[o + 2] * GAL_G
             for (k in 0..2) dst[o + k] = (g[k] * x + g[3 + k] * y + g[6 + k] * z).toFloat()
             for (k in 3..6) dst[o + k] = src[o + k]
         }
@@ -2687,7 +2693,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         // atitolinus: tikra vieta (765 kpc), toliau nei piešimo riba – arčiau ta pačia kryptimi, tas pats kampinis dydis
         if (far > 0.01f) {
-            val kpc = GAL_S.toDouble()
+            val kpc = GAL_G.toDouble()
             val trueP = DoubleArray(3) { fP[it] + m31Dir[it] * 765.0 * kpc }
             val d = DoubleArray(3) { trueP[it] - camPos[it] }
             val dl = kotlin.math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
@@ -2941,7 +2947,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(galProg, "uMVP"), 1, false, mvpI, 0)
         GLES20.glUniform3f(GLES20.glGetUniformLocation(galProg, "uO"), fP[0].toFloat(), fP[1].toFloat(), fP[2].toFloat())
         val pxPerUnit = lastH / (2f * kotlin.math.tan(Math.toRadians(20.0)).toFloat())
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uK"), pxPerUnit * 0.02f * GAL_S)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uK"), pxPerUnit * 0.02f * GAL_G)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uMax"), 4f * density)
         // toliau – ryškiau (galaktika mažėja, šviesa susikaupia), iki ×3
         val gain = 1f + 2f * sstep(4000f, GALAXY_ZOOM, zoom)
@@ -4031,7 +4037,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Mastelio režimo stadijos: Žemė (iki ~3), Saulės sistema (iki SOLAR_ZOOM), galaktika (iki GALAXY_ZOOM). */
     private val SOLAR_ZOOM = 18f
     private val GALAXY_ZOOM = 30_000f
-    private val GALAXY_DEPTH = 20_000f
+    /** Piešimo gylis galaktikos stadijoje: visas Paukščių Takas iš vidaus (iki ~30 kpc nuo kameros). */
+    private val GALAXY_DEPTH = 30f * GAL_G
     private fun maxZoomOut(): Float = GALAXY_ZOOM
 
     /** Atstumas Žemė–Saulė (km) pagal Saulės vidutinę anomaliją. */

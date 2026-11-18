@@ -336,3 +336,31 @@ class TurnHintTest {
         assertEquals(false, TurnHint.quality(t0 + 17_000L, 35f))
     }
 }
+
+/** Visos epochos glodinimas: bendras laikrodžio greitis (kode yra, Doppleryje – ne) nesikaupia skirtingai kiekvienam palydovui. */
+class DopplerEpochSmoothTest {
+    @Test fun commonClockRateDoesNotLeak() {
+        val sm = Sp3V5.Smoother(doppler = true, useAdr = false, dopWindow = 20)
+        val rnd = java.util.Random(3)
+        val v = doubleArrayOf(-400.0, -150.0, 60.0, 220.0, 380.0, -30.0)
+        var errSq = 0.0; var n = 0
+        for (k in 0 until 120) {
+            val t = 500.0 + k
+            val clk = 1.2 * k                                     // imtuvo laikrodžio dreifas 1,2 m/s – tik kode
+            // palydovai pradedami skirtingu metu (kaip tikrovėje – skirtingi glodinimo ilgiai)
+            val ms = v.indices.filter { k >= it * 15 }.map { i ->
+                Sp3V5.M('G', i + 1, 21_000_000.0 + i * 1e5 + v[i] * k + clk + rnd.nextGaussian() * 5.0, 35.0,
+                    Sp3V5.STATE_TOW_DECODED, 0, null, 0, v[i] + rnd.nextGaussian() * 0.05)
+            }
+            val out = sm.applyEpoch(ms, t)
+            if (k >= 100) {
+                // klaida be bendros dalies (bendra – laikrodis, ją sugeria sprendinys)
+                val e = ms.map { m -> out.getValue(m.key) - (21_000_000.0 + (m.svid - 1) * 1e5 + v[m.svid - 1] * k + clk) }
+                val mean = e.average()
+                e.forEach { errSq += (it - mean) * (it - mean); n++ }
+            }
+        }
+        val rms = kotlin.math.sqrt(errSq / n)
+        assert(rms < 2.5) { "palydovų tarpusavio klaida %.2f m".format(rms) }
+    }
+}

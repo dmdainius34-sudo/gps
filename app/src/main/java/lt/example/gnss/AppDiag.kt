@@ -74,7 +74,7 @@ object AppDiag {
             if (oj.isNotEmpty()) appendLine("Išlyginta padėtis (kitoms programoms): šuoliai > 2 m – %d, > 5 m – %d, didžiausias %.1f m".format(Locale.US,
                 oj.count { it > 2.0 }, oj.count { it > 5.0 }, oj.maxOrNull() ?: 0.0))
             val sn = ok.map { it.smN }.filter { !it.isNaN() }
-            if (sn.isNotEmpty()) appendLine("Glodinimas pagal Doplerį: vidutinis glodinimo ilgis %.0f s (daugiausia 100), palydovų glodinimų pradėta iš naujo %d".format(Locale.US,
+            if (sn.isNotEmpty()) appendLine("Glodinimas pagal Doplerį: vidutinis glodinimo ilgis %.0f s (daugiausia 20), palydovų glodinimų pradėta iš naujo %d".format(Locale.US,
                 sn.average(), restartsN))
             val hc = ok.filter { it.hCon }
             appendLine("Su žinomu aukščiu: ${hc.size} epochų (${pct(hc.size, ok.size)}), iš jų iš 3–4 palydovų ${hc.count { it.used <= 4 }}" +

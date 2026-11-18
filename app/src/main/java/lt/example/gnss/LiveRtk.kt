@@ -184,11 +184,11 @@ object LiveRtk {
     /** „Čia žemė“ matavimas ką tik baigtas (UI pasiima ir nuima). */
     @Volatile var groundDone = false
     /**
-     * Pseudoatstumų glodinimas pagal Doplerį (Hatch, langas 100 s): atstumo pokytis tarp epochų imamas iš Doplerio (tikslus,
+     * Pseudoatstumų glodinimas pagal Doplerį (Hatch, langas 20 s – telefonų Doppler ilgiau kaupia paklaidą): atstumo pokytis tarp epochų imamas iš Doplerio (tikslus,
      * mažai triukšmo), o pats atstumas – vis lėčiau vidurkinamas kodas. Fazė (ADR) nenaudojama – planšetėje ji kabinoje trūkinėja.
      * Šuolis (kodas − integruotas Doppler nesutampa) ar > 1,5 s pertrauka – palydovo glodinimas pradedamas iš naujo.
      */
-    private val sppSmooth = Sp3V5.Smoother(doppler = true, useAdr = false)
+    private val sppSmooth = Sp3V5.Smoother(doppler = true, useAdr = false, dopWindow = 20)
     /** Paskutinė programos padėtis skaičiuota su žinomu aukščiu. */
     @Volatile var sppHeightCon = false
         private set
@@ -251,7 +251,7 @@ object LiveRtk {
         // slenkstis su 3 dB histereze kiekvienam palydovui: įeina nuo slenksčio, išeina tik nukritęs 3 dB žemiau –
         // ties slenksčiu mirgantys palydovai nekaitalioja rinkinio (kiekvienas pasikeitimas pastumia padėtį)
         val sm = HashMap<Int, Double>()
-        for (m in ep.meas) if (m.sys != 'R' && (m.state and Sp3V5.STATE_TOW_DECODED) != 0) sm[m.key] = sppSmooth.apply(m, ep.t)
+        sm.putAll(sppSmooth.applyEpoch(ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 }, ep.t))
         fun pr(m: Sp3V5.M) = sm[m.key] ?: m.pr
         val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 &&
                 (it.cn0 >= CnoMask.min || (it.cn0 >= CnoMask.min - 3.0 && (it.sys.toString() + it.svid) in sppIn)) }

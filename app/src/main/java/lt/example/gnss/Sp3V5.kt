@@ -140,8 +140,36 @@ object Sp3V5 {
     fun accept(m: M) = (if (m.sys == 'R') m.state and STATE_GLO_TOD_DECODED != 0 else m.state and STATE_TOW_DECODED != 0) && m.mp != 1 && m.cn0 >= 20.0
 
     /** Glodinimas: ADR (fazė), kitaip integruotas Doppler; tas pats Hatch langas ir paleidimo iš naujo taisyklės. */
-    class Smoother(val doppler: Boolean, val useAdr: Boolean = true) {
-        val adrHatch = Sp3V4.Hatch(); val dopHatch = Sp3V4.Hatch()
+    class Smoother(val doppler: Boolean, val useAdr: Boolean = true, dopWindow: Int = 100) {
+        val adrHatch = Sp3V4.Hatch(); val dopHatch = Sp3V4.Hatch(window = dopWindow)
+        private val last = HashMap<Int, DoubleArray>()        // [kodas, Doppler, t] – ankstesnė epocha
+
+        /**
+         * Visa epocha iš karto (be fazės): prie integruoto Doplerio pridedamas bendras visiems palydovams kodo ir Doplerio
+         * greičių skirtumas (imtuvo laikrodžio dreifas ir šuoliai – mediana). Telefonuose jis ~1 m/s ir, kaupiantis skirtingai
+         * kiekvienam palydovui (jų glodinimas prasideda skirtingu metu), ilgas glodinimas padėtį ne gerino, o blogino.
+         */
+        fun applyEpoch(ms: List<M>, t: Double): Map<Int, Double> {
+            val rates = ArrayList<Double>()
+            for (m in ms) {
+                val p = last[m.key] ?: continue; val prr = m.prr ?: continue
+                val dt = t - p[2]; if (dt in 0.5..1.5) rates.add((m.pr - p[0]) / dt - 0.5 * (prr + p[1]))
+            }
+            val common = if (rates.size >= 4) rates.sorted()[rates.size / 2] else 0.0
+            val out = HashMap<Int, Double>()
+            for (m in ms) {
+                val prr = m.prr
+                if (doppler && prr != null) {
+                    val a = acc[m.key]
+                    val v = if (a != null && t - a[2] in 0.0..1.5) a[0] + (0.5 * (prr + a[1]) + common) * (t - a[2]) else 0.0
+                    acc[m.key] = doubleArrayOf(v, prr, t)
+                    nDop++
+                    out[m.key] = dopHatch.update(m.key, m.pr, v, Sp3V4.ADR_VALID, t)
+                } else { nNone++; out[m.key] = m.pr }
+                last[m.key] = doubleArrayOf(m.pr, prr ?: 0.0, t)
+            }
+            return out
+        }
         private val acc = HashMap<Int, DoubleArray>()        // [integralas, paskutinis prr, paskutinis t]
         var nAdr = 0; var nDop = 0; var nNone = 0
 

@@ -154,6 +154,9 @@ object Rtk {
         /** Paskutinės epochos palydovai: id -> [azimutas °, aukštis °, C/N0, kodo DD liekana m (NaN), fazės šuolis 0/1, kaukė 0/1]. */
         @Volatile var lastObs: Map<String, DoubleArray> = emptyMap()
             private set
+        /** Palydovai, kurių fazė naudota paskutinėje epochoje („G05“, „E11“…), įskaitant atskaitos palydovus. */
+        @Volatile var lastPhaseIds: Set<String> = emptySet()
+            private set
         var dopplerSlips = 0
             private set
         var masked = 0
@@ -278,6 +281,7 @@ object Rtk {
         // key = sistema·2 + tipas (0 kodas, 1 fazė) – kovariacijai (bendras atskaitos palydovas)
         class Dd(val h: DoubleArray, val v: Double, val sRef: Double, val sI: Double, val key: Int, val id: String)
         val dds = ArrayList<Dd>()
+        val phaseRef = HashMap<Int, String>()
         val n = ff.x.size
         var masks = geo.associate { it.o.id to (mask?.invoke(it.az, Math.toDegrees(it.el)) == true) }
         // kaukė netaikoma, jei ji išmestų daugiau nei pusę palydovų arba liktų mažiau nei 6
@@ -293,6 +297,7 @@ object Rtk {
                 val cand = if (type == 0) gs else gs.filter { !it.o.yL.isNaN() && it.o.id in ff.idx }
                 if (cand.size < 2) continue
                 val ref = cand.maxByOrNull { it.el }!!
+                if (type == 1) phaseRef[si] = ref.o.id
                 // svoris pagal aukštį ir signalo stiprumą: silpnas signalas – didesnė σ
                 fun sd(g: G): Double {
                     val k = Math.pow(10.0, (40.0 - g.o.s.cn0) / 20.0).coerceIn(0.7, 5.0)
@@ -333,6 +338,8 @@ object Rtk {
             else true
         }
         if (keep.isEmpty()) return null
+        val ph = keep.filter { it.key % 2 == 1 }
+        lastPhaseIds = ph.map { it.id }.toSet() + ph.map { it.key / 2 }.toSet().mapNotNull { phaseRef[it] }
         // krano apribojimas: atstumas iki bokšto ašies ir aukštis (nepriklausomi pseudo-matavimai)
         val cr0 = if (useCrane) Crane.pseudo(doubleArrayOf(ff.x[0], ff.x[1], ff.x[2])) else emptyList()
         // žinomas prietaiso aukštis (jei krano aukštis neįvestas – kitaip dvigubintųsi)

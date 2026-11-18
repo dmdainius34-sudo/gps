@@ -2403,6 +2403,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawSunShot()                       // po Saulės – kitaip jos diskas uždengia kryželį
         drawPenRay()
         val pin = pinWorld()
+        val phaseIdsNow = LiveRtk.phaseIds()
         for (si in satsI) {
             val sat = si.sat
             val p = si.pos
@@ -2426,6 +2427,17 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val tumble = if (SatHealth.bad(sat.const, sat.svid)) t * 90f + sat.svid * 37f else 0f
             drawSatModel(p, col, glow, usedK, sat.const, tumble)
             if (tumble != 0f) drawSparks(p, t, sat.svid)
+            // RTK fazės palydovas – ryškus žydras švytėjimas (lėtai pulsuoja)
+            if (phaseIdsNow.isNotEmpty() && starTex != 0) {
+                val sc = when (sat.const) { "GPS" -> 'G'; "GAL" -> 'E'; "GLO" -> 'R'; "BDS" -> 'C'; else -> '?' }
+                if ("%c%02d".format(java.util.Locale.US, sc, sat.svid) in phaseIdsNow) {
+                    val pulse = 0.75f + 0.25f * sin(t * 2.2f + sat.svid)
+                    GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+                    billboard(p, eyeI, 0.075f * pulse, 0.075f * pulse, starTex, 0.45f, 0.95f, 1f, 0.55f)
+                    billboard(p, eyeI, 0.03f, 0.03f, starTex, 0.85f, 1f, 1f, 0.8f * pulse)
+                    GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+                }
+            }
             if (muted) {
                 if (mutedTex == 0) mutedTex = makeMutedTexture()
                 GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)

@@ -189,6 +189,8 @@ object LiveRtk {
      * Šuolis (kodas − integruotas Doppler nesutampa) ar > 1,5 s pertrauka – palydovo glodinimas pradedamas iš naujo.
      */
     private val sppSmooth = Sp3V5.Smoother(doppler = true, useAdr = false, dopWindow = 20)
+    /** Palydovai su faze RTK skaičiavime (šviežia – iki 5 s); tušti – RTK neveikia. */
+    fun phaseIds(): Set<String> = if (enabled && System.currentTimeMillis() - lastMs < 5_000L) engine.lastPhaseIds else emptySet()
     /** Paskutinė programos padėtis skaičiuota su žinomu aukščiu. */
     @Volatile var sppHeightCon = false
         private set

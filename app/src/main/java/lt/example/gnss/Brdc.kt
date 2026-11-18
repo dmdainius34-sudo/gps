@@ -25,7 +25,7 @@ object Brdc {
     class Kep(val sys: Char, val prn: Int, val toeAbs: Double, val tocAbs: Double, val sqrtA: Double, val e: Double, val i0: Double,
               val om0: Double, val om: Double, val m0: Double, val dn: Double, val omd: Double, val idot: Double,
               val cuc: Double, val cus: Double, val crc: Double, val crs: Double, val cic: Double, val cis: Double,
-              val af0: Double, val af1: Double, val af2: Double, val tgd: Double)
+              val af0: Double, val af1: Double, val af2: Double, val tgd: Double, val health: Int = 0)
 
     /** Atskiras rinkinys (testams ir failui) – visi įrašai pagal palydovą. */
     class Set {
@@ -116,8 +116,11 @@ object Brdc {
                         val weekGps = when (sys) { 'C' -> week + 1356; else -> week }
                         val toeAbs = weekGps * 604_800.0 + toe + (if (sys == 'C') 14.0 else 0.0)
                         val tgd = when (sys) { 'E' -> b[5][3]; else -> b[5][2] }
+                        // „SV health“: Galileo – tik E1-B bitai (DVS, HS), kitiems – visas laukas
+                        val hRaw = b[5][1].toInt()
+                        val health = if (sys == 'E') hRaw and 0x7 else hRaw
                         set.kep.getOrPut(id) { ArrayList() }.add(Kep(sys, prn, toeAbs, toc, b[1][3], b[1][1], b[3][0], b[2][2], b[3][2],
-                            b[0][3], b[0][2], b[3][3], b[4][0], b[1][0], b[1][2], b[3][1], b[0][1], b[2][1], b[2][3], c0[0], c0[1], c0[2], tgd))
+                            b[0][3], b[0][2], b[3][3], b[4][0], b[1][0], b[1][2], b[3][1], b[0][1], b[2][1], b[2][3], c0[0], c0[1], c0[2], tgd, health))
                     }
                     'R' -> {
                         val km = 1000.0
@@ -128,6 +131,8 @@ object Brdc {
                 }
             } catch (_: Exception) {}
         }
+        // naujausio kiekvieno palydovo įrašo sveikata
+        for ((id, l) in set.kep) l.maxByOrNull { it.toeAbs }?.let { k -> SatHealth.fromFile(id[0], id.substring(1).toInt(), k.health, "BRDC") }
         return set
     }
 

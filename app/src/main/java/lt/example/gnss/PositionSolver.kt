@@ -50,6 +50,8 @@ object PositionSolver {
         val toe: Double, val sqrtA: Double, val e: Double, val m0: Double, val deltaN: Double,
         val omega0: Double, val i0: Double, val omega: Double, val omegaDot: Double, val idot: Double,
         val cuc: Double, val cus: Double, val crc: Double, val crs: Double, val cic: Double, val cis: Double,
+        /** Sveikatos žyma (GPS: 6 bitai; ≠ 0 – nesveikas). */
+        val health: Int = 0,
     ) {
         /** Absoliutus GPS laikas (s nuo GPS epochos) efemeridės atskaitos momentu. */
         val toeAbs: Double get() = week * WEEK_S + toe
@@ -369,8 +371,9 @@ object PositionSolver {
         if (sqrtA < 4000.0 || e >= 0.1) return null                  // akivaizdžiai neteisingi duomenys
         // 10 bitų savaitė -> pilna, artimiausia atskaitos savaitei
         val week = if (refWeek > 0) refWeek + (((wn10 - refWeek) % 1024 + 1536) % 1024 - 512) else wn10
+        val health = ub(w1, 3, 17, 6).toInt()
         return Ephemeris(svid, week, toc, af0, af1, af2, tgd, iode2, toe, sqrtA, e, m0, dn,
-            om0, i0, om, omDot, idot, cuc, cus, crc, crs, cic, cis)
+            om0, i0, om, omDot, idot, cuc, cus, crc, crs, cic, cis, health)
     }
 
     /** Laiko skirtumas savaitės viduje (±302400 s). */

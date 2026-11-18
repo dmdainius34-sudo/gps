@@ -118,7 +118,7 @@ object BroadcastEph {
         val slot = slots.getOrPut(svid) { arrayOfNulls(3) }
         slot[s.id - 1] = s
         val s1 = slot[0] ?: return; val s2 = slot[1] ?: return; val s3 = slot[2] ?: return
-        PositionSolver.decodeEphemeris(svid, s1, s2, s3, gpsWeek)?.let { ephs[svid] = it }
+        PositionSolver.decodeEphemeris(svid, s1, s2, s3, gpsWeek)?.let { ephs[svid] = it; SatHealth.fromNav('G', svid, it.health, "GPS LNAV") }
     }
 
     @Synchronized fun get(svid: Int): PositionSolver.Ephemeris? = ephs[svid]
@@ -131,6 +131,8 @@ object BroadcastEph {
     /** Galileo I/NAV puslapis; tRx – gavimo laikas (GPS s). */
     @Synchronized fun addGal(svid: Int, data: ByteArray, tRx: Double, tMs: Long = System.currentTimeMillis()) {
         gal.add(svid, data, tRx)
+        // 5 žodis: E1-B sveikata (HS, 2 b.) ir duomenų galiojimas (DVS, 1 b.)
+        GalileoNav.word(data)?.let { w -> if (GalileoNav.type(w) == 5) SatHealth.fromNav('E', svid, GalileoNav.e1bHealth(w), "Galileo I/NAV") }
         GalileoNav.word(data)?.let { w -> val t = GalileoNav.type(w); if (t in 1..5) keep('E', svid, t, tMs, data) }
     }
 

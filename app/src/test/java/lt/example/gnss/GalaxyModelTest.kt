@@ -364,3 +364,27 @@ class DopplerEpochSmoothTest {
         assert(rms < 2.5) { "palydovų tarpusavio klaida %.2f m".format(rms) }
     }
 }
+
+/** Sveikatos žyma: Galileo 5 žodžio bitai, žinučių pirmenybė prieš interneto failą. */
+class SatHealthTest {
+    private fun setBit(d: ByteArray, p: Int) { d[p ushr 3] = (d[p ushr 3].toInt() or (1 shl (7 - (p and 7)))).toByte() }
+
+    @Test fun galileoWord5Bits() {
+        val w = ByteArray(16)
+        assertEquals(0, GalileoNav.e1bHealth(w))
+        setBit(w, 69); setBit(w, 70)                       // E1-B HS = 3 (bandomas)
+        assertEquals(6, GalileoNav.e1bHealth(w))
+        setBit(w, 72)                                      // E1-B DVS = 1
+        assertEquals(7, GalileoNav.e1bHealth(w))
+    }
+
+    @Test fun navBeatsFile() {
+        SatHealth.fromNav('G', 30, 0, "GPS LNAV")
+        SatHealth.fromFile('G', 30, 63, "BRDC")             // senas failas nesugadina šviežios žinutės
+        assertEquals(false, SatHealth.bad('G', 30))
+        SatHealth.fromNav('G', 30, 63, "GPS LNAV")
+        assertEquals(true, SatHealth.bad("GPS", 30))
+        SatHealth.fromNav('G', 30, 0, "GPS LNAV")
+        assertEquals(false, SatHealth.bad("GPS", 30))
+    }
+}

@@ -81,6 +81,8 @@ object GalileoNav {
     }
 
     fun bgdE1E5b(w5: ByteArray): Double = Bits(w5).s(57, 10) * Math.scalb(1.0, -32)
+    /** 5 žodis: E1-B HS (bitai 69–70) ir E1-B DVS (bitas 72) -> kodas (HS·2 + DVS); 0 – sveikas. */
+    fun e1bHealth(w5: ByteArray): Int { val b = Bits(w5); return (b.u(69, 2).toInt() shl 1) or b.u(72, 1).toInt() }
 
     /** Savaitė, kurioje toe artimiausias laikui t (GPS s). */
     fun nearestWeek(toe: Double, t: Double): Int {

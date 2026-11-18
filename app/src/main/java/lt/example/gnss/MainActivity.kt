@@ -2422,7 +2422,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 if (nb != null && sat.cn0 > 10f) drawNavBits(p, pin, sat.const + sat.svid, nb, col, sat.cn0)
                 else drawLaser(p, pin, sat.cn0, sat.svid, t)
             }
-            drawSatModel(p, col, glow, usedK, sat.const)
+            // nesveikas (sveikatos žyma efemeridėse) – vartosi kūliais
+            val tumble = if (SatHealth.bad(sat.const, sat.svid)) t * 90f + sat.svid * 37f else 0f
+            drawSatModel(p, col, glow, usedK, sat.const, tumble)
             if (muted) {
                 if (mutedTex == 0) mutedTex = makeMutedTexture()
                 GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
@@ -3427,7 +3429,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun satVariant(const: String) = when (const) { "GLO" -> 1; "GAL" -> 2; "BDS" -> 3; else -> 0 }
 
     /** Palydovas p (sideralinė erdvė): korpusas – konsteliacijos spalvos folija, švytėjimas pagal C/N0, baterijos atsuktos į Saulę. */
-    private fun drawSatModel(p: FloatArray, col: FloatArray, glow: Float, usedK: Float, const: String = "GPS") {
+    private fun drawSatModel(p: FloatArray, col: FloatArray, glow: Float, usedK: Float, const: String = "GPS", tumble: Float = 0f) {
         if (satProg == 0 || satPos == null || satVariants.isEmpty()) return
         // Orientacija: Y – nuo Žemės centro, X (baterijos) – statmenai poliui
         val pl = kotlin.math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).coerceAtLeast(1e-6f)
@@ -3441,6 +3443,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         java.util.Arrays.fill(satModel, 0f)
         for (i in 0..2) { satModel[i] = x[i] * k; satModel[4 + i] = y[i] * k; satModel[8 + i] = z[i] * k }
         satModel[12] = p[0]; satModel[13] = p[1]; satModel[14] = p[2]; satModel[15] = 1f
+        // kūlvirsčiai: sukimasis apie pasvirusią kūno ašį ir lėtas svyravimas apie kitą
+        if (tumble != 0f) {
+            Matrix.rotateM(satModel, 0, tumble, 0.62f, 0.35f, 0.70f)
+            Matrix.rotateM(satModel, 0, 25f * kotlin.math.sin(Math.toRadians(tumble * 0.37).toFloat()), 0f, 1f, 0f)
+        }
         val sun = sunDir()
         val sx = sun[0].toFloat(); val sy = sun[1].toFloat(); val sz = sun[2].toFloat()
         // Baterijos sukasi apie X ašį, kad plokštumos normalė žiūrėtų į Saulę
@@ -4103,6 +4110,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val rows = ArrayList<Pair<String, String>>()
         rows.add("Signalo stiprumas" to "%.1f dB-Hz".format(L, s.cn0) + when { s.cn0 >= 40 -> " (stiprus)"; s.cn0 >= 30 -> " (vidutinis)"; else -> " (silpnas)" })
         rows.add("Naudojamas padėčiai" to if (s.used) "taip" else "ne")
+        SatHealth.info(s.const, s.svid)?.let { h ->
+            rows.add("Sveikatos žyma" to if (h.bad) "NESVEIKAS (kodas ${h.code}, ${h.src}) – programa jo nenaudoja" else "sveikas (${h.src})")
+        }
         val st = NavBits.stat(s.const + s.svid)
         rows.add("Lustas žino" to (when {
             !s.eph -> "efemeridės dar nėra (iš palydovo ~30 s, iš interneto – sekundės)"
@@ -6364,7 +6374,7 @@ class DraggablePanel(
         val now = System.currentTimeMillis()
         if (now - autoMs < 900L) return
         autoMs = now
-        val s = list.filter { it.cn0 > 0f && it.const in setOf("GPS", "GAL", "BDS", "QZS") && (it.eph || it.used) }
+        val s = list.filter { it.cn0 > 0f && it.const in setOf("GPS", "GAL", "BDS", "QZS") && (it.eph || it.used) && !SatHealth.bad(it.const, it.svid) }
             .distinctBy { it.const to it.svid }
             .map { CnoMask.S(it.const, it.cn0.toDouble(), it.elev.toDouble(), it.az.toDouble()) }
         if (CnoMask.autoStep(s)) {
@@ -8248,7 +8258,7 @@ class MainActivity : AppCompatActivity() {
                         (AimDiag.lastSummary(this@MainActivity).takeIf { it.isNotEmpty() }?.let { it + "\n" } ?: "") +
                         (SunCal.lastLine(this@MainActivity)?.let { "Paskutinis kalibravimas pagal Saulę (${SunCal.FILE}): ${SunCal.HEADER.trim()}\n$it\n" } ?: "Kalibravimų pagal Saulę žurnale nėra\n") +
                         (if (Uvi.enabled) Uvi.text() + "\n" else "") + SunFrame.text() + "\n" +
-                        NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + CabinMap.text() + "\n" +
+                        NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + SatHealth.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + CabinMap.text() + "\n" +
                         KnownHeight.text() + "\n" + AppDiag.text() +
                         (Readiness.knowledge()?.let { "Lusto žinios: ${it.text}\n" } ?: "") +
                         "Pasiruošimas: " + Readiness.state(LiveRtk.enabled, LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc).text + "\n" +
@@ -9758,7 +9768,7 @@ class MainActivity : AppCompatActivity() {
             (AimDiag.lastSummary(this).takeIf { it.isNotEmpty() }?.let { it + "\n" } ?: "") +
             "Kalibravimų žurnalas (paskutiniai 10):\n" + (try { SunCal.file(this).readLines().takeLast(11).joinToString("\n") } catch (_: Exception) { "nėra" }) + "\n" +
             SunFrame.text() + "\n" + CabinMap.text() + "\n" + KnownHeight.text() + "\n" + AppDiag.text() +
-            NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n"
+            NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + SatHealth.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n"
 
     private fun buildReport(sections: Set<String>, question: String): String = buildString {
         appendLine("GNSS App ataskaita")

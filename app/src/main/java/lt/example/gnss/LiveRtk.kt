@@ -253,7 +253,7 @@ object LiveRtk {
         val sm = HashMap<Int, Double>()
         sm.putAll(sppSmooth.applyEpoch(ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 }, ep.t))
         fun pr(m: Sp3V5.M) = sm[m.key] ?: m.pr
-        val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 &&
+        val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && !SatHealth.bad(it.sys, it.svid) &&
                 (it.cn0 >= CnoMask.min || (it.cn0 >= CnoMask.min - 3.0 && (it.sys.toString() + it.svid) in sppIn)) }
             .also { l -> sppIn = l.map { it.sys.toString() + it.svid }.toSet() }
             .map { m -> DualFreq.iono(m, ep.t)?.let { i -> Sp3V5.Ob(m.sys, m.svid, pr(m) - i, m.cn0, m.prr, ifree = true) } ?: Sp3V5.Ob(m.sys, m.svid, pr(m), m.cn0, m.prr) }
@@ -325,7 +325,7 @@ object LiveRtk {
 
     /** Palydovų būsena: SP3, jei apima; kitaip – transliuojamos efemeridės (GPS/Galileo žinutės, BRDC). */
     fun prepare(t: Double, obs0: List<Sp3V5.Ob>): List<Sp3V5.SatEp> {
-        val obs = obs0.filter { it.cn0 >= CnoMask.min }
+        val obs = obs0.filter { it.cn0 >= CnoMask.min && !SatHealth.bad(it.sys, it.svid) }
         val r = Sp3Live.reader
         if (r != null && Sp3Solver.inRange(r, t)) { source = "SP3"; return Sp3V5.prepare(t, obs, r) }
         source = "transliuojamos efemeridės"

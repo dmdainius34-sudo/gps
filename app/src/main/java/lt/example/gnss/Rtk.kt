@@ -193,7 +193,9 @@ object Rtk {
          * Mediana klaidina: kabinoje daug trumpai mirksinčių palydovų, nors dalis fazę laiko minutėmis (2026-11-18 kabinoje 56 %).
          */
         fun phaseLongShare(): Double = synchronized(segs) {
-            val all = segs.toList() + lockN.values.toList()
+            // lockN keičia RTK gija – kopija gali nepavykti (tada tik užbaigtos atkarpos)
+            val cur = try { ArrayList(lockN.values) } catch (_: Exception) { emptyList<Int>() }
+            val all = segs.toList() + cur
             val tot = all.sum(); if (tot < 60) Double.NaN else all.filter { it >= 30 }.sum().toDouble() / tot
         }
         private val lockN = HashMap<String, Int>()

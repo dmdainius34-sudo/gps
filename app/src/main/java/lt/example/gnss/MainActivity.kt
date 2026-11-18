@@ -2425,11 +2425,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             // nesveikas (sveikatos žyma efemeridėse) – vartosi kūliais
             val tumble = if (SatHealth.bad(sat.const, sat.svid)) t * 90f + sat.svid * 37f else 0f
             drawSatModel(p, col, glow, usedK, sat.const, tumble)
+            if (tumble != 0f) drawSparks(p, t, sat.svid)
             if (muted) {
                 if (mutedTex == 0) mutedTex = makeMutedTexture()
                 GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
                 // tiesiai ant palydovo (ne pastumtas Žemės ašies kryptimi – iš šono žiūrint tada nukrypdavo nuo palydovo)
-                billboard(p, eyeI, 0.045f, 0.045f, mutedTex, 1f, 1f, 1f, 0.9f)
+                billboard(p, eyeI, 0.045f, 0.045f, mutedTex, 1f, 1f, 1f, 0.45f)
             }
             if (nb != null && sat.cn0 > 10f) {
                 val (lt, asp) = wideLabel(nb.label)
@@ -5443,12 +5444,38 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         return uploadTexture(bmp)
     }
 
+    /**
+     * Sugedusio palydovo kibirkštys: smulkūs ryškūs taškeliai išlekia iš korpuso atsitiktinėmis kryptimis, gelsta ir užgęsta
+     * (kiekviena savo ritmu), retkarčiais – baltas blyksnis.
+     */
+    private fun drawSparks(p: FloatArray, t: Float, seed: Int) {
+        if (starTex == 0) return
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        for (i in 0 until 10) {
+            val h = ((seed * 7919 + i * 104729) % 1000) / 1000f
+            val ph = ((t * (1.3f + 0.9f * h) + i * 0.137f + h) % 1f)
+            // pseudo-atsitiktinė kryptis (kiekvienam ciklui kita)
+            val cyc = ((t * (1.3f + 0.9f * h) + i * 0.137f + h).toInt())
+            val a1 = ((seed * 31 + i * 17 + cyc * 13) % 360) * 0.01745f; val a2 = ((seed * 7 + i * 29 + cyc * 23) % 180 - 90) * 0.01745f
+            val d = 0.012f + 0.07f * ph
+            val q = floatArrayOf(p[0] + d * cos(a2) * cos(a1), p[1] + d * cos(a2) * sin(a1), p[2] + d * sin(a2))
+            val fade = (1f - ph)
+            val sz = 0.006f + 0.006f * fade
+            billboard(q, eyeI, sz, sz, starTex, 1f, 0.55f + 0.4f * fade, 0.15f + 0.5f * fade * fade, fade)
+        }
+        // blyksnis
+        val fl = ((t * 1.7f + seed) % 3f)
+        if (fl < 0.12f) billboard(p, eyeI, 0.05f, 0.05f, starTex, 1f, 0.95f, 0.8f, (0.12f - fl) / 0.12f)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+    }
+
     private var mutedTex = 0
     /** „Užtildyta“: raudonas ratas su įstrižu brūkšniu ant permatomo fono. */
     private fun makeMutedTexture(): Int {
         val n = 64; val bmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888); val cv = Canvas(bmp)
-        val pt = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 7f; color = 0xFFEF4444.toInt() }
-        cv.drawCircle(n / 2f, n / 2f, n / 2f - 5f, pt)
+        // plonas, permatomas (ryškumas – piešiant), kad neuždengtų palydovo
+        val pt = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 3.5f; color = 0xFFEF4444.toInt() }
+        cv.drawCircle(n / 2f, n / 2f, n / 2f - 3f, pt)
         cv.drawLine(n * 0.22f, n * 0.22f, n * 0.78f, n * 0.78f, pt)
         return uploadTexture(bmp)
     }

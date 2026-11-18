@@ -33,7 +33,7 @@ object KnownHeight {
         fun d(k: String) = p.getString(k, "")?.trim()?.replace(',', '.')?.toDoubleOrNull()
         val a = d("agl")?.takeIf { it in -100.0..1000.0 }; val m = d("msl")?.takeIf { it in -500.0..9000.0 }
         val g = p.getFloat("g_msl", Float.NaN).toDouble()
-        if (a != agl || m != msl || !(g == mGround || (g.isNaN() && mGround.isNaN()))) { dhAvg = Double.NaN; dhCnt = 0; conflict = false }   // nauja vertė – patikra iš naujo
+        if (a != agl || m != msl || !(g == mGround || (g.isNaN() && mGround.isNaN()))) { dhAvg = Double.NaN; dhCnt = 0; conflict = false; slowM = Double.NaN; slowM2 = Double.NaN; dhSd = Double.NaN }   // nauja vertė – patikra iš naujo
         agl = a; msl = m
         mGround = g; mLat = p.getFloat("g_lat", Float.NaN).toDouble(); mLon = p.getFloat("g_lon", Float.NaN).toDouble()
         mSigma = p.getFloat("g_sig", 3f).toDouble(); mSrc = p.getString("g_src", "") ?: ""
@@ -81,7 +81,7 @@ object KnownHeight {
         cancelGround("atšaukta")
         appCtx?.getSharedPreferences("known_ref", Context.MODE_PRIVATE)?.edit()?.remove("g_msl")?.remove("g_lat")?.remove("g_lon")
             ?.remove("g_sig")?.remove("g_src")?.apply()
-        mGround = Double.NaN; dhAvg = Double.NaN; dhCnt = 0; conflict = false; gResult = "Išmatuota žemė pašalinta – naudojamas interneto žemėlapis"
+        mGround = Double.NaN; dhAvg = Double.NaN; dhCnt = 0; conflict = false; slowM = Double.NaN; slowM2 = Double.NaN; dhSd = Double.NaN; gResult = "Išmatuota žemė pašalinta – naudojamas interneto žemėlapis"
     }
 
     /**
@@ -130,7 +130,7 @@ object KnownHeight {
             ?.putFloat("g_msl", g.toFloat())?.putFloat("g_lat", lat.toFloat())?.putFloat("g_lon", lon.toFloat())
             ?.putFloat("g_sig", sig.toFloat())?.putString("g_src", src)?.apply()
         mGround = g; mLat = lat; mLon = lon; mSigma = sig; mSrc = src
-        dhAvg = Double.NaN; dhCnt = 0; conflict = false
+        dhAvg = Double.NaN; dhCnt = 0; conflict = false; slowM = Double.NaN; slowM2 = Double.NaN; dhSd = Double.NaN
         gMeasuring = false; gProgress = 1f
         gResult = "Žemė išmatuota: %.1f m virš jūros (%s, σ ≈ %.1f m)".format(Locale.US, g, src, sig)
         return true
@@ -149,8 +149,14 @@ object KnownHeight {
     /**
      * vdop – kiek palydovų išsidėstymas leidžia pasitikėti aukščiu be apribojimo. Kabinoje stogas užstoja aukštus palydovus:
      * VDOP didelis, aukštis be apribojimo gali klysti ir 50 m – tada nesutapimas nieko nereiškia (ten žinomas aukštis labiausiai reikalingas).
-     * Riba: max(30 m, 3 · 6 m · VDOP), vidurkinant ~20 s.
+     * Riba: max(30 m, 3 · 6 m · VDOP, 2,5 · aukščio sklaida per ~50 s), vidurkinant ~20 s; vėl naudojama, kai nesutapimas < 0,7 ribos.
+     * Sklaida svarbi kabinoje: ten aukštis be apribojimo šokinėja ±30–50 m net esant neblogam VDOP, ir tikras įvestas aukštis
+     * (pvz. išmatuota žemė + kabina) būdavo atmetamas. Ant žemės po atviru dangumi sklaida maža – pamirštas 45 m aukštis vis tiek pagaunamas.
      */
+    @Volatile var dhSd = Double.NaN
+        private set
+    private var slowM = Double.NaN; private var slowM2 = Double.NaN
+    fun limit(): Double = maxOf(30.0, 18.0 * (if (vdopAvg.isNaN()) 1.5 else vdopAvg), if (dhSd.isNaN()) 0.0 else 2.5 * dhSd)
     @Volatile var vdopAvg = Double.NaN
         private set
     @Synchronized fun checkFree(lat: Double, lon: Double, h: Double, vdop: Double = 1.5) {
@@ -159,10 +165,13 @@ object KnownHeight {
         dhAvg = if (dhAvg.isNaN()) dh else dhAvg * 0.95 + dh * 0.05
         val v = vdop.coerceIn(0.5, 30.0)
         vdopAvg = if (vdopAvg.isNaN()) v else vdopAvg * 0.95 + v * 0.05
+        slowM = if (slowM.isNaN()) dh else slowM * 0.98 + dh * 0.02
+        slowM2 = if (slowM2.isNaN()) dh * dh else slowM2 * 0.98 + dh * dh * 0.02
+        if (dhCnt >= 10) dhSd = sqrt((slowM2 - slowM * slowM).coerceAtLeast(0.0))
         dhCnt++; freeDh = dhAvg
-        val lim = maxOf(30.0, 18.0 * vdopAvg)
+        val lim = limit()
         if (dhCnt >= 20 && abs(dhAvg) > lim) conflict = true
-        else if (abs(dhAvg) < lim / 2) conflict = false
+        else if (abs(dhAvg) < lim * 0.7) conflict = false
     }
 
     /** Aukščio apribojimas programos padėčiai (vieta lat, lon – paskutinė žinoma) arba null. */
@@ -261,7 +270,7 @@ object KnownHeight {
         if (msl == null) groundNear()?.let { append("; žemė išmatuota čia: %.1f m virš jūros (%s)".format(Locale.US, it, mSrc)) }
             ?: run { if (demStatus.isNotEmpty()) append("; $demStatus") }
         if (gResult.isNotEmpty()) append("; $gResult")
-        if (!freeDh.isNaN()) append("; programos padėtis be aukščio %+.0f m nuo įvesto (VDOP %.1f, riba ±%.0f m)".format(Locale.US, freeDh, vdopAvg, maxOf(30.0, 18.0 * vdopAvg)))
+        if (!freeDh.isNaN()) append("; programos padėtis be aukščio %+.0f m nuo įvesto (VDOP %.1f, aukščio sklaida ±%.0f m, riba ±%.0f m)".format(Locale.US, freeDh, vdopAvg, dhSd, limit()))
         append(when {
             conflict -> "; NENAUDOJAMAS: programos padėtis per toli kitame aukštyje (nulipote?) – pataisykite arba ištrinkite"
             active -> "; naudojamas programos padėtyje ir RTK filtre"

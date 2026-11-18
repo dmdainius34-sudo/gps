@@ -8312,6 +8312,7 @@ class MainActivity : AppCompatActivity() {
                     navCsvUri()?.let { uris.add(it) }
                     rtcmCsvUri()?.let { uris.add(it) }
                     gapLogUri()?.let { uris.add(it) }
+                    try { uris.add(FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", ImuLog.file(this@MainActivity))) } catch (_: Exception) {}
                     try { val cl = File(filesDir, CLAUDE_LOG)
                         if (cl.exists()) { val cf = File(cacheDir, CLAUDE_LOG); cl.copyTo(cf, true)
                             uris.add(FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", cf)) } } catch (_: Exception) {}
@@ -9292,6 +9293,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startDeviceSensors() {
         val sm = getSystemService(SENSOR_SERVICE) as SensorManager
+        try { ImuLog.start(this) } catch (e: Exception) { logError("IMU įrašas: ${e.message}") }
         sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let { sm.registerListener(devSensorListener, it, SensorManager.SENSOR_DELAY_UI) }
         sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)?.let { sm.registerListener(devSensorListener, it, SensorManager.SENSOR_DELAY_UI) }
         sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD_UNCALIBRATED)?.let { sm.registerListener(devSensorListener, it, SensorManager.SENSOR_DELAY_NORMAL) }
@@ -9313,6 +9315,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopDeviceSensors() {
         (getSystemService(SENSOR_SERVICE) as SensorManager).unregisterListener(devSensorListener)
+        ImuLog.stop(this)
     }
 
     // ---------------- KOSMINIAI ORAI (NOAA Kp) ----------------

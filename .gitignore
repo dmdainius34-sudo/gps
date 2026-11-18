@@ -1,3 +1,7 @@
 screens/
 app/src/main/assets/stars_bg_8k.jpg
 starmap8k/
+tools/eval/app-src/
+tools/eval/build/
+tools/eval/.gradle/
+tools/eval/.kotlin/

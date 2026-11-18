@@ -200,6 +200,19 @@ object LiveRtk {
     @Volatile var sppUsedKeys: Set<String> = emptySet()
         private set
     private fun constOf(sys: Char) = when (sys) { 'G' -> "GPS"; 'E' -> "GAL"; 'C' -> "BDS"; 'R' -> "GLO"; 'J' -> "QZS"; else -> sys.toString() }
+
+    /**
+     * Palydovo aparatūros vėlinimas L1/E1 (s) ir šaltinis: GPS TGD, Galileo BGD(E1,E5b) – iš paties palydovo žinučių, kitaip iš BRDC.
+     * SP3 laikrodžiai (kaip ir transliuojamas daugianaris) skirti dviejų dažnių kombinacijai – vieno dažnio vartotojas turi atimti TGD
+     * (2026-11 BRDC: GPS −17,7…+6,5 ns, sklaida 6,8 ns ≈ 2 m kiekvienam palydovui; Galileo sklaida ≈ 1,4 m). null – nežinomas.
+     */
+    fun groupDelay(sys: Char, svid: Int): Pair<Double, String>? {
+        val own = when (sys) { 'G' -> BroadcastEph.get(svid)?.tgd; 'E' -> BroadcastEph.galEph(svid)?.tgd; else -> null }
+        if (own != null && own != 0.0) return own to "iš paties palydovo"
+        if (sys != 'G' && sys != 'E') return null
+        val k = Brdc.set?.kep?.get("%c%02d".format(Locale.US, sys, svid))?.firstOrNull { it.tgd != 0.0 } ?: return own?.let { it to "iš paties palydovo" }
+        return k.tgd to "iš BRDC"
+    }
     /** Ar programa šį palydovą „užtildė“ (neįtraukė į savo padėtį): pagal paskutinį sprendinį, kitaip – pagal signalo slenkstį. */
     fun isMuted(const: String, svid: Int, cn0: Float): Boolean =
         if (System.currentTimeMillis() - sppMs < 5_000L && sppUsedKeys.isNotEmpty()) (const + svid) !in sppUsedKeys else cn0 < CnoMask.min
@@ -257,6 +270,23 @@ object LiveRtk {
         sm.putAll(sppSmooth.applyEpoch(ep.meas.filter { (if (it.sys == 'R') (it.state and Sp3V5.STATE_GLO_TOD_DECODED) else (it.state and Sp3V5.STATE_TOW_DECODED)) != 0 }, ep.t))
         fun pr(m: Sp3V5.M) = sm[m.key] ?: m.pr
         // GLONASS įtrauktas (GSDC 2023: Pixel 7 Pro p50 2,9 → 2,6 m, p95 8,8 → 5,9 m; S22 Ultra 5,2 → 5,0 m), svoris /4 (Sp3V5.GLO_W)
+        // kodėl palydovas nenaudojamas (kortelei ir ataskaitai): pirmas atmetimo žingsnis
+        val why = HashMap<String, Int>()
+        val cn0s = HashMap<String, Double>()
+        for (m in ep.meas) {
+            val k = constOf(m.sys) + m.svid
+            cn0s[k] = m.cn0
+            why[k] = when {
+                (if (m.sys == 'R') (m.state and Sp3V5.STATE_GLO_TOD_DECODED) else (m.state and Sp3V5.STATE_TOW_DECODED)) == 0 -> SatStats.NO_TIME
+                SatHealth.bad(m.sys, m.svid) -> SatStats.UNHEALTHY
+                !(m.cn0 >= CnoMask.min || (m.cn0 >= CnoMask.min - 3.0 && (m.sys.toString() + m.svid) in sppIn)) -> SatStats.WEAK
+                else -> SatStats.NO_ORBIT   // patikslinama po sprendimo
+            }
+        }
+        fun flush(all: Int) {
+            for (k in why.keys.toList()) if (why[k] == SatStats.NO_ORBIT) why[k] = all
+            SatStats.epoch(now, CnoMask.min, why.map { Triple(it.key, it.value, Double.NaN) }, cn0s)
+        }
         val obs = ep.meas.filter { (if (it.sys == 'R') (it.state and Sp3V5.STATE_GLO_TOD_DECODED) else (it.state and Sp3V5.STATE_TOW_DECODED)) != 0 && !SatHealth.bad(it.sys, it.svid) &&
                 (it.cn0 >= CnoMask.min || (it.cn0 >= CnoMask.min - 3.0 && (it.sys.toString() + it.svid) in sppIn)) }
             .also { l -> sppIn = l.map { it.sys.toString() + it.svid }.toSet() }
@@ -267,16 +297,22 @@ object LiveRtk {
                 l.map { o -> if (o.ifree && o.sys in few) ep.meas.first { it.sys == o.sys && it.svid == o.svid }.let { m -> Sp3V5.Ob(m.sys, m.svid, pr(m), m.cn0, m.prr) } else o }
             }
         DualFreq.lastUsed = obs.count { it.ifree }; DualFreq.lastTotal = obs.size
+        // SP3 keliu – aparatūros vėlinimo pataisa (transliuojamų efemeridžių kelias ją jau turi laikrodyje)
+        var tgdN = 0
+        val obsSp3 = if (r == null) obs else obs.map { o ->
+            if (o.ifree) o else groupDelay(o.sys, o.svid)?.let { g -> tgdN++; Sp3V5.Ob(o.sys, o.svid, o.pr - C * g.first, o.cn0, o.prr) } ?: o
+        }
+        SatStats.tgdN = tgdN; SatStats.tgdOf = obs.count { (it.sys == 'G' || it.sys == 'E') && !it.ifree }
         fun fit(hc: Sp3V5.HCon?) = try {
-            if (r != null) Sp3V5.solve(ep.week, ep.tow, obs, r, isb = true, raim = true, hCon = hc)
+            if (r != null) Sp3V5.solve(ep.week, ep.tow, obsSp3, r, isb = true, raim = true, hCon = hc)
             else Sp3V5.solveSats(ep.tow, prepareBroadcast(ep.t, obs), isb = true, raim = true, hCon = hc)
         } catch (_: Exception) { null }
         // žinomas aukštis (įvestas ranka): kai palydovų pakanka – patikra, ar jis čia tinka (be barometro kitaip nežinoma)
         val free = if (obs.size >= 6 && KnownHeight.deviceMsl() != null) fit(null)?.also { KnownHeight.checkFree(it.sol.lat, it.sol.lon, it.sol.h, vdopOf(it)) } else null
         val ref = sppLast?.takeIf { now - sppMs < 60_000L }?.let { it.lat to it.lon } ?: KnownHeight.lastLatLon()
         val hc = ref?.let { KnownHeight.constraint(it.first, it.second) }
-        if (obs.size < (if (hc != null) 3 else 5)) { AppDiag.noPos(obs.size); return }
-        val f = (if (hc != null) fit(hc) else free ?: fit(null)) ?: run { AppDiag.noPos(obs.size); return }
+        if (obs.size < (if (hc != null) 3 else 5)) { AppDiag.noPos(obs.size); flush(SatStats.NO_FIX); sppUsedKeys = emptySet(); return }
+        val f = (if (hc != null) fit(hc) else free ?: fit(null)) ?: run { AppDiag.noPos(obs.size); flush(SatStats.NO_FIX); sppUsedKeys = emptySet(); return }
         // „Čia žemė“: matuojama programos padėtimi be aukščio apribojimo
         if (KnownHeight.gMeasuring) (if (hc == null) f else free ?: fit(null))?.let {
             if (KnownHeight.groundSample(now, it.sol.lat, it.sol.lon, it.sol.h, false, Steps.walking())) groundDone = true
@@ -294,7 +330,17 @@ object LiveRtk {
         sppLast = sol; sppMs = now
         AppDiag.pos(obs.size, f.sol, hc != null, sol,
             obs.map { sppSmooth.dopHatch.count(it.sys.code * 1000 + it.svid).toDouble() }.average(), sppSmooth.dopHatch.restarts)
-        sppUsedKeys = f.sats.map { constOf(it.sys) + it.svid }.toSet()
+        // naudoti – tik tie, kurių liekana yra (žemiau 10° palydovai lieka f.sats, bet sprendime nedalyvauja)
+        val resK = HashMap<String, Double>()
+        for (s in f.sats) {
+            val k = constOf(s.sys) + s.svid
+            val rv = f.res["%c%02d".format(Locale.US, s.sys, s.svid)]
+            if (rv != null) { why[k] = SatStats.USED; resK[k] = rv } else why[k] = SatStats.LOW_EL
+        }
+        for (d in f.dropped) why[constOf(d[0]) + d.substring(1).toInt()] = SatStats.RAIM
+        for (k in why.keys.toList()) if (why[k] == SatStats.NO_ORBIT && k.take(3) !in setOf("GPS", "GAL", "BDS", "GLO")) why[k] = SatStats.NOT_SYS
+        SatStats.epoch(now, CnoMask.min, why.map { Triple(it.key, it.value, resK[it.key] ?: Double.NaN) }, cn0s)
+        sppUsedKeys = resK.keys.toSet()
     }
 
     private fun process() {
@@ -375,8 +421,7 @@ object LiveRtk {
         val id = "%c%02d".format(Locale.US, sys, svid)
         val k = Brdc.set?.kep?.get(id)?.minByOrNull { kotlin.math.abs(it.toeAbs - t) } ?: return null
         if (kotlin.math.abs(k.toeAbs - t) > 4 * 3600) return null
-        val dt = t - k.tocAbs
-        return Brdc.kepler(k, t) to (k.af0 + k.af1 * dt + k.af2 * dt * dt)
+        return Brdc.kepler(k, t) to Brdc.clock(k, t)
     }
 
     fun text(): String {

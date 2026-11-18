@@ -10,6 +10,27 @@ object Own {
     class Res(val name: String, val p50: Double, val p95: Double, val jumps: Int, val n: Int, val none: Int)
 
     var useGlo = true
+    /** Aparatūros vėlinimas (s) pagal „G05“ – kaip programoje SP3 keliu atimamas iš pseudoatstumo. */
+    var tgd: Map<String, Double> = emptyMap()
+    val hacc = ArrayList<Double>()
+    val resAll = ArrayList<Double>()
+    val resBy = HashMap<String, ArrayList<Double>>()
+
+    /** GPS TGD ir Galileo BGD(E1,E5b) iš BRDC (RINEX 3/4) – kaip Brdc.kt programoje. */
+    fun tgdFromBrdc(f: File): Map<String, Double> {
+        val l = f.readLines(); var i = l.indexOfFirst { "END OF HEADER" in it } + 1
+        val out = HashMap<String, Double>()
+        fun num(x: String) = x.trim().replace('D', 'E').toDoubleOrNull() ?: 0.0
+        while (i < l.size) {
+            val sv = l[i].take(3); val n = if (sv[0] == 'R' || sv[0] == 'S') 4 else 8
+            if ((sv[0] == 'G' || sv[0] == 'E') && i + 6 < l.size) {
+                val r = l[i + 6]; val v = num(r.substring(4 + 19 * (if (sv[0] == 'G') 2 else 3)).take(19))
+                if (v != 0.0 && sv !in out) out[sv] = v
+            }
+            i += n
+        }
+        return out
+    }
     fun run(raw: File, sp3: Sp3Reader, truth: Pair<Double, Double>?, thr: Double, smooth: Boolean, filter: Boolean, name: String,
             hMsl: Double? = null, geoidN: Double = 24.89, forceMove: Boolean = false): Pair<Res, List<DoubleArray>> {
         val sm = Sp3V5.Smoother(doppler = true, useAdr = false, dopWindow = 20)
@@ -20,13 +41,15 @@ object Own {
         Sp3V5.readRaw(raw.bufferedReader(), glo = useGlo) { ep ->
             val ms = ep.meas.filter { (if (it.sys == 'R') (it.state and Sp3V5.STATE_GLO_TOD_DECODED) else (it.state and Sp3V5.STATE_TOW_DECODED)) != 0 }
             val smd = if (smooth) sm.applyEpoch(ms, ep.t) else emptyMap()
-            val obs = ms.filter { it.cn0 >= thr }.map { m -> Sp3V5.Ob(m.sys, m.svid, smd[m.key] ?: m.pr, m.cn0, m.prr) }
+            val obs = ms.filter { it.cn0 >= thr }.map { m -> Sp3V5.Ob(m.sys, m.svid, (smd[m.key] ?: m.pr) - 299_792_458.0 * (tgd["%c%02d".format(m.sys, m.svid)] ?: 0.0), m.cn0, m.prr) }
             if (obs.size < 5 || !Sp3Solver.inRange(sp3, ep.t)) { none++; return@readRaw }
             val last = sols.lastOrNull()
             val hc = if (hMsl != null && last != null) Sp3V5.HCon(hMsl + geoidN, 2.0,
                 PositionSolver.llhToEcef(Math.toRadians(last[0]), Math.toRadians(last[1]), hMsl + geoidN)) else null
             val f = try { Sp3V5.solve(ep.week, ep.tow, obs, sp3, isb = true, raim = true, hCon = hc) } catch (_: Exception) { null }
             if (f == null) { none++; return@readRaw }
+            hacc.add(f.sol.hacc); resAll.addAll(f.res.values.map { Math.abs(it) })
+            f.res.forEach { (k, v) -> resBy.getOrPut(k) { ArrayList() }.add(v) }
             vel = try { DopplerVel.solve(f.sats, f.x) } catch (_: Exception) { null }
             var lat = f.sol.lat; var lon = f.sol.lon
             if (filter) {
@@ -43,6 +66,32 @@ object Own {
         for (i in 1 until sols.size) if (PositionSolver.horizDist(sols[i - 1][0], sols[i - 1][1], sols[i][0], sols[i][1]) > 5.0) jumps++
         fun q(p: Double) = if (err.isEmpty()) Double.NaN else err[((err.size - 1) * p).toInt()]
         return Res(name, q(0.5), q(0.95), jumps, sols.size, none) to sols
+    }
+
+    /** TGD pataisos patikra: kaip programoje be TGD ir su TGD iš BRDC; liekanos rodo, ar palydovų atstumai geriau sutampa. */
+    fun tgdMain(dir: File) {
+        val raw = File(dir, "gnss_raw.csv")
+        val sp3 = (dir.listFiles()!!.firstOrNull { it.name.endsWith(".SP3", true) } ?: return).inputStream().use { Sp3Reader.read(it) }
+        val br = dir.listFiles()!!.firstOrNull { it.name.startsWith("brdc") } ?: return
+        val t = tgdFromBrdc(br)
+        println("=== ${dir.name}: TGD/BGD iš BRDC – ${t.size} palydovų")
+        for (on in listOf(false, true)) {
+            tgd = if (on) t else emptyMap(); hacc.clear(); resAll.clear(); resBy.clear()
+            val (r, sols) = run(raw, sp3, null, 20.0, true, true, "x")
+            val h = hacc.sorted(); val ra = resAll.sorted()
+            val med = sols.map { it[0] }.sorted()[sols.size / 2] to sols.map { it[1] }.sorted()[sols.size / 2]
+            println("   %-14s n=%5d  sklaida p50 %5.2f p95 %6.2f m  σ̂ (2·s0) mediana %5.2f m | |liekana| p50 %5.2f p90 %5.2f m  vidurys %.6f %.6f".format(
+                if (on) "+ TGD" else "be TGD", r.n, r.p50, r.p95, h[h.size / 2], ra[ra.size / 2], ra[(ra.size * 0.9).toInt()], med.first, med.second))
+            // palydovo vidutinė liekana (mediana) prieš c·TGD: be pataisos turėtų koreliuoti teigiamai
+            for (sys in listOf('G', 'E')) {
+                val pts = resBy.filter { it.key[0] == sys && it.value.size >= 100 && it.key in t }.map { (k, v) -> v.sorted()[v.size / 2] to 299_792_458.0 * t[k]!! }
+                if (pts.size < 4) continue
+                val mx = pts.map { it.first }.average(); val my = pts.map { it.second }.average()
+                val cxy = pts.sumOf { (it.first - mx) * (it.second - my) }; val cxx = pts.sumOf { (it.first - mx) * (it.first - mx) }; val cyy = pts.sumOf { (it.second - my) * (it.second - my) }
+                println("      %c: palydovų %d, koreliacija liekana~c·TGD %.2f, nuolydis %.2f, liekanų sklaida %.2f m".format(sys, pts.size, cxy / Math.sqrt(cxx * cyy), cxy / cyy, Math.sqrt(cxx / pts.size)))
+            }
+        }
+        tgd = emptyMap()
     }
 
     fun main(dir: File, truthArg: Pair<Double, Double>?) {

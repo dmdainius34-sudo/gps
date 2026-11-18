@@ -4125,7 +4125,27 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val title = (id ?: (s.const + " " + s.svid)) + " · " + sys
         val rows = ArrayList<Pair<String, String>>()
         rows.add("Signalo stiprumas" to "%.1f dB-Hz".format(L, s.cn0) + when { s.cn0 >= 40 -> " (stiprus)"; s.cn0 >= 30 -> " (vidutinis)"; else -> " (silpnas)" })
-        rows.add("Naudojamas padėčiai" to if (s.used) "taip" else "ne")
+        // programos padėtis: naudojamas ar užtildytas ir kodėl; liekana – kiek jo atstumas nesutampa su padėtimi iš visų palydovų
+        val key = s.const + s.svid
+        val nowMs = System.currentTimeMillis()
+        val fresh = nowMs - SatStats.lastMs < 5_000L
+        val cur = SatStats.last[key]?.takeIf { fresh }
+        rows.add("Programos padėtyje" to when {
+            !fresh -> "programos padėtis dabar neskaičiuojama"
+            cur != null && cur.first == SatStats.USED -> "naudojamas" + (if (cur.second.isNaN()) "" else ", liekana %+.1f m".format(L, cur.second))
+            else -> "UŽTILDYTAS – " + (SatStats.reason(key, s.cn0.toDouble()) ?: "nežinoma priežastis")
+        })
+        rows.add("Lusto padėtyje" to if (s.used) "naudojamas" else "nenaudojamas")
+        SatStats.sum(key, nowMs)?.let { a ->
+            val mins = minOf(30L, (a.n + 59) / 60L)
+            val top = (1 until a.why.size).filter { a.why[it] > 0 }.maxByOrNull { a.why[it] }
+            rows.add("Per %d min.".format(L, mins) to "naudotas %.0f %% laiko".format(L, 100.0 * a.used / a.n) +
+                (if (a.used >= 10) "; liekana vid. %+.1f m, RMS %.1f m%s".format(L, a.resMean, a.resRms, SatStats.resWord(a.resRms)) else "") +
+                (top?.let { t -> "; dažniausiai užtildytas: " + (SatStats.text(t, a.cn0, SatStats.lastThr, key) ?: "") + " (%.0f %%)".format(L, 100.0 * a.why[t] / a.n) } ?: ""))
+        }
+        if (s.const == "GPS" || s.const == "GAL") rows.add("Aparatūros vėlinimas (TGD)" to
+            (LiveRtk.groupDelay(if (s.const == "GPS") 'G' else 'E', s.svid)?.let { (g, src) ->
+                "%+.1f ns = %+.2f m (%s) – pataisa taikoma".format(L, g * 1e9, g * 299_792_458.0, src) } ?: "dar nežinomas – pataisa netaikoma"))
         SatHealth.info(s.const, s.svid)?.let { h ->
             rows.add("Sveikatos žyma" to if (h.bad) "NESVEIKAS (kodas ${h.code}, ${h.src}) – programa jo nenaudoja" else "sveikas (${h.src})")
         }
@@ -8320,7 +8340,7 @@ class MainActivity : AppCompatActivity() {
                         (SunCal.lastLine(this@MainActivity)?.let { "Paskutinis kalibravimas pagal Saulę (${SunCal.FILE}): ${SunCal.HEADER.trim()}\n$it\n" } ?: "Kalibravimų pagal Saulę žurnale nėra\n") +
                         (if (Uvi.enabled) Uvi.text() + "\n" else "") + SunFrame.text() + "\n" +
                         NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + SatHealth.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + CabinMap.text() + "\n" +
-                        KnownHeight.text() + "\n" + AppDiag.text() +
+                        KnownHeight.text() + "\n" + AppDiag.text() + SatStats.text() +
                         (Readiness.knowledge()?.let { "Lusto žinios: ${it.text}\n" } ?: "") +
                         "Pasiruošimas: " + Readiness.state(LiveRtk.enabled, LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc).text + "\n" +
                         (if (::skyDome.isInitialized) skyDome.fpsText() + "\n" else "")
@@ -9831,7 +9851,7 @@ class MainActivity : AppCompatActivity() {
             (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" + skyDome.northText(devAzimuth) + "\n" else "") +
             (AimDiag.lastSummary(this).takeIf { it.isNotEmpty() }?.let { it + "\n" } ?: "") +
             "Kalibravimų žurnalas (paskutiniai 10):\n" + (try { SunCal.file(this).readLines().takeLast(11).joinToString("\n") } catch (_: Exception) { "nėra" }) + "\n" +
-            SunFrame.text() + "\n" + CabinMap.text() + "\n" + KnownHeight.text() + "\n" + AppDiag.text() +
+            SunFrame.text() + "\n" + CabinMap.text() + "\n" + KnownHeight.text() + "\n" + AppDiag.text() + SatStats.text() +
             NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + SatHealth.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n"
 
     private fun buildReport(sections: Set<String>, question: String): String = buildString {

@@ -228,7 +228,9 @@ object Sp3V5 {
     /** GLONASS svoris (FDMA: kiekvienas dažnis turi savo imtuvo poslinkį): GSDC 2023 važiavimuose geriausia /4. */
     const val GLO_W = 0.25
 
-    class Fit(val sol: PositionSolver.Solution, val clocks: Map<Char, Double>, val x: DoubleArray, val dropped: List<String>, val sats: List<SatEp>)
+    /** res – naudotų palydovų („G05“) liekanos po sprendimo (m); palydovai, kurių nėra res, nenaudoti (žemiau 10°). */
+    class Fit(val sol: PositionSolver.Solution, val clocks: Map<Char, Double>, val x: DoubleArray, val dropped: List<String>, val sats: List<SatEp>,
+              val res: Map<String, Double> = emptyMap())
 
     /**
      * Svertiniai MKM su atmosferos pataisomis ir 10° kauke; isb – atskiras laikrodis kiekvienai konsteliacijai;
@@ -249,15 +251,16 @@ object Sp3V5 {
         val dropped = ArrayList<String>()
         while (true) {
             val f = lsq(sats, tow, isb, weighted, hCon) ?: return null
-            if (!raim) return Fit(f.sol, f.clocks, f.x, dropped, sats)
+            if (!raim) return Fit(f.sol, f.clocks, f.x, dropped, sats, f.res)
             val (worst, nr) = f.worst
-            if (worst == null || nr <= 3.0 || f.used - 1 < 5) return Fit(f.sol, f.clocks, f.x, dropped, sats)
+            if (worst == null || nr <= 3.0 || f.used - 1 < 5) return Fit(f.sol, f.clocks, f.x, dropped, sats, f.res)
             dropped.add("%c%02d".format(Locale.US, worst.sys, worst.svid))
             sats = sats.filter { it !== worst }
         }
     }
 
-    private class Lsq(val sol: PositionSolver.Solution, val clocks: Map<Char, Double>, val x: DoubleArray, val worst: Pair<SatEp?, Double>, val used: Int)
+    private class Lsq(val sol: PositionSolver.Solution, val clocks: Map<Char, Double>, val x: DoubleArray, val worst: Pair<SatEp?, Double>, val used: Int,
+                      val res: Map<String, Double>)
 
     private fun lsq(sats: List<SatEp>, tow: Double, isb: Boolean, weighted: Boolean, hCon: HCon? = null): Lsq? {
         val nc = if (hCon != null) 1 else 0
@@ -336,7 +339,8 @@ object Sp3V5 {
                 val llh = PositionSolver.ecefToLlh(x[0], x[1], x[2])
                 val clocks = if (isb) systems.indices.associate { systems[it] to x[3 + it] } else mapOf('*' to x[3])
                 return Lsq(PositionSolver.Solution(Math.toDegrees(llh[0]), Math.toDegrees(llh[1]), llh[2], rows.size, s0 * 2, doubleArrayOf(x[0], x[1], x[2])),
-                    clocks, x.copyOf(), worst to nrMax, rows.size)
+                    clocks, x.copyOf(), worst to nrMax, rows.size,
+                    rows.indices.associate { "%c%02d".format(Locale.US, rows[it].first.sys, rows[it].first.svid) to post[it] })
             }
             lastStep = step
         }

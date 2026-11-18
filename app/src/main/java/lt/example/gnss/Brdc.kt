@@ -137,6 +137,19 @@ object Brdc {
     }
 
     /** Kepleris: GPS/Galileo/QZSS ir BeiDou MEO/IGSO; BeiDou GEO (C01–C05, C59–C63) – su −5° posūkiu. */
+    /**
+     * Palydovo laikrodžio pataisa (s) L1/E1/B1I vartotojui: daugianaris + periodinė reliatyvistinė F·e·√A·sin E − TGD/BGD
+     * (kaip PositionSolver.satState; be jų BRDC keliu kiekvienas palydovas klysdavo iki ~7 m).
+     */
+    fun clock(k: Kep, t: Double): Double {
+        val gm = if (k.sys == 'G' || k.sys == 'J') PositionSolver.MU else GM_GAL
+        val a = k.sqrtA * k.sqrtA
+        val mm = k.m0 + (sqrt(gm / (a * a * a)) + k.dn) * (t - k.toeAbs)
+        var e = mm; repeat(12) { e = mm + k.e * sin(e) }
+        val dt = t - k.tocAbs
+        return k.af0 + k.af1 * dt + k.af2 * dt * dt + PositionSolver.F_REL * k.e * k.sqrtA * sin(e) - k.tgd
+    }
+
     fun kepler(k: Kep, t: Double): DoubleArray {
         val gm = if (k.sys == 'G' || k.sys == 'J') PositionSolver.MU else GM_GAL
         val oe = if (k.sys == 'C') OE_BDS else PositionSolver.OMEGA_E

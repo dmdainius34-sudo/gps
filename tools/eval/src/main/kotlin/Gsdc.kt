@@ -182,6 +182,7 @@ fun wlsBaseline(rows: List<Row>, gt: Map<Long, Gt>): String {
 
 fun main(args: Array<String>) {
     if (args.isNotEmpty() && args[0] == "own") { for (d in args.drop(1)) Own.main(File(d), null); return }
+    if (args.isNotEmpty() && args[0] == "tgd") { for (d in args.drop(1)) Own.tgdMain(File(d)); return }
     val opts = listOf(
         Opt("G0 be GLONASS (dabar)", 1, false, true, false, 20.0, velPred = true),
         Opt("G2 + GLONASS (programos svoris /4)", 1, false, true, false, 20.0, velPred = true, glo = true),

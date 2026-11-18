@@ -388,3 +388,19 @@ class SatHealthTest {
         assertEquals(false, SatHealth.bad("GPS", 30))
     }
 }
+
+class SatStatsTest {
+    @Test fun countsReasonsAndResiduals() {
+        SatStats.reset()
+        val t0 = 1_700_000_000_000L
+        for (i in 0 until 10) SatStats.epoch(t0 + i * 1000L, 25.0,
+            listOf(Triple("GPS5", SatStats.USED, if (i % 2 == 0) 2.0 else -2.0), Triple("GAL7", if (i < 4) SatStats.WEAK else SatStats.RAIM, Double.NaN)),
+            mapOf("GPS5" to 40.0, "GAL7" to 22.0))
+        val g = SatStats.sum("GPS5", t0 + 9000L)!!
+        assertEquals(10, g.used); assertEquals(0.0, g.resMean, 1e-9); assertEquals(2.0, g.resRms, 1e-9)
+        val e = SatStats.sum("GAL7", t0 + 9000L)!!
+        assertEquals(0, e.used); assertEquals(4, e.why[SatStats.WEAK]); assertEquals(6, e.why[SatStats.RAIM])
+        assertEquals(null, SatStats.text(SatStats.USED, 40.0, 25.0, "GPS5"))
+        SatStats.reset()
+    }
+}

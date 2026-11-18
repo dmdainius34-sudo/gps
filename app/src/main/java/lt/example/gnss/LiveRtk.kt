@@ -256,7 +256,7 @@ object LiveRtk {
         val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && !SatHealth.bad(it.sys, it.svid) &&
                 (it.cn0 >= CnoMask.min || (it.cn0 >= CnoMask.min - 3.0 && (it.sys.toString() + it.svid) in sppIn)) }
             .also { l -> sppIn = l.map { it.sys.toString() + it.svid }.toSet() }
-            .map { m -> DualFreq.iono(m, ep.t)?.let { i -> Sp3V5.Ob(m.sys, m.svid, pr(m) - i, m.cn0, m.prr, ifree = true) } ?: Sp3V5.Ob(m.sys, m.svid, pr(m), m.cn0, m.prr) }
+            .map { m -> (if (DualFreq.enabled) DualFreq.iono(m, ep.t) else null)?.let { i -> Sp3V5.Ob(m.sys, m.svid, pr(m) - i, m.cn0, m.prr, ifree = true) } ?: Sp3V5.Ob(m.sys, m.svid, pr(m), m.cn0, m.prr) }
             .let { l ->
                 // L1+L5 palydovams reikia savo laikrodžio – verta tik kai sistemoje jų ≥ 3, kitaip lieka įprastas L1 su Klobuchar
                 val few = l.filter { it.ifree }.groupingBy { it.sys }.eachCount().filterValues { it < 3 }.keys

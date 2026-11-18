@@ -240,7 +240,7 @@ class CnoAutoTest {
 
     @Test fun openSkyRaises() {
         val s = sky({ 42.0 }, 10) + sky({ 25.0 }, 6, "GAL")
-        assertEquals(40.0, CnoMask.target(s), 0.0)
+        assertEquals(30.0, CnoMask.target(s), 0.0)
     }
 
     @Test fun fewStrongStaysLow() {

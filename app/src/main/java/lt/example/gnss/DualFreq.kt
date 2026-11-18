@@ -9,6 +9,12 @@ import kotlin.math.abs
  * Imtuvo L1/L5 poslinkis visiems palydovams vienodas – jį sugeria atskiras sprendinio laikrodis.
  */
 object DualFreq {
+    /**
+     * Programos padėtyje išjungta: Google GSDC 2023 važiavimuose (5 × Samsung S22 Ultra) L1+L5 jonosfera tikslumą blogino –
+     * p50 2,3 → 3,1 m, p95 5,2 → 7,4 m (L5 kodas triukšmingesnis, palydovų L1–L5 poslinkiai), ir kaip „iono-free“, ir kaip pataisa.
+     * Pixel telefonai L5 matavimų su iššifruotu TOW iš viso neteikia. Skaičiavimas paliktas diagnostikai.
+     */
+    @Volatile var enabled = false
     const val GAMMA = (1575.42 / 1176.45) * (1575.42 / 1176.45)
     const val K = 1.0 / (GAMMA - 1.0)              // ≈ 1,2606
     const val MIN_N = 10                           // tiek epochų (~10 s) prieš naudojant

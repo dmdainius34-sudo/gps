@@ -2559,12 +2559,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var galN = 0
     /** Saulės aplinkos žvaigždžių (ir Šiaurinės, artimų žvaigždžių) mastelis, vnt./kpc: atitolinus jos sutraukiamos į tašką – Saulės vietą. */
     private val GAL_S = 500f
-    /**
-     * Paukščių Tako modelio mastelis (vnt./kpc) – daug didesnis už žvaigždžių: atitolinus iki galo kamera tik ~0,5 kpc už Saulės,
-     * t. y. galaktikos viduje. Kryptys kaip iš Saulės (paklaida ≤ ~3,5°): centras (Šaulys) – tik atsisukus į pietus
-     * (Lietuvoje jis ne aukščiau ~6° virš horizonto, dažniausiai po juo), už jo – tolimasis kraštas; į šiaurę – blankus išorinis diskas.
-     */
-    private val GAL_G = 60_000f
+    /** Paukščių Tako modelio mastelis (vnt./kpc): dvigubai didesnis už žvaigždžių – galaktika iš šalies, bet ×2 didesnė. */
+    private val GAL_G = 2f * GAL_S
 
     /** Taškai pusiaujo (sideralinėje) erdvėje, Saulė – koordinačių pradžioje; stebėtojo poslinkis (fP) pridedamas šešėliuoklyje. */
     private fun buildGalaxy() {
@@ -2950,7 +2946,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uK"), pxPerUnit * 0.02f * GAL_G)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uMax"), 4f * density)
         // toliau – ryškiau (galaktika mažėja, šviesa susikaupia), iki ×3
-        val gain = 1f + 2f * sstep(4000f, GALAXY_ZOOM, zoom)
+        // ×GAL_G/GAL_S: tiek pat taškų ×4 didesniame plote – kad ryškumas liktų toks pat kaip ×1 dydžio (skaičiavimas: mediana 0,84 = 0,84)
+        val gain = (1f + 2f * sstep(4000f, GALAXY_ZOOM, zoom)) * (GAL_G / GAL_S)
         // HDR: šviesa virš įprasto balto (rgb > 1); be HDR – tik permatomumas iki 1
         GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uA"), if (Hdr.on) a else a * gain)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uHdr"), if (Hdr.on) gain * 2f else 1f)
@@ -4037,8 +4034,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Mastelio režimo stadijos: Žemė (iki ~3), Saulės sistema (iki SOLAR_ZOOM), galaktika (iki GALAXY_ZOOM). */
     private val SOLAR_ZOOM = 18f
     private val GALAXY_ZOOM = 30_000f
-    /** Piešimo gylis galaktikos stadijoje: visas Paukščių Takas iš vidaus (iki ~30 kpc nuo kameros). */
-    private val GALAXY_DEPTH = 30f * GAL_G
+    /** Piešimo gylis už stebėtojo galaktikos stadijoje: tolimiausias disko kraštas (~25 kpc už Saulės) ir atsarga. */
+    private val GALAXY_DEPTH = 40f * GAL_G
     private fun maxZoomOut(): Float = GALAXY_ZOOM
 
     /** Atstumas Žemė–Saulė (km) pagal Saulės vidutinę anomaliją. */

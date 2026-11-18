@@ -280,13 +280,17 @@ object LiveRtk {
         sppHeightCon = hc != null
         sppSource = if (r != null) "SP3" else "efemeridės iš palydovų"
         val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }
-        val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, moving)
+        // greitis iš Doplerio – pirmiau, kad išlyginta vieta judant nevėluotų (Google GSDC važiavimai: p50 5,5 → 2,7 m)
+        try { DopplerVel.solve(f.sats, f.x)?.let { velLast = it; velMs = now } } catch (_: Exception) {}
+        val vNE = velocity()?.let { v -> doubleArrayOf(v.speedH * kotlin.math.cos(Math.toRadians(v.courseDeg)), v.speedH * kotlin.math.sin(Math.toRadians(v.courseDeg))) }
+        // judama: jutikliai (žingsniai, judesys) arba Doplerio greitis > 1,5 m/s (sklandžiai važiuojant automobiliu jutikliai gali nieko nerodyti)
+        val mv = moving || velocity()?.let { it.speedH > 1.5 && it.sigma < 1.0 } == true
+        val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, mv, vNE)
         val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
         sppLast = sol; sppMs = now
         AppDiag.pos(obs.size, f.sol, hc != null, sol,
             obs.map { sppSmooth.dopHatch.count(it.sys.code * 1000 + it.svid).toDouble() }.average(), sppSmooth.dopHatch.restarts)
         sppUsedKeys = f.sats.map { constOf(it.sys) + it.svid }.toSet()
-        try { DopplerVel.solve(f.sats, f.x)?.let { velLast = it; velMs = now } } catch (_: Exception) {}
     }
 
     private fun process() {

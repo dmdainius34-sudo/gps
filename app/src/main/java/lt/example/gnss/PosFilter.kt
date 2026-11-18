@@ -19,7 +19,8 @@ object PosFilter {
     @Synchronized fun reset() { win.clear(); sn = Double.NaN; lat0 = Double.NaN }
 
     /** Grąžina (platuma, ilguma, aukštis, tikslumas m). */
-    @Synchronized fun step(ms: Long, lat: Double, lon: Double, h: Double, real: Double, moving: Boolean): DoubleArray {
+    /** vel – (šiaurės, rytų) greitis m/s iš Doplerio: judant ankstesnė vieta pirmiau pastumiama juo, kitaip išlyginta vieta vėluoja (automobilyje – dešimtis m). */
+    @Synchronized fun step(ms: Long, lat: Double, lon: Double, h: Double, real: Double, moving: Boolean, vel: DoubleArray? = null): DoubleArray {
         if (lat0.isNaN() || ms - lastMs > 30_000L) { lat0 = lat; lon0 = lon; win.clear(); sn = Double.NaN }
         val k = M * cos(Math.toRadians(lat0))
         val p = P((lat - lat0) * M, (lon - lon0) * k, h)
@@ -27,6 +28,7 @@ object PosFilter {
         val out: DoubleArray
         if (moving) {
             win.clear()
+            if (vel != null && !sn.isNaN()) { sn += vel[0] * dt; se += vel[1] * dt }
             if (sn.isNaN() || sqrt((p.n - sn).let { it * it } + (p.e - se).let { it * it }) > 50.0 * dt + 3 * real) { sn = p.n; se = p.e; sh = p.h }
             else { sn += 0.5 * (p.n - sn); se += 0.5 * (p.e - se); sh += 0.5 * (p.h - sh) }
             out = doubleArrayOf(sn, se, sh, real)

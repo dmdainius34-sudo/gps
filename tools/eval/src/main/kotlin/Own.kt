@@ -9,7 +9,8 @@ import java.io.File
 object Own {
     class Res(val name: String, val p50: Double, val p95: Double, val jumps: Int, val n: Int, val none: Int)
 
-    fun run(raw: File, sp3: Sp3Reader, truth: Pair<Double, Double>?, thr: Double, smooth: Boolean, filter: Boolean, name: String): Pair<Res, List<DoubleArray>> {
+    fun run(raw: File, sp3: Sp3Reader, truth: Pair<Double, Double>?, thr: Double, smooth: Boolean, filter: Boolean, name: String,
+            hMsl: Double? = null, geoidN: Double = 24.89): Pair<Res, List<DoubleArray>> {
         val sm = Sp3V5.Smoother(doppler = true, useAdr = false, dopWindow = 20)
         PosFilter.reset(); CnoMask.min = thr; CnoMask.auto = false
         val sols = ArrayList<DoubleArray>(); var none = 0
@@ -19,7 +20,10 @@ object Own {
             val smd = if (smooth) sm.applyEpoch(ms, ep.t) else emptyMap()
             val obs = ms.filter { it.cn0 >= thr }.map { m -> Sp3V5.Ob(m.sys, m.svid, smd[m.key] ?: m.pr, m.cn0, m.prr) }
             if (obs.size < 5 || !Sp3Solver.inRange(sp3, ep.t)) { none++; return@readRaw }
-            val f = try { Sp3V5.solve(ep.week, ep.tow, obs, sp3, isb = true, raim = true) } catch (_: Exception) { null }
+            val last = sols.lastOrNull()
+            val hc = if (hMsl != null && last != null) Sp3V5.HCon(hMsl + geoidN, 2.0,
+                PositionSolver.llhToEcef(Math.toRadians(last[0]), Math.toRadians(last[1]), hMsl + geoidN)) else null
+            val f = try { Sp3V5.solve(ep.week, ep.tow, obs, sp3, isb = true, raim = true, hCon = hc) } catch (_: Exception) { null }
             if (f == null) { none++; return@readRaw }
             vel = try { DopplerVel.solve(f.sats, f.x) } catch (_: Exception) { null }
             var lat = f.sol.lat; var lon = f.sol.lon
@@ -55,8 +59,15 @@ object Own {
             Quad(20.0, true, true, "+ išlyginimas (kaip programoje)"),
             Quad(25.0, true, true, "slenkstis 25 + glod. + išlyg."),
             Quad(30.0, true, true, "slenkstis 30 + glod. + išlyg."),
+            Quad(20.0, true, true, "H222 kaip programoje + aukštis 222"),
+            Quad(20.0, true, true, "H172 kaip programoje + aukštis 172"),
         )) {
-            val (r, sols) = run(raw, sp3, truth, thr, sm, fl, nm)
+            val hm = when { nm.startsWith("H222") -> 222.0; nm.startsWith("H172") -> 172.0; else -> null }
+            val (r, sols) = run(raw, sp3, truth, thr, sm, fl, nm, hm)
+            if (hm != null) { val base = run(raw, sp3, truth, 20.0, true, true, "x").second
+                val m1 = sols.map { it[0] }.sorted()[sols.size / 2] to sols.map { it[1] }.sorted()[sols.size / 2]
+                val m0 = base.map { it[0] }.sorted()[base.size / 2] to base.map { it[1] }.sorted()[base.size / 2]
+                println("   vidurio poslinkis nuo varianto be aukščio: %.1f m".format(PositionSolver.horizDist(m0.first, m0.second, m1.first, m1.second))) }
             println("%-34s n=%4d be pad.=%4d | p50 %6.2f m  p95 %7.2f m  šuolių>5m %d".format(r.name, r.n, r.none, r.p50, r.p95, r.jumps))
             if (nm.startsWith("+ išlyg") && chip != null && chip.isNotEmpty()) {
                 val ref = truth ?: (sols.map { it[0] }.sorted()[sols.size / 2] to sols.map { it[1] }.sorted()[sols.size / 2])

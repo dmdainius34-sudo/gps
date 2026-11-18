@@ -225,8 +225,9 @@ object LiveRtk {
     /** Trumpa RTK pastaba būsenos eilutei: kodėl nėra FIX, ar fazė nutrūksta per dažnai. */
     fun note(): String {
         if (engine.lastFix) return ""
-        val seg = engine.phaseSegMedian()
-        if (!seg.isNaN() && seg < 15.0) return "RTK negalimas: fazė nutrūksta kas ~%.0f s".format(Locale.US, seg)
+        // kiek fazės matavimų ilgose (≥ 30 s) atkarpose – mediana klaidindavo (daug trumpai mirksinčių palydovų)
+        val long = engine.phaseLongShare()
+        if (!long.isNaN() && long < 0.3) return "RTK sunkus: tik %.0f %% fazės nenutrūksta ≥ 30 s".format(Locale.US, 100 * long)
         return engine.fixNote
     }
 
@@ -375,6 +376,7 @@ object LiveRtk {
             if (engine.lastFix) "FIX" else "FLOAT", s.lat, s.lon, s.h, s.hacc, s.sats, engine.lastRatio, (System.currentTimeMillis() - lastMs) / 1000, epochs, engine.run.fixEpochs, source) + (if (engine.qPos > 0.1) ", judant" else ", stovint") +
             (note().let { if (it.isEmpty()) "" else "; $it" }) +
             "; nepertraukta fazė (mediana) " + engine.phaseSegMedian().let { if (it.isNaN()) "nežinoma" else "%.0f s".format(Locale.US, it) } +
+            engine.phaseLongShare().let { if (it.isNaN()) "" else ", ilgose (≥ 30 s) atkarpose %.0f %% fazės".format(Locale.US, 100 * it) } +
             "; kaukė praleido ${engine.masked} palydovų-epochų, Doppler aptiko ${engine.dopplerSlips} fazės trūkių; kitoms programoms perduota $pushedN, sulaikyta $heldN (nesuartėjęs ar šuolis); " + MockLoc.status
     }
 }

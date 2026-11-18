@@ -2404,6 +2404,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawPenRay()
         val pin = pinWorld()
         val phaseIdsNow = LiveRtk.phaseIds()
+        val nowS = android.os.SystemClock.uptimeMillis() / 1000.0
         for (si in satsI) {
             val sat = si.sat
             val p = si.pos
@@ -2427,14 +2428,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val tumble = if (SatHealth.bad(sat.const, sat.svid)) t * 90f + sat.svid * 37f else 0f
             drawSatModel(p, col, glow, usedK, sat.const, tumble)
             if (tumble != 0f) drawSparks(p, t, sat.svid)
-            // RTK fazės palydovas – ryškus žydras švytėjimas (lėtai pulsuoja)
-            if (phaseIdsNow.isNotEmpty() && starTex != 0) {
+            // RTK fazės palydovas – pastovus žydras švytėjimas: užsižiebia, kai fazė atsiranda, dega tolygiai, užgęsta, kai dingsta
+            if (starTex != 0) {
                 val sc = when (sat.const) { "GPS" -> 'G'; "GAL" -> 'E'; "GLO" -> 'R'; "BDS" -> 'C'; else -> '?' }
-                if ("%c%02d".format(java.util.Locale.US, sc, sat.svid) in phaseIdsNow) {
-                    val pulse = 0.75f + 0.25f * sin(t * 2.2f + sat.svid)
+                val id = "%c%02d".format(java.util.Locale.US, sc, sat.svid)
+                val a = phaseGlow(id, id in phaseIdsNow, nowS)
+                if (a > 0.01f) {
                     GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
-                    billboard(p, eyeI, 0.075f * pulse, 0.075f * pulse, starTex, 0.45f, 0.95f, 1f, 0.55f)
-                    billboard(p, eyeI, 0.03f, 0.03f, starTex, 0.85f, 1f, 1f, 0.8f * pulse)
+                    billboard(p, eyeI, 0.07f, 0.07f, starTex, 0.45f, 0.95f, 1f, 0.55f * a)
+                    billboard(p, eyeI, 0.03f, 0.03f, starTex, 0.85f, 1f, 1f, 0.8f * a)
                     GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
                 }
             }
@@ -2457,6 +2459,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
             }
         }
+        glowT = nowS
         drawCorrectionWaves(pin, t)
         if (obstacleMode > 0) drawObstacleSky(pin)
         if (Uvi.enabled) drawUvi()
@@ -5479,6 +5482,21 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val fl = ((t * 1.7f + seed) % 3f)
         if (fl < 0.12f) billboard(p, eyeI, 0.05f, 0.05f, starTex, 1f, 0.95f, 0.8f, (0.12f - fl) / 0.12f)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+    }
+
+    /**
+     * Fazės švytėjimo ryškumas 0..1 kiekvienam palydovui: įsižiebia per ~0,25 s, užgęsta per ~0,5 s; vienos epochos (iki 1,2 s)
+     * pertrauka švytėjimo neišjungia – kad nemirgėtų, kai fazė iš tikro nedingo.
+     */
+    private val glowA = HashMap<String, Float>(); private val glowSeen = HashMap<String, Double>(); private var glowT = 0.0
+    private fun phaseGlow(id: String, on: Boolean, now: Double): Float {
+        if (on) glowSeen[id] = now
+        val lit = now - (glowSeen[id] ?: -99.0) < 1.2
+        val dt = (now - glowT).coerceIn(0.0, 0.1).toFloat()
+        val a0 = glowA[id] ?: 0f
+        val a = if (lit) (a0 + dt * 4f).coerceAtMost(1f) else (a0 - dt * 2f).coerceAtLeast(0f)
+        glowA[id] = a
+        return a
     }
 
     private var mutedTex = 0

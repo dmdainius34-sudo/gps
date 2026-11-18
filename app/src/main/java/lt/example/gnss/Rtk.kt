@@ -188,6 +188,14 @@ object Rtk {
         /** Nepertraukto fazės matavimo atkarpų ilgiai (epochomis) – rodo, ar RTK apskritai įmanomas. */
         private val segs = ArrayDeque<Int>()
         fun phaseSegMedian(): Double = synchronized(segs) { if (segs.size < 10) Double.NaN else segs.sorted()[segs.size / 2].toDouble() }
+        /**
+         * Kokia fazės matavimų dalis yra ilgose (≥ 30 s) nenutrūkusiose atkarpose – įskaitant dar tebesitęsiančias.
+         * Mediana klaidina: kabinoje daug trumpai mirksinčių palydovų, nors dalis fazę laiko minutėmis (2026-11-18 kabinoje 56 %).
+         */
+        fun phaseLongShare(): Double = synchronized(segs) {
+            val all = segs.toList() + lockN.values.toList()
+            val tot = all.sum(); if (tot < 60) Double.NaN else all.filter { it >= 30 }.sum().toDouble() / tot
+        }
         private val lockN = HashMap<String, Int>()
         var lastPhase = 0
             private set

@@ -6431,7 +6431,7 @@ class DraggablePanel(
         val now = System.currentTimeMillis()
         if (now - autoMs < 900L) return
         autoMs = now
-        val s = list.filter { it.cn0 > 0f && it.const in setOf("GPS", "GAL", "BDS", "QZS") && (it.eph || it.used) && !SatHealth.bad(it.const, it.svid) }
+        val s = list.filter { it.cn0 > 0f && it.const in setOf("GPS", "GAL", "BDS", "QZS", "GLO") && (it.eph || it.used) && !SatHealth.bad(it.const, it.svid) }
             .distinctBy { it.const to it.svid }
             .map { CnoMask.S(it.const, it.cn0.toDouble(), it.elev.toDouble(), it.az.toDouble()) }
         if (CnoMask.autoStep(s)) {

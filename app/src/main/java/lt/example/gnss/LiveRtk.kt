@@ -254,9 +254,10 @@ object LiveRtk {
         // slenkstis su 3 dB histereze kiekvienam palydovui: įeina nuo slenksčio, išeina tik nukritęs 3 dB žemiau –
         // ties slenksčiu mirgantys palydovai nekaitalioja rinkinio (kiekvienas pasikeitimas pastumia padėtį)
         val sm = HashMap<Int, Double>()
-        sm.putAll(sppSmooth.applyEpoch(ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 }, ep.t))
+        sm.putAll(sppSmooth.applyEpoch(ep.meas.filter { (if (it.sys == 'R') (it.state and Sp3V5.STATE_GLO_TOD_DECODED) else (it.state and Sp3V5.STATE_TOW_DECODED)) != 0 }, ep.t))
         fun pr(m: Sp3V5.M) = sm[m.key] ?: m.pr
-        val obs = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 && !SatHealth.bad(it.sys, it.svid) &&
+        // GLONASS įtrauktas (GSDC 2023: Pixel 7 Pro p50 2,9 → 2,6 m, p95 8,8 → 5,9 m; S22 Ultra 5,2 → 5,0 m), svoris /4 (Sp3V5.GLO_W)
+        val obs = ep.meas.filter { (if (it.sys == 'R') (it.state and Sp3V5.STATE_GLO_TOD_DECODED) else (it.state and Sp3V5.STATE_TOW_DECODED)) != 0 && !SatHealth.bad(it.sys, it.svid) &&
                 (it.cn0 >= CnoMask.min || (it.cn0 >= CnoMask.min - 3.0 && (it.sys.toString() + it.svid) in sppIn)) }
             .also { l -> sppIn = l.map { it.sys.toString() + it.svid }.toSet() }
             .map { m -> (if (DualFreq.enabled) DualFreq.iono(m, ep.t) else null)?.let { i -> Sp3V5.Ob(m.sys, m.svid, pr(m) - i, m.cn0, m.prr, ifree = true) } ?: Sp3V5.Ob(m.sys, m.svid, pr(m), m.cn0, m.prr) }
@@ -357,6 +358,15 @@ object LiveRtk {
 
     /** (ECEF m, laikrodžio pataisa s) arba null. */
     private fun state(sys: Char, svid: Int, t: Double): Pair<DoubleArray, Double>? {
+        if (sys == 'R') {
+            // GLONASS: iš palydovo eilučių arba BRDC; laikrodis −τn + γn·(t − tb)
+            val id = "R%02d".format(Locale.US, svid)
+            val e = BroadcastEph.gloEph(svid)?.takeIf { kotlin.math.abs(it.tbGps - t) < 1.5 * 3600 }
+                ?: Brdc.set?.glo?.get(id)?.minByOrNull { kotlin.math.abs(it.tbGps - t) } ?: return null
+            if (kotlin.math.abs(e.tbGps - t) > 1.5 * 3600) return null
+            val pos = GloNav.position(e, t, 1.5 * 3600) ?: return null
+            return pos to (-e.tauN + e.gammaN * (t - e.tbGps))
+        }
         val e = when (sys) { 'G' -> BroadcastEph.get(svid); 'E' -> BroadcastEph.galEph(svid); else -> null }
         if (e != null && kotlin.math.abs(t - e.toeAbs) < 4 * 3600) {
             val s = PositionSolver.satState(e, t - e.week * 604_800.0)

@@ -225,6 +225,9 @@ object Sp3V5 {
 
     fun weight(el: Double, cn0: Double) = sin(el).pow(2) * 10.0.pow((cn0 - 45.0) / 10.0)
 
+    /** GLONASS svoris (FDMA: kiekvienas dažnis turi savo imtuvo poslinkį): GSDC 2023 važiavimuose geriausia /4. */
+    const val GLO_W = 0.25
+
     class Fit(val sol: PositionSolver.Solution, val clocks: Map<Char, Double>, val x: DoubleArray, val dropped: List<String>, val sats: List<SatEp>)
 
     /**
@@ -288,7 +291,7 @@ object Sp3V5 {
                     val l = Sp3Solver.look(x, s.rp, rho)
                     if (l[4] < MASK) continue
                     corr = Sp3Solver.saastamoinen(l[0], l[2], l[4]) + (if (s.ifree) 0.0 else Sp3Solver.klobuchar(l[0], l[1], l[3], l[4], tow))
-                    if (weighted) w = weight(l[4], s.cn0)
+                    if (weighted) w = weight(l[4], s.cn0) * (if (s.sys == 'R') GLO_W else 1.0)
                 }
                 val h = DoubleArray(np); h[0] = dx / rho; h[1] = dy / rho; h[2] = dz / rho
                 val ci = if (isb) systems.indexOf(ck(s)) else 0

@@ -48,13 +48,13 @@ fun readGt(f: File): Map<Long, Gt> {
     return m
 }
 
-class Opt(val name: String, val smooth: Int, val dual: Boolean, val filter: Boolean, val autoThr: Boolean, val thr: Double = 20.0, val hyst: Boolean = false, val dsIono: Boolean = false, val few: Boolean = true, val velPred: Boolean = false, val adr: Boolean = false, val glo: Boolean = false, val ionoMode: Int = 0, val tdcpK: Double = 0.0)
+class Opt(val name: String, val smooth: Int, val dual: Boolean, val filter: Boolean, val autoThr: Boolean, val thr: Double = 20.0, val hyst: Boolean = false, val dsIono: Boolean = false, val few: Boolean = true, val velPred: Boolean = false, val adr: Boolean = false, val glo: Boolean = false, val ionoMode: Int = 0, val tdcpK: Double = 0.0, val gloDb: Double = 0.0)
 
 val agg = LinkedHashMap<String, MutableList<DoubleArray>>()
 fun run(rows: List<Row>, gt: Map<Long, Gt>, o: Opt): String {
     val sm = Sp3V5.Smoother(doppler = true, useAdr = o.adr, dopWindow = when (o.smooth) { 2 -> 100; 4 -> 20; 5 -> 50; 6 -> 100; else -> 20 })
     PosFilter.reset(); CnoMask.min = o.thr; CnoMask.auto = o.autoThr
-    PosFilter.moveGain = when { o.name.startsWith("D2") -> 0.2; o.name.startsWith("D1") -> 0.1; else -> 0.5 }
+    PosFilter.moveGain = 0.5
     var inSet = emptySet<String>()
     val dualTmp = HashMap<Int, Pair<Double, Double>>()
     var prevTd: Map<Int, DoubleArray>? = null; var prevTdMs = 0L; var outX: DoubleArray? = null; var tdHit = 0; var tdMiss = 0
@@ -64,10 +64,11 @@ fun run(rows: List<Row>, gt: Map<Long, Gt>, o: Opt): String {
     for ((ms, rs) in byEp) {
         val g = gt[ms] ?: continue
         n++
-        val l1 = rs.filter { !it.l5 && it.sys != 'R' && (it.state and 8) != 0 }
+        // GLONASS: laikas – paros laikas (GLO_TOD_DECODED 0x80), kitiems – TOW (8)
+        val l1 = rs.filter { !it.l5 && (it.sys != 'R' || o.glo) && (it.state and (if (it.sys == 'R') 0x80 else 8)) != 0 }
         val l5 = rs.filter { it.l5 && (it.state and 8) != 0 }.associateBy { it.sys.code * 1000 + it.svid }
         val t = l1.first().let { it.tow } + 0.0
-        val ms_ = l1.map { r -> Sp3V5.M(r.sys, r.svid, r.pr, r.cn0, Sp3V5.STATE_TOW_DECODED, 0, if (o.adr || o.smooth >= 4) r.adr else null, if (o.adr || o.smooth >= 4) r.adrSt else 0, r.prr).also { m -> if (o.dual) m.pr5 = l5[m.key]?.pr } }
+        val ms_ = l1.map { r -> Sp3V5.M(r.sys, r.svid, r.pr, if (r.sys == 'R') r.cn0 - o.gloDb else r.cn0, Sp3V5.STATE_TOW_DECODED, 0, if (o.adr || o.smooth >= 4) r.adr else null, if (o.adr || o.smooth >= 4) r.adrSt else 0, r.prr).also { m -> if (o.dual) m.pr5 = l5[m.key]?.pr } }
         if (o.autoThr) CnoMask.autoStep(l1.map { CnoMask.S(it.sys.toString(), it.cn0, it.el, it.az) })
         val smoothed: Map<Int, Double> = when (o.smooth) {
             0 -> emptyMap()
@@ -182,9 +183,8 @@ fun wlsBaseline(rows: List<Row>, gt: Map<Long, Gt>): String {
 fun main(args: Array<String>) {
     if (args.isNotEmpty() && args[0] == "own") { for (d in args.drop(1)) Own.main(File(d), null); return }
     val opts = listOf(
-        Opt("D  K=0.5 (dabar)", 1, false, true, false, 20.0, velPred = true),
-        Opt("D2 K=0.2", 1, false, true, false, 20.0, velPred = true),
-        Opt("D1 K=0.1", 1, false, true, false, 20.0, velPred = true),
+        Opt("G0 be GLONASS (dabar)", 1, false, true, false, 20.0, velPred = true),
+        Opt("G2 + GLONASS (programos svoris /4)", 1, false, true, false, 20.0, velPred = true, glo = true),
     )
     for (dir in args) {
         val rows = readGsdc(File(dir, "device_gnss.csv")); val gt = readGt(File(dir, "ground_truth.csv"))

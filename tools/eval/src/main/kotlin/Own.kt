@@ -9,6 +9,7 @@ import java.io.File
 object Own {
     class Res(val name: String, val p50: Double, val p95: Double, val jumps: Int, val n: Int, val none: Int)
 
+    var useGlo = true
     fun run(raw: File, sp3: Sp3Reader, truth: Pair<Double, Double>?, thr: Double, smooth: Boolean, filter: Boolean, name: String,
             hMsl: Double? = null, geoidN: Double = 24.89, forceMove: Boolean = false): Pair<Res, List<DoubleArray>> {
         val sm = Sp3V5.Smoother(doppler = true, useAdr = false, dopWindow = 20)
@@ -16,8 +17,8 @@ object Own {
         PosFilter.moveGain = when { name.startsWith("M2") -> 0.2; name.startsWith("M1") -> 0.1; else -> 0.5 }
         val sols = ArrayList<DoubleArray>(); var none = 0
         var vel: DopplerVel.Vel? = null
-        Sp3V5.readRaw(raw.bufferedReader(), glo = false) { ep ->
-            val ms = ep.meas.filter { it.sys != 'R' && (it.state and Sp3V5.STATE_TOW_DECODED) != 0 }
+        Sp3V5.readRaw(raw.bufferedReader(), glo = useGlo) { ep ->
+            val ms = ep.meas.filter { (if (it.sys == 'R') (it.state and Sp3V5.STATE_GLO_TOD_DECODED) else (it.state and Sp3V5.STATE_TOW_DECODED)) != 0 }
             val smd = if (smooth) sm.applyEpoch(ms, ep.t) else emptyMap()
             val obs = ms.filter { it.cn0 >= thr }.map { m -> Sp3V5.Ob(m.sys, m.svid, smd[m.key] ?: m.pr, m.cn0, m.prr) }
             if (obs.size < 5 || !Sp3Solver.inRange(sp3, ep.t)) { none++; return@readRaw }
@@ -54,6 +55,10 @@ object Own {
         val env = rep?.firstOrNull { it.startsWith("Aplinka") } ?: ""
         println("=== ${dir.name}: ${if (truth != null) "TIESA – žinomos koordinatės" else "tiesos nėra – paklaida nuo sprendinių medianos (tik sklaida)"}; $env")
         val chip = File(dir, "gnss_fix.csv").takeIf { it.exists() }?.readLines()?.drop(1)?.mapNotNull { l -> val p = l.split(','); p.getOrNull(1)?.toDoubleOrNull()?.let { a -> p[2].toDoubleOrNull()?.let { b -> a to b } } }
+        for (g in listOf(false, true)) { useGlo = g
+            val (r0, _) = run(raw, sp3, truth, 20.0, true, true, "x")
+            println("   %-30s p50 %6.2f m  p95 %7.2f m  šuolių>5m %d".format(if (g) "kaip programoje + GLONASS" else "kaip programoje be GLONASS", r0.p50, r0.p95, r0.jumps)) }
+        useGlo = true
         for ((thr, sm, fl, nm) in listOf(
             Quad(20.0, false, false, "kodas, slenkstis 20"),
             Quad(20.0, true, false, "+ glodinimas pagal Doplerį"),

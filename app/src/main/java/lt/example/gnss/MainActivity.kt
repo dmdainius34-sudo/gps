@@ -4175,12 +4175,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             // kyla ar leidžiasi; kada nusileis
             Sp3Live.ecefKm(id, t + 600.0)?.let { p10 ->
                 val e10 = Sp3Live.azEl(p10, obsLat, obsLon, 0.0).second
-                var setT = -1.0; var k = 120.0
-                while (k <= 14 * 3600.0) { val pk = Sp3Live.ecefKm(id, t + k) ?: break; if (Sp3Live.azEl(pk, obsLat, obsLon, 0.0).second < 0) { setT = k; break }; k += 120.0 }
+                // reach – iki kada orbita žinoma (GLONASS žinutės galioja tik ~1,5 h, SP3 – iki failo galo)
+                var setT = -1.0; var k = 120.0; var reach = 14 * 3600.0
+                while (k <= 14 * 3600.0) { val pk = Sp3Live.ecefKm(id, t + k) ?: run { reach = k - 120.0; null } ?: break
+                    if (Sp3Live.azEl(pk, obsLat, obsLon, 0.0).second < 0) { setT = k; break }; k += 120.0 }
                 var maxEl = el; var j = 60.0
                 while (j <= (if (setT > 0) setT else 6 * 3600.0)) { val pk = Sp3Live.ecefKm(id, t + j) ?: break; maxEl = maxOf(maxEl, Sp3Live.azEl(pk, obsLat, obsLon, 0.0).second); j += 300.0 }
                 rows.add("Judėjimas danguje" to (if (e10 > el) "kyla" else "leidžiasi") + " (po 10 min. aukštis %.0f°)".format(L, e10) +
-                    (if (setT > 0) "; nusileis po %d h %02d min".format(L, (setT / 3600).toInt(), ((setT % 3600) / 60).toInt()) else "; per 14 h nenusileis") +
+                    (if (setT > 0) "; nusileis po %d h %02d min".format(L, (setT / 3600).toInt(), ((setT % 3600) / 60).toInt())
+                     else if (reach < 14 * 3600.0) "; per artimiausias %d h %02d min nenusileis (toliau orbita dar nežinoma)".format(L, (reach / 3600).toInt(), ((reach % 3600) / 60).toInt())
+                     else "; per 14 h nenusileis") +
                     "; aukščiausiai %.0f°".format(L, maxEl))
             }
         }

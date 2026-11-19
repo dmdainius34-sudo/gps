@@ -2723,7 +2723,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Skrydžio metu galaktika ryškėja kartu su fono blėsimu (kitaip – tik nuo ~0,7 kpc). */
     private fun galFade(): Float = if (flight != null) maxOf(galA, 1f - bgFade()) else galA
     /** Artimų žvaigždžių mastelis: skrydžio metu – kaip galaktikos (kad Šiaurinė žvaigždė ir kaimynės būtų tikrose vietose joje). */
-    private fun starScale(): Float = if (flight != null) GAL_G else GAL_S
+    private fun starScale(): Float = GAL_G                              // visada – vienas tikras mastelis su galaktika
     /**
      * Galaktikos ryškumas: nuo kolapso 0,85 iki 75 % likusio atitolinimo (logaritmiškai) – iš labai blankaus (u²) iki pilno,
      * dar sušvelninta laike (~0,35 s), kad net greitai suspaudus pirštais išryškėtų tolygiai.
@@ -2990,8 +2990,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 billboard(bg, eyeI, cr, cr, coverTex, 0f, 0f, 0f, (t * 4f).coerceAtMost(1f) * bgFade())
                 continue
             }
-            // tikra 3D vieta aplink Saulę (galaktikos mastelis: GAL_S vnt./kpc, 1 šm = 0,3066 pc)
-            val tgt = FloatArray(3) { (fP[it] + s.dir[it] * (s.ly * 0.3066 / 1000.0 * GAL_S)).toFloat() }
+            // tikra 3D vieta aplink Saulę (galaktikos mastelis: starScale() = GAL_G vnt./kpc, 1 šm = 0,3066 pc)
+            val tgt = FloatArray(3) { (fP[it] + s.dir[it] * (s.ly * 0.3066 / 1000.0 * starScale())).toFloat() }
             val p = FloatArray(3) { bg[it] + (tgt[it] - bg[it]) * t }
             val dx = p[0] - camPos[0]; val dy = p[1] - camPos[1]; val dz = p[2] - camPos[2]
             val dc = sqrt(dx * dx + dy * dy + dz * dz)

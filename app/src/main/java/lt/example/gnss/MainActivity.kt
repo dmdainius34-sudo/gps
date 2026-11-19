@@ -7110,6 +7110,48 @@ class DraggablePanel(
     /** „Šaltas startas“ – ištrinti GNSS pagalbos duomenis. */
     var onColdStart: (() -> Unit)? = null
     var onScreenTest: (() -> Unit)? = null
+    private val navLiveBtn = Button(context).apply {
+        text = "Žinutės gyvai"; textSize = 12f; isAllCaps = false; minWidth = 0; minimumWidth = 0
+        setPadding((8 * resources.displayMetrics.density).toInt(), 0, (8 * resources.displayMetrics.density).toInt(), 0)
+        setOnClickListener { showNavLive() }
+    }
+
+    /**
+     * Gyvas visų palydovų navigacinių žinučių langas: kiekvienam – C/N0, žinutės rūšis (efemeridė, almanachas…), kiek gauta,
+     * o bitai „rašomi“ paraidžiui tokiu greičiu, kokiu juos siunčia palydovas (GPS ir GLONASS 50, Galileo ~114 bitų/s).
+     */
+    private fun showNavLive() {
+        val dp = resources.displayMetrics.density
+        val tv = TextView(context).apply { typeface = android.graphics.Typeface.MONOSPACE; textSize = 11f; setTextIsSelectable(true)
+            setPadding((12 * dp).toInt(), (6 * dp).toInt(), (12 * dp).toInt(), 0) }
+        var alive = true
+        val tick = object : Runnable { override fun run() {
+            if (!alive) return
+            val now = System.currentTimeMillis()
+            val cn = lastPanelSats.groupBy { it.const + it.svid }.mapValues { (_, l) -> l.maxOf { it.cn0 } }
+            val keys = NavBits.keys().sortedByDescending { NavBits.get(it)?.tMs ?: 0L }
+            tv.text = if (keys.isEmpty()) "Žinučių dar negauta (lustas jas siunčia, kai palydovo signalas ≥ ~25 dB-Hz)" else buildString {
+                append("Palydovų, siunčiančių žinutes: ${keys.size}. Bitai bėga palydovo greičiu; ★ – efemeridė, ✦ – almanachas\n\n")
+                for (k in keys) {
+                    val m = NavBits.get(k) ?: continue; val st = NavBits.stat(k)
+                    val age = (now - m.tMs) / 1000.0
+                    val shown = (age * m.rate).toInt().coerceIn(0, m.bits.length)
+                    val mark = if (m.eph) "★" else if (m.label.contains("almanach")) "✦" else "·"
+                    append("%-6s %3s dB  %s %s  (prieš %.0f s; viso %d, ef. %d, alm. %d)\n".format(java.util.Locale.US, k,
+                        cn[k]?.let { "%.0f".format(java.util.Locale.US, it) } ?: "–", mark, m.label, age, st?.n ?: 0, st?.eph ?: 0, st?.alm ?: 0))
+                    val txt = m.bits.substring(maxOf(0, shown - 60), shown)
+                    append("       ").append(txt.chunked(10).joinToString(" ")).append(if (shown < m.bits.length) "▌" else "").append("\n")
+                }
+            }
+            tv.postDelayed(this, 200)
+        } }
+        val dlg = android.app.AlertDialog.Builder(context).setTitle("Navigacinės žinutės gyvai")
+            .setView(android.widget.ScrollView(context).apply { addView(tv) })
+            .setPositiveButton("Uždaryti", null).show().also { WinUtil.draggable(it) }
+        dlg.setOnDismissListener { alive = false }
+        tv.post(tick)
+    }
+
     private val screenBtn = Button(context).apply {
         text = "Ekrano testai"; textSize = 12f; isAllCaps = false; minWidth = 0; minimumWidth = 0
         setPadding((8 * resources.displayMetrics.density).toInt(), 0, (8 * resources.displayMetrics.density).toInt(), 0)
@@ -7211,6 +7253,7 @@ class DraggablePanel(
         inputRow.addView(shareBtn)
         recRow.addView(coldBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
         recRow.addView(screenBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
+        recRow.addView(navLiveBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
         recRow.addView(endRecBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
 
         // Veiksmų eilutės neslenka, todėl dalinimosi mygtukas visada matomas

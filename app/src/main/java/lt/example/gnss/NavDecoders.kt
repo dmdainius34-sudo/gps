@@ -253,6 +253,7 @@ object NavBits {
     private val last = java.util.concurrent.ConcurrentHashMap<String, Msg>()
 
     fun get(key: String): Msg? = last[key]
+    fun keys(): List<String> = last.keys.toList()
 
     /** Kiek žinučių iš palydovo gavo lustas nuo programos paleidimo. */
     class Stat { var n = 0; var bits = 0L; var eph = 0; var alm = 0; var firstMs = 0L; var lastMs = 0L }

@@ -2312,8 +2312,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val mvT = FloatArray(16); Matrix.multiplyMM(mvT, 0, mvU, 0, tr, 0)
             Matrix.multiplyMM(mvpI, 0, pv, 0, mvT, 0)
         }
-        System.arraycopy(mvpI, 0, lastMvpI, 0, 16)
         if (observerView()) observerCamera()
+        // bakstelėjimui (palydovai, Saulė, Mėnulis) – ta pati matrica, kuria piešiama (po stebėtojo kameros; anksčiau – prieš ją, todėl pirštas „nepataikydavo“)
+        System.arraycopy(mvpI, 0, lastMvpI, 0, 16)
         // Stebėtojo lokali sistema (dangaus kupolas, horizontas): ENU -> I + vieta
         java.util.Arrays.fill(lMat, 0f)
         for (c in 0..2) for (rr in 0..2) lMat[c * 4 + rr] = fQ[rr * 3 + c].toFloat()
@@ -2373,11 +2374,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
 
         // 5) Laipsnių žymos ant horizonto
+        // stebėtojo vaizde kamera už stebėtojo: rodomos žymos žiūrėjimo kryptimi (žiūrint į rytus – E), ne kameros pusėje (buvo W)
+        val fwd = floatArrayOf(
+            (fE[0] * lookI[0] + fE[1] * lookI[1] + fE[2] * lookI[2]).toFloat(),
+            (fN[0] * lookI[0] + fN[1] * lookI[1] + fN[2] * lookI[2]).toFloat(), 0f)
         for (d in 0 until 360 step 30) {
             val tex = labelTex[labelOf(d)] ?: continue
             val a = Math.toRadians(d.toDouble())
             val c = floatArrayOf((1.04 * sin(a)).toFloat(), (1.04 * cos(a)).toFloat(), 0f)
-            if (dot3(c, eye) < 0.05f) continue
+            if (if (observerView()) dot3(c, fwd) < -0.2f else dot3(c, eye) < 0.05f) continue
             val col = when (d) { 0 -> floatArrayOf(0.94f, 0.27f, 0.27f); 90, 180, 270 -> floatArrayOf(0.98f, 0.8f, 0.08f); else -> floatArrayOf(0.85f, 0.87f, 0.9f) }
             val card = d % 90 == 0
             billboard(c, eye, if (card) 0.18f else 0.09f, if (card) 0.09f else 0.045f, tex, col[0], col[1], col[2], 1f)
@@ -2559,8 +2564,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var galN = 0
     /** Saulės aplinkos žvaigždžių (ir Šiaurinės, artimų žvaigždžių) mastelis, vnt./kpc: atitolinus jos sutraukiamos į tašką – Saulės vietą. */
     private val GAL_S = 500f
-    /** Paukščių Tako modelio mastelis (vnt./kpc): dvigubai didesnis už žvaigždžių – galaktika iš šalies, bet ×2 didesnė. */
-    private val GAL_G = 2f * GAL_S
+    /** Paukščių Tako modelio mastelis (vnt./kpc): 4× didesnis už žvaigždžių (pradžioje buvo lygus). Pasvirimas tikras – J2000 galaktikos ašys stebėtojo horizonto atžvilgiu. */
+    private val GAL_G = 4f * GAL_S
 
     /** Taškai pusiaujo (sideralinėje) erdvėje, Saulė – koordinačių pradžioje; stebėtojo poslinkis (fP) pridedamas šešėliuoklyje. */
     private fun buildGalaxy() {
@@ -2946,7 +2951,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uK"), pxPerUnit * 0.02f * GAL_G)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uMax"), 4f * density)
         // toliau – ryškiau (galaktika mažėja, šviesa susikaupia), iki ×3
-        // ×GAL_G/GAL_S: tiek pat taškų ×4 didesniame plote – kad ryškumas liktų toks pat kaip ×1 dydžio (skaičiavimas: mediana 0,84 = 0,84)
+        // ×GAL_G/GAL_S: tiek pat taškų ×4 didesniame plote – kad ryškumas liktų toks pat kaip ×1 dydžio (skaičiavimas iš šono: mediana 0,84 → 1,0)
         val gain = (1f + 2f * sstep(4000f, GALAXY_ZOOM, zoom)) * (GAL_G / GAL_S)
         // HDR: šviesa virš įprasto balto (rgb > 1); be HDR – tik permatomumas iki 1
         GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uA"), if (Hdr.on) a else a * gain)
@@ -3045,10 +3050,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val dst = if (aboveHorizon(a) && aboveHorizon(b)) up else dn
             dst.add(a[0]); dst.add(a[1]); dst.add(a[2]); dst.add(b[0]); dst.add(b[1]); dst.add(b[2])
         }
-        GLES20.glLineWidth(2f * density)
+        GLES20.glLineWidth(1f)                                              // 1 taško, kaip kitos orbitos
         drawLines(dn.toFloatArray(), 0.85f, 0.7f, 1f, 0.18f)
         drawLines(up.toFloatArray(), 0.85f, 0.7f, 1f, 0.6f)
-        GLES20.glLineWidth(1.5f * density)
     }
 
     /** Segmentai tarp gretimų taškų, abu virš horizonto. */
@@ -3169,7 +3173,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         // Su gylio testu: Žemės rutulys uždengia orbitos dalį, einančią per jį ir už jo
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
-        GLES20.glLineWidth(1f * density)                                    // plona mėlyna orbitos linija
+        GLES20.glLineWidth(1f)                                              // plona (1 taško, kaip trikampio) mėlyna orbitos linija
         drawLines(seg, 0.35f, 0.62f, 1f, 0.7f)
         drawLines(ticks, 0.55f, 0.75f, 1f, 0.9f)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
@@ -4062,6 +4066,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var headingSm = Double.NaN
     /** Kameros vietos kryptis (už stebėtojo, I erdvėje): arti – sutampa su žiūrėjimo kryptimi, toli (žvaigždės, galaktika) – sustingsta. */
     private var posDir: DoubleArray? = null
+    /** Žiūrėjimo kryptis (I erdvėje) – stebėtojo vaizde horizonto žymoms. */
+    private var lookI = floatArrayOf(0f, 0f, 1f)
     /** Laisvo žvilgsnio kryptis ir ekrano viršus (planšetės nugarėlė ir viršus, I erdvėje), išlyginti. */
     private var lookFreeSm: DoubleArray? = null
     private var upFreeSm: DoubleArray? = null
@@ -4296,6 +4302,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val ud = upMix[0] * lookB[0] + upMix[1] * lookB[1] + upMix[2] * lookB[2]
         val camUpB = nrm(DoubleArray(3) { upMix[it] - ud * lookB[it] })
         // kameros vieta: arti seka žiūrėjimo kryptį (už nugaros), toli – sustingsta (I erdvėje, todėl ir Žemei sukantis lieka vietoje)
+        lookI = floatArrayOf(lookB[0].toFloat(), lookB[1].toFloat(), lookB[2].toFloat())
         val pd0 = posDir
         posDir = if (pd0 == null) lookB else nrm(DoubleArray(3) { pd0[it] + (1.0 - freeze) * (lookB[it] - pd0[it]) })
         val lookPos = posDir!!
@@ -4940,6 +4947,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             prev = p
         }
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        GLES20.glLineWidth(1f)                                              // 1 taško, kaip trikampio linijos
         drawLines(pts.toFloatArray(), 0.8f, 0.8f, 0.85f, 0.35f)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
     }

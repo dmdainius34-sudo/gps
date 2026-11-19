@@ -88,7 +88,10 @@ class CnoFallView(ctx: Context) : View(ctx) {
     private val thr = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF000000.toInt() }
 
     fun addSample(sats: List<Sat>) {
-        val m = sats.filter { it.cn0 > 0f }.associate { (it.const + it.svid) to (it.cn0 to constColor(it.const)) }
+        // vienas palydovas gali turėti kelis signalus (GPS L1 C/A ir L1C, BDS B1I ir B1C): imamas stipriausias –
+        // kitaip eilutėse jų reikšmės keisdavosi vietomis ir linija šokinėdavo per visą grafiką („košė“)
+        val m = sats.filter { it.cn0 > 0f }.groupBy { it.const + it.svid }
+            .mapValues { (_, l) -> val b = l.maxByOrNull { it.cn0 }!!; b.cn0 to constColor(b.const) }
         rows.addFirst(m)
         while (rows.size > 60) rows.removeLast()
         if (m.isNotEmpty()) {

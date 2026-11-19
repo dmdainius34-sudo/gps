@@ -10,6 +10,29 @@ object Own {
     class Res(val name: String, val p50: Double, val p95: Double, val jumps: Int, val n: Int, val none: Int)
 
     var useGlo = true
+    /** Transliuojamos efemeridės (BRDC) palydovams, kurių SP3 neturi (BeiDou, kai kurie GLONASS) – kaip programoje. */
+    var brdc: Brdc.Set? = null
+    var hybridN = 0; var epN = 0
+    fun bState(set: Brdc.Set, sys: Char, svid: Int, t: Double): Pair<DoubleArray, Double>? {
+        val id = "%c%02d".format(java.util.Locale.US, sys, svid)
+        if (sys == 'R') { val e = set.glo[id]?.minByOrNull { Math.abs(it.tbGps - t) } ?: return null
+            if (Math.abs(e.tbGps - t) > 1.5 * 3600) return null
+            val pos = GloNav.position(e, t, 1.5 * 3600) ?: return null; return pos to (-e.tauN + e.gammaN * (t - e.tbGps)) }
+        val k = set.kep[id]?.minByOrNull { Math.abs(it.toeAbs - t) } ?: return null
+        if (Math.abs(k.toeAbs - t) > 4 * 3600) return null
+        return Brdc.kepler(k, t) to Brdc.clock(k, t)
+    }
+    fun bPrepare(set: Brdc.Set, t: Double, obs: List<Sp3V5.Ob>): List<Sp3V5.SatEp> = obs.mapNotNull { o ->
+        val C = 299_792_458.0
+        val tSv = t - o.pr / C
+        var st = bState(set, o.sys, o.svid, tSv) ?: return@mapNotNull null
+        val tTx = tSv - st.second
+        st = bState(set, o.sys, o.svid, tTx) ?: return@mapNotNull null
+        val a = bState(set, o.sys, o.svid, tTx - 0.5); val b = bState(set, o.sys, o.svid, tTx + 0.5)
+        val vel = if (a != null && b != null) DoubleArray(3) { b.first[it] - a.first[it] } else DoubleArray(3)
+        val drift = if (a != null && b != null) (b.second - a.second) * C else 0.0
+        Sp3V5.SatEp(o.sys, o.svid, st.first, vel, o.pr + C * st.second, t - tTx, o.cn0, drift, o.prr)
+    }
     /** Aparatūros vėlinimas (s) pagal „G05“ – kaip programoje SP3 keliu atimamas iš pseudoatstumo. */
     var tgd: Map<String, Double> = emptyMap()
     val hacc = ArrayList<Double>()
@@ -46,7 +69,15 @@ object Own {
             val last = sols.lastOrNull()
             val hc = if (hMsl != null && last != null) Sp3V5.HCon(hMsl + geoidN, 2.0,
                 PositionSolver.llhToEcef(Math.toRadians(last[0]), Math.toRadians(last[1]), hMsl + geoidN)) else null
-            val f = try { Sp3V5.solve(ep.week, ep.tow, obs, sp3, isb = true, raim = true, hCon = hc) } catch (_: Exception) { null }
+            val f = try {
+                val bs = brdc
+                if (bs == null) Sp3V5.solve(ep.week, ep.tow, obs, sp3, isb = true, raim = true, hCon = hc) else {
+                    val a = Sp3V5.prepare(ep.t, obs, sp3); val have = a.map { it.sys.code * 1000 + it.svid }.toSet()
+                    val extra = bPrepare(bs, ep.t, obs.filter { (it.sys.code * 1000 + it.svid) !in have })
+                    hybridN += extra.size; epN++
+                    Sp3V5.solveSats(ep.tow, a + extra, isb = true, raim = true, hCon = hc)
+                }
+            } catch (_: Exception) { null }
             if (f == null) { none++; return@readRaw }
             hacc.add(f.sol.hacc); resAll.addAll(f.res.values.map { Math.abs(it) })
             f.res.forEach { (k, v) -> resBy.getOrPut(k) { ArrayList() }.add(v) }
@@ -92,6 +123,24 @@ object Own {
             }
         }
         tgd = emptyMap()
+    }
+
+    /** SP3 + transliuojamos efemeridės trūkstamiems palydovams: sklaida, šuoliai. */
+    fun hybMain(dir: File) {
+        val raw = File(dir, "gnss_raw.csv")
+        val sp3 = (dir.listFiles()!!.first { it.name.endsWith(".SP3", true) }).inputStream().use { Sp3Reader.read(it) }
+        val set = (dir.listFiles()!!.first { it.name.startsWith("brdc") }).inputStream().use { Brdc.parse(it) }
+        println("=== ${dir.name}")
+        for (thr in listOf(20.0, 25.0)) for (h in listOf(false, true)) for (hm in listOf<Double?>(null, 214.73)) {
+            brdc = if (h) set else null; hybridN = 0; epN = 0
+            val (r, sols) = run(raw, sp3, null, thr, true, true, "x", hm)
+            val used = sols.map { it[4] }.average()
+            var j20 = 0; for (i in 1 until sols.size) if (PositionSolver.horizDist(sols[i-1][0], sols[i-1][1], sols[i][0], sols[i][1]) > 20.0) j20++
+            println("  slenkstis %2.0f %-22s %-14s n=%4d p50 %6.2f p95 %7.2f m  šuolių >5 m %3d, >20 m %3d; palydovų vid. %.1f%s".format(thr,
+                if (h) "SP3 + BRDC trūkstamiems" else "tik SP3", if (hm != null) "su aukščiu" else "be aukščio", r.n, r.p50, r.p95, r.jumps, j20, used,
+                if (h && epN > 0) ", iš BRDC vid. %.1f".format(hybridN.toDouble() / epN) else ""))
+        }
+        brdc = null
     }
 
     fun main(dir: File, truthArg: Pair<Double, Double>?) {

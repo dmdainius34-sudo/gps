@@ -198,6 +198,7 @@ fun wlsBaseline(rows: List<Row>, gt: Map<Long, Gt>): String {
 
 fun main(args: Array<String>) {
     if (args.isNotEmpty() && args[0] == "own") { for (d in args.drop(1)) Own.main(File(d), null); return }
+    if (args.isNotEmpty() && args[0] == "hyb") { for (d in args.drop(1)) Own.hybMain(File(d)); return }
     if (args.isNotEmpty() && args[0] == "tgd") { for (d in args.drop(1)) Own.tgdMain(File(d)); return }
     val opts = listOf(
         Opt("dabar (GLONASS /4)", 1, false, true, false, 20.0, velPred = true, glo = true),

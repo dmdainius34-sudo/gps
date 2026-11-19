@@ -1368,6 +1368,11 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setFollowDevice(on: Boolean) { renderer.followDevice = on; renderer.resetUser() }
     fun setLevelHorizon(on: Boolean) { renderer.levelHorizon = on; calPrefs.edit().putBoolean("level_horizon", on).apply() }
     fun setFreeView(on: Boolean) { renderer.freeView = on; renderer.resetUser() }
+    /** Skrydis pro Šiaurinę žvaigždę: true – pradėtas, false – grįžtama. */
+    fun toggleFlight(): Boolean {
+        renderer.onFlightMsg = { m -> handler.post { android.widget.Toast.makeText(context, m, android.widget.Toast.LENGTH_LONG).show() } }
+        return renderer.toggleFlight()
+    }
     fun setOcean(on: Boolean) { renderer.oceanOn = on; if (on) renderer.oceanLevel = 2 }
     fun fpsText(): String = renderer.fpsText() + "; žvaigždžių fonas: " + renderer.cmbName
 
@@ -2192,6 +2197,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         labelTex.clear()
         wideLabels.clear()
         galProg = 0; galBuf = null; coverTex = 0; m31Tex = 0
+        dustProg = 0; dustBuf = null; galVbo = 0; dustVbo = 0
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
         glowProg = 0
@@ -2262,6 +2268,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     override fun onDrawFrame(gl: GL10?) {
         measureFps()
+        updateFlight()
         updateGalFade()
         // Visada kosmoso juoduma (AMOLED/HDR – tikras juodas, be atspalvio), net kai žvaigždžių fonas užgęsta
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -2567,6 +2574,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Paukščių Tako modelio mastelis (vnt./kpc): 4× didesnis už žvaigždžių (pradžioje buvo lygus). Pasvirimas tikras – J2000 galaktikos ašys stebėtojo horizonto atžvilgiu. */
     private val GAL_G = 4f * GAL_S
 
+    private var dustProg = 0
+    private var dustBuf: FloatBuffer? = null
+    private var dustN = 0
+    /** Galaktikos ir dulkių taškai GPU atmintyje (piešiama 10 sluoksnių kas kadrą – be VBO kas kartą būtų siunčiama ~7 MB). */
+    private var galVbo = 0
+    private var dustVbo = 0
+    private var maxPointPx = 0f
+    private val galLoc = IntArray(11)
+    private val dustLoc = IntArray(10)
+
     /** Taškai pusiaujo (sideralinėje) erdvėje, Saulė – koordinačių pradžioje; stebėtojo poslinkis (fP) pridedamas šešėliuoklyje. */
     private fun buildGalaxy() {
         val g = GalaxyModel.frame()
@@ -2580,6 +2597,26 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             for (k in 3..6) dst[o + k] = src[o + k]
         }
         galBuf = floatBuf(dst)
+        // dulkės: x, y, z (scenos vnt.), dydis (kpc), neskaidrumas
+        val ds = GalaxyModel.dust()
+        dustN = ds.size / 5
+        val dd = FloatArray(ds.size)
+        for (i in 0 until dustN) {
+            val o = i * 5
+            val x = (ds[o] + GalaxyModel.R_SUN).toFloat() * GAL_G; val y = ds[o + 1] * GAL_G; val z = ds[o + 2] * GAL_G
+            for (k in 0..2) dd[o + k] = (g[k] * x + g[3 + k] * y + g[6 + k] * z).toFloat()
+            dd[o + 3] = ds[o + 3]; dd[o + 4] = ds[o + 4]
+        }
+        dustBuf = floatBuf(dd)
+        galVbo = uploadVbo(galBuf!!); dustVbo = uploadVbo(dustBuf!!)
+    }
+
+    private fun uploadVbo(fb: FloatBuffer): Int {
+        val ids = IntArray(1); GLES20.glGenBuffers(1, ids, 0)
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, ids[0])
+        fb.position(0); GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, fb.capacity() * 4, fb, GLES20.GL_STATIC_DRAW)
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+        return ids[0]
     }
 
     /** Galaktika išnyra atitolinus už Saulės sistemos (zoom > SOLAR_ZOOM) – tikru pasvirimu Žemės, ašies ir horizonto atžvilgiu. */
@@ -2596,7 +2633,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun starsGone(): Float = sstep(0.8f, 0.88f, collapse())
     private var galA = 0f
     private var galNs = 0L
-    private fun galFade(): Float = galA
+    /** Skrydžio metu galaktika ryškėja kartu su fono blėsimu (kitaip – tik nuo ~0,7 kpc). */
+    private fun galFade(): Float = if (flight != null) maxOf(galA, 1f - bgFade()) else galA
+    /** Artimų žvaigždžių mastelis: skrydžio metu – kaip galaktikos (kad Šiaurinė žvaigždė ir kaimynės būtų tikrose vietose joje). */
+    private fun starScale(): Float = if (flight != null) GAL_G else GAL_S
     /**
      * Galaktikos ryškumas: nuo kolapso 0,85 iki 75 % likusio atitolinimo (logaritmiškai) – iš labai blankaus (u²) iki pilno,
      * dar sušvelninta laike (~0,35 s), kad net greitai suspaudus pirštais išryškėtų tolygiai.
@@ -2712,7 +2752,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val s = polaris ?: return
         if (starTex == 0) return
         val w = 1f - bgFade()                                             // 0 – danguje (fone), 1 – tikroje 3D vietoje
-        val dist3 = (s.ly * 0.3066 / 1000.0 * GAL_S).toFloat()           // šm -> pc -> kpc -> scenos vnt.
+        val dist3 = (s.ly * 0.3066 / 1000.0 * starScale()).toFloat()     // šm -> pc -> kpc -> scenos vnt.
         val pBg = FloatArray(3) { camPos[it] + s.dir[it] * 50f }
         val p3 = FloatArray(3) { fP[it] + s.dir[it] * dist3 }
         val p = FloatArray(3) { pBg[it] * (1f - w) + p3[it] * w }
@@ -2838,6 +2878,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     private fun drawStarCollapse(covers: Boolean) {
+        if (flight != null) return                                       // skrydyje žvaigždės – tikrose 3D vietose (drawStars3d)
         val c = collapse(); if (c <= 0f || starTex == 0) return
         if (covers && bgFade() < 0.01f) return
         val gone = starsGone(); if (!covers && gone > 0.99f) return
@@ -2923,6 +2964,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform1f(GLES20.glGetUniformLocation(s3Prog, "uK"), 2.2f * density)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(s3Prog, "uMax"), 9f * density)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(s3Prog, "uA"), a)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(s3Prog, "uS"), starScale() / GAL_S)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(s3Prog, "uHdr"), if (Hdr.on) 1.6f else 1f)
         resetAttribs()
         val lp = GLES20.glGetAttribLocation(s3Prog, "aPos"); val lc = GLES20.glGetAttribLocation(s3Prog, "aCol")
@@ -2936,34 +2978,81 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 
+    /**
+     * Paukščių Takas su dulkėmis: 10 sluoksnių pagal atstumą nuo kameros (logaritmiškai, nuo artimiausio galaktikos krašto iki tolimiausio),
+     * piešiama nuo tolimiausio: sluoksnio žvaigždės (šviesa sumuojasi), tada to sluoksnio dulkės (sugeria viską už jų). Taip dulkės
+     * užstoja tik toliau esančias žvaigždes – matyti tamsios juostos, disko storis ir gylis (iš viršaus – „bedugnė“ po kojomis).
+     * Ryškumas pagal kameros atstumą iki centro (skaičiuota 2960×1848: ~perpus blankiau nei be dulkių, vidurys ~0,3, soti ≤ 1 %).
+     */
     private fun drawGalaxy3d() {
         val a = galFade()
         if (a < 0.01f) return
-        if (galProg == 0) galProg = program(GAL_VS, GAL_FS)
-        if (galBuf == null) buildGalaxy()
-        val buf = galBuf ?: return
-        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
-        GLES20.glUseProgram(galProg)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(galProg, "uMVP"), 1, false, mvpI, 0)
-        GLES20.glUniform3f(GLES20.glGetUniformLocation(galProg, "uO"), fP[0].toFloat(), fP[1].toFloat(), fP[2].toFloat())
+        if (galProg == 0) {
+            galProg = program(GAL_VS, GAL_FS)
+            for ((k, n) in listOf("uMVP", "uO", "uCam", "uK", "uMax", "uA", "uHdr", "uD0", "uD1", "uDref", "aPos").withIndex())
+                galLoc[k] = if (n == "aPos") GLES20.glGetAttribLocation(galProg, n) else GLES20.glGetUniformLocation(galProg, n)
+        }
+        if (dustProg == 0) {
+            dustProg = program(DUST_VS, DUST_FS)
+            for ((k, n) in listOf("uMVP", "uO", "uCam", "uK", "uMax", "uA", "uD0", "uD1", "aPos", "aDust").withIndex())
+                dustLoc[k] = if (n.startsWith("a")) GLES20.glGetAttribLocation(dustProg, n) else GLES20.glGetUniformLocation(dustProg, n)
+        }
+        if (galBuf == null || galVbo == 0) buildGalaxy()
+        if (galVbo == 0) return
+        if (maxPointPx == 0f) { val r = FloatArray(2); GLES20.glGetFloatv(GLES20.GL_ALIASED_POINT_SIZE_RANGE, r, 0); maxPointPx = r[1].coerceIn(16f, 256f) }
+        val gl = GalaxyModel.frame()
+        val kpc = GAL_G.toDouble()
+        val gc = DoubleArray(3) { fP[it] + gl[it] * GalaxyModel.R_SUN * kpc }
+        val dc = kotlin.math.sqrt((0..2).sumOf { (gc[it] - camPos[it]).let { d -> d * d } }).coerceAtLeast(0.5 * kpc)
+        val dcK = dc / kpc
+        val gain = (6.0 * (if (dcK < 20.0) Math.pow(20.0 / dcK, 0.6) else 20.0 / dcK)).toFloat()
+        val d0 = maxOf(0.05 * kpc, dc - 20 * kpc); val d1 = dc + 20 * kpc
+        val shells = 10
         val pxPerUnit = lastH / (2f * kotlin.math.tan(Math.toRadians(20.0)).toFloat())
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uK"), pxPerUnit * 0.02f * GAL_G)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uMax"), 4f * density)
-        // toliau – ryškiau (galaktika mažėja, šviesa susikaupia), iki ×3
-        // ×GAL_G/GAL_S: tiek pat taškų ×4 didesniame plote – kad ryškumas liktų toks pat kaip ×1 dydžio (skaičiavimas iš šono: mediana 0,84 → 1,0)
-        val gain = (1f + 2f * sstep(4000f, GALAXY_ZOOM, zoom)) * (GAL_G / GAL_S)
-        // HDR: šviesa virš įprasto balto (rgb > 1); be HDR – tik permatomumas iki 1
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uA"), if (Hdr.on) a else a * gain)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(galProg, "uHdr"), if (Hdr.on) gain * 2f else 1f)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
         resetAttribs()
-        val lp = GLES20.glGetAttribLocation(galProg, "aPos"); val lc = GLES20.glGetAttribLocation(galProg, "aCol")
-        GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lc)
-        buf.position(0); GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 28, buf)
-        buf.position(3); GLES20.glVertexAttribPointer(lc, 4, GLES20.GL_FLOAT, false, 28, buf)
-        GLES20.glDrawArrays(GLES20.GL_POINTS, 0, galN)
-        GLES20.glDisableVertexAttribArray(lc)
-        buf.position(0)
+        val lcG = GLES20.glGetAttribLocation(galProg, "aCol")
+        for (sh in shells - 1 downTo 0) {
+            val lo = if (sh == 0) 0f else (d0 * Math.pow(d1 / d0, sh.toDouble() / shells)).toFloat()
+            val hi = if (sh == shells - 1) 1e30f else (d0 * Math.pow(d1 / d0, (sh + 1).toDouble() / shells)).toFloat()
+            // žvaigždės
+            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+            GLES20.glUseProgram(galProg)
+            GLES20.glUniformMatrix4fv(galLoc[0], 1, false, mvpI, 0)
+            GLES20.glUniform3f(galLoc[1], fP[0].toFloat(), fP[1].toFloat(), fP[2].toFloat())
+            GLES20.glUniform3f(galLoc[2], camPos[0], camPos[1], camPos[2])
+            GLES20.glUniform1f(galLoc[3], pxPerUnit * 0.02f * GAL_G)
+            GLES20.glUniform1f(galLoc[4], 4f * density)
+            // HDR: šviesa virš įprasto balto (rgb > 1); be HDR – tik permatomumas iki 1
+            GLES20.glUniform1f(galLoc[5], if (Hdr.on) a else a * gain)
+            GLES20.glUniform1f(galLoc[6], if (Hdr.on) gain * 2f else 1f)
+            GLES20.glUniform1f(galLoc[7], lo); GLES20.glUniform1f(galLoc[8], hi); GLES20.glUniform1f(galLoc[9], dc.toFloat())
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, galVbo)
+            GLES20.glEnableVertexAttribArray(galLoc[10]); GLES20.glEnableVertexAttribArray(lcG)
+            GLES20.glVertexAttribPointer(galLoc[10], 3, GLES20.GL_FLOAT, false, 28, 0)
+            GLES20.glVertexAttribPointer(lcG, 4, GLES20.GL_FLOAT, false, 28, 12)
+            GLES20.glDrawArrays(GLES20.GL_POINTS, 0, galN)
+            GLES20.glDisableVertexAttribArray(lcG); GLES20.glDisableVertexAttribArray(galLoc[10])
+            // dulkės to paties sluoksnio – sugeria už jų esančią šviesą
+            if (dustVbo != 0 && dustN > 0) {
+                GLES20.glBlendFunc(GLES20.GL_ZERO, GLES20.GL_ONE_MINUS_SRC_COLOR)
+                GLES20.glUseProgram(dustProg)
+                GLES20.glUniformMatrix4fv(dustLoc[0], 1, false, mvpI, 0)
+                GLES20.glUniform3f(dustLoc[1], fP[0].toFloat(), fP[1].toFloat(), fP[2].toFloat())
+                GLES20.glUniform3f(dustLoc[2], camPos[0], camPos[1], camPos[2])
+                GLES20.glUniform1f(dustLoc[3], pxPerUnit * GAL_G)
+                GLES20.glUniform1f(dustLoc[4], minOf(160f * density, maxPointPx))
+                GLES20.glUniform1f(dustLoc[5], 1.5f * a)
+                GLES20.glUniform1f(dustLoc[6], lo); GLES20.glUniform1f(dustLoc[7], hi)
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, dustVbo)
+                GLES20.glEnableVertexAttribArray(dustLoc[8]); GLES20.glEnableVertexAttribArray(dustLoc[9])
+                GLES20.glVertexAttribPointer(dustLoc[8], 3, GLES20.GL_FLOAT, false, 20, 0)
+                GLES20.glVertexAttribPointer(dustLoc[9], 2, GLES20.GL_FLOAT, false, 20, 12)
+                GLES20.glDrawArrays(GLES20.GL_POINTS, 0, dustN)
+                GLES20.glDisableVertexAttribArray(dustLoc[9]); GLES20.glDisableVertexAttribArray(dustLoc[8])
+            }
+        }
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
@@ -4029,6 +4118,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile var zoom = 3f
     /** Priartinimas pagal aukštį virš paviršiaus: arčiausiai ~0,05 vnt. (≈ 1 300 km) – Kreta ~2 cm ekrane. */
     fun zoomBy(factor: Float) {
+        if (flight != null) return                                       // skrydžio metu atstumą valdo tvarkaraštis
         if (focus != 0) { val r = bodyRadius(focus).toFloat(); focusZoom = (focusZoom / factor).coerceIn(r * 1.3f, r * 2000f); return }
         // galaktikos stadijoje – žingsnis spartesnis
         val f = if (zoom > EARTH_R + SOLAR_ZOOM) Math.pow(factor.toDouble(), 2.5).toFloat() else factor
@@ -4078,8 +4168,128 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Horizontas lygus su tikru, sukant prietaisą apie žiūrėjimo ašį (ekrano kryptis užrakinta). */
     @Volatile var levelHorizon = true
 
-    private fun observerView() = !followDevice && !freeView && focus == 0
+    private fun observerView() = flight != null || (!followDevice && !freeView && focus == 0)
     fun isObserverView() = observerView()
+
+    // ---- Skrydis pro Šiaurinę žvaigždę (PolarFlight): iš stebėtojo vietos dangaus poliaus kryptimi, tada žvilgsnis – į galaktiką po kojomis ----
+    private class Flight(val zoom0: Float) {
+        var init = false
+        var north = true
+        var pole = DoubleArray(3)
+        /** Pradžios žvilgsnis (į polių), ekrano viršus ir dešinė (šiaurės pusrutulyje – rytai). */
+        var f0 = DoubleArray(3); var u0 = DoubleArray(3); var r0 = DoubleArray(3)
+        /** Planšetės kryptys pradžioje (žvilgsnis, viršus, dešinė) – jos pasukimas nuo tada leidžia apsidairyti. */
+        var dF = DoubleArray(3); var dU = DoubleArray(3); var dR = DoubleArray(3)
+        var altDeg = 0.0
+        var tau = 0.0; var back = false; var w = 0.0; var lastNs = 0L; var stage = 0
+    }
+    @Volatile private var flight: Flight? = null
+    @Volatile private var flightReq = 0
+    /** Skrydžio pranešimai (kviečiama GL gijoje). */
+    var onFlightMsg: ((String) -> Unit)? = null
+    fun flightOn() = flight != null
+    /** Mygtukas: nėra skrydžio (ar grįžtama) – skristi; skrendama ar jau atskrista – grįžti. Grąžina true, jei skrendama. */
+    fun toggleFlight(): Boolean {
+        val f = flight
+        val go = f == null || f.back
+        flightReq = if (go) 1 else 2
+        return go
+    }
+    private val galFrame by lazy { GalaxyModel.frame() }
+    private val sigmaOctDir by lazy {
+        val ra = Math.toRadians((21 + 8 / 60.0 + 47.0 / 3600.0) * 15.0); val de = Math.toRadians(-(88 + 57 / 60.0 + 23.0 / 3600.0))
+        doubleArrayOf(cos(de) * cos(ra), cos(de) * sin(ra), sin(de))
+    }
+
+    /** Kas kadrą (prieš projekciją): laikas, susiliejimas su įprasta kamera, atstumas (zoom – kad veiktų visos stadijos), pranešimai. */
+    private fun updateFlight() {
+        when (flightReq) {
+            1 -> { val f = flight; if (f == null) { focus = 0; flight = Flight(zoom) } else { f.back = false } }
+            2 -> { val f = flight; if (f != null) { f.back = true; onFlightMsg?.invoke("Grįžtama į jūsų stebėjimo vietą") } }
+        }
+        flightReq = 0
+        val fl = flight ?: return
+        val now = System.nanoTime()
+        val dt = if (fl.lastNs == 0L) 0.0 else ((now - fl.lastNs) / 1e9).coerceIn(0.0, 0.1)
+        fl.lastNs = now
+        if (!fl.init) return
+        if (fl.back) fl.tau = maxOf(0.0, fl.tau - 4 * dt)
+        else if (fl.w >= 0.999) fl.tau = minOf(PolarFlight.T_END, fl.tau + dt)
+        val wT = if (fl.back && fl.tau <= 0.0) 0.0 else 1.0
+        fl.w = if (wT > fl.w) minOf(wT, fl.w + dt / 1.5) else maxOf(wT, fl.w - dt / 1.5)
+        val s = PolarFlight.dist(fl.tau, GAL_G.toDouble())
+        val ws = sstep(0f, 1f, fl.w.toFloat())
+        zoom = fl.zoom0 + ((EARTH_R + s).toFloat() - fl.zoom0) * ws
+        if (fl.back && fl.tau <= 0.0 && fl.w <= 0.0) { zoom = fl.zoom0; flight = null; return }
+        if (!fl.back) flightNews(fl, s / GAL_G)
+    }
+
+    /** Pradžia: matomas dangaus polius, jo aukštis virš horizonto, ekrano dešinė (šiaurės pusrutulyje – rytai), planšetės kryptys. */
+    private fun flightInit(fl: Flight, up: DoubleArray, east: DoubleArray) {
+        val pol = polaris?.dir?.let { d -> PolarFlight.nrm(DoubleArray(3) { d[it].toDouble() }) } ?: doubleArrayOf(0.0, 0.0, 1.0)
+        fl.north = PolarFlight.dot(pol, up) >= 0.0
+        fl.pole = if (fl.north) pol else sigmaOctDir
+        fl.altDeg = Math.toDegrees(kotlin.math.asin(PolarFlight.dot(fl.pole, up).coerceIn(-1.0, 1.0)))
+        fl.f0 = fl.pole.copyOf()
+        val rr = PolarFlight.cross(fl.f0, up)
+        fl.r0 = if (kotlin.math.sqrt(PolarFlight.dot(rr, rr)) < 1e-6) east.copyOf() else PolarFlight.nrm(rr)
+        fl.u0 = PolarFlight.cross(fl.r0, fl.f0)
+        val lf = lookFreeSm ?: fl.f0; val uf = upFreeSm ?: fl.u0
+        fl.dF = PolarFlight.nrm(lf); fl.dR = PolarFlight.nrm(PolarFlight.cross(fl.dF, uf)); fl.dU = PolarFlight.cross(fl.dR, fl.dF)
+        fl.init = true
+        onFlightMsg?.invoke(if (fl.north)
+            "Skrydis pro Šiaurinę žvaigždę: kylate %.0f° kampu virš šiaurės horizonto (jūsų platuma %.1f°), dešinė ranka – rytai".format(Locale.US, fl.altDeg, obsLat)
+        else "Skrydis pro pietų dangaus polių (σ Octantis): kylate %.0f° kampu virš pietų horizonto (jūsų platuma %.1f°), dešinė ranka – vakarai".format(Locale.US, fl.altDeg, obsLat))
+    }
+
+    /** Skrydžio kamera: kelias poliaus kryptimi, žvilgsnis pagal tvarkaraštį (+ planšetės pasukimas), susiliejimas su įprasta kamera. */
+    private fun flightCamera(fl: Flight, head: FloatArray, eyeN: FloatArray, lookN: DoubleArray, upN: DoubleArray): Triple<FloatArray, DoubleArray, DoubleArray> {
+        val s = PolarFlight.dist(fl.tau, GAL_G.toDouble())
+        val eyeF = DoubleArray(3) { head[it] + fl.pole[it] * s }
+        val g = galFrame
+        val gc = DoubleArray(3) { fP[it] + g[it] * GalaxyModel.R_SUN * GAL_G }
+        val (ft, ut) = PolarFlight.lookAtGalaxy(eyeF, gc, fl.r0)
+        val q = PolarFlight.slerp(PolarFlight.quat(fl.f0, fl.u0), PolarFlight.quat(ft, ut), PolarFlight.turn(s / GAL_G))
+        val (fs0, us0) = PolarFlight.basis(q)
+        // planšetės pasukimas nuo skrydžio pradžios (sukant planšetę ar kraną galima apsidairyti, galaktika lieka vietoje)
+        val lf = lookFreeSm ?: fl.dF; val uf = upFreeSm ?: fl.dU
+        val dF = PolarFlight.nrm(lf); val dR = PolarFlight.nrm(PolarFlight.cross(dF, uf)); val dU = PolarFlight.cross(dR, dF)
+        fun rel(v: DoubleArray): DoubleArray {
+            val x = PolarFlight.dot(v, fl.dR); val y = PolarFlight.dot(v, fl.dU); val z = PolarFlight.dot(v, fl.dF)
+            return DoubleArray(3) { x * dR[it] + y * dU[it] + z * dF[it] }
+        }
+        val fs = rel(fs0); val us = rel(us0)
+        val ws = sstep(0f, 1f, fl.w.toFloat()).toDouble()
+        val (fb, ub) = PolarFlight.basis(PolarFlight.slerp(PolarFlight.quat(lookN, upN), PolarFlight.quat(fs, us), ws))
+        val eye = FloatArray(3) { (eyeN[it] + (eyeF[it] - eyeN[it]) * ws).toFloat() }
+        return Triple(eye, fb, ub)
+    }
+
+    /** Žymės kelyje: Šiaurinė žvaigždė, plonojo ir storojo disko ribos, galaktika po kojomis, „blynas“. */
+    private fun flightNews(fl: Flight, sKpc: Double) {
+        val g = galFrame
+        val ngp = doubleArrayOf(g[6], g[7], g[8])
+        val cross = PolarFlight.crossingDeg(fl.pole, ngp)
+        val z = kotlin.math.abs(PolarFlight.dot(fl.pole, ngp)) * sKpc
+        // kameros vieta nuo galaktikos centro (kpc): Saulė + kelias
+        val p = DoubleArray(3) { -g[it] * GalaxyModel.R_SUN + fl.pole[it] * sKpc }
+        val dGc = kotlin.math.sqrt(PolarFlight.dot(p, p))
+        val view = kotlin.math.abs(PolarFlight.viewDeg(p, ngp))
+        val side = if (PolarFlight.dot(fl.pole, ngp) >= 0) "šiaurinės" else "pietinės"
+        fun ly(k: Double) = "%,d".format(Locale.US, (k * PolarFlight.LY_PER_KPC / 100).toLong() * 100).replace(',', ' ')
+        val msg = when {
+            fl.stage == 0 && sKpc >= (if (fl.north) 0.133 else 0.090) ->
+                (if (fl.north) "Šiaurinė žvaigždė – 433 šviesmečiai (133 pc)" else "σ Octantis – ~290 šviesmečių (90 pc)") +
+                    ". Kelias kerta galaktikos plokštumą %.0f° kampu".format(Locale.US, cross)
+            fl.stage == 1 && z >= 0.3 -> "Išnirote iš plonojo disko: ${ly(sKpc)} šm nuo Žemės, 0,3 kpc virš plokštumos"
+            fl.stage == 2 && z >= 1.0 -> "Storasis diskas baigėsi: ${ly(sKpc)} šm. Žvilgsnis leidžiasi į galaktiką po kojomis"
+            fl.stage == 3 && sKpc >= 15.0 -> "15 kpc (${ly(sKpc)} šm): galaktika po jumis – centras už %.0f kpc, matote ją %.0f° kampu".format(Locale.US, dGc, view)
+            fl.stage == 4 && sKpc >= 49.9 -> "50 kpc (${ly(sKpc)} šm): galaktika – blyno dydžio, matote ją %.0f° kampu iš $side pusės. Grįžti – dar kartą \uD83D\uDE80".format(Locale.US, view)
+            else -> null
+        } ?: return
+        fl.stage++
+        onFlightMsg?.invoke(msg)
+    }
 
     // ---- Fokusas: kamera prie Saulės (1) ar Mėnulio (2), sukama aplink jų centrą; 0 – įprastai ----
     @Volatile var focus = 0
@@ -4273,7 +4483,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             headingSm + 0.15 * d
         }
         val f = DoubleArray(3) { sin(headingSm) * east[it] + cos(headingSm) * north[it] }
-        val dist = (zoom - EARTH_R).toDouble().coerceAtLeast(0.03)
+        val dist = ((flight?.zoom0 ?: zoom) - EARTH_R).toDouble().coerceAtLeast(0.03)
         // Lygus horizontas + planšetė paguldyta ekranu į viršų (nugarėlė žemyn > 45°): sklandžiai pereinama į vaizdą iš viršaus.
         // Ekrano viršus – planšetės viršutinio krašto kryptis, todėl N ekrane rodo į tikrą šiaurę; horizontas – ratas aplink stebėtoją.
         val backEl = Math.toDegrees(kotlin.math.asin((-r[8]).toDouble().coerceIn(-1.0, 1.0)))
@@ -4306,12 +4516,19 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val pd0 = posDir
         posDir = if (pd0 == null) lookB else nrm(DoubleArray(3) { pd0[it] + (1.0 - freeze) * (lookB[it] - pd0[it]) })
         val lookPos = posDir!!
-        val eye = FloatArray(3) { (head[it] - lookPos[it] * dist).toFloat() }
+        var eye = FloatArray(3) { (head[it] - lookPos[it] * dist).toFloat() }
+        var lookC = lookB; var upC = camUpB; var wFl = 0.0
+        flight?.let { fl ->
+            if (!fl.init) flightInit(fl, up, east)
+            val (e2, l2, u2) = flightCamera(fl, head, eye, lookB, camUpB)
+            eye = e2; lookC = l2; upC = u2; wFl = sstep(0f, 1f, fl.w.toFloat()).toDouble()
+            lookI = floatArrayOf(lookC[0].toFloat(), lookC[1].toFloat(), lookC[2].toFloat())
+        }
         camPos = eye
         val lookV = FloatArray(16)
         Matrix.setLookAtM(lookV, 0, eye[0], eye[1], eye[2],
-            (eye[0] + lookB[0]).toFloat(), (eye[1] + lookB[1]).toFloat(), (eye[2] + lookB[2]).toFloat(),
-            camUpB[0].toFloat(), camUpB[1].toFloat(), camUpB[2].toFloat())
+            (eye[0] + lookC[0]).toFloat(), (eye[1] + lookC[1]).toFloat(), (eye[2] + lookC[2]).toFloat(),
+            upC[0].toFloat(), upC[1].toFloat(), upC[2].toFloat())
         // sklandus sukimas 360°: ekranas neapsiverčia, vaizdas sukasi priešinga kryptimi – horizontas lieka lygus su tikru
         if (levelHorizon) {
             val gx = r[6].toDouble(); val gy = r[7].toDouble()            // tikras „aukštyn“ ekrano koordinatėmis
@@ -4327,7 +4544,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             if (!rollSm.isNaN()) {
                 // vaizde iš viršaus posvyrio pataisos nebereikia (ekrano viršus jau – planšetės kryptis)
                 // laisvame žvilgsnyje (toli) ekrano viršus jau tikras planšetės viršus – pataisos nereikia
-                val rz = FloatArray(16); Matrix.setRotateM(rz, 0, (Math.toDegrees(-rollSm) * (1.0 - topSm - botSm).coerceAtLeast(0.0) * (1.0 - wFree)).toFloat(), 0f, 0f, 1f)
+                val rz = FloatArray(16); Matrix.setRotateM(rz, 0, (Math.toDegrees(-rollSm) * (1.0 - topSm - botSm).coerceAtLeast(0.0) * (1.0 - wFree) * (1.0 - wFl)).toFloat(), 0f, 0f, 1f)
                 val lv2 = FloatArray(16); Matrix.multiplyMM(lv2, 0, rz, 0, lookV, 0); lv2.copyInto(lookV)
             }
         } else rollSm = Double.NaN
@@ -5724,19 +5941,67 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 gl_FragColor = vec4(uColor.rgb + (nz - 0.5) / 128.0, uColor.a * (0.6 + 0.4 * fres));
             }
         """
+        /**
+         * Galaktikos žvaigždės: piešiamos sluoksniais pagal atstumą nuo kameros [uD0, uD1) (kiti taškai išmetami už vaizdo), kad tarp jų
+         * įsiterpusios dulkės užtemdytų tik toliau esančias. Gylis: arčiau – ryškiau, toliau – blankiau ir vos melsviau (tolumos jausmas).
+         */
         private const val GAL_VS = """
             attribute vec3 aPos;
             attribute vec4 aCol;
             uniform mat4 uMVP;
             uniform vec3 uO;
+            uniform vec3 uCam;
             uniform float uK;
             uniform float uMax;
             uniform float uA;
+            uniform float uD0;
+            uniform float uD1;
+            uniform float uDref;
             varying vec4 vCol;
             void main() {
-                gl_Position = uMVP * vec4(aPos + uO, 1.0);
+                vec3 p = aPos + uO;
+                float d = length(p - uCam);
+                if (d < uD0 || d >= uD1) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 1.0; vCol = vec4(0.0); return; }
+                gl_Position = uMVP * vec4(p, 1.0);
                 gl_PointSize = clamp(uK / max(gl_Position.w, 0.001), 1.0, uMax);
-                vCol = vec4(aCol.rgb, min(aCol.a * uA, 1.0));
+                float k = clamp(pow(uDref / max(d, 0.001), 0.6), 0.45, 1.6);
+                vec3 c = mix(aCol.rgb, vec3(0.62, 0.72, 1.0), clamp(0.35 * (1.0 - k), 0.0, 0.3));
+                vCol = vec4(c, min(aCol.a * uA * k, 1.0));
+            }
+        """
+        /** Dulkių debesėlis: dydis – tikras (kpc) pagal atstumą; tolimi, mažesni už ~3 taškus – silpnesni (be triukšmo). */
+        private const val DUST_VS = """
+            attribute vec3 aPos;
+            attribute vec2 aDust;
+            uniform mat4 uMVP;
+            uniform vec3 uO;
+            uniform vec3 uCam;
+            uniform float uK;
+            uniform float uMax;
+            uniform float uA;
+            uniform float uD0;
+            uniform float uD1;
+            varying float vA;
+            void main() {
+                vec3 p = aPos + uO;
+                float d = length(p - uCam);
+                if (d < uD0 || d >= uD1) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 1.0; vA = 0.0; return; }
+                gl_Position = uMVP * vec4(p, 1.0);
+                float sz = uK * aDust.x / max(gl_Position.w, 0.001);
+                gl_PointSize = clamp(sz, 1.0, uMax);
+                vA = aDust.y * uA * clamp(sz / 3.0, 0.0, 1.0);
+            }
+        """
+        /** Sugertis: dst · (1 − sugertis), mėlyna sugeriama labiau – už dulkių šviesa paraudusi (blend ZERO, ONE_MINUS_SRC_COLOR). */
+        private const val DUST_FS = """
+            precision mediump float;
+            varying float vA;
+            void main() {
+                vec2 d = gl_PointCoord - 0.5;
+                float r = dot(d, d) * 4.0;
+                if (r > 1.0) discard;
+                float a = min(vA * (1.0 - r) * (1.0 - r), 0.95);
+                gl_FragColor = vec4(a * 0.55, a * 0.75, a * 0.95, 1.0);
             }
         """
         private const val VIG_VS = """
@@ -5764,11 +6029,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform float uK;
             uniform float uMax;
             uniform float uA;
+            uniform float uS;
             varying vec4 vCol;
             void main() {
-                vec3 p = aPos + uO;
+                vec3 p = aPos * uS + uO;
                 gl_Position = uMVP * vec4(p, 1.0);
-                float b = sqrt(aCol.a) / max(length(p - uCam), 0.01);
+                float b = uS * sqrt(aCol.a) / max(length(p - uCam), 0.01);
                 gl_PointSize = clamp(uK * b, 1.0, uMax);
                 vCol = vec4(aCol.rgb, clamp(uA * (0.2 + 0.4 * uK * b), 0.0, 1.0));
             }
@@ -8199,10 +8465,13 @@ class MainActivity : AppCompatActivity() {
         }
         val calBtn = small("\uD83E\uDDED", 15f).apply { alpha = 0.85f; setOnClickListener { toggleCalibDrum() } }   // 🧭
         val setBtn = small("\u2699", 17f).apply { alpha = 0.85f; setOnClickListener { openSettings() } }               // ⚙ nustatymai
+        // 🚀 skrydis pro Šiaurinę žvaigždę iš šios vietos (savo platumos kampu) iki galaktikos „blyno“; dar kartą – grįžti
+        val flightBtn = small("\uD83D\uDE80", 14f).apply { alpha = 0.6f
+            setOnClickListener { if (::skyDome.isInitialized) { val go = skyDome.toggleFlight(); alpha = if (go) 0.95f else 0.6f } } }
         val tools = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val gap = (6 * dp).toInt()
-            for (b in listOf(fsBtn, followBtn, levelBtn, calBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
+            for (b in listOf(fsBtn, followBtn, levelBtn, calBtn, flightBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
         }
         // barometras: apačioje kairėje – paspaudus nulis čia, toliau rodoma, kiek pakilote ar nusileidote
         if (baro.hasSensor) {

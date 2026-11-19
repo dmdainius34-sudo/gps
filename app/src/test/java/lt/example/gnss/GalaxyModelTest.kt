@@ -404,3 +404,49 @@ class SatStatsTest {
         SatStats.reset()
     }
 }
+
+class PolarFlightTest {
+    @Test fun polarisPathCrossesDiskAt27Deg() {
+        val g = GalaxyModel.frame()
+        val ngp = doubleArrayOf(g[6], g[7], g[8])
+        val ra = Math.toRadians((2 + 31 / 60.0 + 49.0 / 3600.0) * 15.0); val de = Math.toRadians(89 + 15 / 60.0 + 51.0 / 3600.0)
+        val pol = doubleArrayOf(Math.cos(de) * Math.cos(ra), Math.cos(de) * Math.sin(ra), Math.sin(de))
+        assertEquals(26.5, PolarFlight.crossingDeg(pol, ngp), 0.3)
+        // toli kelyje galaktika matoma artėjant prie to paties kampo
+        val p = DoubleArray(3) { -g[it] * GalaxyModel.R_SUN + pol[it] * 500.0 }
+        assertEquals(26.5, PolarFlight.viewDeg(p, ngp), 1.0)
+    }
+
+    @Test fun scheduleIsMonotonicAndHitsKeys() {
+        var prev = 0.0
+        var t = 0.0
+        while (t <= PolarFlight.T_END) { val d = PolarFlight.dist(t, 2000.0); org.junit.Assert.assertTrue(d >= prev); prev = d; t += 0.05 }
+        assertEquals(0.133 * 2000, PolarFlight.dist(10.0, 2000.0), 1e-6)
+        assertEquals(50.0 * 2000, PolarFlight.dist(PolarFlight.T_END, 2000.0), 1e-6)
+    }
+
+    @Test fun quaternionRoundTripAndGalaxyBelowCentre() {
+        val f = PolarFlight.nrm(doubleArrayOf(0.3, -0.5, 0.8)); val u = PolarFlight.nrm(PolarFlight.cross(PolarFlight.cross(f, doubleArrayOf(0.0, 0.0, 1.0)), f))
+        val (f2, u2) = PolarFlight.basis(PolarFlight.quat(f, u))
+        for (i in 0..2) { assertEquals(f[i], f2[i], 1e-9); assertEquals(u[i], u2[i], 1e-9) }
+        val eye = doubleArrayOf(10.0, 5.0, 8.0); val gc = doubleArrayOf(0.0, 0.0, 0.0)
+        val (lf, lu) = PolarFlight.lookAtGalaxy(eye, gc, doubleArrayOf(1.0, 0.0, 0.0))
+        val g = PolarFlight.nrm(DoubleArray(3) { gc[it] - eye[it] })
+        // centras 12° žemiau ekrano vidurio
+        assertEquals(12.0, Math.toDegrees(Math.acos(PolarFlight.dot(lf, g))), 1e-6)
+        org.junit.Assert.assertTrue(PolarFlight.dot(g, lu) < 0)
+    }
+}
+
+class GalaxyDustTest {
+    @Test fun dustCountAndRanges() {
+        val d = GalaxyModel.dust(2000)
+        assertEquals(2000 * 5, d.size)
+        for (i in 0 until 2000) {
+            val o = i * 5
+            org.junit.Assert.assertTrue(d[o + 3] in 0.05f..0.5f)
+            org.junit.Assert.assertTrue(d[o + 4] in 0f..0.5f)
+            org.junit.Assert.assertTrue(kotlin.math.abs(d[o + 2]) < 0.6f)
+        }
+    }
+}

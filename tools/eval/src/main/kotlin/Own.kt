@@ -10,6 +10,7 @@ object Own {
     class Res(val name: String, val p50: Double, val p95: Double, val jumps: Int, val n: Int, val none: Int)
 
     var useGlo = true
+    var maxJump = 0.0
     /** Transliuojamos efemeridės (BRDC) palydovams, kurių SP3 neturi (BeiDou, kai kurie GLONASS) – kaip programoje. */
     var brdc: Brdc.Set? = null
     var hybridN = 0; var epN = 0
@@ -86,15 +87,15 @@ object Own {
             if (filter) {
                 val v = vel
                 val vNE = v?.let { doubleArrayOf(it.speedH * Math.cos(Math.toRadians(it.courseDeg)), it.speedH * Math.sin(Math.toRadians(it.courseDeg))) }
-                val mv = forceMove || (v != null && v.speedH > 1.5 && v.sigma < 1.0)
+                val mv = forceMove || (v != null && v.speedH > 1.5 && v.sigma < 1.0) || (name.startsWith("T") && ((ep.timeMs / 1000) * 7919 % 13) < 4)
                 val q = PosFilter.step(ep.timeMs, lat, lon, f.sol.h, f.sol.hacc, mv, vNE); lat = q[0]; lon = q[1]
             }
             sols.add(doubleArrayOf(lat, lon, f.sol.h, ep.timeMs.toDouble(), f.sol.sats.toDouble()))
         }
         val ref = truth ?: (sols.map { it[0] }.sorted()[sols.size / 2] to sols.map { it[1] }.sorted()[sols.size / 2])
         val err = sols.map { PositionSolver.horizDist(it[0], it[1], ref.first, ref.second) }.sorted()
-        var jumps = 0
-        for (i in 1 until sols.size) if (PositionSolver.horizDist(sols[i - 1][0], sols[i - 1][1], sols[i][0], sols[i][1]) > 5.0) jumps++
+        var jumps = 0; maxJump = 0.0
+        for (i in 1 until sols.size) { val dj = PositionSolver.horizDist(sols[i - 1][0], sols[i - 1][1], sols[i][0], sols[i][1]); if (dj > 5.0) jumps++; maxJump = maxOf(maxJump, dj) }
         fun q(p: Double) = if (err.isEmpty()) Double.NaN else err[((err.size - 1) * p).toInt()]
         return Res(name, q(0.5), q(0.95), jumps, sols.size, none) to sols
     }
@@ -163,6 +164,8 @@ object Own {
             Quad(20.0, true, true, "+ išlyginimas (kaip programoje)"),
             Quad(25.0, true, true, "slenkstis 25 + glod. + išlyg."),
             Quad(30.0, true, true, "slenkstis 30 + glod. + išlyg."),
+            Quad(20.0, true, true, "T  judėjimas mirksi (vibracija)"),
+            Quad(28.0, true, true, "T  mirksi, slenkstis 28"),
             Quad(20.0, true, true, "M  judant, K=0.5"),
             Quad(20.0, true, true, "M2 judant, K=0.2"),
             Quad(20.0, true, true, "M1 judant, K=0.1"),
@@ -175,7 +178,7 @@ object Own {
                 val m1 = sols.map { it[0] }.sorted()[sols.size / 2] to sols.map { it[1] }.sorted()[sols.size / 2]
                 val m0 = base.map { it[0] }.sorted()[base.size / 2] to base.map { it[1] }.sorted()[base.size / 2]
                 println("   vidurio poslinkis nuo varianto be aukščio: %.1f m".format(PositionSolver.horizDist(m0.first, m0.second, m1.first, m1.second))) }
-            println("%-34s n=%4d be pad.=%4d | p50 %6.2f m  p95 %7.2f m  šuolių>5m %d".format(r.name, r.n, r.none, r.p50, r.p95, r.jumps))
+            println("%-34s n=%4d be pad.=%4d | p50 %6.2f m  p95 %7.2f m  šuolių>5m %d, didž. %.0f m".format(r.name, r.n, r.none, r.p50, r.p95, r.jumps, maxJump))
             if (nm.startsWith("+ išlyg") && chip != null && chip.isNotEmpty()) {
                 val ref = truth ?: (sols.map { it[0] }.sorted()[sols.size / 2] to sols.map { it[1] }.sorted()[sols.size / 2])
                 val ce = chip.map { PositionSolver.horizDist(it.first, it.second, ref.first, ref.second) }.sorted()

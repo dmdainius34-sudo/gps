@@ -15,11 +15,14 @@ object PosFilter {
     private val win = ArrayDeque<P>()
     private var sn = Double.NaN; private var se = 0.0; private var sh = 0.0; private var lastMs = 0L
     private var farN = 0
+    /** Judant atmesti tolimi sprendiniai iš eilės – persikėlimas priimamas tik jei jie sutampa tarpusavyje (ne išsibarstę atspindžiai). */
+    private val far = ArrayList<P>()
+    private var wasMoving = false
     /** Judant: kiek naujas sprendinys pastumia išlygintą vietą (likusi dalis – pagal Doplerio greitį). */
     @Volatile var moveGain = 0.5
     private const val M = 111_320.0
 
-    @Synchronized fun reset() { win.clear(); sn = Double.NaN; lat0 = Double.NaN }
+    @Synchronized fun reset() { win.clear(); sn = Double.NaN; lat0 = Double.NaN; far.clear(); farN = 0; wasMoving = false }
 
     /** Grąžina (platuma, ilguma, aukštis, tikslumas m). */
     /** vel – (šiaurės, rytų) greitis m/s iš Doplerio: judant ankstesnė vieta pirmiau pastumiama juo, kitaip išlyginta vieta vėluoja (automobilyje – dešimtis m). */
@@ -33,13 +36,18 @@ object PosFilter {
             win.clear()
             if (vel != null && !sn.isNaN()) { sn += vel[0] * dt; se += vel[1] * dt }
             val dist = if (sn.isNaN()) 0.0 else sqrt((p.n - sn).let { it * it } + (p.e - se).let { it * it })
-            if (sn.isNaN()) { sn = p.n; se = p.e; sh = p.h; farN = 0 }
+            if (sn.isNaN()) { sn = p.n; se = p.e; sh = p.h; farN = 0; far.clear() }
             else if (dist > 50.0 * dt + 3 * real) {
-                // neįmanomas šuolis: pavienis – atmetamas (vieta lieka, kur buvo); tik 3 iš eilės – tikras persikėlimas
-                farN++
-                if (farN >= 3) { sn = p.n; se = p.e; sh = p.h; farN = 0 }
+                // neįmanomas šuolis: atmetamas (vieta lieka, kur buvo). Tikras persikėlimas – tik kai 3 tolimi iš eilės sutampa tarpusavyje
+                // (≤ 10 m + 2σ); išsibarstę atspindžiai (kabinoje šokinėja po šimtus m) nebeperkelia (buvo – 345 m šuolis išlygintoje vietoje)
+                farN++; far.add(p); while (far.size > 3) far.removeAt(0)
+                if (far.size == 3) {
+                    val cn = far.sumOf { it.n } / 3; val ce = far.sumOf { it.e } / 3
+                    val spread = far.maxOf { sqrt((it.n - cn).let { x -> x * x } + (it.e - ce).let { x -> x * x }) }
+                    if (spread <= 10.0 + 2 * real) { sn = cn; se = ce; sh = far.sumOf { it.h } / 3; farN = 0; far.clear() }
+                }
             } else {
-                farN = 0
+                farN = 0; far.clear()
                 // didelis nuokrypis sveriamas mažiau (Huberio svoris): atspindžio „šuolis“ pastumia tik dalį
                 val lim = 5.0 + 3 * real
                 // lėtai (kranas sukasi, einama; < 3 m/s) – stipresnis išlyginimas: kabinos atspindžių triukšmas didesnis už tikrą judesį;
@@ -51,6 +59,8 @@ object PosFilter {
             }
             out = doubleArrayOf(sn, se, sh, real)
         } else {
+            // sustojus po judėjimo – langas pradedamas nuo išlygintos vietos (5 jos kopijos), kad pirmas sprendinys (gal atspindys) neperkeltų taško
+            if (wasMoving && !sn.isNaN()) { win.clear(); repeat(5) { win.addLast(P(sn, se, sh)) } }
             win.addLast(p); while (win.size > 600) win.removeFirst()
             val mn = win.map { it.n }.sorted()[win.size / 2]; val me = win.map { it.e }.sorted()[win.size / 2]
             val d = win.map { sqrt((it.n - mn).let { x -> x * x } + (it.e - me).let { x -> x * x }) }
@@ -63,6 +73,7 @@ object PosFilter {
             sn = an; se = ae; sh = ah
             out = doubleArrayOf(an, ae, ah, acc)
         }
+        wasMoving = moving
         return doubleArrayOf(lat0 + out[0] / M, lon0 + out[1] / k, out[2], out[3])
     }
 }

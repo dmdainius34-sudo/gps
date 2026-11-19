@@ -9882,6 +9882,13 @@ class MainActivity : AppCompatActivity() {
             appendLine("Galimybės: matavimai=${cap.hasMeasurements()}, navigaciniai pranešimai=${cap.hasNavigationMessages()}, " +
                 "antenos info=${cap.hasAntennaInfo()}, matavimų korekcijos=${cap.hasMeasurementCorrections()}")
         }
+        // fazė (nešlio fazė, ADR) – be jos RTK FIX neįmanomas: lusto deklaruota galimybė (Android 14+) ir ar šioje sesijoje matyta
+        val adrCap = if (Build.VERSION.SDK_INT >= 34) try {
+            when (lm.gnssCapabilities.javaClass.getMethod("hasAccumulatedDeltaRange").invoke(lm.gnssCapabilities) as Int) {
+                1 -> "palaiko"; 2 -> "NEPALAIKO"; else -> "nežinoma" }
+        } catch (_: Exception) { "nežinoma" } else "nežinoma (Android < 14)"
+        appendLine("Fazė (ADR, reikalinga RTK FIX): lustas – $adrCap; šioje sesijoje " +
+            if (adrSeenMs > 0L) "matyta (paskutinį kartą prieš ${(System.currentTimeMillis() - adrSeenMs) / 1000} s)" else "NEMATYTA – RTK FIX šiuo įrenginiu nepasiekiamas")
         appendLine("Pilnas sekimas: programa jo prašo (setFullTracking=true)")
         appendLine("Matyti dažniai: ${if (bandsSeen.isEmpty()) "—" else bandsSeen.joinToString(", ")}")
         val dual = bandsSeen.any { it.endsWith("L5") || it.endsWith("E5a") || it.endsWith("E5b") || it.endsWith("B2b") }

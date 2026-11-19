@@ -2446,10 +2446,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             // Švytėjimas: 0 ties 20 dB-Hz, didžiausias ties 45 dB-Hz
             val glow = ((sat.cn0 - 20f) / 25f).coerceIn(0f, 1f)
             val nb = if (showNavBits) NavBits.get(sat.const + sat.svid)?.takeIf { System.currentTimeMillis() - it.tMs < 8_000L } else null
-            if (!muted) {
-                if (nb != null && sat.cn0 > 10f) drawNavBits(p, pin, sat.const + sat.svid, nb, col, sat.cn0)
-                else drawLaser(p, pin, sat.cn0, sat.svid, t)
-            }
+            // navigacinių žinučių (efemeridžių, almanacho) juosta rodoma visada, kai palydovas jas siunčia – ir užtildytam
+            // (užtildymas – tik programos padėčiai; anksčiau įjungus GLONASS BeiDou be SP3 orbitų tapdavo užtildyti ir jų juostos dingdavo)
+            if (nb != null && sat.cn0 > 10f) drawNavBits(p, pin, sat.const + sat.svid, nb, if (muted) FloatArray(3) { col[it] * 0.55f } else col, sat.cn0)
+            else if (!muted) drawLaser(p, pin, sat.cn0, sat.svid, t)
             // nesveikas (sveikatos žyma efemeridėse) – vartosi kūliais
             val tumble = if (SatHealth.bad(sat.const, sat.svid)) t * 90f + sat.svid * 37f else 0f
             drawSatModel(p, col, glow, usedK, sat.const, tumble)

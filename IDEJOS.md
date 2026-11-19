@@ -1,6 +1,6 @@
 # Idėjos ateičiai (nedaroma dabar)
 
-## Krano apribojimas programos padėtyje (atidėta)
+## Krano apribojimas programos padėtyje (PADARYTA 2026-11-19)
 
 Programa remiasi dviem idėjomis:
 1. **Stebėtojo horizontas** – prietaisas pats nustato savo vietą ir orientaciją, viskas skaičiuojama stebėtojo ir horizonto atžvilgiu (dabartinis darbas).
@@ -14,4 +14,4 @@ Kabinos apribojimas (`Crane.kt`: apskritimas aplink bokšto ašį, spindulys r, 
 - **Patikra kaip žinomo aukščio:** laisva padėtis (be apribojimo) lyginama su apskritimu; nesutampa – apribojimas nenaudojamas.
 - **Tikrinimas:** kabinos ZIP įrašai su tikra kabinos vieta iš apskritimo ir kampo (tools/eval), prieš įjungiant.
 
-Laukiama: krano ašies matavimo ant žemės ir kabinos spindulio.
+Padaryta: ašies matavimas, apskritimas programos padėtyje, patikra. Liko: spindulio išmokimas iš įrašų, patikra su kabinos įrašais, kai bus išmatuota ašis.

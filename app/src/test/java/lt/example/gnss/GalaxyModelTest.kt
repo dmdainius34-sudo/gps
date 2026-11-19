@@ -450,3 +450,16 @@ class GalaxyDustTest {
         }
     }
 }
+
+class SfxSynthTest {
+    @Test fun blowgunIsShortLoudAtStartAndQuietAtEnd() {
+        val p = SfxSynth.blowgun(44100)
+        assertEquals(22050, p.size)
+        val peak = p.maxOf { kotlin.math.abs(it.toInt()) }
+        org.junit.Assert.assertTrue(peak in 24000..27000)
+        val head = kotlin.math.sqrt(p.take(4410).sumOf { it.toDouble() * it } / 4410)
+        val tail = kotlin.math.sqrt(p.drop(13230).sumOf { it.toDouble() * it } / (p.size - 13230))
+        org.junit.Assert.assertTrue(head > 10 * tail)
+        assertEquals(0, p.last().toInt())
+    }
+}

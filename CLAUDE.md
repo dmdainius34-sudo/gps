@@ -14,6 +14,10 @@ Android GNSS programa (`lt.example.gnss`), Kotlin, viena veikla `app/src/main/ja
 - `Sp3Reader.kt`, `Sp3Solver.kt` – kol kas tik testui, pavyzdžiai `samples/`.
 - Įrašymas fone: `NavRecordService`, `SessionFiles`, `GapLog`.
 
+## Ateities idėjos
+
+- `IDEJOS.md` – atidėti darbai (krano apribojimas programos padėtyje ir kt.); daryti tik vartotojui paprašius.
+
 ## Ekrano nuotraukos (NEVEIKIA)
 
 Workflow `.github/workflows/screens.yml` neveikia: GitHub paskyra sustabdyta, o GitLab nemokami serveriai emuliatoriaus ekrano nuotraukų daryti negali. Toliau – tik ankstesnės sąrankos aprašas.

@@ -20,6 +20,8 @@ object PosFilter {
     private var wasMoving = false
     /** Judant: kiek naujas sprendinys pastumia išlygintą vietą (likusi dalis – pagal Doplerio greitį). */
     @Volatile var moveGain = 0.5
+    /** Saulės audra (SpaceWeather): jonosfera neramiai – judant naujas sprendinys pastumia perpus mažiau. */
+    @Volatile var storm = false
     private const val M = 111_320.0
 
     @Synchronized fun reset() { win.clear(); sn = Double.NaN; lat0 = Double.NaN; far.clear(); farN = 0; wasMoving = false }
@@ -54,7 +56,7 @@ object PosFilter {
                 // greitai (automobilis) – 0,5, kad nevėluotų (GSDC: kabinoje šuolių > 5 m 165 → 0, automobilyje p95 nepablogėja)
                 val spd = vel?.let { sqrt(it[0] * it[0] + it[1] * it[1]) }
                 val g0 = if (spd != null && spd < 3.0) minOf(moveGain, 0.2) else moveGain
-                val g = if (dist <= lim) g0 else g0 * lim / dist
+                val g = (if (dist <= lim) g0 else g0 * lim / dist) * (if (storm) 0.5 else 1.0)
                 sn += g * (p.n - sn); se += g * (p.e - se); sh += 0.5 * (p.h - sh)
             }
             out = doubleArrayOf(sn, se, sh, real)

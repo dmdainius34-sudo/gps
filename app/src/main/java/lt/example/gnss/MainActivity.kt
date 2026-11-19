@@ -9118,6 +9118,7 @@ class MainActivity : AppCompatActivity() {
         baro.updateMslp(loc.latitude, loc.longitude)
         appendFix(loc)
         fetchKp()
+        updateStormBanner()
         if (::skyDome.isInitialized) skyDome.setLocation(loc.latitude, loc.longitude, loc.altitude)
         lastGpsH = if (loc.hasAltitude()) Geoid.undulation(loc.latitude, loc.longitude)?.let { loc.altitude - it } else null
         render()
@@ -9761,6 +9762,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------- KOSMINIAI ORAI (NOAA Kp) ----------------
+    private var stormView: LinearLayout? = null
+    /** Saulės audros lentelė viršuje (Kp ≥ 5 arba CME pasiekė Žemę) ir stipresnis padėties glodinimas audros metu. */
+    private fun updateStormBanner() {
+        val b = SpaceWeather.banner()
+        PosFilter.storm = b != null
+        if (!::skyHolder.isInitialized) return
+        if (b == null) { stormView?.let { skyHolder.removeView(it) }; stormView = null; return }
+        val dp = resources.displayMetrics.density
+        val v = stormView ?: LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((14 * dp).toInt(), (8 * dp).toInt(), (14 * dp).toInt(), (8 * dp).toInt())
+            background = android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(0xE6B45309.toInt(), 0xE6DC2626.toInt(), 0xE67C2D12.toInt())).apply { cornerRadius = 14 * dp; setStroke((1.5f * dp).toInt(), 0xFFFDE68A.toInt()) }
+            elevation = 6 * dp
+            addView(TextView(this@MainActivity).apply { textSize = 16f; setTextColor(0xFFFFFBEB.toInt()); setTypeface(typeface, android.graphics.Typeface.BOLD); tag = "t" })
+            addView(TextView(this@MainActivity).apply { textSize = 12f; setTextColor(0xFFFEF3C7.toInt()); tag = "s"; maxWidth = (420 * dp).toInt() })
+            setOnClickListener { alpha = if (alpha > 0.5f) 0.35f else 1f }                 // bakstelėjus – permatoma
+            skyHolder.addView(this, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = (56 * dp).toInt() })
+            stormView = this
+        }
+        (v.findViewWithTag<TextView>("t")).text = b.first
+        (v.findViewWithTag<TextView>("s")).text = b.second
+    }
     @Volatile private var kpText = "nežinoma"
     @Volatile private var kpFetched = 0L
 
@@ -9774,8 +9799,10 @@ class MainActivity : AppCompatActivity() {
                 val arr = org.json.JSONArray(txt)
                 val last = arr.get(arr.length() - 1)
                 when (last) {
-                    is org.json.JSONArray -> "Kp ${last.getString(1)} (${last.getString(0)} UTC)"
-                    is org.json.JSONObject -> "Kp ${last.optString("Kp", last.optString("kp_index", "?"))} (${last.optString("time_tag")} UTC)"
+                    is org.json.JSONArray -> { SpaceWeather.kp = last.getString(1).toDoubleOrNull() ?: Double.NaN; SpaceWeather.kpTime = last.getString(0)
+                        "Kp ${last.getString(1)} (${last.getString(0)} UTC)" }
+                    is org.json.JSONObject -> { SpaceWeather.kp = last.optString("Kp", last.optString("kp_index", "")).toDoubleOrNull() ?: Double.NaN
+                        SpaceWeather.kpTime = last.optString("time_tag"); "Kp ${last.optString("Kp", last.optString("kp_index", "?"))} (${last.optString("time_tag")} UTC)" }
                     else -> "nežinoma"
                 }
             } catch (e: Exception) {
@@ -10254,6 +10281,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("Barometras: ${if (baro.hasSensor) "yra" else "nėra"}")
             append(gnssChipInfo())
             appendLine("Kosminiai orai (NOAA): $kpText")
+            appendLine(SpaceWeather.text())
             appendLine("Aplinka (vartotojo žyma): ${envTag().ifBlank { "nenurodyta" }}")
             val kAgl = sharePanel?.knownAgl
             val kMsl = sharePanel?.knownMsl

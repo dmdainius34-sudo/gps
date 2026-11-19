@@ -3090,7 +3090,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform3f(dustLoc[2], camPos[0], camPos[1], camPos[2])
         GLES20.glUniform1f(dustLoc[3], pxPerUnit * GAL_G)
         GLES20.glUniform1f(dustLoc[4], minOf(160f * density, maxPointPx))
-        GLES20.glUniform1f(dustLoc[5], 1.5f * a)
+        // planšetėje (2960×1848, žvaigždės – 1–8 taškų) stiprios dulkės išgraužė juodas skyles („sūris“) – tik švelnus šešėlis
+        GLES20.glUniform1f(dustLoc[5], 0.45f * a)
         GLES20.glUniform1f(dustLoc[6], GAL_G)
         fun stars(first: Int, count: Int) {
             GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
@@ -6070,7 +6071,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vec2 d = gl_PointCoord - 0.5;
                 float r = dot(d, d) * 4.0;
                 if (r > 1.0) discard;
-                float a = min(vA * (1.0 - r) * (1.0 - r), 0.95);
+                float a = min(vA * (1.0 - r) * (1.0 - r), 0.3);
                 gl_FragColor = vec4(a * 0.55, a * 0.75, a * 0.95, 1.0);
             }
         """

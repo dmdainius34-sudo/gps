@@ -113,15 +113,26 @@ class CnoFallView(ctx: Context) : View(ctx) {
         // kiekvieno palydovo pėdsakas – linija per eilutes (sukant prietaisą matomi antenos svyravimai)
         val keys = rows.firstOrNull()?.keys ?: return
         for (k in keys) {
-            val p = Path(); var started = false; var col = 0
+            // atkarpos (be pertraukų); kiekvienos pradžia (seniausi taškai – apačioje) nupjaunama, kol signalas dar „kyla“ iš nulio
+            // (lusto gaudymo pradžia): linija atsiranda iškart ten, kur yra palydovo signalo stiprumas, o ne įstrižai nuo kairės
+            val p = Path(); var col = 0
+            val seg = ArrayList<Pair<Float, Float>>()                       // (dB, y)
+            fun flush() {
+                if (seg.isEmpty()) return
+                val med = seg.map { it.first }.sorted()[seg.size / 2]
+                var end = seg.size
+                while (end > 1 && seg[end - 1].first < med - 4f) end--
+                for (j in 0 until end) { val x = xOf(seg[j].first); if (j == 0) p.moveTo(x, seg[j].second) else p.lineTo(x, seg[j].second) }
+                seg.clear()
+            }
             for ((i, row) in rows.withIndex()) {
                 val y = top + i * rowH; if (y > h) break
                 val v = row[k]
-                if (v == null) { started = false; continue }
+                if (v == null) { flush(); continue }
                 col = v.second
-                val x = xOf(v.first)
-                if (!started) { p.moveTo(x, y); started = true } else p.lineTo(x, y)
+                seg.add(v.first to y)
             }
+            flush()
             line.color = col; line.strokeWidth = 1.6f * dp; line.alpha = 220
             c.drawPath(p, line)
         }

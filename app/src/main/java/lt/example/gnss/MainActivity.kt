@@ -3758,7 +3758,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         var sx = dy * eyeI[2] - dz * eyeI[1]; var sy = dz * eyeI[0] - dx * eyeI[2]; var sz = dx * eyeI[1] - dy * eyeI[0]
         val sl = sqrt(sx * sx + sy * sy + sz * sz); if (sl < 1e-6f) return
         sx /= sl; sy /= sl; sz /= sl
-        val ux = ax[1] * sz - ax[2] * sy; val uy = ax[2] * sx - ax[0] * sz; val uz = ax[0] * sy - ax[1] * sx   // ašis × šonas
         val w = 0.022f
         // smeigtuko galvutės spindulys pasaulio vienetais (galvutė piešiama taškais ekrane)
         val pdx = pin[0] - camPos[0]; val pdy = pin[1] - camPos[1]; val pdz = pin[2] - camPos[2]
@@ -3768,7 +3767,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val fEnd = (1f - headR / len).coerceIn(0.5f, 1f)
         val span = bt.n - BIT_WINDOW
         val k = BIT_WINDOW + (((System.currentTimeMillis() - m.tMs) / 1000.0 * m.rate) % span).toFloat()
-        val phase = ((System.currentTimeMillis() % 4000L) / 4000.0 * 2 * Math.PI).toFloat()
         // juosta dalimis: kiekviena dalis – bitų grupė; tarpas, jei grupė „prarasta“ (tikimybė auga silpnėjant signalui)
         val segs = 16; val sub = 3; val pGap = (1f - q) * 0.55f
         val per = BIT_WINDOW.toFloat() / segs
@@ -3778,15 +3776,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         /** Juostos kraštas ties t (0 – palydovas, 1 – galvutės kraštas), sgn – kuri pusė. */
         fun pt(t: Float, sgn: Float): FloatArray {
             val env = sstep(0f, 0.1f, t) * (1f - 0.65f * sstep(0.88f, 1f, t))      // išnyra plona, prie galvutės siaurėja
-            val ang = (t * 6f * Math.PI).toFloat() - phase                           // 3 apsisukimai per ilgį, bėga link stebėtojo
-            val ca = kotlin.math.cos(ang); val sa = kotlin.math.sin(ang)
+            // tiesi plokščia juosta, atsukta į žiūrovą (buvo spiralė aplink ašį – linijos atrodė kreivos); bitai bėga tekstūra
             val f = t * fEnd
-            val hr = w * 0.5f * env                                                   // spiralės spindulys (banga aplink ašį)
             val hw = w * env
-            return floatArrayOf(
-                sp[0] + dx * f + (ca * sx + sa * ux) * hr * 0.6f + (ca * ux - sa * sx) * hw * sgn,
-                sp[1] + dy * f + (ca * sy + sa * uy) * hr * 0.6f + (ca * uy - sa * sy) * hw * sgn,
-                sp[2] + dz * f + (ca * sz + sa * uz) * hr * 0.6f + (ca * uz - sa * sz) * hw * sgn)
+            return floatArrayOf(sp[0] + dx * f + sx * hw * sgn, sp[1] + dy * f + sy * hw * sgn, sp[2] + dz * f + sz * hw * sgn)
         }
         for (j in 0 until segs) {
             val bitA = k - j * per; val bitB = k - (j + 1) * per

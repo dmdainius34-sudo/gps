@@ -51,6 +51,7 @@ fun readGt(f: File): Map<Long, Gt> {
 class Opt(val name: String, val smooth: Int, val dual: Boolean, val filter: Boolean, val autoThr: Boolean, val thr: Double = 20.0, val hyst: Boolean = false, val dsIono: Boolean = false, val few: Boolean = true, val velPred: Boolean = false, val adr: Boolean = false, val glo: Boolean = false, val ionoMode: Int = 0, val tdcpK: Double = 0.0, val gloDb: Double = 0.0, val uncW: Int = 0, val resW: Int = 0)
 
 val agg = LinkedHashMap<String, MutableList<DoubleArray>>()
+val aggHard = LinkedHashMap<String, MutableList<DoubleArray>>()
 fun run(rows: List<Row>, gt: Map<Long, Gt>, o: Opt): String {
     val sm = Sp3V5.Smoother(doppler = true, useAdr = o.adr, dopWindow = when (o.smooth) { 2 -> 100; 4 -> 20; 5 -> 50; 6 -> 100; else -> 20 })
     PosFilter.reset(); CnoMask.min = o.thr; CnoMask.auto = o.autoThr
@@ -160,6 +161,9 @@ fun run(rows: List<Row>, gt: Map<Long, Gt>, o: Opt): String {
             val v = if (o.velPred) try { DopplerVel.solve(f.sats, f.x) } catch (_: Exception) { null } else null
             val q = PosFilter.step(ms, f.sol.lat, f.sol.lon, f.sol.h, f.sol.hacc, g.speed > 0.5, v?.let { doubleArrayOf(it.speedH * kotlin.math.cos(Math.toRadians(it.courseDeg)), it.speedH * kotlin.math.sin(Math.toRadians(it.courseDeg))) }); lat = q[0]; lon = q[1] }
         val e = PositionSolver.horizDist(lat, lon, g.lat, g.lon); err.add(e)
+        // sunkios epochos (pastatai, medžiai): mažiau nei 10 palydovų ≥ 30 dB-Hz arba C/N0 mediana < 30
+        val cs = l1.map { it.cn0 }.sorted()
+        if (cs.count { it >= 30.0 } < 10 || (cs.isNotEmpty() && cs[cs.size / 2] < 30.0)) herr.add(e)
         val pp = prev; if (pp != null && PositionSolver.horizDist(pp[0], pp[1], lat, lon) - g.speed > 5.0) jumps++
         prev = doubleArrayOf(lat, lon)
     }
@@ -167,6 +171,8 @@ fun run(rows: List<Row>, gt: Map<Long, Gt>, o: Opt): String {
     fun q(p: Double) = err[((err.size - 1) * p).toInt()]
     if (o.tdcpK > 0) System.err.println("   ${o.name}: TDCP poslinkis ${tdHit} epochų, be jo ${tdMiss}")
     agg.getOrPut(o.name) { ArrayList() }.add(doubleArrayOf(q(0.5), q(0.95), jumps.toDouble(), none.toDouble()))
+    herr.sort()
+    if (herr.size >= 30) aggHard.getOrPut(o.name) { ArrayList() }.add(doubleArrayOf(herr[(herr.size - 1) / 2], herr[((herr.size - 1) * 0.95).toInt()], herr.size.toDouble(), err.size.toDouble()))
     return "%-38s n=%4d be pad.=%3d | p50 %6.2f m  p95 %7.2f m  (GSDC %6.2f)  šuolių>5m %d".format(o.name, err.size, none, q(0.5), q(0.95), (q(0.5) + q(0.95)) / 2, jumps)
 }
 
@@ -209,4 +215,7 @@ fun main(args: Array<String>) {
     println("=== VIDURKIS per visus važiavimus (p50, p95, GSDC, šuoliai>5m)")
     for ((k, l) in agg) println("%-38s p50 %5.2f  p95 %6.2f  GSDC %5.2f  šuolių %5.0f".format(k, l.map { it[0] }.average(), l.map { it[1] }.average(),
         l.map { (it[0] + it[1]) / 2 }.average(), l.map { it[2] }.average()))
+    println("=== SUNKIOS EPOCHOS (pastatai, medžiai: < 10 palydovų ≥ 30 dB-Hz arba C/N0 mediana < 30)")
+    for ((k, l) in aggHard) println("%-38s p50 %5.2f  p95 %6.2f  (sunkių epochų %.0f %%, važiavimų %d)".format(k, l.map { it[0] }.average(), l.map { it[1] }.average(),
+        100 * l.sumOf { it[2] } / l.sumOf { it[3] }, l.size))
 }

@@ -2603,10 +2603,23 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     fun screenTest(cb: (String) -> Unit) { stPhase = 0; stReq = cb }
     private fun frameStats(): String {
         val w = lastW; val h = lastH
+        // HDR (FP16) paviršius: baitais nuskaityti neleidžiama (buvo vien nuliai) – skaitoma pusiniais slankiaisiais (ES 3)
+        while (GLES20.glGetError() != GLES20.GL_NO_ERROR) {}
+        val px = IntArray(w * h)                                          // šviesumas 0..255 (HDR > 1 → 255)
+        var how = "RGBA8"
         val bb = java.nio.ByteBuffer.allocateDirect(w * h * 4).order(java.nio.ByteOrder.nativeOrder())
         GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, bb)
-        val px = ByteArray(w * h * 4); bb.get(px)
-        fun lum(i: Int) = maxOf(px[i * 4].toInt() and 255, px[i * 4 + 1].toInt() and 255, px[i * 4 + 2].toInt() and 255)
+        if (GLES20.glGetError() == GLES20.GL_NO_ERROR && !Hdr.on) {
+            for (i in 0 until w * h) px[i] = maxOf(bb.get(i * 4).toInt() and 255, bb.get(i * 4 + 1).toInt() and 255, bb.get(i * 4 + 2).toInt() and 255)
+        } else {
+            val hb = java.nio.ByteBuffer.allocateDirect(w * h * 8).order(java.nio.ByteOrder.nativeOrder())
+            GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, android.opengl.GLES30.GL_HALF_FLOAT, hb)
+            val err = GLES20.glGetError()
+            how = if (err == GLES20.GL_NO_ERROR) "RGBA16F" else "nepavyko (klaida 0x%x)".format(err)
+            if (err == GLES20.GL_NO_ERROR) { val sb = hb.asShortBuffer()
+                for (i in 0 until w * h) { var m = 0f; for (c in 0..2) m = maxOf(m, android.util.Half.toFloat(sb.get(i * 4 + c))); px[i] = (m * 255f).toInt().coerceIn(0, 255) } }
+        }
+        fun lum(i: Int) = px[i]
         var sum = 0L; var black = 0; var sat = 0; var lit = 0; var n = 0
         for (y in 0 until h step 2) for (x in 0 until w step 2) { val l = lum(y * w + x); sum += l; n++; if (l < 6) black++; if (l >= 250) sat++; if (l > 40) lit++ }
         // „skylės“: 24×24 langeliai visai juodi, bet apsupti šviesių (sūrio akys)
@@ -2619,7 +2632,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val nb = listOf(tileLit[ty - 1][tx], tileLit[ty + 1][tx], tileLit[ty][tx - 1], tileLit[ty][tx + 1]).count { it }
             if (nb >= 3) holes++
         }
-        return "vid. šviesumas %.1f, juodų %.1f %%, sočių %.2f %%, šviesių (>40) %.1f %%; šviesių langelių %d, skylių (juodas tarp šviesių) %d".format(
+        return "[$how] vid. šviesumas %.1f, juodų %.1f %%, sočių %.2f %%, šviesių (>40) %.1f %%; šviesių langelių %d, skylių (juodas tarp šviesių) %d".format(
             Locale.US, sum.toDouble() / n, 100.0 * black / n, 100.0 * sat / n, 100.0 * lit / n, litTiles, holes)
     }
     private fun screenTestStep() {

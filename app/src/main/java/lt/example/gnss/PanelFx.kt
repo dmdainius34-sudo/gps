@@ -101,43 +101,55 @@ class CnoFallView(ctx: Context) : View(ctx) {
         invalidate()
     }
 
-    override fun onMeasure(w: Int, h: Int) = setMeasuredDimension(MeasureSpec.getSize(w), (130 * dp).toInt())
+    // dvigubai aukštesnis (sekundė – 4 taškai); kiekviena sistema – savo stulpelyje (GPS | Galileo | GLONASS | BeiDou), kad nesimaišytų
+    override fun onMeasure(w: Int, h: Int) = setMeasuredDimension(MeasureSpec.getSize(w), (262 * dp).toInt())
+
+    private val bands = listOf(listOf("GPS", "QZS") to "GPS", listOf("GAL") to "Galileo", listOf("GLO") to "GLONASS", listOf("BDS") to "BeiDou")
+    private val sep = Paint().apply { color = 0x66000000; strokeWidth = 2f }
 
     override fun onDraw(c: Canvas) {
         val w = width.toFloat(); val h = height.toFloat()
-        val top = 14 * dp; val rowH = 2 * dp
-        c.drawText("silpni %.0f dB-Hz".format(java.util.Locale.US, lo), 2 * dp, 10 * dp, txt)
-        txt.textAlign = Paint.Align.RIGHT; c.drawText("%.0f dB-Hz stiprūs".format(java.util.Locale.US, hi), w - 2 * dp, 10 * dp, txt); txt.textAlign = Paint.Align.LEFT
-        fun xOf(db: Float) = ((db - lo) / (hi - lo)).coerceIn(0f, 1f) * w
-        var g = (kotlin.math.ceil(lo / 5f) * 5f); while (g < hi) { val x = xOf(g); c.drawLine(x, top, x, h, grid); g += 5f }
-        // slenkstis: kairėje išmetami signalai
-        val tx = ((threshold - lo) / (hi - lo)) * w
-        if (tx > 0f) { c.drawRect(0f, top, minOf(tx, w), h, shade); if (tx <= w) { thr.strokeWidth = 2f * dp; c.drawLine(tx, top, tx, h, thr) } }
-        // kiekvieno palydovo pėdsakas – linija per eilutes (sukant prietaisą matomi antenos svyravimai)
-        val keys = rows.firstOrNull()?.keys ?: return
-        for (k in keys) {
-            // atkarpos (be pertraukų); kiekvienos pradžia (seniausi taškai – apačioje) nupjaunama, kol signalas dar „kyla“ iš nulio
-            // (lusto gaudymo pradžia): linija atsiranda iškart ten, kur yra palydovo signalo stiprumas, o ne įstrižai nuo kairės
-            val p = Path(); var col = 0
-            val seg = ArrayList<Pair<Float, Float>>()                       // (dB, y)
-            fun flush() {
-                if (seg.isEmpty()) return
-                val med = seg.map { it.first }.sorted()[seg.size / 2]
-                var end = seg.size
-                while (end > 1 && seg[end - 1].first < med - 4f) end--
-                for (j in 0 until end) { val x = xOf(seg[j].first); if (j == 0) p.moveTo(x, seg[j].second) else p.lineTo(x, seg[j].second) }
-                seg.clear()
+        val top = 26 * dp; val rowH = 4 * dp
+        c.drawText("silpni %.0f".format(java.util.Locale.US, lo), 2 * dp, 10 * dp, txt)
+        txt.textAlign = Paint.Align.CENTER; c.drawText("dB-Hz kiekviename stulpelyje: kairėje silpni, dešinėje stiprūs; viršuje – dabar", w / 2, 10 * dp, txt)
+        txt.textAlign = Paint.Align.RIGHT; c.drawText("%.0f stiprūs".format(java.util.Locale.US, hi), w - 2 * dp, 10 * dp, txt); txt.textAlign = Paint.Align.LEFT
+        val bw = w / bands.size
+        val keys = rows.firstOrNull()?.keys ?: emptySet()
+        for ((bi, band) in bands.withIndex()) {
+            val x0 = bi * bw
+            fun xOf(db: Float) = x0 + ((db - lo) / (hi - lo)).coerceIn(0f, 1f) * bw
+            var g = (kotlin.math.ceil(lo / 5f) * 5f); while (g < hi) { val x = xOf(g); c.drawLine(x, top, x, h, grid); g += 5f }
+            // slenkstis: kairėje išmetami signalai
+            val tx = xOf(threshold)
+            if (threshold > lo) { c.drawRect(x0, top, minOf(tx, x0 + bw), h, shade); thr.strokeWidth = 2f * dp; c.drawLine(tx, top, tx, h, thr) }
+            val bk = keys.filter { k -> band.first.any { k.startsWith(it) } }
+            txt.color = constColor(band.first[0]); txt.isFakeBoldText = true
+            c.drawText("${band.second} (${bk.size})", x0 + 3 * dp, top - 4 * dp, txt)
+            txt.color = 0xFF111827.toInt(); txt.isFakeBoldText = false
+            if (bi > 0) c.drawLine(x0, top - 12 * dp, x0, h, sep)
+            for (k in bk) {
+                // atkarpos (be pertraukų); kiekvienos pradžia (seniausi taškai – apačioje) nupjaunama, kol signalas dar „kyla“ iš nulio
+                val p = Path(); var col = 0
+                val seg = ArrayList<Pair<Float, Float>>()                       // (dB, y)
+                fun flush() {
+                    if (seg.isEmpty()) return
+                    val med = seg.map { it.first }.sorted()[seg.size / 2]
+                    var end = seg.size
+                    while (end > 1 && seg[end - 1].first < med - 4f) end--
+                    for (j in 0 until end) { val x = xOf(seg[j].first); if (j == 0) p.moveTo(x, seg[j].second) else p.lineTo(x, seg[j].second) }
+                    seg.clear()
+                }
+                for ((i, row) in rows.withIndex()) {
+                    val y = top + i * rowH; if (y > h) break
+                    val v = row[k]
+                    if (v == null) { flush(); continue }
+                    col = v.second
+                    seg.add(v.first to y)
+                }
+                flush()
+                line.color = col; line.strokeWidth = 1.6f * dp; line.alpha = 220
+                c.drawPath(p, line)
             }
-            for ((i, row) in rows.withIndex()) {
-                val y = top + i * rowH; if (y > h) break
-                val v = row[k]
-                if (v == null) { flush(); continue }
-                col = v.second
-                seg.add(v.first to y)
-            }
-            flush()
-            line.color = col; line.strokeWidth = 1.6f * dp; line.alpha = 220
-            c.drawPath(p, line)
         }
     }
 }

@@ -1369,6 +1369,11 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setLevelHorizon(on: Boolean) { renderer.levelHorizon = on; calPrefs.edit().putBoolean("level_horizon", on).apply() }
     fun setFreeView(on: Boolean) { renderer.freeView = on; renderer.resetUser() }
     fun screenTest(cb: (String) -> Unit) { renderer.screenTest { t -> handler.post { cb(t) } } }
+    /** Prašoma didžiausio ekrano dažnio (60/120 Hz), ne 30. */
+    override fun surfaceCreated(holder: android.view.SurfaceHolder) {
+        super.surfaceCreated(holder)
+        if (android.os.Build.VERSION.SDK_INT >= 30) try { holder.surface.setFrameRate(120f, android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT) } catch (_: Exception) {}
+    }
     var dustK: Float
         get() = renderer.dustK
         set(v) { renderer.dustK = v; calPrefs.edit().putFloat("dust_k", v).apply() }
@@ -2203,7 +2208,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         labelTex.clear()
         wideLabels.clear()
         galProg = 0; coverTex = 0; m31Tex = 0
-        dustProg = 0; galVbo = 0; dustVbo = 0; galOrderUp = null
+        galVbo = 0; dustTex = 0
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
         glowProg = 0
@@ -2257,7 +2262,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         fpsT0 = now; fpsFrames = 0
         if (oceanOn && oceanLevel > 0) {
             fpsOceanOn = if (fpsOceanOn.isNaN()) fps else 0.7 * fpsOceanOn + 0.3 * fps
-            if (fps < 30.0) {
+            if (fps < 55.0) {                                            // 60/120 Hz ekranai: 30 kadr./s per mažai
                 if (++lowFpsWindows >= 3) {
                     oceanLevel--; lowFpsWindows = 0
                     oceanLog = "vandenyno efektas sumažintas iki lygio $oceanLevel (%.1f kadr./s)".format(java.util.Locale.US, fps)
@@ -2580,17 +2585,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Paukščių Tako modelio mastelis (vnt./kpc): 4× didesnis už žvaigždžių (pradžioje buvo lygus). Pasvirimas tikras – J2000 galaktikos ašys stebėtojo horizonto atžvilgiu. */
     private val GAL_G = 4f * GAL_S
 
-    private var dustProg = 0
     private var dustN = 0
-    /** Galaktikos ir dulkių taškai GPU atmintyje (įkeliami surikiuoti pagal atstumą nuo kameros). */
+    /** Galaktikos taškai GPU atmintyje (įkeliami vieną kartą). */
     private var galVbo = 0
-    private var dustVbo = 0
+    /** Dulkių žemėlapis Σ(x, y) – 256×256 per ±16 kpc (šviesumas 0..1 = 0..dustSigMax); žvaigždės šešėliuoklyje skaito jį (vertex texture). */
+    private var dustTex = 0
+    private var dustSigMax = 1f
     private var maxPointPx = 0f
-    private val galLoc = IntArray(9)
-    private val dustLoc = IntArray(9)
-    /** Taškai (scenos vnt. nuo Saulės): žvaigždės x, y, z, r, g, b, a; dulkės x, y, z, dydis (kpc), neskaidrumas. */
+    private val galLoc = IntArray(14)
     private var galSrc: FloatArray? = null
-    private var dustSrc: FloatArray? = null
 
     /** Dulkių stiprumas (NLO „Ekrano testai“ šliaužiklis; 0 – be dulkių). */
     @Volatile var dustK = 0.25f
@@ -2652,22 +2655,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     /**
-     * Rikiavimas pagal atstumą nuo kameros (fono gijoje): 48 krepšiai logaritmiškai nuo artimiausio iki tolimiausio galaktikos krašto,
-     * masyvuose – nuo toliausio krepšio. Krepšio žvaigždės piešiamos, tada jo dulkės (sugeria tik tai, kas toliau). Krepšiai lieka
-     * vietoje erdvėje, kol kamera pasislenka ~3 % atstumo – tada perrikiuojama (anksčiau 10 sluoksnių sferų slinko kartu su kamera ir
-     * skrendant ribos „perbėgdavo“ per galaktiką: dalis jos užgesdavo). Skaičiavimu: klaida nuo tikslaus rikiavimo 2–6 % (buvo 9–12 %).
+     * Taškai pusiaujo (sideralinėje) erdvėje, Saulė – koordinačių pradžioje; stebėtojo poslinkis (fP) pridedamas šešėliuoklyje.
+     * Dulkės – ne atskiri taškai (dideli tamsūs diskai skrendant uždengdavo žvaigždes lopais, „sūris“), o paviršinis tankis Σ(x, y):
+     * kiekviena žvaigždė pritemdoma pagal dulkių kiekį tarp jos ir kameros (plonas ~0,08 kpc sluoksnis), mėlyna – labiau.
      */
-    private class GalOrder(val stars: FloatArray, val dust: FloatArray, val sOff: IntArray, val dOff: IntArray, val cam: FloatArray)
-    private val GAL_NB = 48
-    @Volatile private var galOrder: GalOrder? = null
-    private var galOrderUp: GalOrder? = null
-    private val galSortBusy = java.util.concurrent.atomic.AtomicBoolean(false)
-    private val galSortExec = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "galaktikos-rikiavimas").apply { isDaemon = true } }
-    private var galSortMs = 0L
-    private var sortStars = FloatArray(0); private var sortDust = FloatArray(0); private var sortB = IntArray(0)
-    private var galUp: FloatBuffer? = null; private var dustUp: FloatBuffer? = null
-
-    /** Taškai pusiaujo (sideralinėje) erdvėje, Saulė – koordinačių pradžioje; stebėtojo poslinkis (fP) pridedamas šešėliuoklyje. */
     private fun buildGalaxy() {
         val g = GalaxyModel.frame()
         if (galSrc == null) {
@@ -2679,50 +2670,40 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 for (k in 0..2) dst[o + k] = (g[k] * x + g[3 + k] * y + g[6 + k] * z).toFloat()
                 for (k in 3..6) dst[o + k] = src[o + k]
             }
-            val ds = GalaxyModel.dust()
-            val dd = FloatArray(ds.size)
-            for (i in 0 until ds.size / 5) {
-                val o = i * 5
-                val x = (ds[o] + GalaxyModel.R_SUN).toFloat() * GAL_G; val y = ds[o + 1] * GAL_G; val z = ds[o + 2] * GAL_G
-                for (k in 0..2) dd[o + k] = (g[k] * x + g[3 + k] * y + g[6 + k] * z).toFloat()
-                dd[o + 3] = ds[o + 3]; dd[o + 4] = ds[o + 4]
+            galSrc = dst
+        }
+        galN = galSrc!!.size / 7
+        val ids = IntArray(1); GLES20.glGenBuffers(1, ids, 0); galVbo = ids[0]
+        val fb = floatBuf(galSrc!!)
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, galVbo)
+        GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, galSrc!!.size * 4, fb, GLES20.GL_STATIC_DRAW)
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+        // dulkių žemėlapis: kiekvienas debesėlis – Gauso dėmė (σ = pusė dydžio), smailė = neskaidrumas (veidu į diską τ)
+        val n = 256; val r = 16.0; val cell = 2 * r / n
+        val sig = FloatArray(n * n)
+        val d = GalaxyModel.dust(); dustN = d.size / 5
+        for (k in 0 until dustN) {
+            val o = k * 5; val x = d[o].toDouble(); val y = d[o + 1].toDouble(); val sg = d[o + 3] / 2.0; val op = d[o + 4].toDouble()
+            val rr = (3 * sg / cell).toInt() + 1; val cx = ((x + r) / cell).toInt(); val cy = ((y + r) / cell).toInt()
+            for (yy in cy - rr..cy + rr) for (xx in cx - rr..cx + rr) {
+                if (xx !in 0 until n || yy !in 0 until n) continue
+                val px = -r + (xx + 0.5) * cell - x; val py = -r + (yy + 0.5) * cell - y
+                sig[yy * n + xx] += (op * kotlin.math.exp(-(px * px + py * py) / (2 * sg * sg))).toFloat()
             }
-            galSrc = dst; dustSrc = dd
         }
-        galN = galSrc!!.size / 7; dustN = dustSrc!!.size / 5
-        val ids = IntArray(2); GLES20.glGenBuffers(2, ids, 0)
-        galVbo = ids[0]; dustVbo = ids[1]
-        galOrderUp = null                                                // naujame GL kontekste – įkelti iš naujo
-    }
-
-    /** Fono gijoje: krepšio numeris (0 – toliausias) kiekvienam taškui, skaičiavimo rikiavimas, masyvai krepšių tvarka. */
-    private fun sortGalaxy(cam: FloatArray, gc: DoubleArray): GalOrder {
-        val src = galSrc!!; val ds = dustSrc!!
-        val n = src.size / 7; val nd = ds.size / 5
-        val kpc = GAL_G.toDouble()
-        val dc = kotlin.math.sqrt((0..2).sumOf { (gc[it] - cam[it]).let { d -> d * d } })
-        val d0 = maxOf(0.02 * kpc, dc - 20 * kpc); val d1 = dc + 20 * kpc
-        val l0 = kotlin.math.ln(d0); val inv = GAL_NB / (kotlin.math.ln(d1) - l0)
-        val cx = cam[0]; val cy = cam[1]; val cz = cam[2]
-        fun bucket(a: FloatArray, o: Int): Int {
-            val dx = a[o] - cx; val dy = a[o + 1] - cy; val dz = a[o + 2] - cz
-            val b = ((0.5 * kotlin.math.ln((dx * dx + dy * dy + dz * dz).toDouble().coerceAtLeast(1e-12)) - l0) * inv).toInt().coerceIn(0, GAL_NB - 1)
-            return GAL_NB - 1 - b
-        }
-        fun order(a: FloatArray, cnt: Int, stride: Int, out: FloatArray): IntArray {
-            if (sortB.size < cnt) sortB = IntArray(cnt)
-            val off = IntArray(GAL_NB + 1)
-            for (i in 0 until cnt) { val b = bucket(a, i * stride); sortB[i] = b; off[b + 1]++ }
-            for (b in 0 until GAL_NB) off[b + 1] += off[b]
-            val pos = off.copyOf()
-            for (i in 0 until cnt) { val d = pos[sortB[i]]++ * stride; val o = i * stride; for (k in 0 until stride) out[d + k] = a[o + k] }
-            return off
-        }
-        if (sortStars.size != src.size) sortStars = FloatArray(src.size)
-        if (sortDust.size != ds.size) sortDust = FloatArray(ds.size)
-        val sOff = order(src, n, 7, sortStars)
-        val dOff = order(ds, nd, 5, sortDust)
-        return GalOrder(sortStars, sortDust, sOff, dOff, cam.copyOf())
+        dustSigMax = sig.maxOrNull()?.coerceAtLeast(1e-3f) ?: 1f
+        val bytes = java.nio.ByteBuffer.allocateDirect(n * n)
+        for (v in sig) bytes.put((v / dustSigMax * 255f).toInt().coerceIn(0, 255).toByte())
+        bytes.position(0)
+        val t = IntArray(1); GLES20.glGenTextures(1, t, 0); dustTex = t[0]
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, dustTex)
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE, n, n, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, bytes)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
     }
 
     /** Galaktika išnyra atitolinus už Saulės sistemos (zoom > SOLAR_ZOOM) – tikru pasvirimu Žemės, ašies ir horizonto atžvilgiu. */
@@ -3085,60 +3066,33 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     /**
-     * Paukščių Takas su dulkėmis: taškai surikiuoti pagal atstumą nuo kameros (sortGalaxy) – piešiama nuo tolimiausio krepšio:
-     * jo žvaigždės (šviesa sumuojasi), tada jo dulkės (sugeria viską už jų, mėlyną labiau). Taip dulkės užstoja tik toliau esančias
-     * žvaigždes – matyti tamsios juostos, disko storis ir gylis (iš viršaus – „bedugnė“ po kojomis).
-     * Ryškumas pagal kameros atstumą iki centro (skaičiuota 2960×1848: vidurys ~0,3, soti ≤ 1 %; skrendant vidutinis ryškumas pastovus).
+     * Paukščių Takas su dulkėmis: vienu piešimu, kiekviena žvaigždė pritemdyta pagal dulkes tarp jos ir kameros (GAL_VS) – tamsios juostos,
+     * disko storis ir gylis be lopų. Ryškumas pagal kameros atstumą iki centro (2960×1848: vidurys ~0,3, soti ≤ 1 %).
      */
     private fun drawGalaxy3d() {
         val a = galFade()
         if (a < 0.01f) return
         if (galProg == 0) {
             galProg = program(GAL_VS, GAL_FS)
-            for ((k, n) in listOf("uMVP", "uO", "uCam", "uK", "uMax", "uA", "uHdr", "uDref", "aPos").withIndex())
-                galLoc[k] = if (n == "aPos") GLES20.glGetAttribLocation(galProg, n) else GLES20.glGetUniformLocation(galProg, n)
-        }
-        if (dustProg == 0) {
-            dustProg = program(DUST_VS, DUST_FS)
-            for ((k, n) in listOf("uMVP", "uO", "uCam", "uK", "uMax", "uA", "uKpc", "aPos", "aDust").withIndex())
-                dustLoc[k] = if (n.startsWith("a")) GLES20.glGetAttribLocation(dustProg, n) else GLES20.glGetUniformLocation(dustProg, n)
+            for ((k, n) in listOf("uMVP", "uO", "uCam", "uK", "uMax", "uA", "uHdr", "uDref", "aPos", "aCol", "uGi", "uCamG", "uDust", "uSig").withIndex())
+                galLoc[k] = if (n.startsWith("a")) GLES20.glGetAttribLocation(galProg, n) else GLES20.glGetUniformLocation(galProg, n)
         }
         if (galSrc == null || galVbo == 0) buildGalaxy()
-        if (maxPointPx == 0f) { val r = FloatArray(2); GLES20.glGetFloatv(GLES20.GL_ALIASED_POINT_SIZE_RANGE, r, 0); maxPointPx = r[1].coerceIn(16f, 256f) }
+        if (maxPointPx == 0f) { val r = FloatArray(2); GLES20.glGetFloatv(GLES20.GL_ALIASED_POINT_SIZE_RANGE, r, 0); maxPointPx = r[1] }
         val gl = GalaxyModel.frame()
         val kpc = GAL_G.toDouble()
-        val gcRel = DoubleArray(3) { gl[it] * GalaxyModel.R_SUN * kpc }               // centras nuo Saulės
-        val camRel = FloatArray(3) { (camPos[it] - fP[it]).toFloat() }
-        // naujas surikiavimas – į GPU; kamerai pasislinkus ~3 % atstumo iki Saulės (ne mažiau 3 pc) – rikiuoti iš naujo
-        galOrder?.let { o -> if (o !== galOrderUp) {
-            val ns = o.stars.size; val nd = o.dust.size
-            if (galUp?.capacity() != ns) galUp = java.nio.ByteBuffer.allocateDirect(ns * 4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
-            if (dustUp?.capacity() != nd) dustUp = java.nio.ByteBuffer.allocateDirect(nd * 4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
-            galUp!!.position(0); galUp!!.put(o.stars); galUp!!.position(0)
-            dustUp!!.position(0); dustUp!!.put(o.dust); dustUp!!.position(0)
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, galVbo); GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, ns * 4, galUp, GLES20.GL_DYNAMIC_DRAW)
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, dustVbo); GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, nd * 4, dustUp, GLES20.GL_DYNAMIC_DRAW)
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
-            galOrderUp = o
-        } }
-        val up = galOrderUp
-        val moved = up?.let { kotlin.math.sqrt((0..2).sumOf { k -> (camRel[k] - it.cam[k]).toDouble().let { d -> d * d } }) } ?: Double.MAX_VALUE
-        val thr = 0.03 * maxOf(0.1 * kpc, kotlin.math.sqrt((0..2).sumOf { k -> camRel[k].toDouble().let { d -> d * d } }))
-        val nowMs = android.os.SystemClock.uptimeMillis()
-        if (moved > thr && galOrder === galOrderUp && nowMs - galSortMs > 80 && galSortBusy.compareAndSet(false, true)) {
-            galSortMs = nowMs
-            val c = camRel.copyOf()
-            galSortExec.execute { try { galOrder = sortGalaxy(c, gcRel) } catch (_: Exception) {} finally { galSortBusy.set(false) } }
-        }
-        if (up == null) return                                          // pirmas surikiavimas dar vyksta (keli ms)
-        val dc = kotlin.math.sqrt((0..2).sumOf { (gcRel[it] - camRel[it]).let { d -> d * d } }).coerceAtLeast(0.5 * kpc)
-        val dcK = dc / kpc
+        val camRel = DoubleArray(3) { (camPos[it] - fP[it]).toDouble() }
+        // kamera galaktikos koordinatėmis (kpc nuo centro): Gᵀ·r / mastelis − (R_SUN, 0, 0)
+        val camG = FloatArray(3) { k -> ((gl[3 * k] * camRel[0] + gl[3 * k + 1] * camRel[1] + gl[3 * k + 2] * camRel[2]) / kpc - (if (k == 0) GalaxyModel.R_SUN else 0.0)).toFloat() }
+        val dcK = kotlin.math.sqrt(camG.sumOf { (it * it).toDouble() }).coerceAtLeast(0.5)
+        val dc = dcK * kpc
         val gain = (6.0 * (if (dcK < 20.0) Math.pow(20.0 / dcK, 0.6) else 20.0 / dcK)).toFloat()
         val pxPerUnit = lastH / (2f * kotlin.math.tan(Math.toRadians(20.0)).toFloat())
+        galDbg = "galaktika: ryškumas %.2f, atstumas iki centro %.1f kpc, stiprinimas %.2f, žvaigždžių %d, dulkių debesėlių %d (Σ maks. %.2f), dulkių stiprumas %.2f, kamera z %.2f kpc".format(
+            Locale.US, a, dcK, gain, galN, dustN, dustSigMax, dustK, camG[2])
         GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
         resetAttribs()
-        val lcG = GLES20.glGetAttribLocation(galProg, "aCol")
-        // uniformai – kartą kadrui kiekvienai programai
         GLES20.glUseProgram(galProg)
         GLES20.glUniformMatrix4fv(galLoc[0], 1, false, mvpI, 0)
         GLES20.glUniform3f(galLoc[1], fP[0].toFloat(), fP[1].toFloat(), fP[2].toFloat())
@@ -3149,48 +3103,19 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform1f(galLoc[5], if (Hdr.on) a else a * gain)
         GLES20.glUniform1f(galLoc[6], if (Hdr.on) gain * 2f else 1f)
         GLES20.glUniform1f(galLoc[7], dc.toFloat())
-        GLES20.glUseProgram(dustProg)
-        GLES20.glUniformMatrix4fv(dustLoc[0], 1, false, mvpI, 0)
-        GLES20.glUniform3f(dustLoc[1], fP[0].toFloat(), fP[1].toFloat(), fP[2].toFloat())
-        GLES20.glUniform3f(dustLoc[2], camPos[0], camPos[1], camPos[2])
-        GLES20.glUniform1f(dustLoc[3], pxPerUnit * GAL_G)
-        GLES20.glUniform1f(dustLoc[4], minOf(160f * density, maxPointPx))
-        // planšetėje (2960×1848, žvaigždės – 1–8 taškų) stiprios dulkės išgraužė juodas skyles („sūris“) – tik švelnus šešėlis
-        GLES20.glUniform1f(dustLoc[5], dustK * a)
-        GLES20.glUniform1f(dustLoc[6], GAL_G)
-        fun stars(first: Int, count: Int) {
-            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
-            GLES20.glUseProgram(galProg)
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, galVbo)
-            GLES20.glEnableVertexAttribArray(galLoc[8]); GLES20.glEnableVertexAttribArray(lcG)
-            GLES20.glVertexAttribPointer(galLoc[8], 3, GLES20.GL_FLOAT, false, 28, 0)
-            GLES20.glVertexAttribPointer(lcG, 4, GLES20.GL_FLOAT, false, 28, 12)
-            GLES20.glDrawArrays(GLES20.GL_POINTS, first, count)
-            GLES20.glDisableVertexAttribArray(lcG); GLES20.glDisableVertexAttribArray(galLoc[8])
-        }
-        fun dust(first: Int, count: Int) {
-            GLES20.glBlendFunc(GLES20.GL_ZERO, GLES20.GL_ONE_MINUS_SRC_COLOR)
-            GLES20.glUseProgram(dustProg)
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, dustVbo)
-            GLES20.glEnableVertexAttribArray(dustLoc[7]); GLES20.glEnableVertexAttribArray(dustLoc[8])
-            GLES20.glVertexAttribPointer(dustLoc[7], 3, GLES20.GL_FLOAT, false, 20, 0)
-            GLES20.glVertexAttribPointer(dustLoc[8], 2, GLES20.GL_FLOAT, false, 20, 12)
-            GLES20.glDrawArrays(GLES20.GL_POINTS, first, count)
-            GLES20.glDisableVertexAttribArray(dustLoc[8]); GLES20.glDisableVertexAttribArray(dustLoc[7])
-        }
-        galDbg = "galaktika: ryškumas %.2f, atstumas iki centro %.1f kpc, stiprinimas %.2f, žvaigždžių %d, dulkių %d (krepšių su dulkėmis %d iš %d), dulkių stiprumas %.2f, didž. taško dydis %.0f".format(
-            Locale.US, a, dcK, gain, galN, dustN, (0 until GAL_NB).count { up.dOff[it + 1] > up.dOff[it] }, GAL_NB, dustK, maxPointPx)
-        // nuo toliausio krepšio: žvaigždžių ruožai be dulkių sujungiami į vieną piešimą
-        var runStart = up.sOff[0]
-        for (b in 0 until GAL_NB) {
-            val dCnt = up.dOff[b + 1] - up.dOff[b]
-            if (dCnt > 0 || b == GAL_NB - 1) {
-                val sEnd = up.sOff[b + 1]
-                if (sEnd > runStart) stars(runStart, sEnd - runStart)
-                runStart = sEnd
-                if (dCnt > 0 && !dustOffFrame && dustK > 0.001f) dust(up.dOff[b], dCnt)
-            }
-        }
+        // I (nuo Saulės) -> galaktikos kpc: Gᵀ / mastelis (stulpeliais, kaip reikalauja GL)
+        val gi = FloatArray(9) { idx -> val col = idx / 3; val row = idx % 3; (gl[3 * row + col] / kpc).toFloat() }
+        GLES20.glUniformMatrix3fv(galLoc[10], 1, false, gi, 0)
+        GLES20.glUniform3f(galLoc[11], camG[0], camG[1], camG[2])
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, dustTex)
+        GLES20.glUniform1i(galLoc[12], 0)
+        GLES20.glUniform1f(galLoc[13], if (dustOffFrame) 0f else dustK * dustSigMax)
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, galVbo)
+        GLES20.glEnableVertexAttribArray(galLoc[8]); GLES20.glEnableVertexAttribArray(galLoc[9])
+        GLES20.glVertexAttribPointer(galLoc[8], 3, GLES20.GL_FLOAT, false, 28, 0)
+        GLES20.glVertexAttribPointer(galLoc[9], 4, GLES20.GL_FLOAT, false, 28, 12)
+        GLES20.glDrawArrays(GLES20.GL_POINTS, 0, galN)
+        GLES20.glDisableVertexAttribArray(galLoc[9]); GLES20.glDisableVertexAttribArray(galLoc[8])
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
@@ -6083,7 +6008,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 gl_FragColor = vec4(uColor.rgb + (nz - 0.5) / 128.0, uColor.a * (0.6 + 0.4 * fres));
             }
         """
-        /** Galaktikos žvaigždės. Gylis: arčiau – ryškiau, toliau – blankiau ir vos melsviau (tolumos jausmas). */
+        /**
+         * Galaktikos žvaigždės. Gylis: arčiau – ryškiau, toliau – blankiau ir vos melsviau. Dulkės: optinis gylis tarp kameros ir žvaigždės –
+         * Σ (žemėlapis, ties plokštumos kirtimu ir kelyje) × kirsta plono sluoksnio (h = 0,08 kpc) dalis × kelio ilgis / aukščio pokytis
+         * (plokštumoje – ribota, kad juosta neužgestų visa); užtemimas tolygus, be lopų.
+         */
         private const val GAL_VS = """
             attribute vec3 aPos;
             attribute vec4 aCol;
@@ -6094,7 +6023,17 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform float uMax;
             uniform float uA;
             uniform float uDref;
+            uniform mat3 uGi;
+            uniform vec3 uCamG;
+            uniform sampler2D uDust;
+            uniform float uSig;
             varying vec4 vCol;
+            float sig(vec2 xy) {
+                vec2 uv = xy / 32.0 + 0.5;
+                if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return 0.0;
+                return texture2DLod(uDust, uv, 0.0).r;
+            }
+            float cdf(float u) { return 0.5 + 0.5 * u / sqrt(1.0 + u * u); }
             void main() {
                 vec3 p = aPos + uO;
                 float d = length(p - uCam);
@@ -6102,90 +6041,18 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 gl_PointSize = clamp(uK / max(gl_Position.w, 0.001), 1.0, uMax);
                 float k = clamp(pow(uDref / max(d, 0.001), 0.6), 0.45, 1.6);
                 vec3 c = mix(aCol.rgb, vec3(0.62, 0.72, 1.0), clamp(0.35 * (1.0 - k), 0.0, 0.3));
-                vCol = vec4(c, min(aCol.a * uA * k, 1.0));
-            }
-        """
-        /**
-         * Dulkių debesėlis: dydis – tikras (kpc) pagal atstumą; tolimi, mažesni už ~3 taškus – silpnesni (be triukšmo);
-         * visai arti kameros (< 3 savo dydžių) – blėsta: pro debesį skrendant jis nebeuždengia viso ekrano tamsia dėme.
-         */
-        private const val DUST_VS = """
-            attribute vec3 aPos;
-            attribute vec2 aDust;
-            uniform mat4 uMVP;
-            uniform vec3 uO;
-            uniform vec3 uCam;
-            uniform float uK;
-            uniform float uMax;
-            uniform float uA;
-            uniform float uKpc;
-            varying float vA;
-            void main() {
-                vec3 p = aPos + uO;
-                float d = length(p - uCam);
-                gl_Position = uMVP * vec4(p, 1.0);
-                float sz = uK * aDust.x / max(gl_Position.w, 0.001);
-                gl_PointSize = clamp(sz, 1.0, uMax);
-                float su = aDust.x * uKpc;
-                vA = aDust.y * uA * clamp(sz / 3.0, 0.0, 1.0) * smoothstep(0.5 * su, 3.0 * su, d);
-            }
-        """
-        /** Sugertis: dst · (1 − sugertis), mėlyna sugeriama labiau – už dulkių šviesa paraudusi (blend ZERO, ONE_MINUS_SRC_COLOR). */
-        private const val DUST_FS = """
-            precision mediump float;
-            varying float vA;
-            void main() {
-                vec2 d = gl_PointCoord - 0.5;
-                float r = dot(d, d) * 4.0;
-                if (r > 1.0) discard;
-                float a = min(vA * (1.0 - r) * (1.0 - r), 0.3);
-                gl_FragColor = vec4(a * 0.55, a * 0.75, a * 0.95, 1.0);
-            }
-        """
-        private const val VIG_VS = """
-            attribute vec2 aPos;
-            varying vec2 vP;
-            void main() { vP = aPos; gl_Position = vec4(aPos, 0.0, 1.0); }
-        """
-        private const val VIG_FS = """
-            precision mediump float;
-            varying vec2 vP;
-            uniform float uA;
-            uniform float uAsp;
-            void main() {
-                float r = length(vec2(vP.x * min(uAsp, 1.0), vP.y / max(uAsp, 1.0)));
-                gl_FragColor = vec4(0.0, 0.0, 0.0, uA * smoothstep(0.55, 1.35, r));
-            }
-        """
-        /** 3D žvaigždė: dydis ir permatomumas pagal regimąjį ryškį iš kameros (√šviesis / atstumas). */
-        private const val STAR3D_VS = """
-            attribute vec3 aPos;
-            attribute vec4 aCol;
-            uniform mat4 uMVP;
-            uniform vec3 uO;
-            uniform vec3 uCam;
-            uniform float uK;
-            uniform float uMax;
-            uniform float uA;
-            uniform float uS;
-            varying vec4 vCol;
-            void main() {
-                vec3 p = aPos * uS + uO;
-                gl_Position = uMVP * vec4(p, 1.0);
-                float b = uS * sqrt(aCol.a) / max(length(p - uCam), 0.01);
-                gl_PointSize = clamp(uK * b, 1.0, uMax);
-                vCol = vec4(aCol.rgb, clamp(uA * (0.2 + 0.4 * uK * b), 0.0, 1.0));
-            }
-        """
-        private const val GAL_FS = """
-            precision mediump float;
-            varying vec4 vCol;
-            uniform float uHdr;
-            void main() {
-                vec2 d = gl_PointCoord - 0.5;
-                float r = dot(d, d) * 4.0;
-                if (r > 1.0) discard;
-                gl_FragColor = vec4(vCol.rgb * uHdr, vCol.a * (1.0 - r));
+                vec3 ext = vec3(1.0);
+                if (uSig > 0.0) {
+                    vec3 s = uGi * aPos - vec3(8.2, 0.0, 0.0);
+                    vec3 dl = s - uCamG;
+                    float dz = dl.z;
+                    float t = abs(dz) > 0.00001 ? clamp(uCamG.z / (uCamG.z - s.z), 0.0, 1.0) : 0.5;
+                    float sg = (sig(uCamG.xy + dl.xy * t) + sig(uCamG.xy + dl.xy * 0.33) + sig(uCamG.xy + dl.xy * 0.67)) / 3.0;
+                    float fr = abs(cdf(s.z / 0.08 * 1.2) - cdf(uCamG.z / 0.08 * 1.2));
+                    float tau = min(4.0, uSig * sg * fr * length(dl) / max(abs(dz), 0.3));
+                    ext = exp(-tau * vec3(0.55, 0.75, 0.95));
+                }
+                vCol = vec4(c * ext, min(aCol.a * uA * k, 1.0));
             }
         """
         private const val COLOR_VS = """

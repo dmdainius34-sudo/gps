@@ -231,6 +231,22 @@ class KnownHeightSppTest {
         assertEquals(h, f.sol.h, 0.05)
         assertEquals(3, f.sol.sats)
     }
+
+    /** Krano apribojimas: 2 palydovai + aukštis + apskritimas aplink bokšto ašį (r = 30 m) – padėtis randama. */
+    @Test fun twoSatsWithHeightAndCraneCircle() {
+        val latD = 54.70; val lonD = 25.30; val h = 200.0
+        val lat = Math.toRadians(latD); val lon = Math.toRadians(lonD)
+        val xT = PositionSolver.llhToEcef(lat, lon, h)
+        // ašis 30 m į šiaurę nuo prietaiso
+        val axLat = latD + 30.0 / 111_320.0
+        val axis = PositionSolver.llhToEcef(Math.toRadians(axLat), lon, 0.0)
+        val up = doubleArrayOf(kotlin.math.cos(Math.toRadians(axLat)) * kotlin.math.cos(lon), kotlin.math.cos(Math.toRadians(axLat)) * kotlin.math.sin(lon), kotlin.math.sin(Math.toRadians(axLat)))
+        val sats = listOf(sat(xT, lat, lon, 80.0, 50.0, 1, 500.0), sat(xT, lat, lon, 260.0, 45.0, 2, 500.0))
+        val x0 = PositionSolver.llhToEcef(Math.toRadians(latD - 0.00003), Math.toRadians(lonD + 0.00005), h)
+        val c = Sp3V5.HCon(h, 0.3, x0).also { it.axis = axis; it.up = up; it.r = 30.0; it.rSigma = 0.3 }
+        val f = Sp3V5.solveSats(100.0, sats, isb = true, raim = true, hCon = c)!!
+        assertEquals(0.0, PositionSolver.horizDist(latD, lonD, f.sol.lat, f.sol.lon), 0.1)
+    }
 }
 
 /** Automatinis signalo slenkstis: atvirame danguje kyla, kai stiprių daug; kai jų mažai – nusileidžia, kad padėtis išliktų. */

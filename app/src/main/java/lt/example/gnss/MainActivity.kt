@@ -10156,7 +10156,29 @@ class MainActivity : AppCompatActivity() {
         val r = field("Spindulys: atstumas nuo ašies iki planšetės, m", if (Crane.radius > 0) Crane.radius.toString() else "")
         val h = field("Planšetės elipsoidinis aukštis, m (nebūtina)", if (Crane.height.isNaN()) "" else Crane.height.toString())
         val on = CheckBox(this).apply { text = "Naudoti RTK skaičiavime (planšetė juda tik ratu aplink bokštą)"; isChecked = Crane.on; box.addView(this) }
+        val sppOn = CheckBox(this).apply { text = "Naudoti programos padėtyje (kabina tik ant apskritimo; patikrinama laisva padėtimi)"; isChecked = Crane.sppOn; box.addView(this) }
         val st = TextView(this).apply { textSize = 12f; text = Crane.text(obsLatNow, obsLonNow); box.addView(this) }
+        // ašis matuojama stovint ant žemės bokšto centre: 2 min. programos padėčių mediana
+        val axLat = ArrayList<Double>(); val axLon = ArrayList<Double>()
+        var axRun = false
+        val axTick = object : Runnable { override fun run() {
+            if (!axRun) return
+            LiveRtk.sppLast?.takeIf { System.currentTimeMillis() - LiveRtk.lastSppMs() < 3_000L }?.let { axLat.add(it.lat); axLon.add(it.lon) }
+            if (axLat.size >= 120) {
+                axRun = false
+                val ml = axLat.sorted()[axLat.size / 2]; val mo = axLon.sorted()[axLon.size / 2]
+                val sp = axLat.indices.map { PositionSolver.horizDist(axLat[it], axLon[it], ml, mo) }.sorted()
+                la.setText("%.7f".format(java.util.Locale.US, ml)); lo.setText("%.7f".format(java.util.Locale.US, mo))
+                st.text = "Ašis išmatuota: %d mėg., sklaida (pusė taškų) %.1f m. Dabar įveskite spindulį (kabinoje – „Spindulys = dabartinis atstumas“) ir išsaugokite.".format(java.util.Locale.US, axLat.size, sp[sp.size / 2])
+                return
+            }
+            st.text = "Matuojama ašis: %d / 120 s – stovėkite bokšto centre".format(java.util.Locale.US, axLat.size)
+            st.postDelayed(this, 1000)
+        } }
+        box.addView(Button(this).apply {
+            text = "Čia krano ašis (stovint ant žemės bokšto centre, 2 min.)"
+            setOnClickListener { axLat.clear(); axLon.clear(); axRun = true; st.removeCallbacks(axTick); st.post(axTick) }
+        })
         box.addView(Button(this).apply {
             text = "Spindulys = dabartinis atstumas iki ašies"
             setOnClickListener {
@@ -10177,6 +10199,7 @@ class MainActivity : AppCompatActivity() {
                 Crane.lat = pla ?: 0.0; Crane.lon = plo ?: 0.0; Crane.radius = pr ?: 0.0; Crane.height = ph ?: Double.NaN
                 Crane.on = on.isChecked
                 if (Crane.on && !Crane.valid) Crane.on = false
+                Crane.sppOn = sppOn.isChecked && Crane.geoValid
                 Crane.save(this)
                 Toast.makeText(this, if (on.isChecked && !Crane.on) "Neteisingi duomenys – apribojimas neįjungtas (ašis, spindulys 0,1–200 m)"
                     else "Ašis %.7f, %.7f; spindulys %.2f m%s%s".format(java.util.Locale.US, Crane.lat, Crane.lon, Crane.radius,
@@ -10184,7 +10207,7 @@ class MainActivity : AppCompatActivity() {
                     Toast.LENGTH_LONG).show()
             }
             .setNegativeButton("Atšaukti", null)
-            .show().also { WinUtil.draggable(it) }
+            .show().also { WinUtil.draggable(it); it.setOnDismissListener { axRun = false } }
     }
 
     private fun startNtrip() {

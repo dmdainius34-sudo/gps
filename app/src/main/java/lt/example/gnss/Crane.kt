@@ -17,6 +17,14 @@ object Crane {
     @Volatile var lat = 0.0; @Volatile var lon = 0.0
     @Volatile var radius = 0.0
     @Volatile var height = Double.NaN          // elipsoidinis aukštis, m (NaN – nežinomas)
+    /** Apribojimas ir programos padėtyje (ne tik RTK): kabina tik ant apskritimo aplink bokštą. */
+    @Volatile var sppOn = false
+    /** Laisvos padėties (be apribojimų) patikra: atstumas iki ašies nesutampa su spinduliu – apribojimas nenaudojamas. */
+    @Volatile var conflict = false
+        private set
+    @Volatile var freeDr = Double.NaN
+        private set
+    private var badN = 0; private var goodN = 0
     const val SIGMA_R = 0.3; const val SIGMA_H = 0.5
 
     fun load(ctx: Context) {
@@ -26,12 +34,43 @@ object Crane {
         lon = p.getString("lon_s", null)?.toDoubleOrNull() ?: 0.0
         radius = p.getString("r_s", null)?.toDoubleOrNull() ?: 0.0
         height = p.getString("h_s", null)?.toDoubleOrNull() ?: Double.NaN
+        sppOn = p.getBoolean("spp_on", false)
     }
 
     fun save(ctx: Context) {
-        ctx.getSharedPreferences("crane", Context.MODE_PRIVATE).edit().putBoolean("on", on)
+        ctx.getSharedPreferences("crane", Context.MODE_PRIVATE).edit().putBoolean("on", on).putBoolean("spp_on", sppOn)
             .putString("lat_s", lat.toString()).putString("lon_s", lon.toString()).putString("r_s", radius.toString())
             .putString("h_s", if (height.isNaN()) "" else height.toString()).apply()
+    }
+
+    /** Ašis ir spindulys įvesti (nepriklausomai nuo įjungimo). */
+    val geoValid get() = radius in 0.1..200.0 && lat in -90.0..90.0 && lon in -180.0..180.0 && (lat != 0.0 || lon != 0.0)
+    val sppActive get() = sppOn && geoValid && !conflict
+
+    /**
+     * Patikra laisva padėtimi: |atstumas iki ašies − r| > max(25 m, 3σ) 5 kartus iš eilės – apribojimas išjungiamas (ne ta vieta, kitas kranas),
+     * vėl įjungiamas po 10 sutampančių iš eilės.
+     */
+    @Synchronized fun checkFree(latDeg: Double, lonDeg: Double, hacc: Double) {
+        if (!geoValid) return
+        val v = en(latDeg, lonDeg); val d = sqrt(v[0] * v[0] + v[1] * v[1])
+        freeDr = d - radius
+        val bad = kotlin.math.abs(freeDr) > maxOf(25.0, 3 * hacc)
+        if (bad) { badN++; goodN = 0; if (badN >= 5) conflict = true } else { goodN++; badN = 0; if (goodN >= 10) conflict = false }
+    }
+
+    /** Programos padėties apribojimas: prie esamo (žinomo aukščio) pridedamas apskritimas; null – nenaudojamas. */
+    fun sppConstraint(base: Sp3V5.HCon?, refLat: Double?, refLon: Double?): Sp3V5.HCon? {
+        if (!sppActive) return base
+        val x0 = base?.x0 ?: run {
+            if (refLat == null || refLon == null) return base
+            val (pl, po) = project(refLat, refLon)
+            PositionSolver.llhToEcef(Math.toRadians(pl), Math.toRadians(po), if (height.isNaN()) 0.0 else height)
+        }
+        val c = base ?: Sp3V5.HCon(Double.NaN, 0.0, x0)
+        val (a, u) = axis()
+        c.axis = a; c.up = u; c.r = radius; c.rSigma = 1.0
+        return c
     }
 
     val valid get() = on && radius in 0.1..200.0 && lat in -90.0..90.0 && lon in -180.0..180.0 && (lat != 0.0 || lon != 0.0) &&
@@ -104,8 +143,11 @@ object Crane {
     }
 
     fun text(fixLat: Double?, fixLon: Double?): String {
-        if (!valid) return "Krano apribojimas: ${if (on) "nenustatytas (ašis ir spindulys)" else "išjungtas"}"
-        val sb = StringBuilder("Krano apribojimas: ašis %.7f, %.7f; spindulys %.2f m%s".format(Locale.US, lat, lon, radius,
+        val spp = if (!sppOn) "programos padėtyje išjungtas" else if (!geoValid) "programos padėtyje – nenustatyta ašis ar spindulys"
+            else "programos padėtyje %s%s".format(Locale.US, if (conflict) "NENAUDOJAMAS (laisva padėtis nesutampa su apskritimu)" else "naudojamas",
+                if (freeDr.isNaN()) "" else ", laisva padėtis %+.1f m nuo apskritimo".format(Locale.US, freeDr))
+        if (!valid) return "Krano apribojimas: RTK ${if (on) "nenustatytas (ašis ir spindulys)" else "išjungtas"}; $spp"
+        val sb = StringBuilder("Krano apribojimas: $spp; RTK – ašis %.7f, %.7f; spindulys %.2f m%s".format(Locale.US, lat, lon, radius,
             if (height.isNaN()) "; aukštis laisvas" else "; aukštis %.2f m".format(Locale.US, height)))
         if (fixLat != null && fixLon != null) {
             val v = en(fixLat, fixLon); val d = sqrt(v[0] * v[0] + v[1] * v[1])

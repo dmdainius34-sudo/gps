@@ -180,6 +180,7 @@ object LiveRtk {
     @Volatile var sppLast: PositionSolver.Solution? = null
         private set
     @Volatile private var sppMs = 0L
+    fun lastSppMs() = sppMs
     private var sppIn: Set<String> = emptySet()
     /** „Čia žemė“ matavimas ką tik baigtas (UI pasiima ir nuima). */
     @Volatile var groundDone = false
@@ -308,16 +309,20 @@ object LiveRtk {
             else Sp3V5.solveSats(ep.tow, prepareBroadcast(ep.t, obs), isb = true, raim = true, hCon = hc)
         } catch (_: Exception) { null }
         // žinomas aukštis (įvestas ranka): kai palydovų pakanka – patikra, ar jis čia tinka (be barometro kitaip nežinoma)
-        val free = if (obs.size >= 6 && KnownHeight.deviceMsl() != null) fit(null)?.also { KnownHeight.checkFree(it.sol.lat, it.sol.lon, it.sol.h, vdopOf(it)) } else null
+        val free = if (obs.size >= 6 && (KnownHeight.deviceMsl() != null || (Crane.sppOn && Crane.geoValid))) fit(null)?.also {
+            if (KnownHeight.deviceMsl() != null) KnownHeight.checkFree(it.sol.lat, it.sol.lon, it.sol.h, vdopOf(it))
+            Crane.checkFree(it.sol.lat, it.sol.lon, it.sol.hacc)
+        } else null
         val ref = sppLast?.takeIf { now - sppMs < 60_000L }?.let { it.lat to it.lon } ?: KnownHeight.lastLatLon()
-        val hc = ref?.let { KnownHeight.constraint(it.first, it.second) }
+        // žinomas aukštis ir (jei nustatytas) krano apskritimas aplink bokšto ašį
+        val hc = Crane.sppConstraint(ref?.let { KnownHeight.constraint(it.first, it.second) }, ref?.first, ref?.second)
         if (obs.size < (if (hc != null) 3 else 5)) { AppDiag.noPos(obs.size); flush(SatStats.NO_FIX); sppUsedKeys = emptySet(); return }
         val f = (if (hc != null) fit(hc) else free ?: fit(null)) ?: run { AppDiag.noPos(obs.size); flush(SatStats.NO_FIX); sppUsedKeys = emptySet(); return }
         // „Čia žemė“: matuojama programos padėtimi be aukščio apribojimo
         if (KnownHeight.gMeasuring) (if (hc == null) f else free ?: fit(null))?.let {
             if (KnownHeight.groundSample(now, it.sol.lat, it.sol.lon, it.sol.h, false, Steps.walking())) groundDone = true
         }
-        sppHeightCon = hc != null
+        sppHeightCon = hc != null && !hc.h0.isNaN()
         sppSource = if (r != null) "SP3" else "efemeridės iš palydovų"
         AppDiag.orbit(r != null)
         val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }
@@ -329,7 +334,7 @@ object LiveRtk {
         val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, mv, vNE)
         val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
         sppLast = sol; sppMs = now
-        AppDiag.pos(obs.size, f.sol, hc != null, sol,
+        AppDiag.pos(obs.size, f.sol, hc != null && !hc.h0.isNaN(), sol,
             obs.map { sppSmooth.dopHatch.count(it.sys.code * 1000 + it.svid).toDouble() }.average(), sppSmooth.dopHatch.restarts)
         // naudoti – tik tie, kurių liekana yra (žemiau 10° palydovai lieka f.sats, bet sprendime nedalyvauja)
         val resK = HashMap<String, Double>()

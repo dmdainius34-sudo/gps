@@ -245,7 +245,11 @@ object Sp3V5 {
      * Žinomas elipsoidinis aukštis h0 (σ, m) kaip papildomas matavimas: vienu nežinomuoju mažiau – padėtis stabilesnė
      * prastos geometrijos vietoje ir randama jau iš 3 palydovų. x0 – pradinis spėjimas (ECEF, netoli tikrosios vietos).
      */
-    class HCon(val h0: Double, val sigma: Double, val x0: DoubleArray)
+    class HCon(val h0: Double, val sigma: Double, val x0: DoubleArray) {
+        /** Krano apribojimas: horizontalus atstumas nuo bokšto ašies (axis – ašies taškas ECEF, up – zenitas ten) = r (σ, m). */
+        var axis: DoubleArray? = null; var up: DoubleArray? = null; var r = 0.0; var rSigma = 1.0
+        val n get() = (if (h0.isNaN()) 0 else 1) + (if (axis != null) 1 else 0)
+    }
 
     /** Tas pats sprendinys iš jau paruoštų palydovų (pvz. iš transliuojamų efemeridžių, kai SP3 nėra). */
     fun solveSats(tow: Double, sats0: List<SatEp>, isb: Boolean, raim: Boolean, weighted: Boolean = true, hCon: HCon? = null): Fit? {
@@ -265,7 +269,7 @@ object Sp3V5 {
                       val res: Map<String, Double>)
 
     private fun lsq(sats: List<SatEp>, tow: Double, isb: Boolean, weighted: Boolean, hCon: HCon? = null): Lsq? {
-        val nc = if (hCon != null) 1 else 0
+        val nc = hCon?.n ?: 0
         if (sats.size + nc < 4) return null
         // L1+L5 pataisyti palydovai – atskiras laikrodis (mažoji raidė): imtuvo L1/L5 poslinkis kitoks nei vien L1
         fun ck(s: SatEp) = if (s.ifree) s.sys.lowercaseChar() else s.sys
@@ -274,13 +278,30 @@ object Sp3V5 {
         val x = DoubleArray(np); x[2] = 6_378_137.0
         if (hCon != null) for (k in 0..2) x[k] = hCon.x0[k]
         // aukščio eilutė: H = vietinis zenitas, svoris (σ0/σh)², σ0 = 3 m – vienetinio svorio pseudoatstumo paklaida
-        fun conRow(): Triple<DoubleArray, Double, Double>? {
-            val c = hCon ?: return null
-            val llh = PositionSolver.ecefToLlh(x[0], x[1], x[2])
-            val h = DoubleArray(np)
-            h[0] = cos(llh[0]) * cos(llh[1]); h[1] = cos(llh[0]) * sin(llh[1]); h[2] = sin(llh[0])
-            val s = c.sigma.coerceAtLeast(0.1)
-            return Triple(h, c.h0 - llh[2], 9.0 / (s * s))
+        fun conRows(): List<Triple<DoubleArray, Double, Double>> {
+            val c = hCon ?: return emptyList()
+            val out = ArrayList<Triple<DoubleArray, Double, Double>>(2)
+            if (!c.h0.isNaN()) {
+                val llh = PositionSolver.ecefToLlh(x[0], x[1], x[2])
+                val h = DoubleArray(np)
+                h[0] = cos(llh[0]) * cos(llh[1]); h[1] = cos(llh[0]) * sin(llh[1]); h[2] = sin(llh[0])
+                val s = c.sigma.coerceAtLeast(0.1)
+                out.add(Triple(h, c.h0 - llh[2], 9.0 / (s * s)))
+            }
+            // krano eilutė: H = horizontali kryptis nuo ašies, liekana r − atstumas
+            val a = c.axis; val u = c.up
+            if (a != null && u != null) {
+                val d = DoubleArray(3) { x[it] - a[it] }
+                val du = d[0] * u[0] + d[1] * u[1] + d[2] * u[2]
+                val hz = DoubleArray(3) { d[it] - du * u[it] }
+                val rh = sqrt(hz[0] * hz[0] + hz[1] * hz[1] + hz[2] * hz[2])
+                if (rh > 0.05) {
+                    val h = DoubleArray(np); for (k in 0..2) h[k] = hz[k] / rh
+                    val s = c.rSigma.coerceAtLeast(0.1)
+                    out.add(Triple(h, c.r - rh, 9.0 / (s * s)))
+                }
+            }
+            return out
         }
         sats.forEach { it.rp.fill(0.0) }
         var lastStep = Double.MAX_VALUE
@@ -307,10 +328,10 @@ object Sp3V5 {
             val usedSys = rows.map { ck(it.first) }.toSet()
             if (isb && systems.any { it !in usedSys }) return lsq(sats.filter { ck(it) in usedSys }, tow, isb, weighted, hCon)
             if (rows.size + nc < np) return null
-            val con = conRow()
-            val hs = rows.map { it.second } + listOfNotNull(con?.first)
-            val ws = rows.map { it.third } + listOfNotNull(con?.third)
-            val rs = res + listOfNotNull(con?.second)
+            val con = conRows()
+            val hs = rows.map { it.second } + con.map { it.first }
+            val ws = rows.map { it.third } + con.map { it.third }
+            val rs = res + con.map { it.second }
             val d = solveNormal(hs, rs, ws) ?: return null
             for (k in 0 until np) x[k] += d[k]
             val step = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])

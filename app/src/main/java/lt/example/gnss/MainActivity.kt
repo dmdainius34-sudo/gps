@@ -9179,9 +9179,23 @@ class MainActivity : AppCompatActivity() {
         val lbl = TextView(this).apply { textSize = 14f; setTextColor(0xFFFFFFFF.toInt()); setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt()); gravity = Gravity.CENTER; text = "0°" }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         fun close() { northBar?.let { (it.parent as? ViewGroup)?.removeView(it) }; northBar = null }
-        for ((t, d) in listOf("\u25C05" to -5.0, "\u25C01" to -1.0, "1\u25B6" to 1.0, "5\u25B6" to 5.0))
-            row.addView(round(t).apply { setOnClickListener { skyDome.northStep(d); lbl.text = "%+.0f°".format(Locale.US, skyDome.liveNorthDeg) } },
-                LinearLayout.LayoutParams(b, b).apply { setMargins(gap, 0, gap, 0) })
+        // laikomi mygtukai: paspaudus – vienas žingsnis, laikant (po 0,4 s) Žemė sukasi toliau kas 0,12 s, kiekvienas žingsnis – vibracijos tiksėjimas
+        val vib = if (android.os.Build.VERSION.SDK_INT >= 31) (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as android.os.VibratorManager).defaultVibrator
+            else @Suppress("DEPRECATION") (getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator)
+        fun tick() { try { vib.vibrate(android.os.VibrationEffect.createOneShot(12, 120)) } catch (_: Exception) {} }
+        for ((t, d) in listOf("\u25C05" to -5.0, "\u25C01" to -1.0, "1\u25B6" to 1.0, "5\u25B6" to 5.0)) {
+            val btn = round(t)
+            val step = { skyDome.northStep(d); lbl.text = "%+.0f°".format(Locale.US, skyDome.liveNorthDeg); tick() }
+            val rep = object : Runnable { override fun run() { step(); btn.postDelayed(this, 120) } }
+            btn.setOnTouchListener { v, ev ->
+                when (ev.actionMasked) {
+                    android.view.MotionEvent.ACTION_DOWN -> { v.isPressed = true; v.alpha = 0.6f; step(); v.postDelayed(rep, 400) }
+                    android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> { v.isPressed = false; v.alpha = 1f; v.removeCallbacks(rep) }
+                }
+                true
+            }
+            row.addView(btn, LinearLayout.LayoutParams(b, b).apply { setMargins(gap, 0, gap, 0) })
+        }
         row.addView(DeviceTurnIcon(this).apply { setOnClickListener {
             skyDome.northStepCancel(); val c = skyDome.northHere(); close()
             Toast.makeText(this@MainActivity, if (c == null) "Krypties jutikliai dar neparuošti" else "N = prietaiso kryptis (%+.1f°)".format(Locale.US, c), Toast.LENGTH_SHORT).show() } },

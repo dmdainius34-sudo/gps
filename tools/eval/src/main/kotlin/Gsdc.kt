@@ -197,7 +197,9 @@ fun wlsBaseline(rows: List<Row>, gt: Map<Long, Gt>): String {
 }
 
 fun main(args: Array<String>) {
-    if (args.isNotEmpty() && args[0] == "own") { for (d in args.drop(1)) Own.main(File(d), null); return }
+    // own katalogas[@platuma,ilguma] – tiesa (žinomos koordinatės) per argumentą, į saugyklą nededama
+    if (args.isNotEmpty() && args[0] == "own") { for (d in args.drop(1)) { val (dir, tr) = d.split("@").let { it[0] to it.getOrNull(1)?.split(",")?.let { p -> p[0].toDouble() to p[1].toDouble() } }
+        Own.main(File(dir), tr) }; return }
     if (args.isNotEmpty() && args[0] == "hyb") { for (d in args.drop(1)) Own.hybMain(File(d)); return }
     if (args.isNotEmpty() && args[0] == "tgd") { for (d in args.drop(1)) Own.tgdMain(File(d)); return }
     val opts = listOf(

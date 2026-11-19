@@ -6055,6 +6055,52 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vCol = vec4(c * ext, min(aCol.a * uA * k, 1.0));
             }
         """
+        private const val VIG_VS = """
+            attribute vec2 aPos;
+            varying vec2 vP;
+            void main() { vP = aPos; gl_Position = vec4(aPos, 0.0, 1.0); }
+        """
+        private const val VIG_FS = """
+            precision mediump float;
+            varying vec2 vP;
+            uniform float uA;
+            uniform float uAsp;
+            void main() {
+                float r = length(vec2(vP.x * min(uAsp, 1.0), vP.y / max(uAsp, 1.0)));
+                gl_FragColor = vec4(0.0, 0.0, 0.0, uA * smoothstep(0.55, 1.35, r));
+            }
+        """
+        /** 3D žvaigždė: dydis ir permatomumas pagal regimąjį ryškį iš kameros (√šviesis / atstumas). */
+        private const val STAR3D_VS = """
+            attribute vec3 aPos;
+            attribute vec4 aCol;
+            uniform mat4 uMVP;
+            uniform vec3 uO;
+            uniform vec3 uCam;
+            uniform float uK;
+            uniform float uMax;
+            uniform float uA;
+            uniform float uS;
+            varying vec4 vCol;
+            void main() {
+                vec3 p = aPos * uS + uO;
+                gl_Position = uMVP * vec4(p, 1.0);
+                float b = uS * sqrt(aCol.a) / max(length(p - uCam), 0.01);
+                gl_PointSize = clamp(uK * b, 1.0, uMax);
+                vCol = vec4(aCol.rgb, clamp(uA * (0.2 + 0.4 * uK * b), 0.0, 1.0));
+            }
+        """
+        private const val GAL_FS = """
+            precision mediump float;
+            varying vec4 vCol;
+            uniform float uHdr;
+            void main() {
+                vec2 d = gl_PointCoord - 0.5;
+                float r = dot(d, d) * 4.0;
+                if (r > 1.0) discard;
+                gl_FragColor = vec4(vCol.rgb * uHdr, vCol.a * (1.0 - r));
+            }
+        """
         private const val COLOR_VS = """
             attribute vec3 aPos;
             uniform mat4 uMVP;

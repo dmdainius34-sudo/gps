@@ -38,8 +38,17 @@ object Sp3Live {
             try {
                 val t = gpsNow()
                 val search = Sp3Storage.search(ctx.applicationContext)
-                val (f, _) = Sp3Locator.chooseByRange(search.all, t to t) { it.open().use { s -> Sp3Reader.headerRange(s) } }
-                if (f != null) { reader = f.open().use { Sp3Reader.read(it) }; source = f.name }
+                val (f, rng) = Sp3Locator.chooseByRange(search.all, t to t) { it.open().use { s -> Sp3Reader.headerRange(s) } }
+                // apimantis dabartį failas nekeičiamas neapimančiu (anksčiau kas 10 min. galėdavo būti paimtas senas – programos padėtis
+                // tada pereidavo prie transliuojamų efemeridžių, keisdavosi palydovų rinkinys ir padėtis šokdavo)
+                val cur = reader
+                val newCovers = rng != null && t >= rng.first && t <= rng.second
+                val curCovers = cur != null && Sp3Solver.inRange(cur, t)
+                if (f != null && (newCovers || !curCovers)) {
+                    val same = f.name == source && curCovers
+                    reader = f.open().use { Sp3Reader.read(it) }; source = f.name
+                    if (!same) log("įkeltas ${f.name}, ${if (newCovers) "apima dabartį" else "dabarties NEAPIMA"}")
+                } else if (f != null) log("${f.name} neapima dabarties – paliktas $source")
             } catch (e: Exception) { android.util.Log.w("GnssApp", "Sp3Live: ${e.message}") }
             finally { loading = false }
         }.start()
@@ -113,6 +122,13 @@ object Sp3Live {
 
     private fun approxLine(): String = "Palydovai be SP3 (padėti pagal Android az/el, brūkšninė kreivė): ${approx.size}" +
         (if (approx.isEmpty()) "" else " – " + approx.joinToString(", "))
+
+    private val loadLog = ArrayDeque<String>()
+    @Synchronized private fun log(m: String) {
+        loadLog.addLast(java.text.SimpleDateFormat("HH:mm:ss", Locale.US).format(java.util.Date()) + " " + m)
+        while (loadLog.size > 12) loadLog.removeFirst()
+    }
+    @Synchronized fun loadText(): String = "SP3 įkėlimai: " + (if (loadLog.isEmpty()) "nėra" else loadLog.joinToString("; "))
 
     @Synchronized
     fun text(): String {

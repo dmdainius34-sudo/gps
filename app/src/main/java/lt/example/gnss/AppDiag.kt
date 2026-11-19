@@ -38,6 +38,14 @@ object AppDiag {
     }
 
     /** Padėties nėra (per mažai palydovų virš slenksčio arba sprendinys nepavyko). */
+    /** Programos padėties orbitų šaltinis kiekvienai epochai: SP3 ar transliuojamos efemeridės, ir persijungimai. */
+    private var orbSp3 = 0; private var orbBr = 0; private var orbSw = 0; private var orbLast: Boolean? = null
+    @Synchronized fun orbit(sp3: Boolean) {
+        if (sp3) orbSp3++ else orbBr++
+        if (orbLast != null && orbLast != sp3) orbSw++
+        orbLast = sp3
+    }
+
     @Synchronized fun noPos(heard: Int) {
         val now = System.currentTimeMillis()
         eps.addLast(E(now, CnoMask.min, CnoMask.auto, heard, 0, false, Double.NaN, Double.NaN, Double.NaN))
@@ -84,6 +92,8 @@ object AppDiag {
             if (fd.isNotEmpty()) appendLine("Aukščio patikra (padėtis be aukščio – įvestas): vid. %+.1f m, didžiausias |%.0f| m; dabar %s".format(Locale.US,
                 fd.average(), fd.maxOf { abs(it) }, if (KnownHeight.conflict) "NENAUDOJAMAS (nesutampa)" else "tinka"))
         }
+        if (orbSp3 + orbBr > 0) appendLine("Orbitos programos padėtyje: SP3 %s, transliuojamos efemeridės %s; persijungimų %d (kiekvienas – kitas palydovų rinkinys, padėtis gali šokti). %s".format(Locale.US,
+            pct(orbSp3, orbSp3 + orbBr), pct(orbBr, orbSp3 + orbBr), orbSw, Sp3Live.loadText()))
         val th = eps.map { it.thr }
         appendLine("Slenkstis: %s, vid. %.0f, min %.0f, max %.0f dB-Hz; automatinių pakeitimų %d".format(Locale.US,
             if (CnoMask.auto) "automatinis" else "rankinis", th.average(), th.minOrNull() ?: 0.0, th.maxOrNull() ?: 0.0, thrs.size))

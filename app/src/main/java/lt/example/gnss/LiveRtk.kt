@@ -319,6 +319,7 @@ object LiveRtk {
         }
         sppHeightCon = hc != null
         sppSource = if (r != null) "SP3" else "efemeridės iš palydovų"
+        AppDiag.orbit(r != null)
         val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }
         // greitis iš Doplerio – pirmiau, kad išlyginta vieta judant nevėluotų (Google GSDC važiavimai: p50 5,5 → 2,7 m)
         try { DopplerVel.solve(f.sats, f.x)?.let { velLast = it; velMs = now } } catch (_: Exception) {}

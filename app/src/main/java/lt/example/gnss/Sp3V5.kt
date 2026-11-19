@@ -194,6 +194,8 @@ object Sp3V5 {
                 val cn0: Double, val clkDrift: Double, val prr: Double?) {
         /** Jonosfera jau pašalinta pagal L1+L5 – Klobuchar netaikomas, savas imtuvo laikrodis (kitas dažnių poslinkis). */
         var ifree = false
+        /** Papildomas svorio daugiklis (1 – įprastai): bandymams – lusto paklaidos įvertis, palydovo liekanų istorija. */
+        var wMul = 1.0
         val rp = DoubleArray(3)
         fun rotate(rx: DoubleArray) {
             val dx = rx[0] - rp[0]; val dy = rx[1] - rp[1]; val dz = rx[2] - pos[2]
@@ -294,7 +296,7 @@ object Sp3V5 {
                     val l = Sp3Solver.look(x, s.rp, rho)
                     if (l[4] < MASK) continue
                     corr = Sp3Solver.saastamoinen(l[0], l[2], l[4]) + (if (s.ifree) 0.0 else Sp3Solver.klobuchar(l[0], l[1], l[3], l[4], tow))
-                    if (weighted) w = weight(l[4], s.cn0) * (if (s.sys == 'R') GLO_W else 1.0)
+                    if (weighted) w = weight(l[4], s.cn0) * (if (s.sys == 'R') GLO_W else 1.0) * s.wMul
                 }
                 val h = DoubleArray(np); h[0] = dx / rho; h[1] = dy / rho; h[2] = dz / rho
                 val ci = if (isb) systems.indexOf(ck(s)) else 0

@@ -10,7 +10,7 @@ import kotlin.math.sqrt
  */
 class Row(val ms: Long, val sys: Char, val svid: Int, val l5: Boolean, val pr: Double, val cn0: Double, val state: Int, val prr: Double?,
           val pos: DoubleArray, val vel: DoubleArray, val clk: Double, val clkDrift: Double, val tow: Double, val el: Double, val az: Double,
-          val wls: DoubleArray?, val ionoDs: Double = 0.0, val adr: Double? = null, val adrSt: Int = 0)
+          val wls: DoubleArray?, val ionoDs: Double = 0.0, val adr: Double? = null, val adrSt: Int = 0, val unc: Double = Double.NaN)
 
 fun readGsdc(f: File): List<Row> {
     val br = f.bufferedReader(); val h = br.readLine().split(',')
@@ -19,7 +19,7 @@ fun readGsdc(f: File): List<Row> {
     val iPr = i("RawPseudorangeMeters"); val iCn = i("Cn0DbHz"); val iSt = i("State"); val iPrr = i("PseudorangeRateMetersPerSecond")
     val iX = i("SvPositionXEcefMeters"); val iVx = i("SvVelocityXEcefMetersPerSecond"); val iClk = i("SvClockBiasMeters"); val iCd = i("SvClockDriftMetersPerSecond")
     val iTn = i("TimeNanos"); val iFb = i("FullBiasNanos"); val iB = i("BiasNanos"); val iEl = i("SvElevationDegrees"); val iAz = i("SvAzimuthDegrees")
-    val iW = i("WlsPositionXEcefMeters"); val iIo = i("IonosphericDelayMeters"); val iAdr = i("AccumulatedDeltaRangeMeters"); val iAs = i("AccumulatedDeltaRangeState")
+    val iW = i("WlsPositionXEcefMeters"); val iIo = i("IonosphericDelayMeters"); val iAdr = i("AccumulatedDeltaRangeMeters"); val iAs = i("AccumulatedDeltaRangeState"); val iU = i("ReceivedSvTimeUncertaintyNanos")
     val out = ArrayList<Row>()
     br.forEachLine { ln ->
         val p = ln.split(','); if (p.size < h.size || p[0] != "Raw") return@forEachLine
@@ -34,7 +34,7 @@ fun readGsdc(f: File): List<Row> {
         val w = p[iW].toDoubleOrNull()?.let { doubleArrayOf(it, p[iW + 1].toDouble(), p[iW + 2].toDouble()) }
         out.add(Row(p[iMs].toLong(), sys, p[iSv].toInt(), l5, pr, p[iCn].toDouble(), p[iSt].toInt(), p[iPrr].toDoubleOrNull(),
             doubleArrayOf(x, p[iX + 1].toDouble(), p[iX + 2].toDouble()), doubleArrayOf(p[iVx].toDouble(), p[iVx + 1].toDouble(), p[iVx + 2].toDouble()),
-            p[iClk].toDouble(), p[iCd].toDoubleOrNull() ?: 0.0, tow, p[iEl].toDoubleOrNull() ?: 0.0, p[iAz].toDoubleOrNull() ?: 0.0, w, p[iIo].toDoubleOrNull() ?: 0.0, p[iAdr].toDoubleOrNull(), p[iAs].toDoubleOrNull()?.toInt() ?: 0))
+            p[iClk].toDouble(), p[iCd].toDoubleOrNull() ?: 0.0, tow, p[iEl].toDoubleOrNull() ?: 0.0, p[iAz].toDoubleOrNull() ?: 0.0, w, p[iIo].toDoubleOrNull() ?: 0.0, p[iAdr].toDoubleOrNull(), p[iAs].toDoubleOrNull()?.toInt() ?: 0, if (iU >= 0) p[iU].toDoubleOrNull() ?: Double.NaN else Double.NaN))
     }
     return out
 }
@@ -48,7 +48,7 @@ fun readGt(f: File): Map<Long, Gt> {
     return m
 }
 
-class Opt(val name: String, val smooth: Int, val dual: Boolean, val filter: Boolean, val autoThr: Boolean, val thr: Double = 20.0, val hyst: Boolean = false, val dsIono: Boolean = false, val few: Boolean = true, val velPred: Boolean = false, val adr: Boolean = false, val glo: Boolean = false, val ionoMode: Int = 0, val tdcpK: Double = 0.0, val gloDb: Double = 0.0)
+class Opt(val name: String, val smooth: Int, val dual: Boolean, val filter: Boolean, val autoThr: Boolean, val thr: Double = 20.0, val hyst: Boolean = false, val dsIono: Boolean = false, val few: Boolean = true, val velPred: Boolean = false, val adr: Boolean = false, val glo: Boolean = false, val ionoMode: Int = 0, val tdcpK: Double = 0.0, val gloDb: Double = 0.0, val uncW: Int = 0, val resW: Int = 0)
 
 val agg = LinkedHashMap<String, MutableList<DoubleArray>>()
 fun run(rows: List<Row>, gt: Map<Long, Gt>, o: Opt): String {
@@ -56,6 +56,7 @@ fun run(rows: List<Row>, gt: Map<Long, Gt>, o: Opt): String {
     PosFilter.reset(); CnoMask.min = o.thr; CnoMask.auto = o.autoThr
     PosFilter.moveGain = 0.5
     var inSet = emptySet<String>()
+    val resHist = HashMap<String, ArrayDeque<Double>>()
     val dualTmp = HashMap<Int, Pair<Double, Double>>()
     var prevTd: Map<Int, DoubleArray>? = null; var prevTdMs = 0L; var outX: DoubleArray? = null; var tdHit = 0; var tdMiss = 0
     val err = ArrayList<Double>(); val herr = ArrayList<Double>(); var prev: DoubleArray? = null; var jumps = 0; var n = 0; var none = 0
@@ -107,8 +108,17 @@ fun run(rows: List<Row>, gt: Map<Long, Gt>, o: Opt): String {
             }
         }
         if (sats.size < 5) { none++; continue }
+        // bandymai: lusto paklaidos įvertis (σ, ns) kaip santykinis svoris; palydovo liekanų istorija (RMS per 30 epochų)
+        if (o.uncW > 0) { val u = sats.mapNotNull { s -> byKey[s.sys.code * 1000 + s.svid]?.unc?.takeIf { !it.isNaN() && it > 0 } }.sorted()
+            val med = if (u.isEmpty()) Double.NaN else u[u.size / 2]
+            if (!med.isNaN()) for (s in sats) { val x = byKey[s.sys.code * 1000 + s.svid]?.unc ?: continue; if (x.isNaN() || x <= 0) continue
+                s.wMul *= (med / x).let { it * it }.coerceIn(if (o.uncW == 2) 0.02 else 0.1, if (o.uncW == 2) 10.0 else 4.0) } }
+        if (o.resW > 0) for (s in sats) { val h = resHist["%c%02d".format(s.sys, s.svid)] ?: continue; if (h.size < 10) continue
+            val rms = sqrt(h.sumOf { it * it } / h.size)
+            s.wMul *= if (o.resW == 1) (if (rms > 5.0) 0.25 else if (rms > 3.0) 0.5 else 1.0) else (3.0 / rms).let { it * it }.coerceIn(0.1, 1.0) }
         val f = try { Sp3V5.solveSats(t, sats, isb = true, raim = true) } catch (_: Exception) { null }
         if (f == null) { none++; continue }
+        for ((k, v) in f.res) { val h = resHist.getOrPut(k) { ArrayDeque() }; h.addLast(v); while (h.size > 30) h.removeFirst() }
         var lat = f.sol.lat; var lon = f.sol.lon
         if (o.tdcpK > 0.0) {
             // TDCP: viso telefono poslinkis per epochą iš fazės skirtumų (LSQ: dx, dy, dz, bendras laikrodžio pokytis)
@@ -184,8 +194,12 @@ fun main(args: Array<String>) {
     if (args.isNotEmpty() && args[0] == "own") { for (d in args.drop(1)) Own.main(File(d), null); return }
     if (args.isNotEmpty() && args[0] == "tgd") { for (d in args.drop(1)) Own.tgdMain(File(d)); return }
     val opts = listOf(
-        Opt("G0 be GLONASS (dabar)", 1, false, true, false, 20.0, velPred = true),
-        Opt("G2 + GLONASS (programos svoris /4)", 1, false, true, false, 20.0, velPred = true, glo = true),
+        Opt("dabar (GLONASS /4)", 1, false, true, false, 20.0, velPred = true, glo = true),
+        Opt("+ lusto σ svoris (0,1–4)", 1, false, true, false, 20.0, velPred = true, glo = true, uncW = 1),
+        Opt("+ lusto σ svoris (0,02–10)", 1, false, true, false, 20.0, velPred = true, glo = true, uncW = 2),
+        Opt("+ liekanų istorija (pakopos)", 1, false, true, false, 20.0, velPred = true, glo = true, resW = 1),
+        Opt("+ liekanų istorija (3/RMS)²", 1, false, true, false, 20.0, velPred = true, glo = true, resW = 2),
+        Opt("+ σ + istorija (pakopos)", 1, false, true, false, 20.0, velPred = true, glo = true, uncW = 1, resW = 1),
     )
     for (dir in args) {
         val rows = readGsdc(File(dir, "device_gnss.csv")); val gt = readGt(File(dir, "ground_truth.csv"))

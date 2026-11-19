@@ -10,9 +10,9 @@ import kotlin.math.sqrt
  */
 object SatStats {
     const val USED = 0; const val NO_TIME = 1; const val UNHEALTHY = 2; const val WEAK = 3; const val NO_ORBIT = 4
-    const val LOW_EL = 5; const val RAIM = 6; const val NO_FIX = 7; const val NOT_SYS = 8
-    private const val N = 9
-    private val short = arrayOf("naudotas", "nėra laiko žymos", "nesveikas", "silpnas", "nėra orbitos", "žemiau 10°", "RAIM", "nėra padėties", "sistema nenaudojama")
+    const val LOW_EL = 5; const val RAIM = 6; const val NO_FIX = 7; const val NOT_SYS = 8; const val MANUAL = 9
+    private const val N = 10
+    private val short = arrayOf("naudotas", "nėra laiko žymos", "nesveikas", "silpnas", "nėra orbitos", "žemiau 10°", "RAIM", "nėra padėties", "sistema nenaudojama", "rankiniu būdu")
 
     private class B(val min: Long) { var n = 0; var used = 0; var rs = 0.0; var rq = 0.0; var cn = 0.0; val why = IntArray(N) }
     private val m = HashMap<String, ArrayDeque<B>>()
@@ -72,6 +72,7 @@ object SatStats {
         LOW_EL -> "per žemai: žemiau 10° virš horizonto (ilgas kelias per atmosferą, daug atspindžių)"
         RAIM -> "RAIM atmetė: jo atstumas nesutampa su kitais palydovais (tikėtinas atspindys)"
         NO_FIX -> "padėtis nesuskaičiuota – per mažai tinkamų palydovų"
+        MANUAL -> "užtildytas rankiniu būdu (C/N0 grafike ar kortelėje)"
         NOT_SYS -> if (key.startsWith("SBS")) "SBAS – pataisų palydovas, atstumui nenaudojamas" else "šios sistemos signalas programos padėčiai nenaudojamas"
         else -> null
     }

@@ -1525,6 +1525,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                     .setPrimaryClip(android.content.ClipData.newPlainText(title, txt))
                 Toast.makeText(context, "Nukopijuota", Toast.LENGTH_SHORT).show()
             }
+            .setNegativeButton(if (ManualMute.has(s.const + s.svid)) "Klausyti" else "Užtildyti") { _, _ ->
+                val k = s.const + s.svid; val m = !ManualMute.has(k); ManualMute.set(k, m)
+                Toast.makeText(context, if (m) "$k užtildytas rankiniu būdu" else "$k vėl klausomas", Toast.LENGTH_SHORT).show() }
             .setPositiveButton("Gerai", null).show().also { WinUtil.unfold(it); WinUtil.draggable(it) }
     }
     private var prevArc = doubleArrayOf(0.0, 0.0, 1.0)
@@ -6763,7 +6766,28 @@ class DraggablePanel(
         addUpdateListener { shimmer.t = it.animatedFraction; shimmer.invalidateSelf() }
     }
     /** C/N0 krioklys meniu viršuje: kairėje silpni, dešinėje stiprūs, eilutės leidžiasi žemyn. */
-    private val cnoFall = CnoFallView(context).apply { threshold = CnoMask.min.toFloat() }
+    private val cnoFall = CnoFallView(context).apply { threshold = CnoMask.min.toFloat()
+        onBandTap = { name, keys -> showMuteDialog(name, keys) } }
+
+    /** Rankinis užtildymas: sistemos palydovai su jungikliais (įjungtas – klausomas, išjungtas – užtildytas), dabartinis C/N0. */
+    private fun showMuteDialog(name: String, keys: List<String>) {
+        val dp = resources.displayMetrics.density
+        val box = android.widget.LinearLayout(context).apply { orientation = android.widget.LinearLayout.VERTICAL; setPadding((16 * dp).toInt(), (4 * dp).toInt(), (16 * dp).toInt(), 0) }
+        if (keys.isEmpty()) box.addView(TextView(context).apply { text = "Šios sistemos palydovų dabar nematyti" })
+        for (k in keys) {
+            val cn = lastPanelSats.filter { it.const + it.svid == k }.maxOfOrNull { it.cn0 }
+            box.addView(android.widget.Switch(context).apply {
+                text = "$k   " + (cn?.let { "%.0f dB-Hz".format(java.util.Locale.US, it) } ?: "nematomas")
+                isChecked = !ManualMute.has(k); textSize = 15f
+                setOnCheckedChangeListener { _, on -> ManualMute.set(k, !on); cnoFall.invalidate() }
+            })
+        }
+        android.app.AlertDialog.Builder(context).setTitle("$name: klausomi palydovai")
+            .setMessage("Išjungtas palydovas užtildomas – neįtraukiamas į programos padėtį (grafike – pilka brūkšninė linija), kol vėl įjungsite.")
+            .setView(android.widget.ScrollView(context).apply { addView(box) })
+            .setNeutralButton("Įjungti visus") { _, _ -> keys.forEach { ManualMute.set(it, false) }; cnoFall.invalidate() }
+            .setPositiveButton("Gerai", null).show().also { WinUtil.draggable(it) }
+    }
     private var lastPanelSats: List<Sat> = emptyList()
     fun setSats(list: List<Sat>) {
         lastPanelSats = list
@@ -8280,7 +8304,7 @@ class MainActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(mw, ww))
         val btnNtrip = Button(this).apply { text = "NTRIP pataisos (RTCM)…"; setOnClickListener { showNtripDialog() } }
         left.addView(btnNtrip, LinearLayout.LayoutParams(mw, ww))
-        Crane.load(this)
+        Crane.load(this); ManualMute.load(this)
         left.addView(Button(this).apply { text = "Krano apribojimas (bokšto ašis, spindulys)…"; setOnClickListener { showCraneDialog() } },
             LinearLayout.LayoutParams(mw, ww))
         left.addView(btnResetN, LinearLayout.LayoutParams(mw, ww))

@@ -280,6 +280,7 @@ object LiveRtk {
             why[k] = when {
                 (if (m.sys == 'R') (m.state and Sp3V5.STATE_GLO_TOD_DECODED) else (m.state and Sp3V5.STATE_TOW_DECODED)) == 0 -> SatStats.NO_TIME
                 SatHealth.bad(m.sys, m.svid) -> SatStats.UNHEALTHY
+                ManualMute.has(k) -> SatStats.MANUAL
                 !(m.cn0 >= CnoMask.min || (m.cn0 >= CnoMask.min - 3.0 && (m.sys.toString() + m.svid) in sppIn)) -> SatStats.WEAK
                 else -> SatStats.NO_ORBIT   // patikslinama po sprendimo
             }
@@ -289,6 +290,7 @@ object LiveRtk {
             SatStats.epoch(now, CnoMask.min, why.map { Triple(it.key, it.value, Double.NaN) }, cn0s)
         }
         val obs = ep.meas.filter { (if (it.sys == 'R') (it.state and Sp3V5.STATE_GLO_TOD_DECODED) else (it.state and Sp3V5.STATE_TOW_DECODED)) != 0 && !SatHealth.bad(it.sys, it.svid) &&
+                !ManualMute.has(constOf(it.sys) + it.svid) &&
                 (it.cn0 >= CnoMask.min || (it.cn0 >= CnoMask.min - 3.0 && (it.sys.toString() + it.svid) in sppIn)) }
             .also { l -> sppIn = l.map { it.sys.toString() + it.svid }.toSet() }
             .map { m -> (if (DualFreq.enabled) DualFreq.iono(m, ep.t) else null)?.let { i -> Sp3V5.Ob(m.sys, m.svid, pr(m) - i, m.cn0, m.prr, ifree = true) } ?: Sp3V5.Ob(m.sys, m.svid, pr(m), m.cn0, m.prr) }

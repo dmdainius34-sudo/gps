@@ -106,6 +106,19 @@ class CnoFallView(ctx: Context) : View(ctx) {
 
     private val bands = listOf(listOf("GPS", "QZS") to "GPS", listOf("GAL") to "Galileo", listOf("GLO") to "GLONASS", listOf("BDS") to "BeiDou")
     private val sep = Paint().apply { color = 0x66000000; strokeWidth = 2f }
+    /** Bakstelėjus stulpelį: (sistemos pavadinimas, jos palydovai) – rankinio užtildymo jungikliams. */
+    var onBandTap: ((String, List<String>) -> Unit)? = null
+    private val mutedLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0x99888888.toInt()
+        pathEffect = android.graphics.DashPathEffect(floatArrayOf(6f, 6f), 0f) }
+    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+        if (e.actionMasked == android.view.MotionEvent.ACTION_UP && width > 0) {
+            val bi = (e.x / (width.toFloat() / bands.size)).toInt().coerceIn(0, bands.size - 1)
+            val keys = rows.flatMap { it.keys }.distinct().filter { k -> bands[bi].first.any { k.startsWith(it) } }
+                .sortedBy { k -> k.dropWhile { !it.isDigit() }.toIntOrNull() ?: 0 }
+            onBandTap?.invoke(bands[bi].second, keys)
+        }
+        return true
+    }
 
     override fun onDraw(c: Canvas) {
         val w = width.toFloat(); val h = height.toFloat()
@@ -147,8 +160,8 @@ class CnoFallView(ctx: Context) : View(ctx) {
                     seg.add(v.first to y)
                 }
                 flush()
-                line.color = col; line.strokeWidth = 1.6f * dp; line.alpha = 220
-                c.drawPath(p, line)
+                if (ManualMute.has(k)) { mutedLine.strokeWidth = 1.2f * dp; c.drawPath(p, mutedLine) }    // rankiniu būdu užtildytas – pilka brūkšninė
+                else { line.color = col; line.strokeWidth = 1.6f * dp; line.alpha = 220; c.drawPath(p, line) }
             }
         }
     }

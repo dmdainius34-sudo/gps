@@ -1368,6 +1368,10 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setFollowDevice(on: Boolean) { renderer.followDevice = on; renderer.resetUser() }
     fun setLevelHorizon(on: Boolean) { renderer.levelHorizon = on; calPrefs.edit().putBoolean("level_horizon", on).apply() }
     fun setFreeView(on: Boolean) { renderer.freeView = on; renderer.resetUser() }
+    fun screenTest(cb: (String) -> Unit) { renderer.screenTest { t -> handler.post { cb(t) } } }
+    var dustK: Float
+        get() = renderer.dustK
+        set(v) { renderer.dustK = v; calPrefs.edit().putFloat("dust_k", v).apply() }
     /** Skrydis pro Šiaurinę žvaigždę: true – pradėtas, false – grįžtama. */
     fun toggleFlight(): Boolean {
         renderer.onFlightMsg = { m -> handler.post { android.widget.Toast.makeText(context, m, android.widget.Toast.LENGTH_LONG).show() } }
@@ -1541,6 +1545,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         // atidarius – visada stebėtojo vaizdas: horizontas pagal žemę ir prietaisą, kryptis – pagal šiaurę
         renderer.followDevice = false; renderer.freeView = false
         renderer.levelHorizon = calPrefs.getBoolean("level_horizon", true)
+        renderer.dustK = calPrefs.getFloat("dust_k", 0.25f)
         calPrefs.edit().putBoolean("follow_device", false).putBoolean("free_view", false).apply()
         renderer.oceanOn = calPrefs.getBoolean("ocean_anim", true)
         setRenderer(renderer)
@@ -2489,6 +2494,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
 
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        screenTestStep()
     }
 
     // ---------------- ŽVAIGŽDŽIŲ FONAS (vietoj CMB) ----------------
@@ -2585,6 +2591,52 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Taškai (scenos vnt. nuo Saulės): žvaigždės x, y, z, r, g, b, a; dulkės x, y, z, dydis (kpc), neskaidrumas. */
     private var galSrc: FloatArray? = null
     private var dustSrc: FloatArray? = null
+
+    /** Dulkių stiprumas (NLO „Ekrano testai“ šliaužiklis; 0 – be dulkių). */
+    @Volatile var dustK = 0.25f
+    @Volatile private var galDbg = "galaktika dar nepiešta"
+    @Volatile private var dustOffFrame = false
+    @Volatile private var stReq: ((String) -> Unit)? = null
+    private var stPhase = 0
+    private var stWith = ""
+    /** Ekrano testas: šis kadras (su dulkėmis) ir kitas (be dulkių) – nuskaitomi pikseliai, statistika ir nustatymai ataskaitai. */
+    fun screenTest(cb: (String) -> Unit) { stPhase = 0; stReq = cb }
+    private fun frameStats(): String {
+        val w = lastW; val h = lastH
+        val bb = java.nio.ByteBuffer.allocateDirect(w * h * 4).order(java.nio.ByteOrder.nativeOrder())
+        GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, bb)
+        val px = ByteArray(w * h * 4); bb.get(px)
+        fun lum(i: Int) = maxOf(px[i * 4].toInt() and 255, px[i * 4 + 1].toInt() and 255, px[i * 4 + 2].toInt() and 255)
+        var sum = 0L; var black = 0; var sat = 0; var lit = 0; var n = 0
+        for (y in 0 until h step 2) for (x in 0 until w step 2) { val l = lum(y * w + x); sum += l; n++; if (l < 6) black++; if (l >= 250) sat++; if (l > 40) lit++ }
+        // „skylės“: 24×24 langeliai visai juodi, bet apsupti šviesių (sūrio akys)
+        val t = 24; val tw = w / t; val th = h / t
+        val tileLit = Array(th) { ty -> BooleanArray(tw) { tx -> var any = false
+            var yy = ty * t; while (yy < ty * t + t && !any) { var xx = tx * t; while (xx < tx * t + t) { if (lum(yy * w + xx) > 25) { any = true; break }; xx += 2 }; yy += 2 }; any } }
+        var holes = 0; var litTiles = 0
+        for (ty in 1 until th - 1) for (tx in 1 until tw - 1) {
+            if (tileLit[ty][tx]) { litTiles++; continue }
+            val nb = listOf(tileLit[ty - 1][tx], tileLit[ty + 1][tx], tileLit[ty][tx - 1], tileLit[ty][tx + 1]).count { it }
+            if (nb >= 3) holes++
+        }
+        return "vid. šviesumas %.1f, juodų %.1f %%, sočių %.2f %%, šviesių (>40) %.1f %%; šviesių langelių %d, skylių (juodas tarp šviesių) %d".format(
+            Locale.US, sum.toDouble() / n, 100.0 * black / n, 100.0 * sat / n, 100.0 * lit / n, litTiles, holes)
+    }
+    private fun screenTestStep() {
+        val cb = stReq ?: return
+        if (stPhase == 0) { stWith = frameStats(); dustOffFrame = true; stPhase = 1; return }
+        val wo = frameStats(); dustOffFrame = false; stReq = null; stPhase = 0
+        val rng = FloatArray(2); GLES20.glGetFloatv(GLES20.GL_ALIASED_POINT_SIZE_RANGE, rng, 0)
+        cb(buildString {
+            appendLine("GPU: ${GLES20.glGetString(GLES20.GL_RENDERER)}; ${GLES20.glGetString(GLES20.GL_VERSION)}")
+            appendLine("Ekranas %d×%d, tankis %.2f, HDR %s, taško dydžiai %.0f–%.0f".format(Locale.US, lastW, lastH, density, if (Hdr.on) "taip" else "ne", rng[0], rng[1]))
+            appendLine("Atitolinimas %.1f; skrydis %s".format(Locale.US, zoom, flight?.let { "taip, %.1f s, %.3f kpc".format(Locale.US, it.tau, PolarFlight.dist(it.tau, GAL_G.toDouble()) / GAL_G) } ?: "ne"))
+            appendLine(galDbg)
+            appendLine("Su dulkėmis: $stWith")
+            appendLine("Be dulkių:   $wo")
+            appendLine(fpsText())
+        })
+    }
 
     /**
      * Rikiavimas pagal atstumą nuo kameros (fono gijoje): 48 krepšiai logaritmiškai nuo artimiausio iki tolimiausio galaktikos krašto,
@@ -3091,7 +3143,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform1f(dustLoc[3], pxPerUnit * GAL_G)
         GLES20.glUniform1f(dustLoc[4], minOf(160f * density, maxPointPx))
         // planšetėje (2960×1848, žvaigždės – 1–8 taškų) stiprios dulkės išgraužė juodas skyles („sūris“) – tik švelnus šešėlis
-        GLES20.glUniform1f(dustLoc[5], 0.45f * a)
+        GLES20.glUniform1f(dustLoc[5], dustK * a)
         GLES20.glUniform1f(dustLoc[6], GAL_G)
         fun stars(first: Int, count: Int) {
             GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
@@ -3113,6 +3165,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glDrawArrays(GLES20.GL_POINTS, first, count)
             GLES20.glDisableVertexAttribArray(dustLoc[8]); GLES20.glDisableVertexAttribArray(dustLoc[7])
         }
+        galDbg = "galaktika: ryškumas %.2f, atstumas iki centro %.1f kpc, stiprinimas %.2f, žvaigždžių %d, dulkių %d (krepšių su dulkėmis %d iš %d), dulkių stiprumas %.2f, didž. taško dydis %.0f".format(
+            Locale.US, a, dcK, gain, galN, dustN, (0 until GAL_NB).count { up.dOff[it + 1] > up.dOff[it] }, GAL_NB, dustK, maxPointPx)
         // nuo toliausio krepšio: žvaigždžių ruožai be dulkių sujungiami į vieną piešimą
         var runStart = up.sOff[0]
         for (b in 0 until GAL_NB) {
@@ -3121,7 +3175,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 val sEnd = up.sOff[b + 1]
                 if (sEnd > runStart) stars(runStart, sEnd - runStart)
                 runStart = sEnd
-                if (dCnt > 0) dust(up.dOff[b], dCnt)
+                if (dCnt > 0 && !dustOffFrame && dustK > 0.001f) dust(up.dOff[b], dCnt)
             }
         }
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
@@ -7112,6 +7166,11 @@ class DraggablePanel(
 
     /** „Šaltas startas“ – ištrinti GNSS pagalbos duomenis. */
     var onColdStart: (() -> Unit)? = null
+    var onScreenTest: (() -> Unit)? = null
+    private val screenBtn = Button(context).apply {
+        text = "Ekrano testai"; textSize = 12f; isAllCaps = false; minWidth = 0; minimumWidth = 0
+        setPadding((8 * resources.displayMetrics.density).toInt(), 0, (8 * resources.displayMetrics.density).toInt(), 0)
+    }
     private val coldBtn = Button(context).apply {
         text = "Šaltas startas"
         textSize = 12f
@@ -7208,6 +7267,7 @@ class DraggablePanel(
         inputRow.addView(sp3UpdateBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         inputRow.addView(shareBtn)
         recRow.addView(coldBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
+        recRow.addView(screenBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
         recRow.addView(endRecBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
 
         // Veiksmų eilutės neslenka, todėl dalinimosi mygtukas visada matomas
@@ -7264,6 +7324,7 @@ class DraggablePanel(
         shareBtn.setOnClickListener { runShare() }
         endRecBtn.setOnClickListener { onEndRecord?.invoke() }
         coldBtn.setOnClickListener { onColdStart?.invoke() }
+        screenBtn.setOnClickListener { onScreenTest?.invoke() }
         sp3Btn.setOnClickListener { onPickSp3?.invoke() }
         sp3UpdateBtn.setOnClickListener { onUpdateSp3?.invoke() }
 
@@ -8692,7 +8753,7 @@ class MainActivity : AppCompatActivity() {
                         (SunCal.lastLine(this@MainActivity)?.let { "Paskutinis kalibravimas pagal Saulę (${SunCal.FILE}): ${SunCal.HEADER.trim()}\n$it\n" } ?: "Kalibravimų pagal Saulę žurnale nėra\n") +
                         (if (Uvi.enabled) Uvi.text() + "\n" else "") + SunFrame.text() + "\n" +
                         NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + SatHealth.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + CabinMap.text() + "\n" +
-                        KnownHeight.text() + "\n" + AppDiag.text() + SatStats.text() +
+                        KnownHeight.text() + "\n" + AppDiag.text() + SatStats.text() + (lastScreenTest?.let { "=== EKRANO TESTAS ===\n$it\n" } ?: "") +
                         (Readiness.knowledge()?.let { "Lusto žinios: ${it.text}\n" } ?: "") +
                         "Pasiruošimas: " + Readiness.state(LiveRtk.enabled, LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc).text + "\n" +
                         (if (::skyDome.isInitialized) skyDome.fpsText() + "\n" else "")
@@ -8809,6 +8870,7 @@ class MainActivity : AppCompatActivity() {
         }
         panel.onEndRecord = { toggleRecording() }
         panel.onColdStart = { askColdStart() }
+        panel.onScreenTest = { runScreenTest() }
         panel.onPickSp3 = { launchSp3Picker() }
         panel.onUpdateSp3 = { updateSp3() }
         refreshSp3Status()
@@ -8919,6 +8981,40 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Šaltas startas: patvirtinimas, tada GNSS atjungiamas, pagalbos duomenys ištrinami ir GNSS paleidžiamas iš naujo. */
+    /** Paskutinis ekrano testas – ir į ZIP ataskaitą. */
+    private var lastScreenTest: String? = null
+
+    /** NLO „Ekrano testai“: vaizdo matavimas su dulkėmis ir be jų, dulkių stiprumo šliaužiklis, tekstas kopijavimui (ir į ZIP). */
+    private fun runScreenTest() {
+        if (!::skyDome.isInitialized) return
+        Toast.makeText(this, "Matuojamas vaizdas (2 kadrai)…", Toast.LENGTH_SHORT).show()
+        skyDome.screenTest { txt ->
+            lastScreenTest = txt
+            val dp = resources.displayMetrics.density
+            val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding((16 * dp).toInt(), (8 * dp).toInt(), (16 * dp).toInt(), 0) }
+            box.addView(TextView(this).apply { text = txt; textSize = 12f; setTextIsSelectable(true) })
+            val lbl = TextView(this).apply { textSize = 13f }
+            fun showK(k: Float) { lbl.text = "Dulkių stiprumas: %.2f (0 – be dulkių)".format(Locale.US, k) }
+            showK(skyDome.dustK)
+            box.addView(lbl)
+            box.addView(android.widget.SeekBar(this).apply {
+                max = 100; progress = (skyDome.dustK / 1.5f * 100).toInt()
+                setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(sb: android.widget.SeekBar?, p: Int, fromUser: Boolean) { if (fromUser) { val k = p / 100f * 1.5f; skyDome.dustK = k; showK(k) } }
+                    override fun onStartTrackingTouch(sb: android.widget.SeekBar?) {}
+                    override fun onStopTrackingTouch(sb: android.widget.SeekBar?) {}
+                })
+            })
+            android.app.AlertDialog.Builder(this).setTitle("Ekrano testas")
+                .setView(android.widget.ScrollView(this).apply { addView(box) })
+                .setNeutralButton("Kopijuoti") { _, _ ->
+                    (getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Ekrano testas", txt))
+                    Toast.makeText(this, "Nukopijuota", Toast.LENGTH_SHORT).show() }
+                .setNegativeButton("Kartoti") { _, _ -> runScreenTest() }
+                .setPositiveButton("Gerai", null).show()
+        }
+    }
+
     private fun askColdStart() {
         android.app.AlertDialog.Builder(this)
             .setTitle("Šaltas startas")
@@ -10203,7 +10299,7 @@ class MainActivity : AppCompatActivity() {
             (if (::skyDome.isInitialized) skyDome.sunCalText() + "\n" + skyDome.northText(devAzimuth) + "\n" else "") +
             (AimDiag.lastSummary(this).takeIf { it.isNotEmpty() }?.let { it + "\n" } ?: "") +
             "Kalibravimų žurnalas (paskutiniai 10):\n" + (try { SunCal.file(this).readLines().takeLast(11).joinToString("\n") } catch (_: Exception) { "nėra" }) + "\n" +
-            SunFrame.text() + "\n" + CabinMap.text() + "\n" + KnownHeight.text() + "\n" + AppDiag.text() + SatStats.text() +
+            SunFrame.text() + "\n" + CabinMap.text() + "\n" + KnownHeight.text() + "\n" + AppDiag.text() + SatStats.text() + (lastScreenTest?.let { "=== EKRANO TESTAS ===\n$it\n" } ?: "") +
             NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + SatHealth.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n"
 
     private fun buildReport(sections: Set<String>, question: String): String = buildString {

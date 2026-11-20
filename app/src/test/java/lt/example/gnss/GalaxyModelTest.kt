@@ -499,4 +499,13 @@ class BaroFuseTest {
         assertEquals(before, BaroFuse.msl()!!, 1e-9)
         BaroFuse.source = null; BaroFuse.anchor(null)
     }
+
+    @Test fun weatherCorrectedLimitsGnssBias() {
+        BaroFuse.source = { 100.0 }; BaroFuse.weatherOk = { true }
+        BaroFuse.anchor(null); BaroFuse.anchor(218.9)
+        var t = 1_000_000L
+        repeat(20000) { t += 1000; BaroFuse.gnss(t, 207.0, 6.0) }   // kabinoje GNSS ~12 m per žemas
+        assertEquals(215.9, BaroFuse.msl()!!, 1e-9)
+        BaroFuse.source = null; BaroFuse.weatherOk = { false }; BaroFuse.anchor(null)
+    }
 }

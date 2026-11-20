@@ -9,11 +9,16 @@ import kotlin.math.abs
  *    įvestas + barometro pokytis nuo inkaro: lipant laiptais ar liftu aukštis seka pats (barometras pokyčius mato ~0,1–0,3 m tikslumu).
  *  - Barometras ilgainiui nuslenka (orų frontai iki kelių hPa per valandą ≈ 8–25 m, temperatūra), todėl poslinkis lėtai (laiko
  *    konstanta 2 h) taisomas pagal programos laisvą (be aukščio apribojimo) GNSS aukštį: jis šokinėja ±10–20 m, bet per valandas neslenka.
+ *    Kai barometras jau pataisytas interneto jūros lygio slėgiu, GNSS pataisa ribojama ±3 m (lieka tik temperatūros ir modelio paklaida).
  *    Pavieniai GNSS aukščiai toliau nei 3σ (ar 40 m) nuo derinio praleidžiami.
  */
 object BaroFuse {
     /** Barometro aukštis (m, santykinis – bet kokiu atskaitos tašku), null – nėra ar senas. Nustato MainActivity. */
     @Volatile var source: (() -> Double?)? = null
+    /** Ar barometro aukštis jau pataisytas interneto jūros lygio slėgiu (orų pokytis atimtas). Nustato MainActivity. */
+    @Volatile var weatherOk: () -> Boolean = { false }
+    /** Kai orai jau pataisyti, GNSS pataisa ribojama: kabinoje laisvas GNSS aukštis būna nuolat ~10–20 m per žemas (atspindžiai). */
+    const val MAX_DRIFT_WEATHER = 3.0
 
     @Volatile private var anchorMsl = Double.NaN
     @Volatile private var anchorBaro = Double.NaN
@@ -52,10 +57,12 @@ object BaroFuse {
         val d = hMsl - cur
         if (abs(d) > maxOf(40.0, 3 * sigma)) return
         drift += d * (dt / TAU_S)
+        if (weatherOk()) drift = drift.coerceIn(-MAX_DRIFT_WEATHER, MAX_DRIFT_WEATHER)
         gnssN++
     }
 
-    fun text(): String = if (!active) "Barometro ir GNSS aukščio derinys: neveikia (nėra barometro ar įvesto aukščio)"
+    fun text(): String = text0() + if (active && weatherOk()) " (orai pataisyti interneto slėgiu, GNSS pataisa ≤ ±%.0f m)".format(Locale.US, MAX_DRIFT_WEATHER) else ""
+    private fun text0(): String = if (!active) "Barometro ir GNSS aukščio derinys: neveikia (nėra barometro ar įvesto aukščio)"
         else "Barometro ir GNSS aukščio derinys: įvesta %.1f m, barometras nuo įvedimo %+.1f m, GNSS pataisa %+.1f m (%d mėg.), dabar %.1f m virš jūros".format(Locale.US,
             anchorMsl, (lastBaro - anchorBaro).takeIf { !it.isNaN() } ?: 0.0, drift, gnssN, msl() ?: Double.NaN)
 }

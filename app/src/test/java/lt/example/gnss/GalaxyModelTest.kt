@@ -272,13 +272,22 @@ class KnownPosTest {
         assertEquals(5.0, KnownPos.parseSigma("±5"), 0.0)
     }
 
-    @Test fun conflictWhenFarAndBack() {
+    @Test fun cabinBiasKeptWalkingAndFarDisable() {
         KnownPos.set(true, 54.70 to 25.30, 5.0)
+        val m = 1.0 / 111_320.0
+        var t = 1_000_000L
+        // kabinoje telefonas nuosekliai klysta 22 m – vieta lieka naudojama
+        repeat(120) { t += 1000; KnownPos.checkFree(54.70 + 22 * m, 25.30, t, false, true) }
         org.junit.Assert.assertTrue(KnownPos.active)
-        repeat(60) { KnownPos.checkFree(54.70 + 40.0 / 111_320.0, 25.30) }     // 40 m į šiaurę, riba 15 m
+        // einama 15 s – išjungiama
+        repeat(16) { t += 1000; KnownPos.checkFree(54.70 + 22 * m, 25.30, t, true, true) }
         org.junit.Assert.assertFalse(KnownPos.active)
-        repeat(100) { KnownPos.checkFree(54.70, 25.30) }
+        // sustojus 30 s šalia – vėl įjungiama
+        repeat(31) { t += 1000; KnownPos.checkFree(54.70 + 5 * m, 25.30, t, false, true) }
         org.junit.Assert.assertTrue(KnownPos.active)
+        // labai toli (be žingsnių) – išjungiama
+        repeat(100) { t += 1000; KnownPos.checkFree(54.70 + 100 * m, 25.30, t, false, true) }
+        org.junit.Assert.assertFalse(KnownPos.active)
         KnownPos.set(false, null, 10.0)
     }
 }

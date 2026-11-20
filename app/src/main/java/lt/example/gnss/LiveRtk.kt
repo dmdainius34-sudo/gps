@@ -314,7 +314,7 @@ object LiveRtk {
         val free = if (obs.size >= 6 && (KnownHeight.deviceMsl() != null || (Crane.sppOn && Crane.geoValid) || (KnownPos.use && KnownPos.valid))) fit(null)?.also {
             if (KnownHeight.deviceMsl() != null) KnownHeight.checkFree(it.sol.lat, it.sol.lon, it.sol.h, vdopOf(it))
             Crane.checkFree(it.sol.lat, it.sol.lon, it.sol.hacc)
-            KnownPos.checkFree(it.sol.lat, it.sol.lon)
+            KnownPos.checkFree(it.sol.lat, it.sol.lon, now, Steps.walking(), Steps.count > 0)
         } else null
         val ref = sppLast?.takeIf { now - sppMs < 60_000L }?.let { it.lat to it.lon } ?: KnownHeight.lastLatLon()
         // žinomas aukštis ir (jei nustatytas) krano apskritimas aplink bokšto ašį

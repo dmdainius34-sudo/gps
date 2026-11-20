@@ -293,7 +293,9 @@ class Barometer(context: Context) : SensorEventListener {
     fun start() { sensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) } }
     fun stop() { sm.unregisterListener(this) }
 
-    override fun onSensorChanged(event: SensorEvent) { stationHpa = event.values[0].toDouble() }
+    @Volatile var lastMs = 0L
+        private set
+    override fun onSensorChanged(event: SensorEvent) { stationHpa = event.values[0].toDouble(); lastMs = System.currentTimeMillis() }
     override fun onAccuracyChanged(s: Sensor?, accuracy: Int) {}
 
     fun altitude(): Double? {
@@ -333,8 +335,19 @@ class Barometer(context: Context) : SensorEventListener {
         fetching = true
         Thread {
             try {
-                val url = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&hourly=pressure_msl&past_days=1&forecast_days=2&timeformat=unixtime"
-                val hr = JSONObject(URL(url).readText()).getJSONObject("hourly")
+                // koordinatės suapvalinamos (Open-Meteo tinklelis ~11 km), aiškus HTTP klaidos kodas; nepavykus – paprastesnė užklausa
+                fun get(q: String): String {
+                    val c = (URL("https://api.open-meteo.com/v1/forecast?latitude=%.3f&longitude=%.3f&%s".format(java.util.Locale.US, lat, lon, q))
+                        .openConnection() as java.net.HttpURLConnection).apply { connectTimeout = 15_000; readTimeout = 20_000; setRequestProperty("User-Agent", "GnssApp") }
+                    try {
+                        val code = c.responseCode
+                        if (code != 200) throw java.io.IOException("HTTP $code: " + (c.errorStream?.bufferedReader()?.readText()?.take(160) ?: ""))
+                        return c.inputStream.bufferedReader().readText()
+                    } finally { c.disconnect() }
+                }
+                val txt = try { get("hourly=pressure_msl&past_days=1&forecast_days=2&timeformat=unixtime") }
+                    catch (e: Exception) { get("hourly=pressure_msl&forecast_days=1&timeformat=unixtime") }
+                val hr = JSONObject(txt).getJSONObject("hourly")
                 val ts = hr.getJSONArray("time"); val ps = hr.getJSONArray("pressure_msl")
                 val ser = (0 until minOf(ts.length(), ps.length())).mapNotNull { i -> if (ps.isNull(i)) null else ts.getLong(i) * 1000L to ps.getDouble(i) }
                 val t = System.currentTimeMillis()
@@ -347,7 +360,7 @@ class Barometer(context: Context) : SensorEventListener {
                 lastLon = lon
                 lastFetch = now
             } catch (e: Exception) {
-                mslpSource = "klaida: ${e.message}"
+                mslpSource = "klaida: ${e.javaClass.simpleName} ${e.message?.take(200) ?: ""}"
             } finally {
                 fetching = false
             }
@@ -8278,6 +8291,8 @@ class MainActivity : AppCompatActivity() {
         lm = getSystemService(LOCATION_SERVICE) as LocationManager
         mainExecutor = ContextCompat.getMainExecutor(this)
         baro = Barometer(this)
+        // barometro ir GNSS aukščio derinys: barometro aukštis (šviežias ≤ 10 s); planšetėje barometro nėra
+        if (baro.hasSensor) BaroFuse.source = { baro.altitude()?.takeIf { System.currentTimeMillis() - baro.lastMs < 10_000L } }
 
         info = TextView(this).apply {
             textSize = 14f

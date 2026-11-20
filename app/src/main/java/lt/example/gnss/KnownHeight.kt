@@ -169,6 +169,8 @@ object KnownHeight {
         slowM2 = if (slowM2.isNaN()) dh * dh else slowM2 * 0.98 + dh * dh * 0.02
         if (dhCnt >= 10) dhSd = sqrt((slowM2 - slowM * slowM).coerceAtLeast(0.0))
         dhCnt++; freeDh = dhAvg
+        // laisvas GNSS aukštis lėtai taiso barometro nuslinkimą (telefone)
+        Geoid.undulation(lat, lon)?.let { n -> BaroFuse.gnss(System.currentTimeMillis(), h - n, 5.0 * v) }
         val lim = limit()
         if (dhCnt >= 20 && abs(dhAvg) > lim) conflict = true
         else if (abs(dhAvg) < lim * 0.7) conflict = false
@@ -192,7 +194,10 @@ object KnownHeight {
     val active get() = (msl != null || (agl != null && groundMsl() != null)) && !conflict
 
     /** Prietaiso aukštis virš jūros, m. */
-    fun deviceMsl(): Double? = msl ?: agl?.let { a -> groundMsl()?.let { it + a } }
+    /** Įvestas aukštis (be barometro). */
+    fun enteredMsl(): Double? = msl ?: agl?.let { a -> groundMsl()?.let { it + a } }
+    /** Prietaiso aukštis: telefone su barometru – įvestas + barometro pokytis (BaroFuse), kitaip – įvestas. */
+    fun deviceMsl(): Double? { val e = enteredMsl(); BaroFuse.anchor(e); return if (e == null) null else BaroFuse.msl() ?: e }
 
     /**
      * σ: įvestas aukštis virš jūros – 2 m (dažnai jis pats išmatuotas ±3–5 m; 0,3 m buvo per griežta ir kabinoje „išmušdavo“ RTK filtrą);
@@ -269,6 +274,7 @@ object KnownHeight {
         msl?.let { append((if (agl != null) ", " else "") + "virš jūros %.2f m".format(Locale.US, it)) }
         val dm = deviceMsl()
         if (dm != null) append("; prietaisas %.2f m virš jūros (σ %.1f m)".format(Locale.US, dm, sigma()))
+        if (BaroFuse.active) append(" [" + BaroFuse.text() + "]")
         if (!lastLat.isNaN()) h0(lastLat, lastLon)?.let { append(", elipsoidinis %.2f m".format(Locale.US, it)) }
         if (msl == null) groundNear()?.let { append("; žemė išmatuota čia: %.1f m virš jūros (%s)".format(Locale.US, it, mSrc)) }
             ?: run { if (demStatus.isNotEmpty()) append("; $demStatus") }

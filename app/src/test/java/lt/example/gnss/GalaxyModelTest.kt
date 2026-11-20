@@ -479,3 +479,24 @@ class SfxSynthTest {
         assertEquals(0, p.last().toInt())
     }
 }
+
+class BaroFuseTest {
+    @Test fun followsBaroAndCorrectsDriftSlowly() {
+        var b = 100.0
+        BaroFuse.source = { b }
+        BaroFuse.anchor(null); BaroFuse.anchor(200.0)
+        assertEquals(200.0, BaroFuse.msl()!!, 1e-9)
+        b = 125.0                                        // užlipta 25 m
+        assertEquals(225.0, BaroFuse.msl()!!, 1e-9)
+        // barometras nuslinko +10 m (oras), GNSS rodo tikrą 225: per 2 h pataisa artėja prie −10
+        b = 135.0
+        var t = 1_000_000L
+        repeat(7200) { t += 1000; BaroFuse.gnss(t, 225.0, 10.0) }
+        val h = BaroFuse.msl()!!
+        org.junit.Assert.assertTrue("h=$h", h in 225.0..230.0)
+        // pavienis GNSS šuolis 100 m nepaveikia
+        val before = BaroFuse.msl()!!; BaroFuse.gnss(t + 1000, 400.0, 10.0)
+        assertEquals(before, BaroFuse.msl()!!, 1e-9)
+        BaroFuse.source = null; BaroFuse.anchor(null)
+    }
+}

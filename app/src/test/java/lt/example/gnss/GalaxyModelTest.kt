@@ -481,31 +481,50 @@ class SfxSynthTest {
 }
 
 class BaroFuseTest {
+    private fun pAt(h: Double, ref: Double) = ref * Math.pow(1.0 - h / 44330.0, 5.255)
+
     @Test fun followsBaroAndCorrectsDriftSlowly() {
-        var b = 100.0
-        BaroFuse.source = { b }
-        BaroFuse.anchor(null); BaroFuse.anchor(200.0)
-        assertEquals(200.0, BaroFuse.msl()!!, 1e-9)
-        b = 125.0                                        // užlipta 25 m
-        assertEquals(225.0, BaroFuse.msl()!!, 1e-9)
+        BaroFuse.reset()
+        var p = pAt(100.0, 1013.25)
+        BaroFuse.source = { p to null }
+        BaroFuse.anchor(200.0)
+        assertEquals(200.0, BaroFuse.msl()!!, 1e-6)
+        p = pAt(125.0, 1013.25)                              // užlipta 25 m
+        assertEquals(225.0, BaroFuse.msl()!!, 1e-6)
+        org.junit.Assert.assertFalse(BaroFuse.weatherOk)
         // barometras nuslinko +10 m (oras), GNSS rodo tikrą 225: per 2 h pataisa artėja prie −10
-        b = 135.0
+        p = pAt(135.0, 1013.25)
         var t = 1_000_000L
         repeat(7200) { t += 1000; BaroFuse.gnss(t, 225.0, 10.0) }
         val h = BaroFuse.msl()!!
         org.junit.Assert.assertTrue("h=$h", h in 225.0..230.0)
-        // pavienis GNSS šuolis 100 m nepaveikia
-        val before = BaroFuse.msl()!!; BaroFuse.gnss(t + 1000, 400.0, 10.0)
+        val before = BaroFuse.msl()!!; BaroFuse.gnss(t + 1000, 400.0, 10.0)   // pavienis 100 m šuolis nepaveikia
         assertEquals(before, BaroFuse.msl()!!, 1e-9)
-        BaroFuse.source = null; BaroFuse.anchor(null)
+        BaroFuse.source = null; BaroFuse.reset()
+    }
+
+    @Test fun lateMslpDoesNotJump() {
+        BaroFuse.reset()
+        val p = 964.47
+        var ref: Double? = null
+        BaroFuse.source = { p to ref }
+        BaroFuse.anchor(218.9)                                // inkaras dar be interneto slėgio (1013 hPa → ~414 m)
+        assertEquals(218.9, BaroFuse.msl()!!, 1e-6)
+        ref = 989.3                                           // atėjo interneto slėgis
+        assertEquals(218.9, BaroFuse.msl()!!, 1e-6)
+        ref = 988.3                                           // slėgis nukrito 1 hPa (oras), barometras – tas pats: aukštis ~+8 m pataisa
+        val h = BaroFuse.msl()!!
+        org.junit.Assert.assertTrue("h=$h", h in 209.0..212.0)
+        BaroFuse.source = null; BaroFuse.reset()
     }
 
     @Test fun weatherCorrectedLimitsGnssBias() {
-        BaroFuse.source = { 100.0 }; BaroFuse.weatherOk = { true }
-        BaroFuse.anchor(null); BaroFuse.anchor(218.9)
+        BaroFuse.reset()
+        BaroFuse.source = { 964.47 to 989.3 }
+        BaroFuse.anchor(218.9)
         var t = 1_000_000L
         repeat(20000) { t += 1000; BaroFuse.gnss(t, 207.0, 6.0) }   // kabinoje GNSS ~12 m per žemas
-        assertEquals(215.9, BaroFuse.msl()!!, 1e-9)
-        BaroFuse.source = null; BaroFuse.weatherOk = { false }; BaroFuse.anchor(null)
+        assertEquals(215.9, BaroFuse.msl()!!, 1e-6)
+        BaroFuse.source = null; BaroFuse.reset()
     }
 }

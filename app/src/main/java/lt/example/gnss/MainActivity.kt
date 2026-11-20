@@ -8292,8 +8292,10 @@ class MainActivity : AppCompatActivity() {
         mainExecutor = ContextCompat.getMainExecutor(this)
         baro = Barometer(this)
         // barometro ir GNSS aukščio derinys: barometro aukštis (šviežias ≤ 10 s); planšetėje barometro nėra
-        if (baro.hasSensor) BaroFuse.source = { baro.altitude()?.takeIf { System.currentTimeMillis() - baro.lastMs < 10_000L } }
-        if (baro.hasSensor) BaroFuse.weatherOk = { baro.refHpa(System.currentTimeMillis()) != null }
+        if (baro.hasSensor) BaroFuse.source = {
+            val now = System.currentTimeMillis(); val p = baro.stationHpa
+            if (p == null || now - baro.lastMs > 10_000L) null else p to baro.refHpa(now)
+        }
 
         info = TextView(this).apply {
             textSize = 14f

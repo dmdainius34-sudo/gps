@@ -29,6 +29,7 @@ object KnownHeight {
 
     fun load(ctx: Context) {
         appCtx = ctx.applicationContext
+        KnownPos.load(ctx)
         val p = ctx.getSharedPreferences("known_ref", Context.MODE_PRIVATE)
         fun d(k: String) = p.getString(k, "")?.trim()?.replace(',', '.')?.toDoubleOrNull()
         val a = d("agl")?.takeIf { it in -100.0..1000.0 }; val m = d("msl")?.takeIf { it in -500.0..9000.0 }

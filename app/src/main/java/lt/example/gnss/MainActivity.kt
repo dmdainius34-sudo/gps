@@ -6970,6 +6970,12 @@ class DraggablePanel(
     private val aglInput = refField("Žinomas aukštis virš žemės, m", "agl", numType)
     private val mslInput = refField("Žinomas aukštis virš jūros, m", "msl", numType)
     private val coordInput = refField("Žinomos koordinatės: platuma, ilguma", "coord", InputType.TYPE_CLASS_TEXT)
+    private val coordSigInput = refField("± kiek tikite koordinatėmis, m (numatyta 10)", "coord_sig", numType)
+    private val coordUse = android.widget.CheckBox(context).apply {
+        text = "Naudoti žinomą vietą (±) programos padėtyje"; textSize = 13f
+        isChecked = refPrefs.getBoolean("coord_use", false)
+        setOnCheckedChangeListener { _, c -> refPrefs.edit().putBoolean("coord_use", c).apply(); KnownPos.load(context) }
+    }
 
     private fun num(e: EditText): Double? = e.text.toString().trim().replace(',', '.').toDoubleOrNull()
     val knownAgl: Double? get() = num(aglInput)
@@ -7314,6 +7320,8 @@ class DraggablePanel(
         bodyInner.addView(aglInput)
         bodyInner.addView(mslInput)
         bodyInner.addView(coordInput)
+        bodyInner.addView(coordSigInput)
+        bodyInner.addView(coordUse)
         bodyInner.addView(sp3Btn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
 
         addView(panel)
@@ -7467,7 +7475,7 @@ class DraggablePanel(
                 touchOnControl = inside(questionInput, ev.rawX, ev.rawY) ||
                     inside(alphaSeek, ev.rawX, ev.rawY) || inside(rawSecs, ev.rawX, ev.rawY) ||
                     inside(envSpinner, ev.rawX, ev.rawY) || inside(aglInput, ev.rawX, ev.rawY) ||
-                    inside(mslInput, ev.rawX, ev.rawY) || inside(coordInput, ev.rawX, ev.rawY) ||
+                    inside(mslInput, ev.rawX, ev.rawY) || inside(coordInput, ev.rawX, ev.rawY) || inside(coordSigInput, ev.rawX, ev.rawY) ||
                     inside(cnoSeek, ev.rawX, ev.rawY) || inside(cnoAuto, ev.rawX, ev.rawY)
                 if (touchOnControl) return false
             }
@@ -8756,7 +8764,7 @@ class MainActivity : AppCompatActivity() {
                         (AimDiag.lastSummary(this@MainActivity).takeIf { it.isNotEmpty() }?.let { it + "\n" } ?: "") +
                         (SunCal.lastLine(this@MainActivity)?.let { "Paskutinis kalibravimas pagal Saulę (${SunCal.FILE}): ${SunCal.HEADER.trim()}\n$it\n" } ?: "Kalibravimų pagal Saulę žurnale nėra\n") +
                         (if (Uvi.enabled) Uvi.text() + "\n" else "") + SunFrame.text() + "\n" +
-                        NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + SatHealth.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + CabinMap.text() + "\n" +
+                        NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + SatHealth.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + KnownPos.text() + "\n" + CabinMap.text() + "\n" +
                         KnownHeight.text() + "\n" + AppDiag.text() + SatStats.text() + (lastScreenTest?.let { "=== EKRANO TESTAS ===\n$it\n" } ?: "") +
                         (Readiness.knowledge()?.let { "Lusto žinios: ${it.text}\n" } ?: "") +
                         "Pasiruošimas: " + Readiness.state(LiveRtk.enabled, LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc).text + "\n" +
@@ -10403,6 +10411,7 @@ class MainActivity : AppCompatActivity() {
                 if (refPN > 0) appendLine("Horizontali paklaida: vidutinė ${fx(refDSum / refPN, 2)} m, didžiausia ${fx(refDMax, 2)} m (${refPN} fiksų)")
                 if (kAgl != null && kMsl != null) appendLine("Žemės aukštis virš jūros (iš etalonų): ${fx(kMsl - kAgl, 2)} m")
                 appendLine(KnownHeight.text())
+                appendLine(KnownPos.text())
             }
             appendLine("Planšetės padėtis: pitch ${fx(devPitch, 0)}°, roll ${fx(devRoll, 0)}°, ekrano azimutas ${fx(devAzimuth, 0)}°, judėjimas ${fx(motionLevel, 2)} m/s²")
             appendLine("Magnetinis laukas: ${MagWatch.why}${if (MagWatch.disturbed) " – kompasu nepasitikima" else ""}; žingsnių ${Steps.count}, ${if (Steps.walking()) "einama" else "neinama"}")

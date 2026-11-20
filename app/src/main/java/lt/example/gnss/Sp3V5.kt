@@ -248,7 +248,9 @@ object Sp3V5 {
     class HCon(val h0: Double, val sigma: Double, val x0: DoubleArray) {
         /** Krano apribojimas: horizontalus atstumas nuo bokšto ašies (axis – ašies taškas ECEF, up – zenitas ten) = r (σ, m). */
         var axis: DoubleArray? = null; var up: DoubleArray? = null; var r = 0.0; var rSigma = 1.0
-        val n get() = (if (h0.isNaN()) 0 else 1) + (if (axis != null) 1 else 0)
+        /** Žinoma vieta (ECEF) su σ (m): dvi eilutės – rytai ir šiaurė (vienetiniai vektoriai ECEF). */
+        var pos: DoubleArray? = null; var east: DoubleArray? = null; var north: DoubleArray? = null; var pSigma = 10.0
+        val n get() = (if (h0.isNaN()) 0 else 1) + (if (axis != null) 1 else 0) + (if (pos != null) 2 else 0)
     }
 
     /** Tas pats sprendinys iš jau paruoštų palydovų (pvz. iš transliuojamų efemeridžių, kai SP3 nėra). */
@@ -280,7 +282,7 @@ object Sp3V5 {
         // aukščio eilutė: H = vietinis zenitas, svoris (σ0/σh)², σ0 = 3 m – vienetinio svorio pseudoatstumo paklaida
         fun conRows(): List<Triple<DoubleArray, Double, Double>> {
             val c = hCon ?: return emptyList()
-            val out = ArrayList<Triple<DoubleArray, Double, Double>>(2)
+            val out = ArrayList<Triple<DoubleArray, Double, Double>>(4)
             if (!c.h0.isNaN()) {
                 val llh = PositionSolver.ecefToLlh(x[0], x[1], x[2])
                 val h = DoubleArray(np)
@@ -299,6 +301,15 @@ object Sp3V5 {
                     val h = DoubleArray(np); for (k in 0..2) h[k] = hz[k] / rh
                     val s = c.rSigma.coerceAtLeast(0.1)
                     out.add(Triple(h, c.r - rh, 9.0 / (s * s)))
+                }
+            }
+            // žinomos vietos eilutės: H = rytų / šiaurės kryptis, liekana – atstumas ta kryptimi iki žinomos vietos
+            val p = c.pos; val ee = c.east; val nn = c.north
+            if (p != null && ee != null && nn != null) {
+                val s = c.pSigma.coerceAtLeast(0.5)
+                for (dir in arrayOf(ee, nn)) {
+                    val h = DoubleArray(np); for (k in 0..2) h[k] = dir[k]
+                    out.add(Triple(h, (p[0] - x[0]) * dir[0] + (p[1] - x[1]) * dir[1] + (p[2] - x[2]) * dir[2], 9.0 / (s * s)))
                 }
             }
             return out

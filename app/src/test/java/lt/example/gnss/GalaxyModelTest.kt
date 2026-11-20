@@ -247,6 +247,40 @@ class KnownHeightSppTest {
         val f = Sp3V5.solveSats(100.0, sats, isb = true, raim = true, hCon = c)!!
         assertEquals(0.0, PositionSolver.horizDist(latD, lonD, f.sol.lat, f.sol.lon), 0.1)
     }
+
+    /** Žinoma vieta ±: 2 palydovai + aukštis + vieta (σ 5 m) – padėtis randama prie tikrosios. */
+    @Test fun twoSatsWithHeightAndKnownPos() {
+        val latD = 54.70; val lonD = 25.30; val h = 200.0
+        val lat = Math.toRadians(latD); val lon = Math.toRadians(lonD)
+        val xT = PositionSolver.llhToEcef(lat, lon, h)
+        val sats = listOf(sat(xT, lat, lon, 80.0, 50.0, 1, 500.0), sat(xT, lat, lon, 260.0, 45.0, 2, 500.0))
+        KnownPos.set(true, latD to lonD, 5.0)
+        val c = KnownPos.sppConstraint(Sp3V5.HCon(h, 0.3, PositionSolver.llhToEcef(lat, lon + 0.0002, h)), h)!!
+        assertEquals(3, c.n)
+        val f = Sp3V5.solveSats(100.0, sats, isb = true, raim = true, hCon = c)!!
+        assertEquals(0.0, PositionSolver.horizDist(latD, lonD, f.sol.lat, f.sol.lon), 0.5)
+        KnownPos.set(false, null, 10.0)
+    }
+}
+
+class KnownPosTest {
+    @Test fun parseAndSigma() {
+        assertEquals(54.5 to 25.25, KnownPos.parse("54,5; 25,25"))
+        assertEquals(54.5 to 25.25, KnownPos.parse("54.5, 25.25"))
+        org.junit.Assert.assertNull(KnownPos.parse("54.5"))
+        assertEquals(10.0, KnownPos.parseSigma(""), 0.0)
+        assertEquals(5.0, KnownPos.parseSigma("±5"), 0.0)
+    }
+
+    @Test fun conflictWhenFarAndBack() {
+        KnownPos.set(true, 54.70 to 25.30, 5.0)
+        org.junit.Assert.assertTrue(KnownPos.active)
+        repeat(60) { KnownPos.checkFree(54.70 + 40.0 / 111_320.0, 25.30) }     // 40 m į šiaurę, riba 15 m
+        org.junit.Assert.assertFalse(KnownPos.active)
+        repeat(100) { KnownPos.checkFree(54.70, 25.30) }
+        org.junit.Assert.assertTrue(KnownPos.active)
+        KnownPos.set(false, null, 10.0)
+    }
 }
 
 /** Automatinis signalo slenkstis: atvirame danguje kyla, kai stiprių daug; kai jų mažai – nusileidžia, kad padėtis išliktų. */

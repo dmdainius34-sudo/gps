@@ -311,13 +311,15 @@ object LiveRtk {
             else Sp3V5.solveSats(ep.tow, prepareBroadcast(ep.t, obs), isb = true, raim = true, hCon = hc)
         } catch (_: Exception) { null }
         // žinomas aukštis (įvestas ranka): kai palydovų pakanka – patikra, ar jis čia tinka (be barometro kitaip nežinoma)
-        val free = if (obs.size >= 6 && (KnownHeight.deviceMsl() != null || (Crane.sppOn && Crane.geoValid))) fit(null)?.also {
+        val free = if (obs.size >= 6 && (KnownHeight.deviceMsl() != null || (Crane.sppOn && Crane.geoValid) || (KnownPos.use && KnownPos.valid))) fit(null)?.also {
             if (KnownHeight.deviceMsl() != null) KnownHeight.checkFree(it.sol.lat, it.sol.lon, it.sol.h, vdopOf(it))
             Crane.checkFree(it.sol.lat, it.sol.lon, it.sol.hacc)
+            KnownPos.checkFree(it.sol.lat, it.sol.lon)
         } else null
         val ref = sppLast?.takeIf { now - sppMs < 60_000L }?.let { it.lat to it.lon } ?: KnownHeight.lastLatLon()
         // žinomas aukštis ir (jei nustatytas) krano apskritimas aplink bokšto ašį
-        val hc = Crane.sppConstraint(ref?.let { KnownHeight.constraint(it.first, it.second) }, ref?.first, ref?.second)
+        val hc = KnownPos.sppConstraint(Crane.sppConstraint(ref?.let { KnownHeight.constraint(it.first, it.second) }, ref?.first, ref?.second),
+            sppLast?.h ?: KnownHeight.deviceMsl() ?: 0.0)
         if (obs.size < (if (hc != null) 3 else 5)) { AppDiag.noPos(obs.size); flush(SatStats.NO_FIX); sppUsedKeys = emptySet(); return }
         val f = (if (hc != null) fit(hc) else free ?: fit(null)) ?: run { AppDiag.noPos(obs.size); flush(SatStats.NO_FIX); sppUsedKeys = emptySet(); return }
         // „Čia žemė“: matuojama programos padėtimi be aukščio apribojimo

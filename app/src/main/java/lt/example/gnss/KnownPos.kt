@@ -20,8 +20,8 @@ object KnownPos {
     @Volatile var use = false; private set
     @Volatile var lat = Double.NaN; private set
     @Volatile var lon = Double.NaN; private set
-    @Volatile var sigma = DEFAULT_SIGMA; private set
     const val DEFAULT_SIGMA = 10.0
+    @Volatile var sigma = DEFAULT_SIGMA; private set
 
     @Volatile var conflict = false
         private set

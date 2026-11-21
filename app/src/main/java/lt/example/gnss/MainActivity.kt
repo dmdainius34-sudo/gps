@@ -1515,6 +1515,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
             // bakstelėjimas į palydovą – jo duomenų lentelė
             renderer.pickSat(e.x, e.y)?.let { showSatInfo(it); return true }
+            // TKS, Parker, Solar Orbiter – kortelė su paaiškinimu
+            renderer.pickLive(e.x, e.y)?.let { showLiveInfo(it); return true }
             // bakstelėjimas į Saulę ar Mėnulį – kamera nuskrenda prie jo; į Žemę – grįžta
             when (val id = renderer.pick(e.x, e.y)) {
                 1, 2 -> { renderer.focusOn(id); android.widget.Toast.makeText(context, (if (id == 1) "Saulė" else "Mėnulis") +
@@ -1524,6 +1526,33 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             return true
         }
     })
+    private fun showLiveInfo(k: String) {
+        val now = System.currentTimeMillis()
+        val (title, body) = when (k) {
+            "iss" -> "TKS – Tarptautinė kosminė stotis" to buildString {
+                append("Didžiausias žmonių pastatytas objektas kosmose (ISS, ~109 m pločio). Skrieja ~420 km aukštyje, Žemę apskrieja per ~92 min. greičiu ~7,7 km/s (≈ 28 000 km/h); joje nuolat gyvena 6–7 astronautai.\n\n")
+                append("Plika akimi matoma kaip ryški, nemirksinti žvaigždė, kuri per kelias minutes perskrieja dangų – tik sutemus, kai stotis dar apšviesta Saulės.\n\n")
+                SpaceLive.iss?.let { el -> val v = SpaceLive.issEci(el, now); val r = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+                    append("Dabar: %.0f km virš Žemės.\n".format(java.util.Locale.US, r - 6371.0)) }
+                val vis = SpaceLive.passes.filter { it.visible && it.endMs > now }.take(3)
+                append(if (vis.isEmpty()) "Matomų praskridimų per 3 paras nėra." else "Matomi praskridimai:\n" + vis.joinToString("\n") {
+                    "  " + java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(it.startMs)) + " – iki %.0f° aukščio".format(java.util.Locale.US, it.maxEl) })
+                append("\n\nOrbita – Celestrak duomenys; padėtis apytikslė (kelių km tikslumu).")
+            }
+            "parker" -> "Parker Solar Probe" to buildString {
+                append("NASA zondas (paleistas 2018 m.), arčiausiai Saulės priartėjęs žmogaus pagamintas objektas: perihelyje tik ~9,9 Saulės spindulio (~6,1 mln. km) nuo Saulės centro, greitis iki ~690 000 km/h – greičiausias kada nors sukurtas objektas. Skrenda per Saulės vainiką ir matuoja saulės vėją jo gimimo vietoje.\n\n")
+                SpaceLive.probes.firstOrNull { it.name.startsWith("Parker") }?.let { p -> append("Dabar: %.0f Saulės spindulių (%.3f AU, %.1f mln. km) nuo Saulės centro.\n\n".format(java.util.Locale.US, SpaceLive.rSun(p.now), SpaceLive.rSun(p.now) / Donki.AU_RSUN, SpaceLive.rSun(p.now) * 0.696)) }
+                append("Skaičius prie užrašo – atstumas Saulės spinduliais (R☉). Modelyje Saulė per didelė, todėl atstumas nuo jos paviršiaus nubraižytas proporcingai iki Žemės orbitos; linija – kelias 60 d. atgal ir 30 d. į priekį (NASA JPL Horizons).")
+            }
+            else -> "Solar Orbiter" to buildString {
+                append("ESA ir NASA zondas (paleistas 2020 m.). Fotografuoja Saulę iš arti (~0,28–1 AU) ir pirmasis pažiūrės į Saulės ašigalius: Veneros traukos manevrais orbita kasmet palinksta (iki ~17°, vėliau iki ~33° nuo Saulės pusiaujo). Tyrinėja, iš kur kyla saulės vėjas ir žybsniai.\n\n")
+                SpaceLive.probes.firstOrNull { it.name.startsWith("Solar") }?.let { p -> append("Dabar: %.0f Saulės spindulių (%.3f AU, %.1f mln. km) nuo Saulės centro.\n\n".format(java.util.Locale.US, SpaceLive.rSun(p.now), SpaceLive.rSun(p.now) / Donki.AU_RSUN, SpaceLive.rSun(p.now) * 0.696)) }
+                append("Skaičius prie užrašo – atstumas Saulės spinduliais (R☉). Modelyje atstumas nuo Saulės paviršiaus nubraižytas proporcingai iki Žemės orbitos; linija – kelias 60 d. atgal ir 30 d. į priekį (NASA JPL Horizons).")
+            }
+        }
+        android.app.AlertDialog.Builder(context).setTitle(title).setMessage(body).setPositiveButton("Gerai", null).show()
+    }
+
     private fun showSatInfo(s: Sat) {
         val (title, rows) = try { renderer.satInfo(s) } catch (e: Exception) { (s.const + " " + s.svid) to listOf("Klaida" to (e.message ?: e.javaClass.simpleName)) }
         val dp = resources.displayMetrics.density
@@ -3941,8 +3970,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val (tex, asp) = wideLabel(if (la < 0) "${-la}°P" else "${la}°Š")
             billboard(p, eyeI, 0.018f * asp, 0.018f, tex, 0.85f, 0.92f, 1f, 0.85f)
         }
-        val (tt, ta) = wideLabel("Vėžio atogrąža %.2f°".format(java.util.Locale.US, eps)); sc(eps + 1.5, -30.0).let { if (facing(it)) billboard(it, eyeI, 0.016f * ta, 0.016f, tt, 1f, 0.85f, 0.3f, 0.85f) }
-        val (tc, tca) = wideLabel("Ožiaragio atogrąža"); sc(-eps - 1.5, -30.0).let { if (facing(it)) billboard(it, eyeI, 0.016f * tca, 0.016f, tc, 1f, 0.85f, 0.3f, 0.85f) }
+        // atogrąžų užrašai pašalinti – užtenka brūkšninių linijų
     }
 
     /** Ar gaublio taškas atsuktas į kamerą (užrašai galinėje pusėje nepiešiami). */
@@ -3976,9 +4004,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         cross(mLat, mLon, 1f, 0.95f, 0.2f, 6.0)
         Uvi.centerCached(now)?.let { cross(it[0], it[1], 1f, 0.3f, 0.8f, 4.0) }
         GLES20.glDepthMask(true); GLES20.glDisable(GLES20.GL_DEPTH_TEST)
-        val (tex, asp) = wideLabel("Saulė zenite (modelis)")
-        val pl = sc(mLat + 8, mLon, 1.02)
-        billboard(pl, eyeI, 0.03f * asp, 0.03f, tex, 1f, 0.95f, 0.3f, 0.95f)
+        // užrašas „Saulė zenite (modelis)“ pašalintas – lieka kryžius
     }
 
     /** Kliūčių skliautas 3D: 0 – išjungtas, 1 – kupolas, 2 – dėžė (kabinos forma, sukasi su planšete). */
@@ -4479,6 +4505,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Bakstelėjimas į palydovą (artimiausias ekrane, iki ~32 dp) arba null. */
     fun pickSat(x: Float, y: Float): Sat? {
+        if (!showSats) return null                         // palydovai nerodomi – ir jų kortelės neatsidaro
         val m = lastMvpI
         var best: Sat? = null; var bestD = 32f * density
         for (si in satsI) {
@@ -4604,7 +4631,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val s = scr(p) ?: continue
             val rpx = (lastH / 2f) * bodyRadius(id).toFloat() / (s[2] * tanHalf)
             val d = kotlin.math.hypot(s[0] - x, s[1] - y)
-            if (d < maxOf(45f * density, rpx * 1.3f) && d < bestD) { best = id; bestD = d }
+            if (d < maxOf(60f * density, rpx * 1.6f) && d < bestD) { best = id; bestD = d }
         }
         return best
     }
@@ -5124,7 +5151,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 val lat = 90 - y; val lon = ((x - 180) % 360 + 360) % 360
                 val v = g[(lat + 90) * 360 + lon]
                 if (v < 2f) continue
-                val a = (v / 35f).coerceIn(0f, 1f) * 0.9f
+                val a = (0.25f + v / 25f).coerceIn(0f, 1f)                   // ryškiau – matosi ir ramią naktį (Kp 1–3)
                 val t = ((v - 30f) / 50f).coerceIn(0f, 1f)
                 val r = (0.25f + 0.75f * t); val gg = (1f - 0.65f * t); val b = (0.45f + 0.4f * t)
                 px[y * w + x] = android.graphics.Color.argb((a * 255).toInt(), (r * a * 255).toInt(), (gg * a * 255).toInt(), (b * a * 255).toInt())
@@ -5151,12 +5178,26 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val depthWas = GLES20.glIsEnabled(GLES20.GL_DEPTH_TEST); val blendWas = GLES20.glIsEnabled(GLES20.GL_BLEND)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
         GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE)
-        GLES20.glEnable(GLES20.GL_CULL_FACE); GLES20.glCullFace(GLES20.GL_BACK)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
-        GLES20.glDisable(GLES20.GL_CULL_FACE)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)          // be paviršių atmetimo (galinę pusę užstoja Žemė)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA); GLES20.glDepthMask(true)
         if (!depthWas) GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         if (!blendWas) GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
+    /** Paskutinės nupieštos bakstelimų vietos (pasaulio sistemoje): TKS, Parker, Solar Orbiter. */
+    private val tapPts = java.util.concurrent.ConcurrentHashMap<String, FloatArray>()
+    /** Bakstelėtas objektas iš SpaceLive (iss, parker, solo) arba null. */
+    fun pickLive(x: Float, y: Float): String? {
+        if (!SpaceLive.enabled) return null
+        val m = lastMvpI; var best: String? = null; var bestD = 40f * density
+        for ((k, p) in tapPts) {
+            if (k == "iss" && SpaceLive.iss == null) continue
+            val v = FloatArray(4); Matrix.multiplyMV(v, 0, m, 0, floatArrayOf(p[0], p[1], p[2], 1f), 0)
+            if (v[3] <= 1e-6f) continue
+            val sx = (v[0] / v[3] + 1f) / 2f * lastW; val sy = (1f - v[1] / v[3]) / 2f * lastH
+            val d = kotlin.math.hypot(sx - x, sy - y); if (d < bestD) { bestD = d; best = k }
+        }
+        return best
     }
 
     /** TKS (Celestrak elementai): taškas su užrašu ir orbitos ratas (±45 min.), tikru aukščiu virš Žemės. */
@@ -5175,6 +5216,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glLineWidth(1f)
         drawLines(pts.toFloatArray(), 0.9f, 0.95f, 1f, 0.35f)
         val v = SpaceLive.issEci(el, now); val p = FloatArray(3) { (v[it] * k).toFloat() }
+        tapPts["iss"] = p
         // už Žemės – nerodoma
         val dd = p[0] * eyeI[0] + p[1] * eyeI[1] + p[2] * eyeI[2]
         val px2 = p[0] - dd * eyeI[0]; val py2 = p[1] - dd * eyeI[1]; val pz2 = p[2] - dd * eyeI[2]
@@ -5261,6 +5303,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glLineWidth(1f)
             drawLines(seg.toFloatArray(), 0.6f, 0.9f, 1f, 0.3f)
             val p = probePos(pr.now)
+            tapPts[if (pr.name.startsWith("Parker")) "parker" else "solo"] = p
             GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
             billboard(p, eyeI, 0.06f, 0.06f, starTex, 0.6f, 0.95f, 1f, 0.95f)
             GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
@@ -5891,9 +5934,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         GLES20.glUseProgram(colorProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
-        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 0.55f, 0.9f, 1f, 0.9f)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 0.55f, 0.9f, 1f, 0.35f)
         bindPos(colorProg, floatBuf(pts.toFloatArray()))
-        GLES20.glLineWidth(3f)
+        GLES20.glLineWidth(2f)
         GLES20.glDrawArrays(GLES20.GL_LINES, 0, pts.size / 3)
         GLES20.glLineWidth(1f)
     }
@@ -6022,8 +6065,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             (k * cos(Math.toRadians(la)) * sin(Math.toRadians(lo))).toFloat(), (k * sin(Math.toRadians(la))).toFloat())
         val thin = ArrayList<Float>(); val main = ArrayList<Float>(); val axis = ArrayList<Float>()
         fun seg(d: ArrayList<Float>, a: FloatArray, b: FloatArray) { d.add(a[0]); d.add(a[1]); d.add(a[2]); d.add(b[0]); d.add(b[1]); d.add(b[2]) }
-        for (la in -75..75 step 15) { val d = if (la == 0) main else thin; var lo = -180.0; while (lo < 180) { seg(d, pt(la.toDouble(), lo), pt(la.toDouble(), lo + 5)); lo += 5.0 } }
-        for (lo in -180 until 180 step 15) { val d = if (lo == 0) main else thin; var la = -85.0; while (la < 85) { seg(d, pt(la, lo.toDouble()), pt(la + 5, lo.toDouble())); la += 5.0 } }
+        // koordinačių tinklelis ant Saulės ir Mėnulio pašalintas – liko ašis (strypas per polius) ir į Žemę atsuktas taškas
         seg(axis, pt(90.0, 0.0, r), pt(90.0, 0.0, 0.25 * 1.5)); seg(axis, pt(-90.0, 0.0, r), pt(-90.0, 0.0, 0.25 * 1.5))
         val b0 = subLat; val l0 = subLon
         val earthPt = ArrayList<Float>()
@@ -9274,8 +9316,8 @@ class MainActivity : AppCompatActivity() {
                     if (key != elevKey && System.currentTimeMillis() - elevAskMs > 1500L) { elevAskMs = System.currentTimeMillis(); fetchCentreElev(ci[0], ci[1], key) }
                     val sea = skyDome.reliefAt(ci[0], ci[1])
                     val hTxt = elevVal?.takeIf { elevKey == key }?.let { e ->
-                        if (e <= 0.5 && sea < -5) "gylis ~%.0f m".format(Locale.US, -sea) else "%.0f m virš jūros".format(Locale.US, e) }
-                        ?: if (sea < -5) "gylis ~%.0f m".format(Locale.US, -sea) else "~%.0f m".format(Locale.US, maxOf(0.0, sea))
+                        if (e <= 0.5 && sea < -5) "%.0f m".format(Locale.US, sea) else "%.0f m".format(Locale.US, e) }
+                        ?: "%.0f m".format(Locale.US, if (sea < -5) sea else maxOf(0.0, sea))     // be minuso – virš jūros, su minusu – gylis
                     info.text = "%.5f, %.5f · %s".format(Locale.US, ci[0], ci[1], hTxt)
                 }
                 info.postDelayed(this, 200L)

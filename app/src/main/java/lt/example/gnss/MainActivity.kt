@@ -2978,8 +2978,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             for (k in 0..2) seg.add(a[k] + d[k] * g); for (k in 0..2) seg.add(b[k] - d[k] * g)
         }
         // plonos sidabrinės linijos
-        GLES20.glLineWidth(maxOf(1f, 0.7f * density))
-        drawLines(seg.toFloatArray(), 0.80f, 0.83f, 0.88f, 0.5f * a0)
+        GLES20.glLineWidth(1f)                                   // ploniausia (1 taškas), blankesnė
+        drawLines(seg.toFloatArray(), 0.80f, 0.83f, 0.88f, 0.32f * a0)
         GLES20.glLineWidth(1f)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
         val sec = android.os.SystemClock.uptimeMillis() / 1000.0
@@ -3260,8 +3260,22 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             dst.add(a[0]); dst.add(a[1]); dst.add(a[2]); dst.add(b[0]); dst.add(b[1]); dst.add(b[2])
         }
         GLES20.glLineWidth(1f)                                              // 1 taško, kaip kitos orbitos
-        drawLines(dn.toFloatArray(), 0.85f, 0.7f, 1f, 0.18f)
-        drawLines(up.toFloatArray(), 0.85f, 0.7f, 1f, 0.6f)
+        val gf = galFade()
+        drawLines(dn.toFloatArray(), 0.85f, 0.7f, 1f, 0.18f * (1f - gf))
+        drawLines(up.toFloatArray(), 0.85f, 0.7f, 1f, 0.6f * (1f - gf))
+        // galaktikos mastelyje – Saulės (ir Žemės) kelias aplink galaktikos centrą: ratas, kurio centras – galaktikos centras
+        // (8,2 kpc nuo mūsų), o mes – ant jo krašto; punktyru
+        if (gf > 0.01f) {
+            val gs = GAL_G.toDouble(); val rr = GalaxyModel.R_SUN * gs
+            val gc = DoubleArray(3) { fP[it] + g[it] * rr }
+            val orb = ArrayList<Float>(); val m = 360
+            fun op(t: Double) = DoubleArray(3) { gc[it] + rr * (-g[it] * cos(t) + g[3 + it] * sin(t)) }
+            for (i in 0 until m step 2) {
+                val a = op(2 * Math.PI * i / m); val b = op(2 * Math.PI * (i + 1) / m)
+                for (c in 0..2) orb.add(a[c].toFloat()); for (c in 0..2) orb.add(b[c].toFloat())
+            }
+            drawLines(orb.toFloatArray(), 0.85f, 0.7f, 1f, 0.55f * gf)
+        }
     }
 
     /** Segmentai tarp gretimų taškų, abu virš horizonto. */
@@ -8882,10 +8896,18 @@ class MainActivity : AppCompatActivity() {
         // 🚀 skrydis pro Šiaurinę žvaigždę iš šios vietos (savo platumos kampu) iki galaktikos „blyno“; dar kartą – grįžti
         val flightBtn = small("\uD83D\uDE80", 14f).apply { alpha = 0.6f
             setOnClickListener { if (::skyDome.isInitialized) { val go = skyDome.toggleFlight(); alpha = if (go) 0.95f else 0.6f } } }
+        // ⌂ – grįžti į pradinį vaizdą (pasimetus); stovi vietoje seno ⟳ mygtuko (jį pakeitė 🌍/👁)
+        val homeBtn = small("\u2302", 17f).apply { alpha = 0.75f
+            setOnClickListener {
+                keyHaptic(this)
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("free_view", false).putBoolean("follow_device", false).apply()
+                if (::skyDome.isInitialized) skyDome.goHome()
+                modeBtn?.text = "\uD83C\uDF0D"; flightBtn.alpha = 0.6f
+            } }
         val tools = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val gap = (6 * dp).toInt()
-            for (b in listOf(followBtn, levelBtn, calBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
+            for (b in listOf(homeBtn, levelBtn, calBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
         }
         // barometras: apačioje kairėje – paspaudus nulis čia, toliau rodoma, kiek pakilote ar nusileidote
         if (baro.hasSensor) {
@@ -9012,17 +9034,10 @@ class MainActivity : AppCompatActivity() {
             skyHolder.addView(col, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.END or Gravity.CENTER_VERTICAL).apply { val mm = (10 * dp).toInt(); setMargins(mm, mm, mm + bSize + (8 * dp).toInt(), mm) })   // kairiau įrankių stulpelio
         }
-        // Kairėje: 🚀 skrydis ir ⌂ – grįžti į pradinį vaizdą (pasimetus)
+        // Kairėje: 🚀 skrydis
         run {
-            val home = small("\u2302", 17f).apply { alpha = 0.6f
-                setOnClickListener {
-                    keyHaptic(this)
-                    getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("free_view", false).putBoolean("follow_device", false).apply()
-                    skyDome.goHome(); modeBtn?.text = "\uD83C\uDF0D"; flightBtn.alpha = 0.6f
-                } }
             val lc = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL
-                addView(flightBtn, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = (8 * dp).toInt() })
-                addView(home, LinearLayout.LayoutParams(bSize, bSize)) }
+                addView(flightBtn, LinearLayout.LayoutParams(bSize, bSize)) }
             skyHolder.addView(lc, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply {
                 val mm = (10 * dp).toInt(); setMargins(mm, (84 * dp).toInt(), mm, mm) })
         }

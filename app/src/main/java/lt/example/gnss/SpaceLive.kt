@@ -352,7 +352,7 @@ object SpaceLive {
         val out = ArrayList<String>()
         val dark = Astro.altAz(Astro.sunEq(now), latDeg, lonDeg, now).second < -6.0
         aurora?.let { g -> val p = auroraNear(g, latDeg, lonDeg)
-            if (p >= 10 && dark && shown.add("aur" + now / 21_600_000L)) out.add("🌌 Šiąnakt gali matytis pašvaistė šiaurėje (iki %.0f %%)".format(Locale.US, p)) }
+            if (false && p >= 10 && dark && shown.add("aur" + now / 21_600_000L)) out.add("🌌 Šiąnakt gali matytis pašvaistė šiaurėje (iki %.0f %%)".format(Locale.US, p)) }
         flares.lastOrNull()?.let { f -> if ((f.cls.startsWith("X") || f.cls.startsWith("M")) && now - f.peakMs < 3_600_000L && shown.add("flr" + f.peakMs))
             out.add("☀ Saulės žybsnis %s prieš %d min.".format(Locale.US, f.cls, (now - f.peakMs) / 60_000L)) }
         if (!bz.isNaN() && bz <= -10 && windSpeed >= 500 && shown.add("bz" + now / 10_800_000L))

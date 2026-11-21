@@ -2484,7 +2484,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             if (if (observerView()) dot3(c, fwd) < -0.2f else hs >= 1f && dot3(c, eye) < 0.05f) continue
             val col = when (d) { 0 -> floatArrayOf(0.94f, 0.27f, 0.27f); 90, 180, 270 -> floatArrayOf(0.98f, 0.8f, 0.08f); else -> floatArrayOf(0.85f, 0.87f, 0.9f) }
             val card = d % 90 == 0
-            billboard(c, eye, (if (card) 0.18f else 0.09f) * hs, (if (card) 0.09f else 0.045f) * hs, tex, col[0], col[1], col[2], 1f)
+            // KLAIDA BUVO: žymos piešiamos pasaulio (pusiaujo) matrica, nes ją anksčiau perrašo žvaigždžių piešimas – ratas gulėjo pusiaujo
+            // plokštumoje ir sukosi su žvaigždėmis (N rodė ne į šiaurę). Dabar vieta perskaičiuojama į pasaulio sistemą iš stebėtojo ENU.
+            val cw = FloatArray(3) { (fE[it] * c[0] + fN[it] * c[1] + fU[it] * c[2] + fP[it]).toFloat() }
+            System.arraycopy(mvpI, 0, mvp, 0, 16)
+            billboard(cw, eyeI, (if (card) 0.18f else 0.09f) * hs, (if (card) 0.09f else 0.045f) * hs, tex, col[0], col[1], col[2], 1f)
         }
 
         // 6) Palydovai: geras signalas žybsi kaip žvaigždės
@@ -3511,7 +3515,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         seg(tip, DoubleArray(3) { tip[it] - mv[it] * r * 0.3 - side[it] * r * 0.15 }, arrow)
         drawLines(arrow.toFloatArray(), 0.5f, 1f, 0.55f, 0.95f)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
-        labelAt(DoubleArray(3) { obs[it] + nn[it] * hr * 1.08 }, "n", 0.6f, 1f, 1f, 0.04f)
+        labelAt(DoubleArray(3) { obs[it] + nn[it] * hr * 1.08 }, "N", 0.6f, 1f, 1f, 0.03f)
     }
 
     private fun drawSky() {
@@ -5151,10 +5155,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 val lat = 90 - y; val lon = ((x - 180) % 360 + 360) % 360
                 val v = g[(lat + 90) * 360 + lon]
                 if (v < 2f) continue
-                val a = (0.25f + v / 25f).coerceIn(0f, 1f)                   // ryškiau – matosi ir ramią naktį (Kp 1–3)
-                val t = ((v - 30f) / 50f).coerceIn(0f, 1f)
-                val r = (0.25f + 0.75f * t); val gg = (1f - 0.65f * t); val b = (0.45f + 0.4f * t)
-                px[y * w + x] = android.graphics.Color.argb((a * 255).toInt(), (r * a * 255).toInt(), (gg * a * 255).toInt(), (b * a * 255).toInt())
+                val a = (0.25f + v / 25f).coerceIn(0f, 1f)                   // intensyvumas; spalvas parenka šešėliuoklis
+                px[y * w + x] = android.graphics.Color.argb(255, (a * 255).toInt(), (a * 255).toInt(), (a * 255).toInt())
             }
             val bmp = Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
             if (auroraTex != 0) GLES20.glDeleteTextures(1, intArrayOf(auroraTex), 0)
@@ -5166,7 +5168,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val m = FloatArray(16); Matrix.multiplyMM(m, 0, earthMvp, 0, sc, 0)
         GLES20.glUseProgram(auroraProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(auroraProg, "uMVP"), 1, false, m, 0)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(auroraProg, "uPulse"), (0.85 + 0.15 * sin((System.nanoTime() - t0) / 1e9 * 1.3)).toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(auroraProg, "uTime"), ((System.nanoTime() - t0) / 1e9 % 10_000.0).toFloat())
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, auroraTex)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(auroraProg, "uTex"), 0)
         resetAttribs()
@@ -6970,12 +6972,29 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             varying vec2 vUV;
             void main() { vUV = aUV; gl_Position = uMVP * vec4(aPos, 1.0); }
         """
+        // Pašvaistės spalvos kaip tikrovėje: žalia (deguonis 557,7 nm, 100–150 km) – vyrauja; raudona (deguonis 630 nm, > 200 km) –
+        // stipriose vietose viršutiniame krašte; violetinė–mėlyna (azotas 427,8 nm) – stipriausiose, apatiniame krašte.
+        // Mirgėjimas: „užuolaidos“ – ilgumos kryptimi bėgančios bangos ir lėtas tvyksėjimas.
         private const val AUR_FS = """
             precision mediump float;
             uniform sampler2D uTex;
-            uniform float uPulse;
+            uniform float uTime;
             varying vec2 vUV;
-            void main() { gl_FragColor = texture2D(uTex, vUV) * uPulse; }
+            void main() {
+                float a = texture2D(uTex, vUV).r;
+                if (a < 0.01) discard;
+                float x = vUV.x * 360.0;
+                float curtain = 0.55 + 0.45 * sin(x * 1.7 + uTime * 0.9 + 2.5 * sin(x * 0.31 - uTime * 0.35));
+                float shimmer = 0.8 + 0.2 * sin(uTime * 7.0 + x * 5.3) * sin(uTime * 3.1 - x * 2.1);
+                float pulse = 0.8 + 0.2 * sin(uTime * 0.6 + x * 0.05);
+                vec3 green = vec3(0.22, 1.0, 0.45);
+                vec3 red = vec3(1.0, 0.22, 0.32);
+                vec3 violet = vec3(0.55, 0.35, 1.0);
+                vec3 c = green * a
+                       + red * smoothstep(0.55, 0.95, a) * 0.55 * (0.6 + 0.4 * sin(x * 0.9 - uTime * 0.5))
+                       + violet * smoothstep(0.7, 1.0, a) * 0.45 * curtain;
+                gl_FragColor = vec4(c * curtain * shimmer * pulse, 1.0);
+            }
         """
         private const val TILE_VS = """
             attribute vec3 aPos;

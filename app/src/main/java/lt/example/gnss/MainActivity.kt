@@ -2534,7 +2534,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawCorrectionWaves(pin, t)
         if (obstacleMode > 0) drawObstacleSky(pin)
         if (Uvi.enabled) drawUvi()
-        // senas tinklelis (kas 15°) pašalintas – liko vienas prisitaikantis (drawGlobeGrid)
+        // senas tinklelis (kas 15°) pašalintas – liko vienas prisitaikantis (drawGlobeGrid); atogrąžos ir poliariniai ratai – su juo
+        if (showEarthGrid) drawGraticule()
         // Stebėtojas: sukasi tik apie save (rodyklė), visata nuo planšetės sukimo nepriklauso
         drawObserverHeading()
         // SP3 trajektorijos ±30 min. arba užrašas apie apytikslę padėtį
@@ -3886,11 +3887,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         val normal = ArrayList<Float>(); val main = ArrayList<Float>(); val special = ArrayList<Float>()
         fun seg(dst: ArrayList<Float>, a: FloatArray, b: FloatArray) { dst.add(a[0]); dst.add(a[1]); dst.add(a[2]); dst.add(b[0]); dst.add(b[1]); dst.add(b[2]) }
-        for (la in -75..75 step 15) {                                   // lygiagretės
+        // paliktos tik atogrąžos ir poliariniai ratai (platumų/ilgumų linijas piešia prisitaikantis tinklelis drawGlobeGrid)
+        if (false) for (la in -75..75 step 15) {                        // lygiagretės
             val dst = if (la == 0) main else normal
             var lo = -180.0; while (lo < 180.0) { seg(dst, sc(la.toDouble(), lo), sc(la.toDouble(), lo + 3)); lo += 3.0 }
         }
-        for (lo in -180 until 180 step 15) {                            // dienovidiniai
+        if (false) for (lo in -180 until 180 step 15) {                 // dienovidiniai
             val dst = if (lo == 0) main else normal
             var la = -87.0; while (la < 87.0) { seg(dst, sc(la, lo.toDouble()), sc(la + 3, lo.toDouble())); la += 3.0 }
         }
@@ -3910,12 +3912,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         GLES20.glLineWidth(1f); GLES20.glDepthMask(true); GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         // užrašai: ilgumos ant pusiaujo kas 30°, platumos ant Grinvičo dienovidinio
-        for (lo in -150..180 step 30) {
+        if (false) for (lo in -150..180 step 30) {
             val p = sc(2.0, lo.toDouble()); if (!facing(p)) continue
             val (tex, asp) = wideLabel(if (lo == 180) "180°" else if (lo < 0) "${-lo}°V" else if (lo == 0) "0°" else "${lo}°R")
             billboard(p, eyeI, 0.018f * asp, 0.018f, tex, 0.85f, 0.92f, 1f, 0.85f)
         }
-        for (la in listOf(-60, -30, 30, 60)) {
+        if (false) for (la in listOf(-60, -30, 30, 60)) {
             val p = sc(la.toDouble(), 1.5); if (!facing(p)) continue
             val (tex, asp) = wideLabel(if (la < 0) "${-la}°P" else "${la}°Š")
             billboard(p, eyeI, 0.018f * asp, 0.018f, tex, 0.85f, 0.92f, 1f, 0.85f)

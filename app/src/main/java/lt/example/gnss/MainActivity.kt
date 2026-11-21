@@ -5051,7 +5051,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val lat0 = Math.toDegrees(kotlin.math.asin((cm[2] / cl).coerceIn(-1.0, 1.0))); val lon0 = Math.toDegrees(kotlin.math.atan2(cm[1], cm[0]))
         val alt = cl - r0
         centreLat = lat0; centreLon = lon0; centreAltKm = alt / r0 * 6371.0
-        if (!showEarthGrid) { gridStepDeg = Double.NaN; return }
+        // tinklelis rodomas tik priartinus – kartu su palydovinėmis plytelėmis (žemiau ~400 km, ryškėja iki ~200 km)
+        val gA = (1.0 - ((alt - 0.008) / 0.008).coerceIn(0.0, 1.0).let { it * it * (3 - 2 * it) }).toFloat()
+        if (!showEarthGrid || gA <= 0.01f) { gridStepDeg = Double.NaN; return }
         // matomas kampas (°) ekrano aukščiu ant paviršiaus
         val viewDeg = Math.toDegrees(minOf(Math.PI, 2.0 * kotlin.math.tan(Math.toRadians(20.0)) * alt / r0))
         val step = GRID_STEPS.firstOrNull { viewDeg / it >= 4.0 } ?: GRID_STEPS.last()
@@ -5085,7 +5087,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glUseProgram(colorProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, earthMvp, 0)
-        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 0.95f, 0.55f, 0.55f)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 0.95f, 0.55f, 0.55f * gA)
         resetAttribs()
         bindPos(colorProg, floatBuf(seg.toFloatArray()))
         GLES20.glLineWidth(1f * density)

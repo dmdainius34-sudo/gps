@@ -1403,6 +1403,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     val freeView get() = renderer.freeView
     fun centreOnMe() { renderer.centreOnMe() }
     fun setSunTrue(on: Boolean) { renderer.sunTrue = on }
+    fun setLascoDisk(on: Boolean) { renderer.showLascoDisk = on }
     fun centreInfo(): DoubleArray = doubleArrayOf(renderer.centreLat, renderer.centreLon, renderer.centreAltKm, renderer.gridStepDeg)
     /** Reljefo aukštis (m; jūroje – gylis su minusu) iš GEBCO tinklelio (0,25°) taške. */
     fun reliefAt(lat: Double, lon: Double): Double = renderer.reliefAtPublic(lat, lon)
@@ -1622,6 +1623,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         setEGLConfigChooser(MsaaConfigChooser())
         setEGLWindowSurfaceFactory(HdrSurfaceFactory({ calPrefs.edit().putBoolean("hdr", false).apply() }, { calPrefs.edit().putBoolean("ten_bit", false).apply() }))
         renderer.sunTrue = calPrefs.getBoolean("sun_true", false)
+        renderer.showLascoDisk = calPrefs.getBoolean("lasco_disk", true)
         preserveEGLContextOnPause = true
         renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
         renderer.showMarkers = calPrefs.getBoolean("markers", true)
@@ -6126,6 +6128,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private val sunMat = FloatArray(16)
     private val sunMvp = FloatArray(16)
 
+    /** LASCO C2 vainiko diskas (2D koronografo nuotrauka, paversta 3D tūriu aplink Saulę). */
+    @Volatile var showLascoDisk = true
+
     /** Saulė tikra spalva (balta ~5800 K) vietoj SDO ultravioletinės (auksinės). */
     @Volatile var sunTrue = false
 
@@ -6269,6 +6274,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val ul = kotlin.math.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]); for (i in 0..2) u[i] /= ul
         val r = floatArrayOf(d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0])   // vakarai
         drawCmeCones(sp, rs, dl, z)
+        if (!showLascoDisk) return                                  // LASCO vainiko diskas (2D nuotrauka 3D tūryje) išjungtas
         val frames = Lasco.frames; if (frames.isEmpty()) return
         if (Lasco.version != lascoVer) { lascoVer = Lasco.version
             if (lascoTexs.isNotEmpty()) GLES20.glDeleteTextures(lascoTexs.size, lascoTexs, 0)
@@ -9131,6 +9137,12 @@ class MainActivity : AppCompatActivity() {
             setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_lasco", on).apply(); Lasco.enabled = on
                 if (::skyDome.isInitialized) skyDome.setLasco(on)
                 if (on) { Lasco.refresh(this@MainActivity); Donki.refresh(this@MainActivity) } }
+        }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(CheckBox(this).apply {
+            text = "Saulės vainiko diskas (LASCO 2D nuotrauka, paversta 3D)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("lasco_disk", true)
+            setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("lasco_disk", on).apply()
+                if (::skyDome.isInitialized) skyDome.setLascoDisk(on) }
         }, LinearLayout.LayoutParams(mw, ww))
         Uvi.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("uv_layer", false)
         left.addView(CheckBox(this).apply {

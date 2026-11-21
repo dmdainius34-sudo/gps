@@ -2430,6 +2430,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawEarth()
         drawTiles()
         drawGlobeGrid()
+        if (SpaceLive.enabled) { drawAurora(); drawIss() }
         drawEquatorRing(t)
         drawMoon()
         drawMoonOrbit()
@@ -5100,6 +5101,169 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Palydovai (modeliai, spinduliai, žymos) – varnelė „Rodyti palydovus“. */
     @Volatile var showSats = false
 
+    // ---------------- KOSMINIAI ORAI GYVAI (SpaceLive) ----------------
+    private var auroraTex = 0
+    private var auroraVerDone = -1
+    private var auroraProg = 0
+
+    /** Pašvaistės ovalas (NOAA OVATION) ant gaublio: permatomas švytintis sluoksnis ~150 km aukštyje, žalia → violetinė pagal tikimybę. */
+    private fun drawAurora() {
+        val g = SpaceLive.aurora ?: return
+        if (earthPos == null) return
+        if (auroraVerDone != SpaceLive.auroraVer) {
+            auroraVerDone = SpaceLive.auroraVer
+            val w = 360; val h = 181
+            val px = IntArray(w * h)
+            for (y in 0 until h) for (x in 0 until w) {
+                val lat = 90 - y; val lon = ((x - 180) % 360 + 360) % 360
+                val v = g[(lat + 90) * 360 + lon]
+                if (v < 2f) continue
+                val a = (v / 35f).coerceIn(0f, 1f) * 0.9f
+                val t = ((v - 30f) / 50f).coerceIn(0f, 1f)
+                val r = (0.25f + 0.75f * t); val gg = (1f - 0.65f * t); val b = (0.45f + 0.4f * t)
+                px[y * w + x] = android.graphics.Color.argb((a * 255).toInt(), (r * a * 255).toInt(), (gg * a * 255).toInt(), (b * a * 255).toInt())
+            }
+            val bmp = Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
+            if (auroraTex != 0) GLES20.glDeleteTextures(1, intArrayOf(auroraTex), 0)
+            auroraTex = uploadTexture(bmp)
+        }
+        if (auroraTex == 0) return
+        if (auroraProg == 0) auroraProg = program(AUR_VS, AUR_FS)
+        val sc = FloatArray(16); Matrix.setIdentityM(sc, 0); Matrix.scaleM(sc, 0, 1.024f, 1.024f, 1.024f)
+        val m = FloatArray(16); Matrix.multiplyMM(m, 0, earthMvp, 0, sc, 0)
+        GLES20.glUseProgram(auroraProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(auroraProg, "uMVP"), 1, false, m, 0)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(auroraProg, "uPulse"), (0.85 + 0.15 * sin((System.nanoTime() - t0) / 1e9 * 1.3)).toFloat())
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, auroraTex)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(auroraProg, "uTex"), 0)
+        resetAttribs()
+        val lp = GLES20.glGetAttribLocation(auroraProg, "aPos"); val lu = GLES20.glGetAttribLocation(auroraProg, "aUV")
+        GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lu)
+        earthPos!!.position(0); earthUv!!.position(0)
+        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, earthPos)
+        GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, earthUv)
+        val depthWas = GLES20.glIsEnabled(GLES20.GL_DEPTH_TEST); val blendWas = GLES20.glIsEnabled(GLES20.GL_BLEND)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE)
+        GLES20.glEnable(GLES20.GL_CULL_FACE); GLES20.glCullFace(GLES20.GL_BACK)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
+        GLES20.glDisable(GLES20.GL_CULL_FACE)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA); GLES20.glDepthMask(true)
+        if (!depthWas) GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        if (!blendWas) GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
+    /** TKS (Celestrak elementai): taškas su užrašu ir orbitos ratas (±45 min.), tikru aukščiu virš Žemės. */
+    private fun drawIss() {
+        val el = SpaceLive.iss ?: return
+        val now = System.currentTimeMillis()
+        val k = EARTH_R / 6371.0
+        val pts = ArrayList<Float>()
+        var prev: DoubleArray? = null
+        for (i in -45..45) {
+            val v = SpaceLive.issEci(el, now + i * 60_000L); val q = DoubleArray(3) { v[it] * k }
+            prev?.let { a -> for (c in 0..2) pts.add(a[c].toFloat()); for (c in 0..2) pts.add(q[c].toFloat()) }
+            prev = q
+        }
+        GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glLineWidth(1f)
+        drawLines(pts.toFloatArray(), 0.9f, 0.95f, 1f, 0.35f)
+        val v = SpaceLive.issEci(el, now); val p = FloatArray(3) { (v[it] * k).toFloat() }
+        // už Žemės – nerodoma
+        val dd = p[0] * eyeI[0] + p[1] * eyeI[1] + p[2] * eyeI[2]
+        val px2 = p[0] - dd * eyeI[0]; val py2 = p[1] - dd * eyeI[1]; val pz2 = p[2] - dd * eyeI[2]
+        if (dd < 0f && sqrt(px2 * px2 + py2 * py2 + pz2 * pz2) < EARTH_R) return
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        billboard(p, eyeI, 0.035f, 0.035f, starTex, 1f, 1f, 1f, 0.95f)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        labelAt(doubleArrayOf(p[0].toDouble(), p[1].toDouble(), p[2] + 0.03), "TKS", 1f, 1f, 1f, 0.022f)
+    }
+
+    /**
+     * Prie Saulės: saulės vėjo dalelės (tikru greičiu: 1 para kelio ≈ 3 s), Bz ženklas prie Žemės, žybsnio blyksnis tikroje vietoje,
+     * 25-ojo ciklo dėmių skaičius, Parker Solar Probe ir Solar Orbiter (atstumas nuo Saulės paviršiaus – proporcingai iki Žemės orbitos).
+     */
+    private fun drawSunLive(sp: FloatArray, rs: Float) {
+        val dl = sqrt(sp[0] * sp[0] + sp[1] * sp[1] + sp[2] * sp[2]); if (dl < 1e-6f) return
+        val d = floatArrayOf(sp[0] / dl, sp[1] / dl, sp[2] / dl)                  // Žemė → Saulė
+        val now = System.currentTimeMillis()
+        val z = SunFrame.axes(now)[2]
+        val pz = (z[0] * d[0] + z[1] * d[1] + z[2] * d[2]).toFloat()
+        val u = floatArrayOf(z[0].toFloat() - pz * d[0], z[1].toFloat() - pz * d[1], z[2].toFloat() - pz * d[2])
+        val ul = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).coerceAtLeast(1e-6f); for (i in 0..2) u[i] /= ul
+        val r = floatArrayOf(d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0])   // vakarai
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false); GLES20.glEnable(GLES20.GL_BLEND)
+        val tS = (System.nanoTime() - t0) / 1e9
+        // 1) saulės vėjas
+        val v = SpaceLive.windSpeed
+        if (!v.isNaN() && v > 100) {
+            val period = (SpaceLive.travelHours(v) / 24.0 * 3.0).coerceIn(2.5, 25.0)
+            val nPart = (40 + 12 * (if (SpaceLive.windDensity.isNaN()) 4.0 else SpaceLive.windDensity)).toInt().coerceIn(30, 160)
+            val bz = SpaceLive.bz
+            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+            for (i in 0 until nPart) {
+                val ph = ((tS / period + i * 0.6180339887) % 1.0)
+                val ang = i * 2.399963; val spread = (0.15 + 0.5 * ph) * ((i * 7919) % 100 / 100.0)
+                val dist = rs * 1.05 + ph * (dl - rs * 1.05 - 0.35)
+                val pos = FloatArray(3) { (sp[it] - d[it] * dist + (u[it] * cos(ang) + r[it] * sin(ang)) * spread).toFloat() }
+                val warm = if (!bz.isNaN() && bz < -5) ((-bz - 5) / 15.0).coerceIn(0.0, 1.0).toFloat() * ph.toFloat() else 0f
+                val a = (0.55f * sin(Math.PI * ph).toFloat()).coerceAtLeast(0f)
+                billboard(pos, eyeI, 0.035f, 0.035f, starTex, 1f, 0.95f - 0.5f * warm, 0.75f - 0.6f * warm, a)
+            }
+            // Bz neigiamas – raudonas lankas Saulės pusėje prie Žemės (magnetosfera „atsidaro“)
+            if (!bz.isNaN() && bz < -5) {
+                val arc = ArrayList<Float>(); val rr = 0.5
+                for (j in -12 until 12) {
+                    val a0 = j * Math.PI / 24; val a1 = (j + 1) * Math.PI / 24
+                    fun ap(a: Double) = FloatArray(3) { (d[it] * rr * cos(a) + u[it] * rr * sin(a)).toFloat() }
+                    ap(a0).forEach { arc.add(it) }; ap(a1).forEach { arc.add(it) }
+                }
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+                GLES20.glLineWidth(2f * density)
+                drawLines(arc.toFloatArray(), 1f, 0.35f, 0.3f, (0.35f + 0.25f * sin(tS * 3).toFloat()) * ((-bz - 5) / 10).toFloat().coerceIn(0.3f, 1f))
+                GLES20.glLineWidth(1f)
+                labelAt(doubleArrayOf(d[0] * 0.62 + u[0] * 0.12, d[1] * 0.62 + u[1] * 0.12, d[2] * 0.62 + u[2] * 0.12), "Bz %+.0f nT".format(java.util.Locale.US, bz), 1f, 0.5f, 0.45f, 0.03f)
+            }
+        }
+        // 2) žybsnis: blyksnis tikroje vietoje diske (DONKI), užgęsta per ~1 val.
+        SpaceLive.flares.lastOrNull()?.let { f ->
+            val age = (now - f.peakMs) / 60_000.0
+            if (age in -5.0..120.0) {
+                val la = Math.toRadians(f.lat); val lo = Math.toRadians(f.lonW)
+                val pos = FloatArray(3) { (sp[it] + rs * (-d[it] * cos(la) * cos(lo) + r[it] * cos(la) * sin(lo) + u[it] * sin(la)) * 1.01).toFloat() }
+                val big = f.cls.startsWith("X") || f.cls.startsWith("M")
+                val a = (kotlin.math.exp(-maxOf(0.0, age) / 30.0) * (0.75 + 0.25 * sin(tS * 6))).toFloat()
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+                val sz = rs * (if (big) 0.9f else 0.45f)
+                billboard(pos, eyeI, sz, sz, starTex, 1f, 1f, 0.9f, a)
+                billboard(pos, eyeI, sz * 0.35f, sz * 0.35f, starTex, 1f, 1f, 1f, a)
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+                labelAt(DoubleArray(3) { pos[it] + u[it] * rs * 0.35 }, "%s žybsnis prieš %d min.".format(java.util.Locale.US, f.cls, maxOf(0, age.toInt())), 1f, 0.95f, 0.6f, rs * 0.16f)
+            }
+        }
+        // 3) Saulės ciklas
+        if (!SpaceLive.ssn.isNaN()) labelAt(DoubleArray(3) { sp[it] - u[it] * rs * 1.45 }, "25 ciklas · dėmių %.0f".format(java.util.Locale.US, SpaceLive.ssn), 1f, 0.85f, 0.5f, rs * 0.14f)
+        // 4) zondai: atstumas nuo Saulės paviršiaus proporcingai iki Žemės orbitos (Saulė modelyje per didelė – tikru masteliu jie būtų „Saulės viduje“)
+        fun probePos(v: DoubleArray): FloatArray {
+            val l = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).coerceAtLeast(1e-9)
+            val rm = rs + l * (dl - rs)
+            return FloatArray(3) { (sp[it] + v[it] / l * rm).toFloat() }
+        }
+        for (pr in SpaceLive.probes) {
+            val seg = ArrayList<Float>(); var prev: FloatArray? = null
+            for (q in pr.path) { val c = probePos(q); prev?.let { a -> a.forEach { seg.add(it) }; c.forEach { seg.add(it) } }; prev = c }
+            GLES20.glLineWidth(1f)
+            drawLines(seg.toFloatArray(), 0.6f, 0.9f, 1f, 0.3f)
+            val p = probePos(pr.now)
+            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+            billboard(p, eyeI, 0.06f, 0.06f, starTex, 0.6f, 0.95f, 1f, 0.95f)
+            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+            labelAt(doubleArrayOf(p[0].toDouble() + u[0] * 0.12, p[1].toDouble() + u[1] * 0.12, p[2].toDouble() + u[2] * 0.12),
+                "%s · %.0f R☉".format(java.util.Locale.US, if (pr.name.startsWith("Parker")) "Parker" else "Solar Orbiter", SpaceLive.rSun(pr.now)), 0.7f, 0.95f, 1f, 0.05f)
+        }
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+    }
+
     private var earthProg = 0
     private val earthAxis by lazy { floatBuf(floatArrayOf(0f, 0f, -0.5f, 0f, 0f, 0.5f)) }
     private var earthPos: FloatBuffer? = null
@@ -5940,6 +6104,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
         GLES20.glDisable(GLES20.GL_CULL_FACE)
         drawLasco(sp, k * EARTH_R)
+        if (SpaceLive.enabled) drawSunLive(sp, k * EARTH_R)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glDepthMask(true)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
@@ -6749,6 +6914,20 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 c = c / (vec3(1.0) + 0.25 * c);               // švelnus tonų suspaudimas, kontrastas išlieka
                 gl_FragColor = vec4(c, 1.0);
             }
+        """
+        private const val AUR_VS = """
+            attribute vec3 aPos;
+            attribute vec2 aUV;
+            uniform mat4 uMVP;
+            varying vec2 vUV;
+            void main() { vUV = aUV; gl_Position = uMVP * vec4(aPos, 1.0); }
+        """
+        private const val AUR_FS = """
+            precision mediump float;
+            uniform sampler2D uTex;
+            uniform float uPulse;
+            varying vec2 vUV;
+            void main() { gl_FragColor = texture2D(uTex, vUV) * uPulse; }
         """
         private const val TILE_VS = """
             attribute vec3 aPos;
@@ -8611,7 +8790,7 @@ class MainActivity : AppCompatActivity() {
             .putBoolean("stable_north", true).putBoolean("level_horizon", true)     // stebėtojo horizontas visada lygus su ekranu
             .putBoolean("sun_log_fix", false).putBoolean("markers", true).putBoolean("orient", true)
             .putBoolean("earth_grid", true).putBoolean("grid", false).putBoolean("sun_grid", true).putBoolean("sun_sdo", true)
-            .putBoolean("sun_lasco", true).putBoolean("uv_layer", true).putBoolean("nav_bits", false).putBoolean("show_sats", false)
+            .putBoolean("sun_lasco", true).putBoolean("uv_layer", true).putBoolean("space_live", true).putBoolean("nav_bits", false).putBoolean("show_sats", false)
             .putBoolean("free_view", false).putBoolean("follow_device", false).apply()
         getSharedPreferences("cabin", Context.MODE_PRIVATE).edit().putBoolean("learn", false).putBoolean("use", false).apply()
         FixPoints.init(filesDir)
@@ -8758,6 +8937,12 @@ class MainActivity : AppCompatActivity() {
             text = "Saulės koordinatės (heliografinis tinklelis, ašis, į Žemę atsuktas taškas)"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_grid", true)
             setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.setSunGrid(on) }
+        }, LinearLayout.LayoutParams(mw, ww))
+        SpaceLive.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("space_live", true)
+        left.addView(CheckBox(this).apply {
+            text = "Kosminiai orai gyvai: pašvaistė, saulės vėjas, žybsniai, Saulės ciklas, zondai prie Saulės, TKS, užtemimai"
+            isChecked = SpaceLive.enabled
+            setOnCheckedChangeListener { _, on -> SpaceLive.enabled = on; getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("space_live", on).apply() }
         }, LinearLayout.LayoutParams(mw, ww))
         SunImage.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_sdo", true)
         left.addView(CheckBox(this).apply {
@@ -9611,6 +9796,8 @@ class MainActivity : AppCompatActivity() {
         baro.updateMslp(loc.latitude, loc.longitude)
         appendFix(loc)
         fetchKp()
+        SpaceLive.refresh(loc.latitude, loc.longitude)
+        SpaceLive.alerts(loc.latitude, loc.longitude).forEach { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
         updateStormBanner()
         if (::skyDome.isInitialized) skyDome.setLocation(loc.latitude, loc.longitude, loc.altitude)
         lastGpsH = if (loc.hasAltitude()) Geoid.undulation(loc.latitude, loc.longitude)?.let { loc.altitude - it } else null
@@ -10813,6 +11000,7 @@ class MainActivity : AppCompatActivity() {
             append(gnssChipInfo())
             appendLine("Kosminiai orai (NOAA): $kpText")
             appendLine(SpaceWeather.text())
+            append(SpaceLive.text(obsLatNow, obsLonNow))
             appendLine("Aplinka (vartotojo žyma): ${envTag().ifBlank { "nenurodyta" }}")
             val kAgl = sharePanel?.knownAgl
             val kMsl = sharePanel?.knownMsl

@@ -8597,7 +8597,7 @@ class MainActivity : AppCompatActivity() {
         // paleidimo animacija (Android 12+) rodoma ~1,1 s: pirmas kadras atidedamas, kol ji pasibaigia
         if (Build.VERSION.SDK_INT >= 31 && savedInstanceState == null) {
             val t0 = android.os.SystemClock.uptimeMillis()
-            val content = findViewById<View>(android.R.id.content)
+            val content = window.decorView
             content.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
                 override fun onPreDraw(): Boolean {
                     if (android.os.SystemClock.uptimeMillis() - t0 < 1100L) { content.postDelayed({ content.invalidate() }, 50L); return false }

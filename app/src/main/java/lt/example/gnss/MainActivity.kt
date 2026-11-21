@@ -1384,6 +1384,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     val freeView get() = renderer.freeView
     fun centreOnMe() { renderer.centreOnMe() }
     fun centreInfo(): DoubleArray = doubleArrayOf(renderer.centreLat, renderer.centreLon, renderer.centreAltKm, renderer.gridStepDeg)
+    /** Reljefo aukštis (m; jūroje – gylis su minusu) iš GEBCO tinklelio (0,25°) taške. */
+    fun reliefAt(lat: Double, lon: Double): Double = renderer.reliefAtPublic(lat, lon)
     var earthGrid: Boolean
         get() = renderer.showEarthGrid
         set(v) { renderer.showEarthGrid = v; calPrefs.edit().putBoolean("earth_grid", v).apply() }
@@ -4925,6 +4927,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         java.nio.ByteBuffer.allocateDirect(a.size * 2).order(java.nio.ByteOrder.nativeOrder()).asShortBuffer().apply { put(a); position(0) }
     }
+
+    fun reliefAtPublic(lat: Double, lon: Double): Double = reliefH(lat, lon)
 
     /** Reljefo aukštis (m) iš earth_relief.bin (tas pats, kuriuo pakeltas Žemės paviršius). */
     private fun reliefH(latDeg: Double, lonDeg: Double): Double {
@@ -9262,7 +9266,16 @@ class MainActivity : AppCompatActivity() {
                 val on = skyDome.freeView && !ci[0].isNaN()
                 cross.visibility = if (on) View.VISIBLE else View.GONE
                 info.visibility = if (on) View.VISIBLE else View.GONE
-                if (on) info.text = "%.5f, %.5f".format(Locale.US, ci[0], ci[1])     // ~1 m tikslumu
+                if (on) {
+                    // aukštis virš jūros (Copernicus DEM 90 m per Open-Meteo), jūroje – gylis (GEBCO, 0,25° tinklelis)
+                    val key = "%.3f,%.3f".format(Locale.US, ci[0], ci[1])
+                    if (key != elevKey && System.currentTimeMillis() - elevAskMs > 1500L) { elevAskMs = System.currentTimeMillis(); fetchCentreElev(ci[0], ci[1], key) }
+                    val sea = skyDome.reliefAt(ci[0], ci[1])
+                    val hTxt = elevVal?.takeIf { elevKey == key }?.let { e ->
+                        if (e <= 0.5 && sea < -5) "gylis ~%.0f m".format(Locale.US, -sea) else "%.0f m virš jūros".format(Locale.US, e) }
+                        ?: if (sea < -5) "gylis ~%.0f m".format(Locale.US, -sea) else "~%.0f m".format(Locale.US, maxOf(0.0, sea))
+                    info.text = "%.5f, %.5f · %s".format(Locale.US, ci[0], ci[1], hTxt)
+                }
                 info.postDelayed(this, 200L)
             } }
             info.post(tk)
@@ -9840,6 +9853,21 @@ class MainActivity : AppCompatActivity() {
         val view = skyDome.headingDeg() ?: return null
         val tr = SunCal.trueFromMag(e, mag.first, skyDome.declinationDeg())
         return SunCal.wrap(view - tr) to e
+    }
+
+    // ekrano centro aukštis (Open-Meteo elevation – Copernicus DEM 90 m)
+    @Volatile private var elevKey = ""; @Volatile private var elevVal: Double? = null; @Volatile private var elevAskMs = 0L
+    private fun fetchCentreElev(lat: Double, lon: Double, key: String) {
+        Thread {
+            try {
+                val c = (URL("https://api.open-meteo.com/v1/elevation?latitude=%.4f&longitude=%.4f".format(Locale.US, lat, lon)).openConnection() as java.net.HttpURLConnection)
+                    .apply { connectTimeout = 10_000; readTimeout = 15_000 }
+                if (c.responseCode == 200) {
+                    val e = org.json.JSONObject(c.inputStream.bufferedReader().readText()).getJSONArray("elevation").getDouble(0)
+                    elevVal = e; elevKey = key
+                }
+            } catch (_: Exception) {}
+        }.start()
     }
 
     /** Šiaurės įrašymas: planšetė nukreipta į šiaurę arba pirštu pasuktas 3D vaizdas. */

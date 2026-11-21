@@ -2328,7 +2328,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val t = (System.nanoTime() - t0) / 1e9f
 
         // Zoom: kameros atstumas kiekvieną kadrą; artima riba mažėja priartinus (kad Žemė nebūtų nukirpta)
-        val near = ((zoom - EARTH_R) * 0.3f).coerceIn(0.0001f, 0.1f)
+        val near = ((zoom - EARTH_R) * 0.3f).coerceIn(0.000002f, 0.1f)
         Matrix.perspectiveM(proj, 0, 40f, aspectNow, near, if (zoom > EARTH_R + SOLAR_ZOOM) zoom + GALAXY_DEPTH else 60f)
         proj[9] = if (observerView() || (freeView && focus == 0)) 0f else 0.3f   // stebėtojo režime horizontas, laisvame gaublyje – taškas po kamera ekrano viduryje
         Matrix.setIdentityM(view, 0)
@@ -4216,13 +4216,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
 
     @Volatile var zoom = 3f
-    /** Priartinimas pagal aukštį virš paviršiaus: arčiausiai ~0,0004 vnt. (≈ 10 km) – arti rodomos palydovinės plytelės (GlobeTiles). */
+    /** Priartinimas pagal aukštį virš paviršiaus: arčiausiai ~300 m virš žemės – arti rodomos palydovinės plytelės (GlobeTiles). */
     fun zoomBy(factor: Float) {
         if (flight != null) return                                       // skrydžio metu atstumą valdo tvarkaraštis
         if (focus != 0) { val r = bodyRadius(focus).toFloat(); focusZoom = (focusZoom / factor).coerceIn(r * 1.3f, r * 2000f); return }
         // galaktikos stadijoje – žingsnis spartesnis
         val f = if (zoom > EARTH_R + SOLAR_ZOOM) Math.pow(factor.toDouble(), 2.5).toFloat() else factor
-        zoom = EARTH_R + ((zoom - EARTH_R) / f).coerceIn(0.0004f, maxZoomOut())
+        // arčiausiai ~300 m virš žemės (laisvame gaublyje reljefas tada tikro aukščio); stebėtojo vaizde – kaip anksčiau (atstumas ≥ 10 km)
+        val ground = if (centreLat.isNaN()) 0.0 else EARTH_R * maxOf(0.0, reliefH(centreLat, centreLon)) / 6_371_000.0
+        zoom = EARTH_R + ((zoom - EARTH_R) / f).coerceIn((ground + 0.000012).toFloat(), maxZoomOut())
     }
 
     /** Mastelio režimo stadijos: Žemė (iki ~3), Saulės sistema (iki SOLAR_ZOOM), galaktika (iki GALAXY_ZOOM). */
@@ -4913,7 +4915,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         for (j in 0..n) for (i in 0..n) {
             val lat = GlobeTiles.latOf(k.y + j.toDouble() / n, k.z); val lon = GlobeTiles.lonOf(k.x + i.toDouble() / n, k.z)
             val la = Math.toRadians(lat); val lo = Math.toRadians(lon)
-            val r = r0 * (1.0 + EARTH_RELIEF_X * maxOf(0.0, reliefH(lat, lon)) / 6_371_000.0) * (1.0 + 2e-6)
+            val r = r0 * (1.0 + EARTH_RELIEF_X * maxOf(0.0, reliefH(lat, lon)) / 6_371_000.0)
             val d = doubleArrayOf(cos(la) * cos(lo), cos(la) * sin(lo), sin(la))
             val o = (j * (n + 1) + i) * 5
             data[o] = (r * d[0]).toFloat(); data[o + 1] = (r * d[1]).toFloat(); data[o + 2] = (r * d[2]).toFloat()
@@ -4968,6 +4970,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val sun = sunDir()
         GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
         GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uAlpha"), alpha.toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uRk"), reliefK)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(prog, "uTex"), 0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         resetAttribs()
@@ -5020,7 +5023,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val lonA = floor((lon0 - lonSpan) / step) * step; val lonB = floor((lon0 + lonSpan) / step) * step + step
         fun pt(la: Double, lo: Double): DoubleArray {
             val a = Math.toRadians(la); val o = Math.toRadians(lo)
-            val r = r0 * (1.0 + EARTH_RELIEF_X * maxOf(0.0, reliefH(la, lo)) / 6_371_000.0) * (1.0 + 4e-6)
+            val r = r0 * (1.0 + EARTH_RELIEF_X * reliefK * maxOf(0.0, reliefH(la, lo)) / 6_371_000.0) + 1e-7
             return doubleArrayOf(r * cos(a) * cos(o), r * cos(a) * sin(o), r * sin(a))
         }
         fun vis(p: DoubleArray) = (p[0] * cm[0] + p[1] * cm[1] + p[2] * cm[2]) / kotlin.math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]) > r0 * 0.999
@@ -5220,8 +5223,22 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     /** Žemės sukimasis: GMST + stebėtojo ilguma; ašis rodo į Polaris (pasvirimas = 90° − platuma). */
+    /**
+     * Reljefo išryškinimas: iš toli ×30 (kalnai matomi), laisvame gaublyje priartinus (< 500 km) mažinamas iki tikro aukščio (< 50 km) –
+     * kitaip arti žemės kamera atsidurtų „po“ išpūstu reljefu.
+     */
+    @Volatile private var reliefK = 1f
+    private fun updateReliefK() {
+        val alt = (kotlin.math.sqrt(camPos[0] * camPos[0] + camPos[1] * camPos[1] + camPos[2] * camPos[2]) - EARTH_R).toDouble()
+        reliefK = if (!freeView || focus != 0 || alt <= 0) 1f else {
+            val t = ((kotlin.math.ln(alt) - kotlin.math.ln(0.002)) / (kotlin.math.ln(0.02) - kotlin.math.ln(0.002))).coerceIn(0.0, 1.0)
+            kotlin.math.exp(kotlin.math.ln(1.0 / EARTH_RELIEF_X) * (1 - t)).toFloat()
+        }
+    }
+
     private fun drawEarth() {
         if (earthPos == null) return
+        updateReliefK()
         // Žemė sukasi apie savo ašį (Polaris kryptimi) pagal GMST; smeigtukas ir horizontas – jos dalis
         val gg = fG
         java.util.Arrays.fill(earthMat, 0f)
@@ -5263,6 +5280,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUseProgram(prog)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uMVP"), 1, false, earthMvp, 0)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uModel"), 1, false, earthMat, 0)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uRk"), reliefK)
             val sun = sunDir()
             GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
             GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uEye"), eyeI[0], eyeI[1], eyeI[2])
@@ -6694,12 +6712,14 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             attribute vec2 aUV;
             uniform mat4 uMVP;
             uniform mat4 uModel;
+            uniform float uRk;
             varying vec2 vUV;
             varying vec3 vS;
             void main() {
                 vUV = aUV;
                 vS = mat3(uModel) * aPos;
-                gl_Position = uMVP * vec4(aPos, 1.0);
+                float r = length(aPos);
+                gl_Position = uMVP * vec4(aPos / r * (0.25 + (r - 0.25) * uRk), 1.0);
             }
         """
         private const val TILE_FS = """
@@ -6721,6 +6741,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             attribute vec3 aNormal;
             uniform mat4 uMVP;
             uniform mat4 uModel;
+            uniform float uRk;                    // reljefo išryškinimo daliklis: 1 – ×30, arti žemės – tikras aukštis
             varying vec2 vUV;
             varying vec3 vN;
             varying vec3 vS;
@@ -6728,7 +6749,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vUV = aUV;
                 vN = mat3(uModel) * aNormal;      // reljefo normalė – šlaitų šešėliai
                 vS = mat3(uModel) * aPos;         // rutulio normalė – diena/naktis, atmosfera, vandens blizgesys
-                gl_Position = uMVP * vec4(aPos, 1.0);
+                float r = length(aPos);
+                vec3 p = aPos / r * (0.25 + (r - 0.25) * uRk);
+                gl_Position = uMVP * vec4(p, 1.0);
             }
         """
         private const val EARTH_FS = """

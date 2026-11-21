@@ -5199,7 +5199,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 val la = 90.0 - yy * 180.0 / (h - 1); val lo = -180.0 + xx * 360.0 / w
                 if (kotlin.math.abs(la) < 40.0) continue
                 val v = at(la, lo)
-                val al = ((v - 1f) / 14f).coerceIn(0f, 1f).let { it * it * (3 - 2 * it) } * 0.95f
+                // tik tikimybė ≥ ~5 % (silpnas foninis švytėjimas toliau nuo ovalo nerodomas – atrodė kaip „lopas“);
+                // ties 45–52° platuma švelniai išnyksta (be tiesaus krašto)
+                val edge = ((kotlin.math.abs(la) - 45.0) / 7.0).coerceIn(0.0, 1.0).toFloat()
+                val al = ((v - 5f) / 15f).coerceIn(0f, 1f).let { it * it * (3 - 2 * it) } * 0.95f * edge
                 if (al <= 0.003f) continue
                 val red = ((v - 25f) / 40f).coerceIn(0f, 1f) * 0.55f
                 val vio = ((v - 45f) / 40f).coerceIn(0f, 1f) * 0.45f

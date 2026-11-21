@@ -1382,6 +1382,11 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setLevelHorizon(on: Boolean) { renderer.levelHorizon = on; calPrefs.edit().putBoolean("level_horizon", on).apply() }
     fun setFreeView(on: Boolean) { renderer.freeView = on; renderer.resetUser() }
     val freeView get() = renderer.freeView
+    fun centreOnMe() { renderer.centreOnMe() }
+    fun centreInfo(): DoubleArray = doubleArrayOf(renderer.centreLat, renderer.centreLon, renderer.centreAltKm, renderer.gridStepDeg)
+    var earthGrid: Boolean
+        get() = renderer.showEarthGrid
+        set(v) { renderer.showEarthGrid = v; calPrefs.edit().putBoolean("earth_grid", v).apply() }
     /** Mygtukai +/−: priartinti ar nutolinti (f > 1 – arčiau). */
     fun zoomStep(f: Float) { renderer.zoomBy(f) }
     fun screenTest(cb: (String) -> Unit) { renderer.screenTest { t -> handler.post { cb(t) } } }
@@ -1566,6 +1571,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         if (calPrefs.contains("sun_shot_daz")) renderer.sunShot = doubleArrayOf(calPrefs.getFloat("sun_shot_daz", 0f).toDouble(), calPrefs.getFloat("sun_shot_del", 0f).toDouble())
         renderer.showNavBits = calPrefs.getBoolean("nav_bits", true)
         renderer.showGrid = calPrefs.getBoolean("grid", true)
+        renderer.showEarthGrid = calPrefs.getBoolean("earth_grid", true)
         renderer.showSunGrid = calPrefs.getBoolean("sun_grid", true)
         renderer.showLasco = calPrefs.getBoolean("sun_lasco", true)
         renderer.obstacleMode = calPrefs.getInt("obst_mode", 1)
@@ -2324,7 +2330,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Zoom: kameros atstumas kiekvieną kadrą; artima riba mažėja priartinus (kad Žemė nebūtų nukirpta)
         val near = ((zoom - EARTH_R) * 0.3f).coerceIn(0.0001f, 0.1f)
         Matrix.perspectiveM(proj, 0, 40f, aspectNow, near, if (zoom > EARTH_R + SOLAR_ZOOM) zoom + GALAXY_DEPTH else 60f)
-        proj[9] = if (observerView()) 0f else 0.3f                 // stebėtojo režime horizontas – ekrano viduryje
+        proj[9] = if (observerView() || (freeView && focus == 0)) 0f else 0.3f   // stebėtojo režime horizontas, laisvame gaublyje – taškas po kamera ekrano viduryje
         Matrix.setIdentityM(view, 0)
         Matrix.translateM(view, 0, 0f, 0f, -zoom)
         Matrix.multiplyMM(pv, 0, proj, 0, view, 0)
@@ -2419,6 +2425,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // 2b) Žemė gaublio viduryje (pasvirusi į Polaris, sukasi realiu laiku)
         drawEarth()
         drawTiles()
+        drawGlobeGrid()
         drawEquatorRing(t)
         drawMoon()
         drawMoonOrbit()
@@ -4238,7 +4245,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile private var spinAngle = 0.0
     @Volatile private var spinAxis = doubleArrayOf(0.0, 0.0, 1.0)
     fun setDragging(b: Boolean) { dragging = b }
-    fun resetUser() { userR = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0); spinAngle = 0.0; baseEye = null }
+    fun resetUser() { userR = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0); spinAngle = 0.0; baseEye = null; baseEyeE = null }
+
+    /** „Mano padėtis“: laisvas gaublys virš stebėtojo; jei toli (> 100 km) – priartinama iki ~30 km. */
+    fun centreOnMe() {
+        resetUser()
+        if (zoom - EARTH_R > 0.004f) zoom = EARTH_R + 0.0012f
+    }
 
     /** false (numatytasis) – visata nepriklauso nuo planšetės sukimo; true – senas režimas (vaizdas sukasi su planšete). */
     @Volatile var followDevice = false
@@ -4648,10 +4661,17 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
     /** Kameros kryptis sideralinėje erdvėje: pradžioje – virš stebėtojo, toliau keičiama tik vilkimu (userR). */
     private var baseEye: DoubleArray? = null
+    /** Laisvo gaublio kameros kryptis Žemės (sukamoje) sistemoje. */
+    private var baseEyeE: DoubleArray? = null
 
     /** Kamera -> I matrica (eilutėmis): Z – į kamerą (iš pradžių stebėtojo zenitas), Y – dangaus šiaurė. */
     private fun inertialCamera(out: DoubleArray) {
-        val z = baseEye ?: doubleArrayOf(fU[0], fU[1], fU[2]).also { baseEye = it }
+        val cg = cos(fG); val sg = sin(fG)
+        // laisvame gaublyje kamera sukasi kartu su Žeme (kaip Google Earth) – kitaip žemė po kamera slinktų ~15°/val.
+        val z = if (freeView && focus == 0) {
+            val e = baseEyeE ?: doubleArrayOf(cg * fU[0] + sg * fU[1], -sg * fU[0] + cg * fU[1], fU[2]).also { baseEyeE = it }
+            doubleArrayOf(cg * e[0] - sg * e[1], sg * e[0] + cg * e[1], e[2])
+        } else baseEye ?: doubleArrayOf(fU[0], fU[1], fU[2]).also { baseEye = it }
         var x = doubleArrayOf(-z[1], z[0], 0.0)                      // (0,0,1) × z
         var xl = kotlin.math.sqrt(x[0] * x[0] + x[1] * x[1])
         if (xl < 1e-6) { x = doubleArrayOf(1.0, 0.0, 0.0); xl = 1.0 }
@@ -4972,6 +4992,67 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (!blendWas) GLES20.glDisable(GLES20.GL_BLEND)
         if (drawn > 0) GlobeTiles.shownMs = System.currentTimeMillis()
     }
+
+    /** Laisvo gaublio ekrano centras: platuma, ilguma (°), aukštis virš paviršiaus (km), tinklelio žingsnis (°); NaN – ne laisvas gaublys. */
+    @Volatile var centreLat = Double.NaN; private set
+    @Volatile var centreLon = Double.NaN; private set
+    @Volatile var centreAltKm = Double.NaN; private set
+    @Volatile var gridStepDeg = Double.NaN; private set
+    private val GRID_STEPS = doubleArrayOf(30.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005)
+
+    /** Platumų ir ilgumų tinklelis laisvame gaublyje: žingsnis pagal aukštį (ekrane ~4–10 linijų), linijos ant reljefo, už horizonto – nepiešiamos. */
+    private fun drawGlobeGrid() {
+        if (!freeView || focus != 0 || flight != null || zoom > EARTH_R + SOLAR_ZOOM) { centreLat = Double.NaN; gridStepDeg = Double.NaN; return }
+        val m = earthMat; val r0 = EARTH_R.toDouble(); val cw = camPos
+        val cm = DoubleArray(3) { i -> m[i * 4] * cw[0].toDouble() + m[i * 4 + 1] * cw[1].toDouble() + m[i * 4 + 2] * cw[2].toDouble() }
+        val cl = kotlin.math.sqrt(cm[0] * cm[0] + cm[1] * cm[1] + cm[2] * cm[2]); if (cl < 1e-6) return
+        val lat0 = Math.toDegrees(kotlin.math.asin((cm[2] / cl).coerceIn(-1.0, 1.0))); val lon0 = Math.toDegrees(kotlin.math.atan2(cm[1], cm[0]))
+        val alt = cl - r0
+        centreLat = lat0; centreLon = lon0; centreAltKm = alt / r0 * 6371.0
+        if (!showEarthGrid) { gridStepDeg = Double.NaN; return }
+        // matomas kampas (°) ekrano aukščiu ant paviršiaus
+        val viewDeg = Math.toDegrees(minOf(Math.PI, 2.0 * kotlin.math.tan(Math.toRadians(20.0)) * alt / r0))
+        val step = GRID_STEPS.firstOrNull { viewDeg / it >= 4.0 } ?: GRID_STEPS.last()
+        gridStepDeg = step
+        val nL = 8
+        val latA = (floor((lat0 - nL * step) / step) * step).coerceAtLeast(-90.0); val latB = (floor((lat0 + nL * step) / step) * step + step).coerceAtMost(90.0)
+        val lonSpan = minOf(180.0, nL * step / maxOf(0.05, cos(Math.toRadians(lat0))))
+        val lonA = floor((lon0 - lonSpan) / step) * step; val lonB = floor((lon0 + lonSpan) / step) * step + step
+        fun pt(la: Double, lo: Double): DoubleArray {
+            val a = Math.toRadians(la); val o = Math.toRadians(lo)
+            val r = r0 * (1.0 + EARTH_RELIEF_X * maxOf(0.0, reliefH(la, lo)) / 6_371_000.0) * (1.0 + 4e-6)
+            return doubleArrayOf(r * cos(a) * cos(o), r * cos(a) * sin(o), r * sin(a))
+        }
+        fun vis(p: DoubleArray) = (p[0] * cm[0] + p[1] * cm[1] + p[2] * cm[2]) / kotlin.math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]) > r0 * 0.999
+        val seg = ArrayList<Float>()
+        fun line(n: Int, f: (Double) -> DoubleArray) {
+            var prev = f(0.0)
+            for (i in 1..n) {
+                val q = f(i.toDouble() / n)
+                if (vis(prev) && vis(q)) { for (c in 0..2) seg.add(prev[c].toFloat()); for (c in 0..2) seg.add(q[c].toFloat()) }
+                prev = q
+            }
+        }
+        var la = latA; var guard = 0
+        while (la <= latB + 1e-9 && guard++ < 60) { val l = la; line(48) { t -> pt(l, lonA + (lonB - lonA) * t) }; la += step }
+        var lo = lonA; guard = 0
+        while (lo <= lonB + 1e-9 && guard++ < 120) { val o = lo; line(48) { t -> pt(latA + (latB - latA) * t, o) }; lo += step }
+        if (seg.isEmpty()) return
+        val depthWas = GLES20.glIsEnabled(GLES20.GL_DEPTH_TEST); val blendWas = GLES20.glIsEnabled(GLES20.GL_BLEND)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, earthMvp, 0)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 0.95f, 0.55f, 0.55f)
+        resetAttribs()
+        bindPos(colorProg, floatBuf(seg.toFloatArray()))
+        GLES20.glLineWidth(1f * density)
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, seg.size / 3)
+        GLES20.glLineWidth(1f)
+        if (depthWas) GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        if (!blendWas) GLES20.glDisable(GLES20.GL_BLEND)
+    }
+    @Volatile var showEarthGrid = true
 
     private var earthProg = 0
     private val earthAxis by lazy { floatBuf(floatArrayOf(0f, 0f, -0.5f, 0f, 0f, 0.5f)) }
@@ -8907,6 +8988,17 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, if (on) "Laisvas gaublys: vilkite pirštu, + / − arba žiupsneliu – priartinti" else "Stebėtojo vaizdas", Toast.LENGTH_SHORT).show()
             }
             col.addView(mode, LinearLayout.LayoutParams(bs, bs).apply { setMargins(0, gp, 0, gp) })
+            // ◎ – mano padėtis: laisvas gaublys virš stebėtojo (toli – priartinama)
+            val me = rb("\u25CE").apply { setOnClickListener {
+                keyHaptic(this)
+                if (!skyDome.freeView) { getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("free_view", true).apply(); skyDome.setFreeView(true); mode.text = "\uD83D\uDC41" }
+                skyDome.centreOnMe()
+            } }
+            col.addView(me, LinearLayout.LayoutParams(bs, bs).apply { setMargins(0, gp, 0, gp) })
+            // # – koordinačių tinklelis ant Žemės (laisvame gaublyje)
+            val gridB = rb("#").apply { alpha = if (skyDome.earthGrid) 1f else 0.45f
+                setOnClickListener { keyHaptic(this); skyDome.earthGrid = !skyDome.earthGrid; alpha = if (skyDome.earthGrid) 1f else 0.45f } }
+            col.addView(gridB, LinearLayout.LayoutParams(bs, bs).apply { setMargins(0, gp, 0, gp) })
             for ((t, f) in listOf("+" to 1.06f, "\u2212" to 1f / 1.06f)) {
                 val btn = rb(t)
                 val rep = object : Runnable { override fun run() { skyDome.zoomStep(f); btn.postDelayed(this, 16L) } }
@@ -8921,6 +9013,43 @@ class MainActivity : AppCompatActivity() {
             }
             skyHolder.addView(col, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.END or Gravity.CENTER_VERTICAL).apply { val mm = (10 * dp).toInt(); setMargins(mm, mm, mm + bSize + (8 * dp).toInt(), mm) })   // kairiau įrankių stulpelio
+        }
+        // Laisvame gaublyje: kryželis ekrano centre ir po juo – centro koordinatės, aukštis, tinklelio žingsnis
+        run {
+            val cross = object : View(this) {
+                val pn = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.6f * dp; style = android.graphics.Paint.Style.STROKE }
+                override fun onDraw(c: android.graphics.Canvas) {
+                    val cx = width / 2f; val cy = height / 2f; val a = 11f * dp; val g = 3f * dp
+                    for ((col, w) in listOf(0xAA000000.toInt() to 3.6f * dp, 0xFFFFFFFF.toInt() to 1.6f * dp)) {
+                        pn.color = col; pn.strokeWidth = w
+                        c.drawLine(cx - a, cy, cx - g, cy, pn); c.drawLine(cx + g, cy, cx + a, cy, pn)
+                        c.drawLine(cx, cy - a, cx, cy - g, pn); c.drawLine(cx, cy + g, cx, cy + a, pn)
+                    }
+                }
+            }.apply { visibility = View.GONE }
+            val info = TextView(this).apply { textSize = 12f; setTextColor(0xFFFFFFFF.toInt()); setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())
+                gravity = Gravity.CENTER; visibility = View.GONE; setTextIsSelectable(false)
+                setOnLongClickListener { (getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("koordinatės", text.toString().substringBefore(" ·")))
+                    Toast.makeText(this@MainActivity, "Centro koordinatės nukopijuotos", Toast.LENGTH_SHORT).show(); true } }
+            val tk = object : Runnable { override fun run() {
+                val ci = skyDome.centreInfo()
+                val on = skyDome.freeView && !ci[0].isNaN()
+                cross.visibility = if (on) View.VISIBLE else View.GONE
+                info.visibility = if (on) View.VISIBLE else View.GONE
+                if (on) {
+                    val km = ci[2]
+                    val alt = if (km < 10) "%.1f km".format(Locale.US, km) else "%.0f km".format(Locale.US, km)
+                    val dec = when { ci[3].isNaN() || ci[3] >= 1 -> 3; ci[3] >= 0.01 -> 5; else -> 6 }
+                    info.text = "%.${dec}f°, %.${dec}f° · %s".format(Locale.US, ci[0], ci[1], alt) +
+                        (if (ci[3].isNaN()) "" else " · tinklelis %s°".format(Locale.US, java.math.BigDecimal(ci[3]).stripTrailingZeros().toPlainString()))
+                }
+                info.postDelayed(this, 200L)
+            } }
+            info.post(tk)
+            skyHolder.addView(cross, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            skyHolder.addView(info, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER).apply {
+                topMargin = (40 * dp).toInt() })
         }
         // palydovinių plytelių autorystė (licencijos reikalavimas) – tik kai plytelės matomos
         run {

@@ -5169,6 +5169,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUseProgram(auroraProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(auroraProg, "uMVP"), 1, false, m, 0)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(auroraProg, "uTime"), ((System.nanoTime() - t0) / 1e9 % 10_000.0).toFloat())
+        run { val em = earthMat; val cw = camPos
+            val cm = FloatArray(3) { i -> em[i * 4] * cw[0] + em[i * 4 + 1] * cw[1] + em[i * 4 + 2] * cw[2] }
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(auroraProg, "uCam"), cm[0], cm[1], cm[2]) }
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, auroraTex)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(auroraProg, "uTex"), 0)
         resetAttribs()
@@ -6970,7 +6973,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             attribute vec2 aUV;
             uniform mat4 uMVP;
             varying vec2 vUV;
-            void main() { vUV = aUV; gl_Position = uMVP * vec4(aPos, 1.0); }
+            varying vec3 vP;
+            void main() { vUV = aUV; vP = aPos; gl_Position = uMVP * vec4(aPos, 1.0); }
         """
         // Pašvaistės spalvos kaip tikrovėje: žalia (deguonis 557,7 nm, 100–150 km) – vyrauja; raudona (deguonis 630 nm, > 200 km) –
         // stipriose vietose viršutiniame krašte; violetinė–mėlyna (azotas 427,8 nm) – stipriausiose, apatiniame krašte.
@@ -6979,8 +6983,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             precision mediump float;
             uniform sampler2D uTex;
             uniform float uTime;
+            uniform vec3 uCam;                  // kamera Žemės sistemoje (vnt.)
             varying vec2 vUV;
+            varying vec3 vP;
             void main() {
+                // tik iš kameros matoma (horizonto šioje pusėje) dalis – kitaip arti priartinus kitos pusės ovalas prasišviečia per Žemę
+                if (dot(normalize(vP), uCam) < 0.2565) discard;
                 float a = texture2D(uTex, vUV).r;
                 if (a < 0.01) discard;
                 float x = vUV.x * 360.0;

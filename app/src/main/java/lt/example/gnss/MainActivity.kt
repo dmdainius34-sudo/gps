@@ -8576,13 +8576,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // po paleidimo visos nustatymų varnelės nuimtos, išskyrus „Stabili šiaurė (ignoruoti magnetometrą)“
+        // po paleidimo įjungta: stabili šiaurė, orientyrai, erdvės orientacija, tinklelis, Saulės koordinatės, SDO, LASCO, UV; palydovai – išjungti
         // (HDR paliekamas, nes jis įsigalioja tik atidarius programą iš naujo)
         getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit()
             .putBoolean("stable_north", true).putBoolean("level_horizon", true)     // stebėtojo horizontas visada lygus su ekranu
-            .putBoolean("sun_log_fix", false).putBoolean("markers", false).putBoolean("orient", false)
-            .putBoolean("earth_grid", false).putBoolean("grid", false).putBoolean("sun_grid", false).putBoolean("sun_sdo", false)
-            .putBoolean("sun_lasco", false).putBoolean("uv_layer", false).putBoolean("nav_bits", false).putBoolean("show_sats", false)
+            .putBoolean("sun_log_fix", false).putBoolean("markers", true).putBoolean("orient", true)
+            .putBoolean("earth_grid", true).putBoolean("grid", false).putBoolean("sun_grid", true).putBoolean("sun_sdo", true)
+            .putBoolean("sun_lasco", true).putBoolean("uv_layer", true).putBoolean("nav_bits", false).putBoolean("show_sats", false)
             .putBoolean("free_view", false).putBoolean("follow_device", false).apply()
         getSharedPreferences("cabin", Context.MODE_PRIVATE).edit().putBoolean("learn", false).putBoolean("use", false).apply()
         FixPoints.init(filesDir)
@@ -8665,13 +8665,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
         // šiaurės įrašymas, kalibravimas pagal orientyrus ir žurnalas – mažame 🧭 mygtuke ant 3D vaizdo (būgnas)
-        SunCal.autoFix = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_log_fix", true)
-        left.addView(CheckBox(this).apply {
-            text = "Šiaurės pataisa pagal Saulės žurnalą ir magnetometrą (kai nuokrypis > 2° ir 30 s stabilus)"
-            isChecked = SunCal.autoFix
-            setOnCheckedChangeListener { _, on -> SunCal.autoFix = on
-                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_log_fix", on).apply() }
-        }, LinearLayout.LayoutParams(mw, ww))
+        // šiaurės pataisa pagal Saulės žurnalą ir magnetometrą pašalinta: ji remiasi magnetometru, kuris krano kabinoje (plienas) klysta,
+        // ir prieštarauja „Stabili šiaurė (ignoruoti magnetometrą)“
+        SunCal.autoFix = false
         val btnNtrip = Button(this).apply { text = "NTRIP pataisos (RTCM)…"; setOnClickListener { showNtripDialog() } }
         left.addView(btnNtrip, LinearLayout.LayoutParams(mw, ww))
         Crane.load(this); ManualMute.load(this)

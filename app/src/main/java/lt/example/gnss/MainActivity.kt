@@ -8171,6 +8171,7 @@ class MainActivity : AppCompatActivity() {
             if (container.width <= 0 || container.height <= 0) return
             leftCol?.visibility = View.GONE
             cnoView.visibility = View.GONE
+            bg.visibility = View.INVISIBLE               // 3D per visą ekraną – šviesus fonas nereikalingas (be balto blyksnio)
             rootScroll?.scrollTo(0, 0)
             fullscreen = true
             edgeToEdge(true)
@@ -8183,6 +8184,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             leftCol?.visibility = View.VISIBLE
             cnoView.visibility = View.VISIBLE
+            bg.visibility = View.VISIBLE
             skyHolder.layoutParams = skyHolderLp
             fullscreen = false
             edgeToEdge(false)
@@ -8577,7 +8579,7 @@ class MainActivity : AppCompatActivity() {
         // po paleidimo visos nustatymų varnelės nuimtos, išskyrus „Stabili šiaurė (ignoruoti magnetometrą)“
         // (HDR paliekamas, nes jis įsigalioja tik atidarius programą iš naujo)
         getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit()
-            .putBoolean("stable_north", true)
+            .putBoolean("stable_north", true).putBoolean("level_horizon", true)     // stebėtojo horizontas visada lygus su ekranu
             .putBoolean("sun_log_fix", false).putBoolean("markers", false).putBoolean("orient", false)
             .putBoolean("earth_grid", false).putBoolean("grid", false).putBoolean("sun_grid", false).putBoolean("sun_sdo", false)
             .putBoolean("sun_lasco", false).putBoolean("uv_layer", false).putBoolean("nav_bits", false).putBoolean("show_sats", false)
@@ -8885,7 +8887,7 @@ class MainActivity : AppCompatActivity() {
         val tools = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val gap = (6 * dp).toInt()
-            for (b in listOf(fsBtn, followBtn, levelBtn, calBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
+            for (b in listOf(followBtn, levelBtn, calBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
         }
         // barometras: apačioje kairėje – paspaudus nulis čia, toliau rodoma, kiek pakilote ar nusileidote
         if (baro.hasSensor) {
@@ -9110,7 +9112,8 @@ class MainActivity : AppCompatActivity() {
             if (container.width <= 0 && tries > 0) { container.postDelayed({ go3d(tries - 1) }, 100L); return }
             if (!use3d) setGlobe(true)
             if (!fullscreen) toggleFullscreen()
-            root.alpha = 1f; bg.visibility = View.VISIBLE
+            // atidengiama tik po 3D vaizdo išplėtimo per visą ekraną – kitaip trumpai matosi šviesus nustatymų puslapis
+            container.post { container.post { root.alpha = 1f } }
         }
         container.post { go3d(30) }
         

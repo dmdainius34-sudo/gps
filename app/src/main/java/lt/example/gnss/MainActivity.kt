@@ -5143,27 +5143,70 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var auroraVerDone = -1
     private var auroraProg = 0
 
-    /** Pašvaistės ovalas (NOAA OVATION) ant gaublio: permatomas švytintis sluoksnis ~150 km aukštyje, žalia → violetinė pagal tikimybę. */
+    /** Pašvaistės sluoksnis: tik ašigalių zonose (|platuma| 45–89°), smulkus tinklelis 1° × 2°, ~120 km aukštyje. (x, y, z, u, v) */
+    private val auroraMesh: Pair<FloatBuffer, Int> by lazy {
+        val r = EARTH_R * 1.019
+        val out = ArrayList<Float>()
+        fun v(la: Double, lo: Double) {
+            val a = Math.toRadians(la); val o = Math.toRadians(lo)
+            out.add((r * cos(a) * cos(o)).toFloat()); out.add((r * cos(a) * sin(o)).toFloat()); out.add((r * sin(a)).toFloat())
+            out.add(((lo + 180.0) / 360.0).toFloat()); out.add(((90.0 - la) / 180.0).toFloat())
+        }
+        for (hs in intArrayOf(1, -1)) {
+            var la = 45.0
+            while (la < 89.0) {
+                val a0 = hs * la; val a1 = hs * (la + 1.0)
+                var lo = -180.0
+                while (lo < 180.0) {
+                    v(a0, lo); v(a1, lo); v(a1, lo + 2); v(a0, lo); v(a1, lo + 2); v(a0, lo + 2)
+                    lo += 2.0
+                }
+                la += 1.0
+            }
+        }
+        floatBuf(out.toFloatArray()) to out.size / 5
+    }
+
+    /**
+     * Pašvaistės ovalas (NOAA OVATION) ant gaublio: tolygus švytėjimas su tikromis spalvomis – žalia vyrauja, stipresnėse vietose raudona,
+     * stipriausiose violetinė. Duomenų tinklelis (1°) išlyginamas ir padidinamas 2×, kraštai švelnūs (ne kampuoti).
+     */
     private fun drawAurora() {
         val g = SpaceLive.aurora ?: return
-        if (earthPos == null) return
         if (auroraVerDone != SpaceLive.auroraVer) {
             auroraVerDone = SpaceLive.auroraVer
-            val w = 360; val h = 181
+            // išlyginimas: du 3×3 vidurkio praėjimai (ilguma – ratu)
+            var a = g.copyOf()
+            repeat(2) {
+                val b = FloatArray(a.size)
+                for (la in 0..180) for (lo in 0 until 360) {
+                    var sum = 0f; var n = 0
+                    for (dy in -1..1) { val y = la + dy; if (y < 0 || y > 180) continue
+                        for (dx in -1..1) { sum += a[y * 360 + ((lo + dx + 360) % 360)]; n++ } }
+                    b[la * 360 + lo] = sum / n
+                }
+                a = b
+            }
+            fun at(la: Double, lo: Double): Float {
+                val y = (la + 90.0).coerceIn(0.0, 180.0); val x = ((lo % 360.0) + 360.0) % 360.0
+                val y0 = y.toInt().coerceAtMost(179); val x0 = x.toInt(); val fy = (y - y0).toFloat(); val fx = (x - x0).toFloat(); val x1 = (x0 + 1) % 360
+                fun q(yy: Int, xx: Int) = a[yy * 360 + xx]
+                return (q(y0, x0) * (1 - fx) + q(y0, x1) * fx) * (1 - fy) + (q(y0 + 1, x0) * (1 - fx) + q(y0 + 1, x1) * fx) * fy
+            }
+            val w = 720; val h = 362
             val px = IntArray(w * h)
-            for (y in 0 until h) for (x in 0 until w) {
-                val lat = 90 - y; val lon = ((x - 180) % 360 + 360) % 360
-                val v = g[(lat + 90) * 360 + lon]
-                if (v < 2f) continue
-                // kaip anksčiau (tolygus švytėjimas), tik tikresnės spalvos: žalia – vyrauja; stipresnėse vietose – raudonas
-                // atspalvis (deguonis 630 nm, aukštai), stipriausiose – violetinis (azotas, apatinis kraštas)
-                val a = (0.25f + v / 25f).coerceIn(0f, 1f)
+            for (yy in 0 until h) for (xx in 0 until w) {
+                val la = 90.0 - yy * 180.0 / (h - 1); val lo = -180.0 + xx * 360.0 / w
+                if (kotlin.math.abs(la) < 40.0) continue
+                val v = at(la, lo)
+                val al = ((v - 1f) / 14f).coerceIn(0f, 1f).let { it * it * (3 - 2 * it) } * 0.95f
+                if (al <= 0.003f) continue
                 val red = ((v - 25f) / 40f).coerceIn(0f, 1f) * 0.55f
                 val vio = ((v - 45f) / 40f).coerceIn(0f, 1f) * 0.45f
                 val r = (0.22f + 0.78f * red + 0.35f * vio).coerceIn(0f, 1f)
                 val gg = (1f - 0.55f * red - 0.45f * vio).coerceIn(0f, 1f)
-                val b = (0.45f + 0.15f * red + 0.55f * vio).coerceIn(0f, 1f)
-                px[y * w + x] = android.graphics.Color.argb(255, (r * a * 255).toInt(), (gg * a * 255).toInt(), (b * a * 255).toInt())
+                val bb = (0.45f + 0.15f * red + 0.55f * vio).coerceIn(0f, 1f)
+                px[yy * w + xx] = android.graphics.Color.argb(255, (r * al * 255).toInt(), (gg * al * 255).toInt(), (bb * al * 255).toInt())
             }
             val bmp = Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
             if (auroraTex != 0) GLES20.glDeleteTextures(1, intArrayOf(auroraTex), 0)
@@ -5171,10 +5214,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         if (auroraTex == 0) return
         if (auroraProg == 0) auroraProg = program(AUR_VS, AUR_FS)
-        val sc = FloatArray(16); Matrix.setIdentityM(sc, 0); Matrix.scaleM(sc, 0, 1.024f, 1.024f, 1.024f)
-        val m = FloatArray(16); Matrix.multiplyMM(m, 0, earthMvp, 0, sc, 0)
+        val (buf, cnt) = auroraMesh
         GLES20.glUseProgram(auroraProg)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(auroraProg, "uMVP"), 1, false, m, 0)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(auroraProg, "uMVP"), 1, false, earthMvp, 0)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(auroraProg, "uTime"), ((System.nanoTime() - t0) / 1e9 % 10_000.0).toFloat())
         run { val em = earthMat; val cw = camPos
             val cm = FloatArray(3) { i -> em[i * 4] * cw[0] + em[i * 4 + 1] * cw[1] + em[i * 4 + 2] * cw[2] }
@@ -5184,13 +5226,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         resetAttribs()
         val lp = GLES20.glGetAttribLocation(auroraProg, "aPos"); val lu = GLES20.glGetAttribLocation(auroraProg, "aUV")
         GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lu)
-        earthPos!!.position(0); earthUv!!.position(0)
-        GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 0, earthPos)
-        GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 0, earthUv)
+        buf.position(0); GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 20, buf)
+        buf.position(3); GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 20, buf)
+        buf.position(0)
         val depthWas = GLES20.glIsEnabled(GLES20.GL_DEPTH_TEST); val blendWas = GLES20.glIsEnabled(GLES20.GL_BLEND)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
         GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)          // be paviršių atmetimo (galinę pusę užstoja Žemė)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, cnt)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA); GLES20.glDepthMask(true)
         if (!depthWas) GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         if (!blendWas) GLES20.glDisable(GLES20.GL_BLEND)
@@ -6994,7 +7036,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             varying vec3 vP;
             void main() {
                 // tik iš kameros matoma (horizonto šioje pusėje) dalis – kitaip arti priartinus kitos pusės ovalas prasišviečia per Žemę
-                if (dot(normalize(vP), uCam) < 0.2565) discard;
+                if (dot(normalize(vP), uCam) < 0.2548) discard;
                 vec4 t = texture2D(uTex, vUV);
                 if (t.g + t.r < 0.01) discard;
                 // lėtas, tolygus pulsavimas (kaip senesnėje versijoje)

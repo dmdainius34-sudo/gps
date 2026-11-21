@@ -6230,7 +6230,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uCam"), camPos[0], camPos[1], camPos[2])
         GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uCenter"), sp[0], sp[1], sp[2])
         GLES20.glUniform1f(GLES20.glGetUniformLocation(glowProg, "uTime"), t)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(glowProg, "uGain"), if (showLasco && Lasco.image != null) 0.3f else 1f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(glowProg, "uGain"), if (showLasco && showLascoDisk && Lasco.image != null) 0.3f else 1f)
         // tikra spalva: švytėjimas baltas, vos šiltas; SDO – oranžinis
         if (sunTrue) GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uTint"), 1f, 0.95f, 0.88f)
         else GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uTint"), 1f, 0.62f, 0.22f)

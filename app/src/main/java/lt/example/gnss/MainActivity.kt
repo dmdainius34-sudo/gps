@@ -1387,6 +1387,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     var earthGrid: Boolean
         get() = renderer.showEarthGrid
         set(v) { renderer.showEarthGrid = v; calPrefs.edit().putBoolean("earth_grid", v).apply() }
+    var showSats: Boolean
+        get() = renderer.showSats
+        set(v) { renderer.showSats = v; calPrefs.edit().putBoolean("show_sats", v).apply() }
     /** Mygtukai +/−: priartinti ar nutolinti (f > 1 – arčiau). */
     fun zoomStep(f: Float) { renderer.zoomBy(f) }
     fun screenTest(cb: (String) -> Unit) { renderer.screenTest { t -> handler.post { cb(t) } } }
@@ -1401,9 +1404,11 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     /** Skrydis pro Šiaurinę žvaigždę: true – pradėtas, false – grįžtama. */
     fun toggleFlight(): Boolean {
         renderer.onFlightMsg = { m -> handler.post { android.widget.Toast.makeText(context, m, android.widget.Toast.LENGTH_LONG).show() } }
-        renderer.onFlightSfx = { n -> Sfx.play(n) }
+        renderer.onFlightSfx = null                    // garsas skrendant pro žvaigždę pašalintas
         return renderer.toggleFlight()
     }
+    /** ⌂ – grįžti į pradinį vaizdą (kaip paleidus programą). */
+    fun goHome() { renderer.goHome() }
     fun setOcean(on: Boolean) { renderer.oceanOn = on; if (on) renderer.oceanLevel = 2 }
     fun fpsText(): String = renderer.fpsText() + "; žvaigždžių fonas: " + renderer.cmbName
 
@@ -1571,7 +1576,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         if (calPrefs.contains("sun_shot_daz")) renderer.sunShot = doubleArrayOf(calPrefs.getFloat("sun_shot_daz", 0f).toDouble(), calPrefs.getFloat("sun_shot_del", 0f).toDouble())
         renderer.showNavBits = calPrefs.getBoolean("nav_bits", true)
         renderer.showGrid = calPrefs.getBoolean("grid", true)
-        renderer.showEarthGrid = calPrefs.getBoolean("earth_grid", true)
+        renderer.showEarthGrid = calPrefs.getBoolean("earth_grid", false)
+        renderer.showSats = calPrefs.getBoolean("show_sats", false)
         renderer.showSunGrid = calPrefs.getBoolean("sun_grid", true)
         renderer.showLasco = calPrefs.getBoolean("sun_lasco", true)
         renderer.obstacleMode = calPrefs.getInt("obst_mode", 1)
@@ -1580,7 +1586,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.levelHorizon = calPrefs.getBoolean("level_horizon", true)
         renderer.dustK = calPrefs.getFloat("dust_k", 0.25f)
         calPrefs.edit().putBoolean("follow_device", false).putBoolean("free_view", false).apply()
-        renderer.oceanOn = calPrefs.getBoolean("ocean_anim", true)
+        renderer.oceanOn = false                       // animuotas vandenynas pašalintas
         setRenderer(renderer)
         renderMode = RENDERMODE_CONTINUOUSLY
     }
@@ -1678,10 +1684,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             if (++reanchorTries < 24) handler.postDelayed(this, 5_000L)
             return
         }
-        if (!SignalHeading.mapClean) return
-        val d = SunCal.wrap(h - e.deg)
-        if (kotlin.math.abs(d) > 5.0) nudgeNorth(d, "po paleidimo pagal signalus")
-        HeadingTrust.set(true, "pataisyta pagal signalų kryptį")
+        // šiaurės pataisa pagal signalus pašalinta (vartotojo prašymu) – kryptis iš signalų tik ataskaitai
+        return
     } }
 
     fun stop() {
@@ -1925,7 +1929,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                     if (da < -Math.PI) da += 2 * Math.PI
                     // pasukimas dviem pirštais – tik aiškiai sukant (> 10°), kad priartinant vaizdas nesvyruotų
                     if (renderer.globeGrab() && !rollOn) { rollAcc += da; if (kotlin.math.abs(rollAcc) > Math.toRadians(10.0)) rollOn = true; da = 0.0 }
-                    renderer.rollBy(da)
+                    renderer.rollBy(-da)      // ekrano y žemyn: pirštai pagal laikrodžio rodyklę – ir vaizdas pagal laikrodžio rodyklę
                     pinchAngle = ang
                     // dviem pirštais – vaizdo poslinkis (kai kamera prie Saulės ar Mėnulio)
                     val mx = (e.getX(0) + e.getX(1)) / 2; val my = (e.getY(0) + e.getY(1)) / 2
@@ -2472,6 +2476,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val phaseIdsNow = LiveRtk.phaseIds()
         val nowS = android.os.SystemClock.uptimeMillis() / 1000.0
         for (si in satsI) {
+            if (!showSats) break                              // palydovai rodomi tik uždėjus varnelę „Rodyti palydovus“
             val sat = si.sat
             val p = si.pos
             // Už Žemės: kamera -> palydovas kerta Žemės rutulį – nerodome
@@ -2529,7 +2534,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawCorrectionWaves(pin, t)
         if (obstacleMode > 0) drawObstacleSky(pin)
         if (Uvi.enabled) drawUvi()
-        if (showGrid) drawGraticule()
+        // senas tinklelis (kas 15°) pašalintas – liko vienas prisitaikantis (drawGlobeGrid)
         // Stebėtojas: sukasi tik apie save (rodyklė), visata nuo planšetės sukimo nepriklauso
         drawObserverHeading()
         // SP3 trajektorijos ±30 min. arba užrašas apie apytikslę padėtį
@@ -3232,16 +3237,23 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * Galaktikos pusiaujas (Paukščių Tako disko plokštuma) kaip didysis dangaus apskritimas:
      * virš horizonto – ryškiai, po horizontu – blankiai. Rodo, kaip diskas pasviręs horizonto atžvilgiu dabar.
      */
+    /**
+     * Galaktikos disko vidurio plokštuma, matoma iš Saulės vietos galaktikoje: Saulė ~21 pc virš plokštumos, todėl plokštuma
+     * (ties galaktikos centru, 8,2 kpc) matoma ~0,15° žemiau galaktikos pusiaujo (b = 0). Punktyru.
+     */
     private fun drawGalacticPlane() {
         val g = GalaxyModel.frame()
         val n = 180
+        val b0 = -kotlin.math.atan(0.0208 / GalaxyModel.R_SUN)
+        val cb = cos(b0); val sb = sin(b0)
         val pts = (0 until n).map { i ->
             val t = 2 * Math.PI * i / n
-            floatArrayOf(((g[0] * cos(t) + g[3] * sin(t))).toFloat(), ((g[1] * cos(t) + g[4] * sin(t))).toFloat(), ((g[2] * cos(t) + g[5] * sin(t))).toFloat())
+            floatArrayOf((cb * (g[0] * cos(t) + g[3] * sin(t)) + sb * g[6]).toFloat(), (cb * (g[1] * cos(t) + g[4] * sin(t)) + sb * g[7]).toFloat(),
+                (cb * (g[2] * cos(t) + g[5] * sin(t)) + sb * g[8]).toFloat())
                 .let { skyPt(it, starR) }
         }
         val up = ArrayList<Float>(); val dn = ArrayList<Float>()
-        for (i in 0 until n) {
+        for (i in 0 until n step 2) {
             val a = pts[i]; val b = pts[(i + 1) % n]
             val dst = if (aboveHorizon(a) && aboveHorizon(b)) up else dn
             dst.add(a[0]); dst.add(a[1]); dst.add(a[2]); dst.add(b[0]); dst.add(b[1]); dst.add(b[2])
@@ -3414,7 +3426,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val pd = doubleArrayOf(pol[0].toDouble(), pol[1].toDouble(), pol[2].toDouble())
         val fade = 1f - galFade()
         if (fade > 0.01f) {
-            val bg = DoubleArray(3) { camPos[it] + pd[it] * 50.0 }
+            // pratęsimas baigiasi ten, kur nupiešta Šiaurinė žvaigždė: skrendant – tikroje 3D vietoje (kur veda skrydžio kelias), kitaip – fone
+            val pl = polaris
+            val bg = if (flight != null && pl != null) { val d3 = pl.ly * 0.3066 / 1000.0 * starScale(); DoubleArray(3) { fP[it] + pd[it] * d3 } }
+                else DoubleArray(3) { camPos[it] + pd[it] * 50.0 }
             val a0 = DoubleArray(3) { c[it] + ax[it] * starR * 0.92 }
             val ext = ArrayList<Float>()
             val m2 = 160
@@ -4297,6 +4312,14 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     var onFlightMsg: ((String) -> Unit)? = null
     var onFlightSfx: ((String) -> Unit)? = null
     fun flightOn() = flight != null
+    /** Pradinis vaizdas: stebėtojo kamera, pradinis atstumas, be fokuso ir pasukimų; skrendant – grįžtama. */
+    fun goHome() {
+        if (flight != null) flightReq = 2
+        focus = 0; panX = 0f; panY = 0f
+        freeView = false; followDevice = false
+        zoom = 3f
+        resetUser()
+    }
     /** Mygtukas: nėra skrydžio (ar grįžtama) – skristi; skrendama ar jau atskrista – grįžti. Grąžina true, jei skrendama. */
     fun toggleFlight(): Boolean {
         val f = flight
@@ -5005,7 +5028,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Platumų ir ilgumų tinklelis laisvame gaublyje: žingsnis pagal aukštį (ekrane ~4–10 linijų), linijos ant reljefo, už horizonto – nepiešiamos. */
     private fun drawGlobeGrid() {
-        if (!freeView || focus != 0 || flight != null || zoom > EARTH_R + SOLAR_ZOOM) { centreLat = Double.NaN; gridStepDeg = Double.NaN; return }
+        if (focus != 0 || flight != null || zoom > EARTH_R + SOLAR_ZOOM) { centreLat = Double.NaN; gridStepDeg = Double.NaN; return }
         val m = earthMat; val r0 = EARTH_R.toDouble(); val cw = camPos
         val cm = DoubleArray(3) { i -> m[i * 4] * cw[0].toDouble() + m[i * 4 + 1] * cw[1].toDouble() + m[i * 4 + 2] * cw[2].toDouble() }
         val cl = kotlin.math.sqrt(cm[0] * cm[0] + cm[1] * cm[1] + cm[2] * cm[2]); if (cl < 1e-6) return
@@ -5056,6 +5079,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (!blendWas) GLES20.glDisable(GLES20.GL_BLEND)
     }
     @Volatile var showEarthGrid = true
+    /** Palydovai (modeliai, spinduliai, žymos) – varnelė „Rodyti palydovus“. */
+    @Volatile var showSats = false
 
     private var earthProg = 0
     private val earthAxis by lazy { floatBuf(floatArrayOf(0f, 0f, -0.5f, 0f, 0f, 0.5f)) }
@@ -7532,32 +7557,18 @@ class DraggablePanel(
         isClickable = true
         isFocusable = true
 
-        val opts = linkedMapOf(
-            "fiksas" to "Fiksas (koordinatės, tikslumas)",
-            "geoidas" to "Geoidas ir aukštis",
-            "baro" to "Barometras ir kalibravimas",
-            "palydovai" to "Palydovai ir C/N0 dabar",
-            "cno" to "C/N0 istorija (~2 min)",
-            "klaidos" to "Klaidos ir būsena",
-            "irenginys" to "Įrenginys (modelis, Android)",
-            "screenshot" to "Įtraukti ekrano kopiją",
-            "raw" to "Matavimai + fiksai (2 CSV)"
-        )
+        // ZIP visada su naudingomis dalimis (geoidas, barometras, palydovų būsena, klaidos, įrenginys); atskirai – tik ekrano kopija.
+        // Fiksas, C/N0 istorija ir palydovų sąrašas pašalinti – kartojo kitas ataskaitos dalis ir CSV failus.
+        val opts = linkedMapOf("screenshot" to "Įtraukti ekrano kopiją")
         for ((k, v) in opts) {
             val cb = CheckBox(context).apply {
                 text = v
                 textSize = 15f
                 minHeight = (44 * density).toInt()
-                isChecked = k != "raw"
+                isChecked = false
             }
             boxes[k] = cb
-            if (k == "raw") {
-                rawRow.addView(cb, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-                rawRow.addView(rawSecs)
-                rawRow.addView(secLabel)
-            } else {
-                optionsLayout.addView(cb)
-            }
+            optionsLayout.addView(cb)
         }
 
         header.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -7586,25 +7597,8 @@ class DraggablePanel(
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(cnoLbl, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         bodyInner.addView(fixBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        bodyInner.addView(msgInput, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        bodyInner.addView(pkBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        bodyInner.addView(pkReport)
-        bodyInner.addView(pkToken)
-        pkBtn.setOnClickListener {
-            val q = message()
-            onSendPk?.invoke(q, pkReport.isChecked, pkToken.text.toString().trim())
-        }
-        bodyInner.addView(claudeBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        bodyInner.addView(claudeAnswer)
-        bodyInner.addView(claudeModel)
-        bodyInner.addView(claudeKey)
-        claudeBtn.setOnClickListener {
-            val q = message()
-            if (q.isEmpty()) { setClaudeAnswer("Parašykite žinutę laukelyje viršuje ir spauskite dar kartą."); return@setOnClickListener }
-            onAskClaude?.invoke(q, ClaudeAsk.MODELS[claudeModel.selectedItemPosition.coerceAtLeast(0)][0], claudeKey.text.toString().trim())
-        }
+        // žinutės Claude su raktu (API, GitHub) pašalintos iš programos
         bodyInner.addView(optionsLayout)
-        bodyInner.addView(rawRow)
         bodyInner.addView(alphaLabel)
         bodyInner.addView(alphaSeek)
         bodyInner.addView(envSpinner)
@@ -7651,7 +7645,11 @@ class DraggablePanel(
     /** Atidaryti NLO pranešimų langą (pvz. bakstelėjus prisegtą burbulą). */
     fun open() = expandBubble()
 
+    /** Prieš išskleidžiant: jei grąžina true – langas atidarytas kitaip (padalintame ekrane – virš visų programų). */
+    var onExpandOverlay: (() -> Boolean)? = null
+
     private fun expandBubble() {
+            if (onExpandOverlay?.invoke() == true) return
             try {
                 maximize()
             } catch (e: Throwable) {
@@ -7662,7 +7660,7 @@ class DraggablePanel(
 
     private fun runShare() {
         if (counting) return
-        val selected = boxes.filterValues { it.isChecked }.keys.toSet()
+        val selected = boxes.filterValues { it.isChecked }.keys.toSet() + setOf("geoidas", "baro", "palydovai", "klaidos", "irenginys")
         val screenshot = "screenshot" in selected
         if ("raw" in selected) {
             val secs = rawSecs.text.toString().toIntOrNull()?.coerceIn(5, 1800) ?: 900
@@ -8320,7 +8318,7 @@ class MainActivity : AppCompatActivity() {
             // kryptis iš magnetometro + Saulės kalibravimų žurnalo (nuokrypio stebėjimas ir taisymas)
             try { northFromLogTick() } catch (_: Exception) {}
             // kryptis iš signalų stiprumo (prieš mokymąsi – kad dabartinis mėginys netaptų savo paties įrodymu)
-            try { SignalHeading.update(list, hd) { d -> if (::skyDome.isInitialized) runOnUiThread { skyDome.nudgeNorth(d, "automatinė pagal signalus") } } } catch (_: Exception) {}
+            try { SignalHeading.update(list, hd) { _ -> } } catch (_: Exception) {}     // tik ataskaitai, vaizdo nesuka
             CabinMap.learnStatus(if (HeadingTrust.trusted) hd else null, list)
             cabinView?.let { it.heading = hd; it.sats = list; it.invalidate() }
             lastSats = list
@@ -8576,6 +8574,15 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // po paleidimo visos nustatymų varnelės nuimtos, išskyrus „Stabili šiaurė (ignoruoti magnetometrą)“
+        // (HDR paliekamas, nes jis įsigalioja tik atidarius programą iš naujo)
+        getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit()
+            .putBoolean("stable_north", true)
+            .putBoolean("sun_log_fix", false).putBoolean("markers", false).putBoolean("orient", false)
+            .putBoolean("earth_grid", false).putBoolean("grid", false).putBoolean("sun_grid", false).putBoolean("sun_sdo", false)
+            .putBoolean("sun_lasco", false).putBoolean("uv_layer", false).putBoolean("nav_bits", false).putBoolean("show_sats", false)
+            .putBoolean("free_view", false).putBoolean("follow_device", false).apply()
+        getSharedPreferences("cabin", Context.MODE_PRIVATE).edit().putBoolean("learn", false).putBoolean("use", false).apply()
         FixPoints.init(filesDir)
         // HDR: langas prašo HDR ryškumo atsargos (ekranas leidžia taškams šviesti ryškiau už įprastą baltą)
         if (Build.VERSION.SDK_INT >= 26 && getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("hdr", true))
@@ -8655,10 +8662,6 @@ class MainActivity : AppCompatActivity() {
                 if (::skyDome.isInitialized) skyDome.setSouthUp(southUpOn)
             }
         }
-        val btnResetN = Button(this).apply {
-            text = "Atstatyti šiaurę (3D)"
-            setOnClickListener { if (::skyDome.isInitialized) skyDome.resetNorth() }
-        }
         // šiaurės įrašymas, kalibravimas pagal orientyrus ir žurnalas – mažame 🧭 mygtuke ant 3D vaizdo (būgnas)
         SunCal.autoFix = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_log_fix", true)
         left.addView(CheckBox(this).apply {
@@ -8672,7 +8675,6 @@ class MainActivity : AppCompatActivity() {
         Crane.load(this); ManualMute.load(this)
         left.addView(Button(this).apply { text = "Krano apribojimas (bokšto ašis, spindulys)…"; setOnClickListener { showCraneDialog() } },
             LinearLayout.LayoutParams(mw, ww))
-        left.addView(btnResetN, LinearLayout.LayoutParams(mw, ww))
         val cbStableN = CheckBox(this).apply {
             text = "Stabili šiaurė (ignoruoti magnetometrą)"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("stable_north", true)
@@ -8687,14 +8689,9 @@ class MainActivity : AppCompatActivity() {
         CnoMask.min = cnoSp.getFloat("cno_min", 20f).toDouble()
         CnoMask.auto = cnoSp.getBoolean("cno_auto", true)
         // signalo slenkstis reguliuojamas NLO meniu po C/N0 kriokliu (slankiklis ir juoda riba krioklyje)
-        SignalHeading.autoFix = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sig_heading_fix", true)
+        // šiaurės pataisa pagal signalų stiprumą pašalinta (kryptis tik skaičiuojama ataskaitai)
+        SignalHeading.autoFix = false
         SignalHeading.mapClean = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("cabin_clean_v2", false)
-        left.addView(CheckBox(this).apply {
-            text = "Šiaurės pataisa pagal signalų stiprumą (kabinos žemėlapis, tik kai patikima)"
-            isChecked = SignalHeading.autoFix
-            setOnCheckedChangeListener { _, on -> SignalHeading.autoFix = on
-                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sig_heading_fix", on).apply() }
-        }, LinearLayout.LayoutParams(mw, ww))
         val cbMarkers = CheckBox(this).apply {
             text = "Rodyti orientyrus"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("markers", true)
@@ -8713,23 +8710,22 @@ class MainActivity : AppCompatActivity() {
             }
         }
         left.addView(cbOrient, LinearLayout.LayoutParams(mw, ww))
-        left.addView(Button(this).apply {
-            text = "Rašiklio diagnostika (S Pen)"
-            setOnClickListener { showPenDiag() }
-        }, LinearLayout.LayoutParams(mw, ww))
-        left.addView(Button(this).apply {
-            text = "Suteikti visus leidimus"
-            setOnClickListener { requestAllPermissions(withSpecials = true) }
-        }, LinearLayout.LayoutParams(mw, ww))
         left.addView(CheckBox(this).apply {
             text = "HDR galaktika (ryškiau už baltą; įsigalioja atidarius iš naujo)"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("hdr", true)
             setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("hdr", on).apply() }
         }, LinearLayout.LayoutParams(mw, ww))
         left.addView(CheckBox(this).apply {
-            text = "Koordinačių tinklelis ant gaublio (kas 15°, atogrąžos)"
-            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("grid", true)
-            setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.setGrid(on) }
+            text = "Koordinačių tinklelis ant gaublio (žingsnis pagal priartinimą; tas pats kaip # mygtukas)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("earth_grid", false)
+            setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.earthGrid = on
+                else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("earth_grid", on).apply() }
+        }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(CheckBox(this).apply {
+            text = "Rodyti palydovus"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("show_sats", false)
+            setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.showSats = on
+                else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("show_sats", on).apply() }
         }, LinearLayout.LayoutParams(mw, ww))
         left.addView(CheckBox(this).apply {
             text = "Saulės koordinatės (heliografinis tinklelis, ašis, į Žemę atsuktas taškas)"
@@ -8783,12 +8779,8 @@ class MainActivity : AppCompatActivity() {
         } }
         left.addView(cv, LinearLayout.LayoutParams((240 * resources.displayMetrics.density).toInt(), ww))
         cv.loadRoom(this)
-        left.addView(Button(this).apply {
-            fun lab() { text = "3D forma: " + if (cv.shape == 1) "patalpa (%.1f×%.1f×%.1f m)".format(java.util.Locale.US, cv.roomW, cv.roomL, cv.roomH) else "kupolas 10 m" }
-            lab()
-            setOnClickListener { cv.shape = 1 - cv.shape; cv.saveRoom(this@MainActivity); lab(); cv.invalidate() }
-        }, LinearLayout.LayoutParams(mw, ww))
-        left.addView(Button(this).apply { text = "Patalpos (kabinos) matmenys…"; setOnClickListener { showRoomDialog(cv) } }, LinearLayout.LayoutParams(mw, ww))
+        // 3D forma visada – kupolas (patalpos forma ir matmenys pašalinti)
+        if (cv.shape != 0) { cv.shape = 0; cv.saveRoom(this@MainActivity) }
         left.addView(CheckBox(this).apply {
             text = "Mokytis kabinos žemėlapio"; isChecked = CabinMap.learn
             setOnCheckedChangeListener { _, on -> CabinMap.learn = on; cabPrefs.edit().putBoolean("learn", on).apply() }
@@ -8811,30 +8803,12 @@ class MainActivity : AppCompatActivity() {
             text = "Išvalyti kabinos žemėlapį"
             setOnClickListener { CabinMap.clear(); markCabinClean(); cv.invalidate(); Toast.makeText(this@MainActivity, "Žemėlapis išvalytas", Toast.LENGTH_SHORT).show() }
         }, LinearLayout.LayoutParams(mw, ww))
-        val cbFree = CheckBox(this).apply {
-            text = "Laisvas vaizdas iš viršaus"
-            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("free_view", false)
-            setOnCheckedChangeListener { _, on ->
-                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("free_view", on).apply()
-                if (::skyDome.isInitialized) skyDome.setFreeView(on)
-            }
-        }
-        left.addView(cbFree, LinearLayout.LayoutParams(mw, ww))
-        val cbOcean = CheckBox(this).apply {
-            text = "Animuotas vandenynas"
-            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("ocean_anim", true)
-            setOnCheckedChangeListener { _, on ->
-                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("ocean_anim", on).apply()
-                if (::skyDome.isInitialized) skyDome.setOcean(on)
-            }
-        }
-        left.addView(cbOcean, LinearLayout.LayoutParams(mw, ww))
         left.addView(TextView(this).apply {
             text = "Moon: NASA SVS CGI Moon Kit (LRO LROC, LOLA) · Earth: NASA Blue Marble, GEBCO"
             textSize = 11f
             alpha = 0.7f
         }, LinearLayout.LayoutParams(mw, ww))
-        left.addView(info, LinearLayout.LayoutParams(mw, ww))
+        // senas informacijos rodymas (FIKSAS, BAROMETRAS, PALYDOVAI) nustatymuose pašalintas – viskas ZIP ataskaitoje
 
         val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         right.addView(skyView, LinearLayout.LayoutParams(skySide, skySide))
@@ -8911,7 +8885,7 @@ class MainActivity : AppCompatActivity() {
         val tools = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val gap = (6 * dp).toInt()
-            for (b in listOf(fsBtn, followBtn, levelBtn, calBtn, flightBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
+            for (b in listOf(fsBtn, followBtn, levelBtn, calBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
         }
         // barometras: apačioje kairėje – paspaudus nulis čia, toliau rodoma, kiek pakilote ar nusileidote
         if (baro.hasSensor) {
@@ -9038,6 +9012,20 @@ class MainActivity : AppCompatActivity() {
             skyHolder.addView(col, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.END or Gravity.CENTER_VERTICAL).apply { val mm = (10 * dp).toInt(); setMargins(mm, mm, mm + bSize + (8 * dp).toInt(), mm) })   // kairiau įrankių stulpelio
         }
+        // Kairėje: 🚀 skrydis ir ⌂ – grįžti į pradinį vaizdą (pasimetus)
+        run {
+            val home = small("\u2302", 17f).apply { alpha = 0.6f
+                setOnClickListener {
+                    keyHaptic(this)
+                    getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("free_view", false).putBoolean("follow_device", false).apply()
+                    skyDome.goHome(); modeBtn?.text = "\uD83C\uDF0D"; flightBtn.alpha = 0.6f
+                } }
+            val lc = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL
+                addView(flightBtn, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = (8 * dp).toInt() })
+                addView(home, LinearLayout.LayoutParams(bSize, bSize)) }
+            skyHolder.addView(lc, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply {
+                val mm = (10 * dp).toInt(); setMargins(mm, (84 * dp).toInt(), mm, mm) })
+        }
         // Laisvame gaublyje: kryželis ekrano centre ir po juo – centro koordinatės, aukštis, tinklelio žingsnis
         run {
             val cross = object : View(this) {
@@ -9054,20 +9042,14 @@ class MainActivity : AppCompatActivity() {
             val info = TextView(this).apply { textSize = 12f; setTextColor(0xFFFFFFFF.toInt()); setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())
                 gravity = Gravity.CENTER; visibility = View.GONE; setTextIsSelectable(false)
                 setOnLongClickListener { (getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
-                    .setPrimaryClip(android.content.ClipData.newPlainText("koordinatės", text.toString().substringBefore(" ·")))
+                    .setPrimaryClip(android.content.ClipData.newPlainText("koordinatės", text.toString()))
                     Toast.makeText(this@MainActivity, "Centro koordinatės nukopijuotos", Toast.LENGTH_SHORT).show(); true } }
             val tk = object : Runnable { override fun run() {
                 val ci = skyDome.centreInfo()
                 val on = skyDome.freeView && !ci[0].isNaN()
                 cross.visibility = if (on) View.VISIBLE else View.GONE
                 info.visibility = if (on) View.VISIBLE else View.GONE
-                if (on) {
-                    val km = ci[2]
-                    val alt = if (km < 10) "%.1f km".format(Locale.US, km) else "%.0f km".format(Locale.US, km)
-                    val dec = when { ci[3].isNaN() || ci[3] >= 1 -> 3; ci[3] >= 0.01 -> 5; else -> 6 }
-                    info.text = "%.${dec}f°, %.${dec}f° · %s".format(Locale.US, ci[0], ci[1], alt) +
-                        (if (ci[3].isNaN()) "" else " · tinklelis %s°".format(Locale.US, java.math.BigDecimal(ci[3]).stripTrailingZeros().toPlainString()))
-                }
+                if (on) info.text = "%.5f, %.5f".format(Locale.US, ci[0], ci[1])     // ~1 m tikslumu
                 info.postDelayed(this, 200L)
             } }
             info.post(tk)
@@ -9120,12 +9102,15 @@ class MainActivity : AppCompatActivity() {
         container.addView(bg, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         container.addView(root, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
+        // paleidžiant – juodas fonas, kol įsijungia 3D vaizdas (be balto blyksnio)
+        container.setBackgroundColor(0xFF000000.toInt()); bg.visibility = View.INVISIBLE; root.alpha = 0f
         setContentView(container)
         // Programa pradeda iš karto 3D vaizdu per visą ekraną; buvęs 2D pradžios puslapis – nustatymuose (⚙)
         fun go3d(tries: Int) {
             if (container.width <= 0 && tries > 0) { container.postDelayed({ go3d(tries - 1) }, 100L); return }
             if (!use3d) setGlobe(true)
             if (!fullscreen) toggleFullscreen()
+            root.alpha = 1f; bg.visibility = View.VISIBLE
         }
         container.post { go3d(30) }
         
@@ -9278,12 +9263,16 @@ class MainActivity : AppCompatActivity() {
         panel.setRecording(NavRecordService.running || !recordEnded)
         sharePanel = panel
         
-        // Nustatome pradinę poziciją viršutiniame dešiniajame kampe
+        // padalintame ekrane NLO langas atidaromas virš visų programų – per visą telefono ekraną, galima stumdyti po abi puses
+        panel.onExpandOverlay = {
+            if (overlayHost == null && Build.VERSION.SDK_INT >= 24 && isInMultiWindowMode &&
+                (Build.VERSION.SDK_INT < 23 || android.provider.Settings.canDrawOverlays(this))) { expandPanelOverlay(); true } else false
+        }
+        // pradinė vieta – kairėje, ekrano viduryje (ne ant dešinės pusės mygtukų)
         panel.post {
-            val margin = (16 * resources.displayMetrics.density).toInt()
-            // Kadangi gravitacija START, translationX pastums į dešinę
-            panel.translationX = (container.width - panel.width - margin).toFloat()
-            panel.translationY = margin.toFloat()
+            val margin = (12 * resources.displayMetrics.density).toInt()
+            panel.translationX = margin.toFloat()
+            panel.translationY = (container.height * 0.45f).coerceAtLeast(margin.toFloat())
         }
     }
 
@@ -10843,10 +10832,6 @@ class MainActivity : AppCompatActivity() {
             appendLine("Navigacijos klausytojas: ${if (NavRecordService.listenerRegistered) "užregistruotas" else "neužregistruotas"}")
             appendLine("Navigacijos žinučių statusas: ${NavRecordService.navStatusText()}")
             appendLine("Navigacijos paslauga (priekinis planas): ${if (NavRecordService.running) "veikia" else "neveikia"}")
-            appendLine("Palydovų sąrašas:")
-            lastSats.sortedWith(compareBy({ it.const }, { it.svid })).forEach { s ->
-                appendLine("${s.const} ${s.svid}: C/N0 ${fx(s.cn0.toDouble())}, kampas ${fx(s.elev.toDouble(), 0)}°, az ${fx(s.az.toDouble(), 0)}°, fiksui: ${if (s.used) "taip" else "ne"}")
-            }
             appendLine()
         }
         if ("cno" in sections) { appendLine("=== C/N0 ISTORIJA ==="); appendLine(cnoView.summary()); appendLine() }

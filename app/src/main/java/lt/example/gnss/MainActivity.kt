@@ -9002,6 +9002,7 @@ class MainActivity : AppCompatActivity() {
             val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
             val bs = (40 * dp).toInt(); val gp = (5 * dp).toInt()
             val mode = rb(if (skyDome.freeView) "\uD83D\uDC41" else "\uD83C\uDF0D")
+            modeBtn = mode
             mode.setOnClickListener {
                 keyHaptic(mode)
                 val on = !skyDome.freeView
@@ -9638,6 +9639,8 @@ class MainActivity : AppCompatActivity() {
 
     /** Šiaurės įrašymas: planšetė nukreipta į šiaurę arba pirštu pasuktas 3D vaizdas. */
     private var northBar: View? = null
+    /** 🌍/👁 mygtukas (laisvas gaublys / stebėtojo vaizdas). */
+    private var modeBtn: TextView? = null
 
     /**
      * Šiaurės juosta ant 3D vaizdo (be lango ir paaiškinimų): permatomi apvalūs mygtukai ◀5 ◀1 1▶ 5▶ (gaublys sukasi iš karto),
@@ -9646,6 +9649,12 @@ class MainActivity : AppCompatActivity() {
     private fun showNorthDialog() {
         if (!::skyDome.isInitialized) return
         northBar?.let { (it.parent as? ViewGroup)?.removeView(it); northBar = null; skyDome.northStepCancel(); return }
+        // laisvame gaublyje kamera nepriklauso nuo krypties – šiaurė taisoma stebėtojo vaizde
+        if (skyDome.freeView) {
+            getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("free_view", false).apply()
+            skyDome.setFreeView(false); modeBtn?.text = "\uD83C\uDF0D"
+            Toast.makeText(this, "Šiaurė nustatoma stebėtojo vaizde – laisvas gaublys išjungtas", Toast.LENGTH_SHORT).show()
+        }
         val dp = resources.displayMetrics.density
         val b = (40 * dp).toInt(); val gap = (4 * dp).toInt()
         fun round(t: String, size: Float = 13f) = TextView(this).apply {

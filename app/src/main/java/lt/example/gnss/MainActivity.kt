@@ -2446,14 +2446,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val fwd = floatArrayOf(
             (fE[0] * lookI[0] + fE[1] * lookI[1] + fE[2] * lookI[2]).toFloat(),
             (fN[0] * lookI[0] + fN[1] * lookI[1] + fN[2] * lookI[2]).toFloat(), 0f)
+        // laisvame gaublyje žiedas mažinamas pagal aukštį: priartinus N, E, S, W lieka aplink stebėtoją ekrane (buvo ~26 000 km atstumu – „šone“)
+        val hs = if (freeView && focus == 0 && flight == null) ((zoom - EARTH_R) * 0.45f / 1.04f).coerceIn(0.0002f, 1f) else 1f
         for (d in 0 until 360 step 30) {
             val tex = labelTex[labelOf(d)] ?: continue
             val a = Math.toRadians(d.toDouble())
-            val c = floatArrayOf((1.04 * sin(a)).toFloat(), (1.04 * cos(a)).toFloat(), 0f)
-            if (if (observerView()) dot3(c, fwd) < -0.2f else dot3(c, eye) < 0.05f) continue
+            val c = floatArrayOf((1.04 * hs * sin(a)).toFloat(), (1.04 * hs * cos(a)).toFloat(), 0f)
+            if (if (observerView()) dot3(c, fwd) < -0.2f else hs >= 1f && dot3(c, eye) < 0.05f) continue
             val col = when (d) { 0 -> floatArrayOf(0.94f, 0.27f, 0.27f); 90, 180, 270 -> floatArrayOf(0.98f, 0.8f, 0.08f); else -> floatArrayOf(0.85f, 0.87f, 0.9f) }
             val card = d % 90 == 0
-            billboard(c, eye, if (card) 0.18f else 0.09f, if (card) 0.09f else 0.045f, tex, col[0], col[1], col[2], 1f)
+            billboard(c, eye, (if (card) 0.18f else 0.09f) * hs, (if (card) 0.09f else 0.045f) * hs, tex, col[0], col[1], col[2], 1f)
         }
 
         // 6) Palydovai: geras signalas žybsi kaip žvaigždės

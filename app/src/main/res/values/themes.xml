@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.GnssApp" parent="Theme.AppCompat.Light.DarkActionBar" />
+    <!-- juodas fonas nuo pat paleidimo (kitaip kol įsikrauna 3D vaizdas, matomas baltas langas) -->
+    <style name="Theme.GnssApp" parent="Theme.AppCompat.Light.DarkActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
 </resources>

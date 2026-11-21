@@ -5290,7 +5290,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             }
         }
         // 3) Saulės ciklas
-        if (!SpaceLive.ssn.isNaN()) labelAt(DoubleArray(3) { sp[it] - u[it] * rs * 1.45 }, "25 ciklas · dėmių %.0f".format(java.util.Locale.US, SpaceLive.ssn), 1f, 0.85f, 0.5f, rs * 0.14f)
+        // Saulės ciklo užrašas pašalintas (dėmių skaičius – tik ataskaitoje)
         // 4) zondai: atstumas nuo Saulės paviršiaus proporcingai iki Žemės orbitos (Saulė modelyje per didelė – tikru masteliu jie būtų „Saulės viduje“)
         fun probePos(v: DoubleArray): FloatArray {
             val l = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).coerceAtLeast(1e-9)

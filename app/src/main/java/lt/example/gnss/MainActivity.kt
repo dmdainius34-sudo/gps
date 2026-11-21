@@ -1138,6 +1138,9 @@ private class BubbleRenderer(private val appCtx: Context, private val density: F
 object Hdr {
     @Volatile var wanted = false
     @Volatile var on = false
+    /** 10 bitų (RGBA1010102) langas – kai 16 bitų HDR nepasiekiamas; tenWanted=false – praėjusį kartą nepavyko. */
+    @Volatile var tenWanted = true
+    @Volatile var tenBit = false
     private const val EGL_COLOR_COMPONENT_TYPE_EXT = 0x3339
     private const val EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT = 0x333B
     const val EGL_GL_COLORSPACE_KHR = 0x309D
@@ -1161,7 +1164,7 @@ object Hdr {
 }
 
 /** Langų paviršius: HDR konfigūracijai – scRGB spalvų erdvė; nepavykus – paprastas (ir HDR išjungiamas kitam kartui). */
-class HdrSurfaceFactory(private val onFail: () -> Unit) : GLSurfaceView.EGLWindowSurfaceFactory {
+class HdrSurfaceFactory(private val onFail: () -> Unit, private val onTenFail: () -> Unit = {}) : GLSurfaceView.EGLWindowSurfaceFactory {
     override fun createWindowSurface(egl: javax.microedition.khronos.egl.EGL10, display: javax.microedition.khronos.egl.EGLDisplay,
                                      config: EGLConfig, nativeWindow: Any?): javax.microedition.khronos.egl.EGLSurface? {
         if (Hdr.on) {
@@ -1170,7 +1173,10 @@ class HdrSurfaceFactory(private val onFail: () -> Unit) : GLSurfaceView.EGLWindo
             if (s != null && s != javax.microedition.khronos.egl.EGL10.EGL_NO_SURFACE) return s
             Hdr.on = false; onFail()
         }
-        return try { egl.eglCreateWindowSurface(display, config, nativeWindow, null) } catch (_: Exception) { null }
+        val s = try { egl.eglCreateWindowSurface(display, config, nativeWindow, null) } catch (_: Exception) { null }
+        // 10 bitų langas nesukurtas – kitą kartą jo nebandyti (grįžtama į 8 bitus)
+        if ((s == null || s == javax.microedition.khronos.egl.EGL10.EGL_NO_SURFACE) && Hdr.tenBit) onTenFail()
+        return s
     }
     override fun destroySurface(egl: javax.microedition.khronos.egl.EGL10, display: javax.microedition.khronos.egl.EGLDisplay,
                                 surface: javax.microedition.khronos.egl.EGLSurface) { egl.eglDestroySurface(display, surface) }
@@ -1179,9 +1185,22 @@ class HdrSurfaceFactory(private val onFail: () -> Unit) : GLSurfaceView.EGLWindo
 class MsaaConfigChooser : GLSurfaceView.EGLConfigChooser {
     override fun chooseConfig(egl: javax.microedition.khronos.egl.EGL10,
                               display: javax.microedition.khronos.egl.EGLDisplay): EGLConfig {
-        Hdr.floatConfig(egl, display)?.let { Hdr.on = true; return it }
+        Hdr.floatConfig(egl, display)?.let { Hdr.on = true; Hdr.tenBit = false; return it }
         Hdr.on = false
         val E = javax.microedition.khronos.egl.EGL10.EGL_NONE
+        // 10 bitų spalvos (1024 pakopos kanalui) – sklandūs Saulės vainiko ir galaktikos perėjimai be juostelių
+        if (Hdr.tenWanted && Build.VERSION.SDK_INT >= 26) {
+            val ms10 = intArrayOf(0x3024, 10, 0x3023, 10, 0x3022, 10, 0x3021, 2, 0x3025, 16, 0x3040, 4, 0x3032, 1, 0x3031, 4, E)
+            val plain10 = intArrayOf(0x3024, 10, 0x3023, 10, 0x3022, 10, 0x3021, 2, 0x3025, 16, 0x3040, 4, E)
+            for (attrs in arrayOf(ms10, plain10)) {
+                val num = IntArray(1); val cfg = arrayOfNulls<EGLConfig>(1)
+                if (egl.eglChooseConfig(display, attrs, cfg, 1, num) && num[0] > 0 && cfg[0] != null) {
+                    val rv = IntArray(1); egl.eglGetConfigAttrib(display, cfg[0], 0x3024, rv)
+                    if (rv[0] == 10) { Hdr.tenBit = true; return cfg[0]!! }
+                }
+            }
+        }
+        Hdr.tenBit = false
         val ms = intArrayOf(0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3021, 8, 0x3025, 16,
             0x3040, 4, 0x3032, 1, 0x3031, 4, E)          // RGBA8, depth16, ES2, sample buffers=1, samples=4
         val plain = intArrayOf(0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3021, 8, 0x3025, 16, 0x3040, 4, E)
@@ -1383,6 +1402,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setFreeView(on: Boolean) { renderer.freeView = on; renderer.resetUser() }
     val freeView get() = renderer.freeView
     fun centreOnMe() { renderer.centreOnMe() }
+    fun setSunTrue(on: Boolean) { renderer.sunTrue = on }
     fun centreInfo(): DoubleArray = doubleArrayOf(renderer.centreLat, renderer.centreLon, renderer.centreAltKm, renderer.gridStepDeg)
     /** Reljefo aukštis (m; jūroje – gylis su minusu) iš GEBCO tinklelio (0,25°) taške. */
     fun reliefAt(lat: Double, lon: Double): Double = renderer.reliefAtPublic(lat, lon)
@@ -1598,8 +1618,10 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     init {
         setEGLContextClientVersion(2)
         Hdr.wanted = calPrefs.getBoolean("hdr", true)
+        Hdr.tenWanted = calPrefs.getBoolean("ten_bit", true)
         setEGLConfigChooser(MsaaConfigChooser())
-        setEGLWindowSurfaceFactory(HdrSurfaceFactory { calPrefs.edit().putBoolean("hdr", false).apply() })
+        setEGLWindowSurfaceFactory(HdrSurfaceFactory({ calPrefs.edit().putBoolean("hdr", false).apply() }, { calPrefs.edit().putBoolean("ten_bit", false).apply() }))
+        renderer.sunTrue = calPrefs.getBoolean("sun_true", false)
         preserveEGLContextOnPause = true
         renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
         renderer.showMarkers = calPrefs.getBoolean("markers", true)
@@ -2732,7 +2754,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val rng = FloatArray(2); GLES20.glGetFloatv(GLES20.GL_ALIASED_POINT_SIZE_RANGE, rng, 0)
         cb(buildString {
             appendLine("GPU: ${GLES20.glGetString(GLES20.GL_RENDERER)}; ${GLES20.glGetString(GLES20.GL_VERSION)}")
-            appendLine("Ekranas %d×%d, tankis %.2f, HDR %s, taško dydžiai %.0f–%.0f".format(Locale.US, lastW, lastH, density, if (Hdr.on) "taip" else "ne", rng[0], rng[1]))
+            appendLine("Ekranas %d×%d, tankis %.2f, spalvos %s, taško dydžiai %.0f–%.0f".format(Locale.US, lastW, lastH, density, if (Hdr.on) "HDR 16 bitų" else if (Hdr.tenBit) "10 bitų" else "8 bitų", rng[0], rng[1]))
             appendLine("Atitolinimas %.1f; skrydis %s".format(Locale.US, zoom, flight?.let { "taip, %.1f s, %.3f kpc".format(Locale.US, it.tau, PolarFlight.dist(it.tau, GAL_G.toDouble()) / GAL_G) } ?: "ne"))
             appendLine(galDbg)
             appendLine("Su dulkėmis: $stWith")
@@ -6104,6 +6126,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private val sunMat = FloatArray(16)
     private val sunMvp = FloatArray(16)
 
+    /** Saulė tikra spalva (balta ~5800 K) vietoj SDO ultravioletinės (auksinės). */
+    @Volatile var sunTrue = false
+
     /** 3D Saulės rutulys: animuota granuliacija, dėmės, kraštų patamsėjimas; lėtai sukasi. */
     @Volatile var showSunGrid = true
     private var sunImgVer = 0
@@ -6166,6 +6191,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform3f(GLES20.glGetUniformLocation(sunProg, "uCam"), camPos[0], camPos[1], camPos[2])
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uTime"), t)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uHasTex"), if (sunImgTex == 0) 0f else if (sunReal) 2f else 1f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uGain"), if (Hdr.on) 2.4f else 1f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uTrue"), if (sunTrue) 1f else 0f)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sunImgTex)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(sunProg, "uTex"), 0)
@@ -6806,6 +6833,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform float uTime;
             uniform sampler2D uTex;
             uniform float uHasTex;
+            uniform float uGain;     // HDR: centras ryškesnis už baltą (1 – be HDR)
+            uniform float uTrue;     // 1 – tikra spalva (balta ~5800 K), 0 – SDO ultravioletinė
             float hash(vec3 p) {
                 return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
             }
@@ -6838,8 +6867,19 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     col = texture2D(uTex, vUV).rgb * 1.25 * (0.92 + 0.16 * n);
                 }
                 float mu = max(dot(normalize(vN), normalize(uCam - vW)), 0.0);
-                col *= 0.42 + 0.58 * pow(mu, 0.5);      // kraštų patamsėjimas (limb darkening)
-                col += vec3(1.0, 0.6, 0.2) * pow(1.0 - mu, 4.0) * 0.6;   // ryškus kraštas
+                if (uTrue > 0.5) {
+                    // tikra spalva: balta, šiek tiek šilta (~5800 K); tekstūra – tik ryškumo detalėms (dėmės, fakelai)
+                    float lum = dot(col, vec3(0.299, 0.587, 0.114));
+                    col = vec3(1.0, 0.965, 0.915) * (0.88 + 0.24 * (lum - 0.5));
+                    // kraštų patamsėjimas (fotosferos dėsnis I(μ) = 1 − u(1 − μ), u ≈ 0,6) ir kraštas šiltesnis
+                    col *= 1.0 - 0.6 * (1.0 - mu);
+                    col *= mix(vec3(1.0, 0.78, 0.55), vec3(1.0), mu);
+                } else {
+                    col *= 0.42 + 0.58 * pow(mu, 0.5);      // kraštų patamsėjimas (limb darkening)
+                    col += vec3(1.0, 0.6, 0.2) * pow(1.0 - mu, 4.0) * 0.6;   // ryškus kraštas
+                }
+                // HDR: centras šviečia ryškiau už baltą, kraštai – ne
+                col *= mix(1.0, uGain, pow(mu, 1.5));
                 gl_FragColor = vec4(col, 1.0);
             }
         """
@@ -9061,6 +9101,12 @@ class MainActivity : AppCompatActivity() {
             text = "Kosminiai orai gyvai: pašvaistė, saulės vėjas, žybsniai, Saulės ciklas, užtemimai"
             isChecked = SpaceLive.enabled
             setOnCheckedChangeListener { _, on -> SpaceLive.enabled = on; getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("space_live", on).apply() }
+        }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(CheckBox(this).apply {
+            text = "Saulė tikra spalva (balta, ~5800 K) vietoj SDO ultravioletinės (auksinės)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_true", false)
+            setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_true", on).apply()
+                if (::skyDome.isInitialized) skyDome.setSunTrue(on) }
         }, LinearLayout.LayoutParams(mw, ww))
         SunImage.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_sdo", true)
         left.addView(CheckBox(this).apply {

@@ -65,7 +65,7 @@ object SpaceLive {
     @Volatile var bt = Double.NaN; private set
     @Volatile var windTime = ""; private set
 
-    /** NOAA „products“ formatas: [[antraštės...], [reikšmės...], ...]; grąžina paskutinę eilutę su skaičiais pagal stulpelių vardus. */
+    // NOAA „products“ formatas – masyvas, kurio pirma eilutė antraštės, toliau reikšmės; grąžina paskutinę pilną eilutę pagal stulpelių vardus
     fun lastRow(json: String, vararg cols: String): DoubleArray? {
         val a = org.json.JSONArray(json); if (a.length() < 2) return null
         val h = a.getJSONArray(0); val idx = cols.map { c -> (0 until h.length()).firstOrNull { h.getString(it) == c } ?: return null }

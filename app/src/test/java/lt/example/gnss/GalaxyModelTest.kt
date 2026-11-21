@@ -595,3 +595,45 @@ class GlobeTilesTest {
         assertEquals(c[0].toInt(), k[0].x)
     }
 }
+
+class SpaceLiveTest {
+    @Test fun auroraParseAndNear() {
+        val js = """{"Observation Time":"2026-11-21T10:00:00Z","Forecast Time":"2026-11-21T10:45:00Z","coordinates":[[25,60,12],[25,63,30],[0,0,0]]}"""
+        val g = SpaceLive.parseAurora(js)!!
+        assertEquals(12f, SpaceLive.auroraAt(g, 60.0, 25.0), 0f)
+        assertEquals(30f, SpaceLive.auroraNear(g, 54.7, 25.3), 0f)        // 63° Š – iki 9° į šiaurę
+        assertEquals(0f, SpaceLive.auroraNear(g, 40.0, 25.0), 0f)
+    }
+
+    @Test fun windRowAndClasses() {
+        val js = """[["time_tag","density","speed","temperature"],["2026-11-21 10:00:00.000","4.1","420.5","90000"],["2026-11-21 10:05:00.000",null,null,null]]"""
+        val r = SpaceLive.lastRow(js, "density", "speed")!!
+        assertEquals(4.1, r[0], 1e-9); assertEquals(420.5, r[1], 1e-9)
+        assertEquals("M2.0", SpaceLive.xrayClass(2e-5)); assertEquals("X1.5", SpaceLive.xrayClass(1.5e-4)); assertEquals("C3.0", SpaceLive.xrayClass(3e-6))
+        assertEquals(15.0 to -34.0, SpaceLive.parseLoc("N15E34")); assertEquals(-8.0 to 60.0, SpaceLive.parseLoc("S08W60"))
+    }
+
+    @Test fun horizonsVectors() {
+        val txt = "...\n\$\$SOE\n2461000.500000000 = A.D. 2025-Nov-21 00:00:00.0000 TDB \n X = 1.234567890123456E-01 Y =-2.0E-02 Z = 3.5E-03\n" +
+            "2461001.500000000 = A.D. 2025-Nov-22 00:00:00.0000 TDB \n X = 1.3E-01 Y =-2.1E-02 Z = 3.6E-03\n\$\$EOE\n"
+        val p = SpaceLive.parseHorizons(txt)
+        assertEquals(2, p.size); assertEquals(0.1234567890123456, p[0][0], 1e-12); assertEquals(-0.02, p[0][1], 1e-12)
+    }
+
+    @Test fun issOrbitSane() {
+        val js = """[{"EPOCH":"2026-11-20T12:00:00.000000","MEAN_MOTION":15.5,"ECCENTRICITY":0.0005,"INCLINATION":51.64,"RA_OF_ASC_NODE":120.0,"ARG_OF_PERICENTER":80.0,"MEAN_ANOMALY":10.0}]"""
+        val el = SpaceLive.parseOmm(js)!!
+        for (h in 0..48 step 6) {
+            val v = SpaceLive.issEci(el, el.epochMs + h * 3_600_000L)
+            val r = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+            org.junit.Assert.assertTrue("r=$r", r in 6700.0..6860.0)
+            org.junit.Assert.assertTrue(kotlin.math.abs(v[2]) <= r * kotlin.math.sin(Math.toRadians(51.7)) + 1)
+        }
+        // zenite: tiesiai virš stebėtojo – aukštis 90°
+        val (e, _) = SpaceLive.lookAngles(54.7, 25.3, run { val la = Math.toRadians(54.7); val lo = Math.toRadians(25.3); val r = 6378.137 + 420
+            doubleArrayOf(r * kotlin.math.cos(la) * kotlin.math.cos(lo), r * kotlin.math.cos(la) * kotlin.math.sin(lo), r * kotlin.math.sin(la)) })
+        assertEquals(90.0, e, 0.5)
+        val ps = SpaceLive.computePasses(el, 54.7, 25.3, el.epochMs, 24)
+        org.junit.Assert.assertTrue("passes=${ps.size}", ps.size in 2..12)
+    }
+}

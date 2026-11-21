@@ -5155,8 +5155,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 val lat = 90 - y; val lon = ((x - 180) % 360 + 360) % 360
                 val v = g[(lat + 90) * 360 + lon]
                 if (v < 2f) continue
-                val a = (0.25f + v / 25f).coerceIn(0f, 1f)                   // intensyvumas; spalvas parenka šešėliuoklis
-                px[y * w + x] = android.graphics.Color.argb(255, (a * 255).toInt(), (a * 255).toInt(), (a * 255).toInt())
+                // kaip anksčiau (tolygus švytėjimas), tik tikresnės spalvos: žalia – vyrauja; stipresnėse vietose – raudonas
+                // atspalvis (deguonis 630 nm, aukštai), stipriausiose – violetinis (azotas, apatinis kraštas)
+                val a = (0.25f + v / 25f).coerceIn(0f, 1f)
+                val red = ((v - 25f) / 40f).coerceIn(0f, 1f) * 0.55f
+                val vio = ((v - 45f) / 40f).coerceIn(0f, 1f) * 0.45f
+                val r = (0.22f + 0.78f * red + 0.35f * vio).coerceIn(0f, 1f)
+                val gg = (1f - 0.55f * red - 0.45f * vio).coerceIn(0f, 1f)
+                val b = (0.45f + 0.15f * red + 0.55f * vio).coerceIn(0f, 1f)
+                px[y * w + x] = android.graphics.Color.argb(255, (r * a * 255).toInt(), (gg * a * 255).toInt(), (b * a * 255).toInt())
             }
             val bmp = Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
             if (auroraTex != 0) GLES20.glDeleteTextures(1, intArrayOf(auroraTex), 0)
@@ -6978,7 +6985,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         """
         // Pašvaistės spalvos kaip tikrovėje: žalia (deguonis 557,7 nm, 100–150 km) – vyrauja; raudona (deguonis 630 nm, > 200 km) –
         // stipriose vietose viršutiniame krašte; violetinė–mėlyna (azotas 427,8 nm) – stipriausiose, apatiniame krašte.
-        // Mirgėjimas: „užuolaidos“ – ilgumos kryptimi bėgančios bangos ir lėtas tvyksėjimas.
         private const val AUR_FS = """
             precision mediump float;
             uniform sampler2D uTex;
@@ -6989,19 +6995,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             void main() {
                 // tik iš kameros matoma (horizonto šioje pusėje) dalis – kitaip arti priartinus kitos pusės ovalas prasišviečia per Žemę
                 if (dot(normalize(vP), uCam) < 0.2565) discard;
-                float a = texture2D(uTex, vUV).r;
-                if (a < 0.01) discard;
-                float x = vUV.x * 360.0;
-                float curtain = 0.55 + 0.45 * sin(x * 1.7 + uTime * 0.9 + 2.5 * sin(x * 0.31 - uTime * 0.35));
-                float shimmer = 0.8 + 0.2 * sin(uTime * 7.0 + x * 5.3) * sin(uTime * 3.1 - x * 2.1);
-                float pulse = 0.8 + 0.2 * sin(uTime * 0.6 + x * 0.05);
-                vec3 green = vec3(0.22, 1.0, 0.45);
-                vec3 red = vec3(1.0, 0.22, 0.32);
-                vec3 violet = vec3(0.55, 0.35, 1.0);
-                vec3 c = green * a
-                       + red * smoothstep(0.55, 0.95, a) * 0.55 * (0.6 + 0.4 * sin(x * 0.9 - uTime * 0.5))
-                       + violet * smoothstep(0.7, 1.0, a) * 0.45 * curtain;
-                gl_FragColor = vec4(c * curtain * shimmer * pulse, 1.0);
+                vec4 t = texture2D(uTex, vUV);
+                if (t.g + t.r < 0.01) discard;
+                // lėtas, tolygus pulsavimas (kaip senesnėje versijoje)
+                float pulse = 0.85 + 0.15 * sin(uTime * 1.3);
+                gl_FragColor = vec4(t.rgb * pulse, 1.0);
             }
         """
         private const val TILE_VS = """

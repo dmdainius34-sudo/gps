@@ -6226,6 +6226,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uCenter"), sp[0], sp[1], sp[2])
         GLES20.glUniform1f(GLES20.glGetUniformLocation(glowProg, "uTime"), t)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(glowProg, "uGain"), if (showLasco && Lasco.image != null) 0.3f else 1f)
+        // tikra spalva: švytėjimas baltas, vos šiltas; SDO – oranžinis
+        if (sunTrue) GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uTint"), 1f, 0.95f, 0.88f)
+        else GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uTint"), 1f, 0.62f, 0.22f)
         resetAttribs()
         val gl = GLES20.glGetAttribLocation(glowProg, "aPos")
         GLES20.glEnableVertexAttribArray(gl)
@@ -6295,6 +6298,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uRs"), rs)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uHalf"), Lasco.HALF_RSUN.toFloat())
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uOut"), outR.toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uTrue"), if (sunTrue) 1f else 0f)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uIn"), inR.toFloat())
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texB)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(lascoProg, "uTex2"), 1)
@@ -6901,6 +6905,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform vec3 uR;
             uniform float uRs;
             uniform float uHalf;
+            uniform float uTrue;
             uniform float uOut;
             uniform float uIn;
             varying vec3 vW;
@@ -6947,6 +6952,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 float v = 1.0 - exp(-acc.x * (dt / uRs) * 2.5 * 0.8 / (uOut - uIn));   // švelnus prisotinimas – ne vientisa geltona
                 // spalva pagal ryškumą: silpni srautai – raudoni, ryškūs išmetimai – geltoni
                 vec3 col = mix(vec3(0.95, 0.18, 0.04), vec3(1.0, 0.82, 0.25), clamp(v * 1.6, 0.0, 1.0));
+                // tikra spalva: vainikas perlamutriškai baltas (LASCO C2 oranžinė – tik koronografo paletė)
+                col = mix(col, vec3(0.93, 0.95, 1.0) * (0.75 + 0.25 * clamp(v * 1.6, 0.0, 1.0)), uTrue);
                 gl_FragColor = vec4(col * v * 0.85, 1.0);
             }
         """
@@ -6970,6 +6977,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform vec3 uCenter;
             uniform float uTime;
             uniform float uGain;
+            uniform vec3 uTint;
             varying vec3 vW;
             void main() {
                 // Spindulio nuo kameros atstumas iki Saulės centro – korona visada koncentriška su Saule
@@ -6982,7 +6990,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 float r0 = 1.0 / 2.0;                         // Saulės kraštas
                 float g = r < r0 ? 0.35 : pow(clamp((1.0 - r) / (1.0 - r0), 0.0, 1.0), 1.8);
                 g *= (0.85 + 0.15 * sin(uTime * 1.5)) * uGain;
-                gl_FragColor = vec4(vec3(1.0, 0.62, 0.22) * g, g);
+                gl_FragColor = vec4(uTint * g, g);
             }
         """
         private const val ATMO_VS = """

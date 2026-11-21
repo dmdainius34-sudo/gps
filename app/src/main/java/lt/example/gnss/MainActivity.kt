@@ -8594,6 +8594,17 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // paleidimo animacija (Android 12+) rodoma ~1,1 s: pirmas kadras atidedamas, kol ji pasibaigia
+        if (Build.VERSION.SDK_INT >= 31 && savedInstanceState == null) {
+            val t0 = android.os.SystemClock.uptimeMillis()
+            val content = findViewById<View>(android.R.id.content)
+            content.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    if (android.os.SystemClock.uptimeMillis() - t0 < 1100L) { content.postDelayed({ content.invalidate() }, 50L); return false }
+                    content.viewTreeObserver.removeOnPreDrawListener(this); return true
+                }
+            })
+        }
         // po paleidimo įjungta: stabili šiaurė, orientyrai, erdvės orientacija, tinklelis, Saulės koordinatės, SDO, LASCO, UV; palydovai – išjungti
         // (HDR paliekamas, nes jis įsigalioja tik atidarius programą iš naujo)
         getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit()

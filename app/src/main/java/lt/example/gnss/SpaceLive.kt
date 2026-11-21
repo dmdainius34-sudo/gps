@@ -283,7 +283,7 @@ object SpaceLive {
                         ?.let { txt -> if (txt.isBlank()) flares = emptyList() else runCatching { parseFlares(txt) }.getOrNull()?.let { flares = it } }
                 }
                 if (due("ssn", 24 * 3_600_000L, now)) get("https://services.swpc.noaa.gov/json/solar-cycle/observed-solar-cycle-indices.json")?.let { runCatching { parseCycle(it) } }
-                if (due("probes", 12 * 3_600_000L, now)) {
+                if (false && due("probes", 12 * 3_600_000L, now)) {
                     val f = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
                     val st = f.format(java.util.Date(now - 60 * 86_400_000L)); val en = f.format(java.util.Date(now + 30 * 86_400_000L))
                     val out = ArrayList<Probe>()
@@ -298,7 +298,7 @@ object SpaceLive {
                     }
                     if (out.isNotEmpty()) probes = out
                 }
-                if (due("iss", 12 * 3_600_000L, now)) get("https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=json")?.let { runCatching { parseOmm(it) }.getOrNull()?.let { iss = it } }
+                if (false && due("iss", 12 * 3_600_000L, now)) get("https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=json")?.let { runCatching { parseOmm(it) }.getOrNull()?.let { iss = it } }
                 val el = iss
                 if (el != null && (lonDeg != 0.0 || latDeg != 0.0) && due("pass", 30 * 60_000L, now)) passes = computePasses(el, latDeg, lonDeg, now)
                 if (status == "neatsisiųsta") status = "atnaujinta"

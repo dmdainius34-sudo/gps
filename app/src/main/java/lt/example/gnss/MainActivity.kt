@@ -2461,7 +2461,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawEarth()
         drawTiles()
         drawGlobeGrid()
-        if (SpaceLive.enabled) { drawAurora(); drawIss() }
+        if (SpaceLive.enabled) drawAurora()            // TKS ir zondai pašalinti (ne ta tema)
         drawEquatorRing(t)
         drawMoon()
         drawMoonOrbit()
@@ -3511,7 +3511,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         seg(tip, DoubleArray(3) { tip[it] - mv[it] * r * 0.3 - side[it] * r * 0.15 }, arrow)
         drawLines(arrow.toFloatArray(), 0.5f, 1f, 0.55f, 0.95f)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
-        labelAt(DoubleArray(3) { obs[it] + nn[it] * hr * 1.08 }, "Š", 0.6f, 1f, 1f, 0.04f)
+        labelAt(DoubleArray(3) { obs[it] + nn[it] * hr * 1.08 }, "n", 0.6f, 1f, 1f, 0.04f)
     }
 
     private fun drawSky() {
@@ -8988,7 +8988,7 @@ class MainActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(mw, ww))
         SpaceLive.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("space_live", true)
         left.addView(CheckBox(this).apply {
-            text = "Kosminiai orai gyvai: pašvaistė, saulės vėjas, žybsniai, Saulės ciklas, zondai prie Saulės, TKS, užtemimai"
+            text = "Kosminiai orai gyvai: pašvaistė, saulės vėjas, žybsniai, Saulės ciklas, užtemimai"
             isChecked = SpaceLive.enabled
             setOnCheckedChangeListener { _, on -> SpaceLive.enabled = on; getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("space_live", on).apply() }
         }, LinearLayout.LayoutParams(mw, ww))

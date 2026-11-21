@@ -1381,6 +1381,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setFollowDevice(on: Boolean) { renderer.followDevice = on; renderer.resetUser() }
     fun setLevelHorizon(on: Boolean) { renderer.levelHorizon = on; calPrefs.edit().putBoolean("level_horizon", on).apply() }
     fun setFreeView(on: Boolean) { renderer.freeView = on; renderer.resetUser() }
+    val freeView get() = renderer.freeView
+    /** Mygtukai +/−: priartinti ar nutolinti (f > 1 – arčiau). */
+    fun zoomStep(f: Float) { renderer.zoomBy(f) }
     fun screenTest(cb: (String) -> Unit) { renderer.screenTest { t -> handler.post { cb(t) } } }
     /** Prašoma didžiausio ekrano dažnio (60/120 Hz), ne 30. */
     override fun surfaceCreated(holder: android.view.SurfaceHolder) {
@@ -1544,6 +1547,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             .setPositiveButton("Gerai", null).show().also { WinUtil.unfold(it); WinUtil.draggable(it) }
     }
     private var prevArc = doubleArrayOf(0.0, 0.0, 1.0)
+    // gaublio „paimk ir tempk“: paskutinė piršto vieta ir laikas; dviejų pirštų pasukimas – tik peržengus 10° (kad nedrebėtų)
+    private var prevX = 0f; private var prevY = 0f; private var lastMoveMs = 0L
+    private var rollAcc = 0.0; private var rollOn = false
     private var pinchLast = 0f
     private var midX = 0f; private var midY = 0f
     private var pinchAngle = 0.0
@@ -1886,7 +1892,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                 // stebėtojo vaizde vilkimas kryptį nekeičia – jutikliai neužšaldomi (kitaip kryptis „sustingsta“ 60 s)
                 manual = !renderer.isObserverView()
                 renderer.setDragging(true)
+                renderer.stopSpin()
                 prevArc = arcMap(e.x, e.y)
+                prevX = e.x; prevY = e.y; lastMoveMs = e.eventTime
                 parent?.requestDisallowInterceptTouchEvent(true)
                 return true
             }
@@ -1894,6 +1902,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                 if (e.pointerCount >= 2) {
                     pinchLast = pinchDist(e)
                     pinchAngle = pinchAng(e)
+                    rollAcc = 0.0; rollOn = false
+                    renderer.stopSpin()
                     midX = (e.getX(0) + e.getX(1)) / 2; midY = (e.getY(0) + e.getY(1)) / 2
                 }
                 return true
@@ -1907,12 +1917,18 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                     var da = ang - pinchAngle
                     if (da > Math.PI) da -= 2 * Math.PI
                     if (da < -Math.PI) da += 2 * Math.PI
+                    // pasukimas dviem pirštais – tik aiškiai sukant (> 10°), kad priartinant vaizdas nesvyruotų
+                    if (renderer.globeGrab() && !rollOn) { rollAcc += da; if (kotlin.math.abs(rollAcc) > Math.toRadians(10.0)) rollOn = true; da = 0.0 }
                     renderer.rollBy(da)
                     pinchAngle = ang
                     // dviem pirštais – vaizdo poslinkis (kai kamera prie Saulės ar Mėnulio)
                     val mx = (e.getX(0) + e.getX(1)) / 2; val my = (e.getY(0) + e.getY(1)) / 2
                     renderer.panBy((mx - midX) / height.coerceAtLeast(1), (my - midY) / height.coerceAtLeast(1))
                     midX = mx; midY = my
+                } else if (renderer.globeGrab()) {
+                    // kaip Google Earth: žemė juda kartu su pirštu (greitis pagal aukštį virš paviršiaus)
+                    renderer.dragGlobe(e.x - prevX, e.y - prevY)
+                    prevX = e.x; prevY = e.y; lastMoveMs = e.eventTime
                 } else {
                     val cur = arcMap(e.x, e.y)
                     renderer.arcRotate(prevArc, cur)
@@ -1924,10 +1940,13 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                 pinchLast = 0f
                 pinchAngle = 0.0
                 val remaining = if (e.actionIndex == 0) 1 else 0
-                if (remaining < e.pointerCount) prevArc = arcMap(e.getX(remaining), e.getY(remaining))
+                if (remaining < e.pointerCount) { prevArc = arcMap(e.getX(remaining), e.getY(remaining)); prevX = e.getX(remaining); prevY = e.getY(remaining) }
+                renderer.stopSpin()
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                // pirštas sustojo prieš atleidžiant – nesisuka toliau (inercija tik metant)
+                if (e.eventTime - lastMoveMs > 60L || e.actionMasked == MotionEvent.ACTION_CANCEL) renderer.stopSpin()
                 renderer.setDragging(false)
                 handler.removeCallbacks(resumeSensors)
                 if (manual) handler.postDelayed(resumeSensors, 60_000L)
@@ -4699,6 +4718,24 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         return o
     }
+
+    /** Gaublio „paimk ir tempk“ režimas: laisvas vaizdas (ne stebėtojo), be skrydžio ir be kito kūno. */
+    fun globeGrab(): Boolean = !observerView() && focus == 0 && zoom < EARTH_R + SOLAR_ZOOM
+
+    /**
+     * Vilkimas pirštu (px): Žemė pasisuka tiek, kiek ekrano pikselių atitinka žemės paviršiuje po kamera, t. y. taškas lieka po pirštu
+     * (arti – lėtai ir tiksliai, toli – greičiau, bet ne daugiau ~0,2°/px).
+     */
+    fun dragGlobe(dx: Float, dy: Float) {
+        val alt = (zoom - EARTH_R).toDouble().coerceAtLeast(1e-5)
+        val k = minOf(2.0 * kotlin.math.tan(Math.toRadians(20.0)) * alt / maxOf(lastH, 1) / EARTH_R, 0.0035)
+        val ax = dy * k; val ay = dx * k
+        val ang = kotlin.math.hypot(ax, ay); if (ang < 1e-9) return
+        val axis = doubleArrayOf(ax / ang, ay / ang, 0.0)
+        userR = mul3d(axisAngleMat(axis, ang), userR)
+        spinAxis = axis; spinAngle = ang
+    }
+    fun stopSpin() { spinAngle = 0.0 }
 
     /** Ritinimas aplink ekrano (žiūros) ašį – dviejų pirštų pasukimas. */
     fun rollBy(angle: Double) {
@@ -8851,6 +8888,39 @@ class MainActivity : AppCompatActivity() {
             gb.post(tick); gLbl.post(lblTick)
             skyHolder.addView(gRow, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, bSize, Gravity.BOTTOM or Gravity.START).apply {
                 val m = (10 * dp).toInt(); setMargins(m, m, m, m + (44 * dp).toInt() + (if (baro.hasSensor) bSize + (8 * dp).toInt() else 0)) })
+        }
+        // Gaublio valdymas: 🌍 – laisvas gaublys (kaip Google Earth, be jutiklių drebėjimo) / 👁 – stebėtojo vaizdas; + ir − priartinimui
+        // (paspaudus – žingsnis, laikant – tolygiai)
+        run {
+            fun rb(t: String) = TextView(this).apply {
+                text = t; textSize = 20f; gravity = Gravity.CENTER; setTextColor(0xFFFFFFFF.toInt())
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0x55000000); setStroke((1 * dp).toInt(), 0x66FFFFFF) } }
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+            val bs = (40 * dp).toInt(); val gp = (5 * dp).toInt()
+            val mode = rb(if (skyDome.freeView) "\uD83D\uDC41" else "\uD83C\uDF0D")
+            mode.setOnClickListener {
+                keyHaptic(mode)
+                val on = !skyDome.freeView
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("free_view", on).apply()
+                skyDome.setFreeView(on)
+                mode.text = if (on) "\uD83D\uDC41" else "\uD83C\uDF0D"
+                Toast.makeText(this, if (on) "Laisvas gaublys: vilkite pirštu, + / − arba žiupsneliu – priartinti" else "Stebėtojo vaizdas", Toast.LENGTH_SHORT).show()
+            }
+            col.addView(mode, LinearLayout.LayoutParams(bs, bs).apply { setMargins(0, gp, 0, gp) })
+            for ((t, f) in listOf("+" to 1.06f, "\u2212" to 1f / 1.06f)) {
+                val btn = rb(t)
+                val rep = object : Runnable { override fun run() { skyDome.zoomStep(f); btn.postDelayed(this, 16L) } }
+                btn.setOnTouchListener { v, ev ->
+                    when (ev.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> { v.alpha = 0.6f; keyHaptic(v); skyDome.zoomStep(f * f * f); v.postDelayed(rep, 300L) }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { v.alpha = 1f; v.removeCallbacks(rep) }
+                    }
+                    true
+                }
+                col.addView(btn, LinearLayout.LayoutParams(bs, bs).apply { setMargins(0, gp, 0, gp) })
+            }
+            skyHolder.addView(col, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.END or Gravity.CENTER_VERTICAL).apply { val mm = (10 * dp).toInt(); setMargins(mm, mm, mm + bSize + (8 * dp).toInt(), mm) })   // kairiau įrankių stulpelio
         }
         // palydovinių plytelių autorystė (licencijos reikalavimas) – tik kai plytelės matomos
         run {

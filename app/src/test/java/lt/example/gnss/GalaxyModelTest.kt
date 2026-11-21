@@ -571,3 +571,27 @@ class BaroFuseTest {
         BaroFuse.source = null; BaroFuse.reset()
     }
 }
+
+class GlobeTilesTest {
+    @Test fun mercatorRoundTrip() {
+        val xy = GlobeTiles.xyOf(54.7, 25.3, 14)
+        assertEquals(54.7, GlobeTiles.latOf(xy[1], 14), 1e-9)
+        assertEquals(25.3, GlobeTiles.lonOf(xy[0], 14), 1e-9)
+        assertEquals(9343, xy[0].toInt())
+    }
+
+    @Test fun zoomByResolution() {
+        assertEquals(GlobeTiles.MAX_Z, GlobeTiles.zoomFor(2.0, 54.7))        // arti – didžiausias lygis
+        assertEquals(GlobeTiles.MIN_Z, GlobeTiles.zoomFor(1e6, 54.7))
+        val z = GlobeTiles.zoomFor(150.0, 54.7)                              // ~150 m/px → z 9
+        org.junit.Assert.assertTrue("z=$z", z in 9..10)
+    }
+
+    @Test fun aroundGridWrapsAndSorts() {
+        val k = GlobeTiles.around(54.7, 179.99, 3, 1)
+        assertEquals(9, k.size)
+        org.junit.Assert.assertTrue(k.all { it.x in 0 until 8 })
+        val c = GlobeTiles.xyOf(54.7, 179.99, 3)
+        assertEquals(c[0].toInt(), k[0].x)
+    }
+}

@@ -2303,7 +2303,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val t = (System.nanoTime() - t0) / 1e9f
 
         // Zoom: kameros atstumas kiekvieną kadrą; artima riba mažėja priartinus (kad Žemė nebūtų nukirpta)
-        val near = ((zoom - EARTH_R) * 0.3f).coerceIn(0.003f, 0.1f)
+        val near = ((zoom - EARTH_R) * 0.3f).coerceIn(0.0001f, 0.1f)
         Matrix.perspectiveM(proj, 0, 40f, aspectNow, near, if (zoom > EARTH_R + SOLAR_ZOOM) zoom + GALAXY_DEPTH else 60f)
         proj[9] = if (observerView()) 0f else 0.3f                 // stebėtojo režime horizontas – ekrano viduryje
         Matrix.setIdentityM(view, 0)
@@ -2399,6 +2399,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
         // 2b) Žemė gaublio viduryje (pasvirusi į Polaris, sukasi realiu laiku)
         drawEarth()
+        drawTiles()
         drawEquatorRing(t)
         drawMoon()
         drawMoonOrbit()
@@ -4189,13 +4190,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
 
     @Volatile var zoom = 3f
-    /** Priartinimas pagal aukštį virš paviršiaus: arčiausiai ~0,05 vnt. (≈ 1 300 km) – Kreta ~2 cm ekrane. */
+    /** Priartinimas pagal aukštį virš paviršiaus: arčiausiai ~0,0004 vnt. (≈ 10 km) – arti rodomos palydovinės plytelės (GlobeTiles). */
     fun zoomBy(factor: Float) {
         if (flight != null) return                                       // skrydžio metu atstumą valdo tvarkaraštis
         if (focus != 0) { val r = bodyRadius(focus).toFloat(); focusZoom = (focusZoom / factor).coerceIn(r * 1.3f, r * 2000f); return }
         // galaktikos stadijoje – žingsnis spartesnis
         val f = if (zoom > EARTH_R + SOLAR_ZOOM) Math.pow(factor.toDouble(), 2.5).toFloat() else factor
-        zoom = EARTH_R + ((zoom - EARTH_R) / f).coerceIn(0.05f, maxZoomOut())
+        zoom = EARTH_R + ((zoom - EARTH_R) / f).coerceIn(0.0004f, maxZoomOut())
     }
 
     /** Mastelio režimo stadijos: Žemė (iki ~3), Saulės sistema (iki SOLAR_ZOOM), galaktika (iki GALAXY_ZOOM). */
@@ -4559,7 +4560,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             headingSm + 0.15 * d
         }
         val f = DoubleArray(3) { sin(headingSm) * east[it] + cos(headingSm) * north[it] }
-        val dist = ((flight?.zoom0 ?: zoom) - EARTH_R).toDouble().coerceAtLeast(0.03)
+        val dist = ((flight?.zoom0 ?: zoom) - EARTH_R).toDouble().coerceAtLeast(0.0004)
         // Lygus horizontas + planšetė paguldyta ekranu į viršų (nugarėlė žemyn > 45°): sklandžiai pereinama į vaizdą iš viršaus.
         // Ekrano viršus – planšetės viršutinio krašto kryptis, todėl N ekrane rodo į tikrą šiaurę; horizontas – ratas aplink stebėtoją.
         val backEl = Math.toDegrees(kotlin.math.asin((-r[8]).toDouble().coerceIn(-1.0, 1.0)))
@@ -4757,6 +4758,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         } catch (e: Exception) {
             android.util.Log.w("GnssApp", "earth_relief.bin nerastas – Žemė be reljefo"); return
         }
+        reliefHm = hm
         fun height(latDeg: Double, lonDeg: Double): Double {
             val fx = ((lonDeg + 180.0) * 4.0 - 0.5).let { ((it % w) + w) % w }
             val fy = ((90.0 - latDeg) * 4.0 - 0.5).coerceIn(0.0, hgt - 1.0)
@@ -4809,6 +4811,131 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         android.util.Log.i("GnssApp", "Žemės reljefas: ${earthBands.size} juostos, ${(stacks + 1) * cols} viršūnių, išryškinimas ×${EARTH_RELIEF_X.toInt()}")
     }
+    // ---------------- PALYDOVINĖS PLYTELĖS (priartinus) ----------------
+    private var reliefHm: ShortArray? = null
+    private var tileProg = 0
+    private class TileGl(val tex: Int, val vbo: FloatBuffer, val dirs: Array<DoubleArray>)
+    private val tileGl = LinkedHashMap<GlobeTiles.Key, TileGl>(64, 0.75f, true)
+    private val TILE_N = 8
+    private val tileIdx: java.nio.ShortBuffer by lazy {
+        val n = TILE_N; val a = ShortArray(n * n * 6); var k = 0
+        for (j in 0 until n) for (i in 0 until n) {
+            val i0 = j * (n + 1) + i; val i1 = i0 + n + 1
+            a[k++] = i0.toShort(); a[k++] = i1.toShort(); a[k++] = (i1 + 1).toShort()
+            a[k++] = i0.toShort(); a[k++] = (i1 + 1).toShort(); a[k++] = (i0 + 1).toShort()
+        }
+        java.nio.ByteBuffer.allocateDirect(a.size * 2).order(java.nio.ByteOrder.nativeOrder()).asShortBuffer().apply { put(a); position(0) }
+    }
+
+    /** Reljefo aukštis (m) iš earth_relief.bin (tas pats, kuriuo pakeltas Žemės paviršius). */
+    private fun reliefH(latDeg: Double, lonDeg: Double): Double {
+        val hm = reliefHm ?: return 0.0
+        val w = 1440; val hgt = 720
+        val fx = ((lonDeg + 180.0) * 4.0 - 0.5).let { ((it % w) + w) % w }
+        val fy = ((90.0 - latDeg) * 4.0 - 0.5).coerceIn(0.0, hgt - 1.0)
+        val x0 = fx.toInt(); val y0 = fy.toInt(); val x1 = (x0 + 1) % w; val y1 = (y0 + 1).coerceAtMost(hgt - 1)
+        val ax = fx - x0; val ay = fy - y0
+        fun v(x: Int, y: Int) = hm[y * w + x].toDouble()
+        return (v(x0, y0) * (1 - ax) + v(x1, y0) * ax) * (1 - ay) + (v(x0, y1) * (1 - ax) + v(x1, y1) * ax) * ay
+    }
+
+    private fun tileUpload(k: GlobeTiles.Key, jpg: ByteArray): TileGl? {
+        val bmp = android.graphics.BitmapFactory.decodeByteArray(jpg, 0, jpg.size) ?: return null
+        val ids = IntArray(1); GLES20.glGenTextures(1, ids, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
+        GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
+        bmp.recycle()
+        val n = TILE_N; val r0 = EARTH_R.toDouble()
+        val data = FloatArray((n + 1) * (n + 1) * 5)
+        val dirs = ArrayList<DoubleArray>()
+        for (j in 0..n) for (i in 0..n) {
+            val lat = GlobeTiles.latOf(k.y + j.toDouble() / n, k.z); val lon = GlobeTiles.lonOf(k.x + i.toDouble() / n, k.z)
+            val la = Math.toRadians(lat); val lo = Math.toRadians(lon)
+            val r = r0 * (1.0 + EARTH_RELIEF_X * maxOf(0.0, reliefH(lat, lon)) / 6_371_000.0) * (1.0 + 2e-6)
+            val d = doubleArrayOf(cos(la) * cos(lo), cos(la) * sin(lo), sin(la))
+            val o = (j * (n + 1) + i) * 5
+            data[o] = (r * d[0]).toFloat(); data[o + 1] = (r * d[1]).toFloat(); data[o + 2] = (r * d[2]).toFloat()
+            data[o + 3] = i.toFloat() / n; data[o + 4] = j.toFloat() / n
+            if ((i == 0 || i == n || i == n / 2) && (j == 0 || j == n || j == n / 2)) dirs.add(d)
+        }
+        return TileGl(ids[0], floatBuf(data), dirs.toTypedArray())
+    }
+
+    /**
+     * Priartinus (< ~400 km iki paviršiaus) ant Žemės – palydovinės nuotraukos plytelės: stambesnis lygis (fonas, kol kraunasi)
+     * ir tikslusis lygis pagal ekrano raišką aplink tašką, į kurį žiūrima. Plytelės kaupiamos atmintyje (GlobeTiles).
+     */
+    private fun drawTiles() {
+        if (tileProg == 0 || focus != 0 || flight != null || earthTex == 0) return
+        val m = earthMat; val r0 = EARTH_R.toDouble()
+        val cw = camPos
+        val cm = DoubleArray(3) { i -> m[i * 4] * cw[0].toDouble() + m[i * 4 + 1] * cw[1].toDouble() + m[i * 4 + 2] * cw[2].toDouble() }
+        val lw = if (observerView()) lookI else floatArrayOf(-eyeI[0], -eyeI[1], -eyeI[2])
+        val lm = DoubleArray(3) { i -> m[i * 4] * lw[0].toDouble() + m[i * 4 + 1] * lw[1].toDouble() + m[i * 4 + 2] * lw[2].toDouble() }
+        val cl = kotlin.math.sqrt(cm[0] * cm[0] + cm[1] * cm[1] + cm[2] * cm[2])
+        val alt = cl - r0
+        val alpha = 1.0 - ((alt - 0.008) / 0.008).coerceIn(0.0, 1.0).let { it * it * (3 - 2 * it) }
+        if (alpha <= 0.01 || cl < 1e-6) { GlobeTiles.wanted = emptySet(); return }
+        // taškas, į kurį žiūrima: žvilgsnio ir rutulio sankirta (kitaip – po kamera)
+        val b = cm[0] * lm[0] + cm[1] * lm[1] + cm[2] * lm[2]
+        val disc = b * b - (cl * cl - r0 * r0)
+        var hit = DoubleArray(3) { cm[it] / cl * r0 }; var dist = alt
+        if (disc > 0) { val tt = -b - kotlin.math.sqrt(disc); if (tt > 0) { hit = DoubleArray(3) { cm[it] + tt * lm[it] }; dist = tt } }
+        val hl = kotlin.math.sqrt(hit[0] * hit[0] + hit[1] * hit[1] + hit[2] * hit[2])
+        val lat = Math.toDegrees(kotlin.math.asin((hit[2] / hl).coerceIn(-1.0, 1.0))); val lon = Math.toDegrees(kotlin.math.atan2(hit[1], hit[0]))
+        val mpp = 2.0 * (dist / r0 * 6_371_000.0) * kotlin.math.tan(Math.toRadians(20.0)) / lastH
+        val z = GlobeTiles.zoomFor(mpp, lat); val zb = maxOf(GlobeTiles.MIN_Z, z - 3)
+        val keysB = GlobeTiles.around(lat, lon, zb, 2); val keys = if (z > zb) GlobeTiles.around(lat, lon, z, 3) else emptyList()
+        val all = keysB + keys
+        GlobeTiles.wanted = all.toHashSet()
+        var up = 0
+        while (up < 6) {
+            val (k, jpg) = GlobeTiles.ready.poll() ?: break
+            if (tileGl.containsKey(k)) continue
+            tileUpload(k, jpg)?.let { tileGl[k] = it }; up++
+        }
+        for (k in all) if (!tileGl.containsKey(k)) GlobeTiles.request(k)
+        if (tileGl.size > 160) {
+            val it = tileGl.entries.iterator()
+            while (tileGl.size > 160 && it.hasNext()) { val e = it.next(); if (e.key !in GlobeTiles.wanted) { GLES20.glDeleteTextures(1, intArrayOf(e.value.tex), 0); it.remove() } }
+        }
+        val prog = tileProg
+        GLES20.glUseProgram(prog)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uMVP"), 1, false, earthMvp, 0)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uModel"), 1, false, earthMat, 0)
+        val sun = sunDir()
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uAlpha"), alpha.toFloat())
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(prog, "uTex"), 0)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        resetAttribs()
+        val lp = GLES20.glGetAttribLocation(prog, "aPos"); val lu = GLES20.glGetAttribLocation(prog, "aUV")
+        GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lu)
+        val depthWas = GLES20.glIsEnabled(GLES20.GL_DEPTH_TEST); val blendWas = GLES20.glIsEnabled(GLES20.GL_BLEND)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        var drawn = 0
+        for (k in all) {
+            val t = tileGl[k] ?: continue
+            // už horizonto – nepiešiama (piešiama be gylio testo)
+            if (t.dirs.none { d -> d[0] * cm[0] + d[1] * cm[1] + d[2] * cm[2] > r0 * 0.999 }) continue
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, t.tex)
+            t.vbo.position(0); GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 20, t.vbo)
+            t.vbo.position(3); GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 20, t.vbo)
+            t.vbo.position(0); tileIdx.position(0)
+            GLES20.glDrawElements(GLES20.GL_TRIANGLES, TILE_N * TILE_N * 6, GLES20.GL_UNSIGNED_SHORT, tileIdx)
+            drawn++
+        }
+        if (depthWas) GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        if (!blendWas) GLES20.glDisable(GLES20.GL_BLEND)
+        if (drawn > 0) GlobeTiles.shownMs = System.currentTimeMillis()
+    }
+
     private var earthProg = 0
     private val earthAxis by lazy { floatBuf(floatArrayOf(0f, 0f, -0.5f, 0f, 0f, 0.5f)) }
     private var earthPos: FloatBuffer? = null
@@ -4820,6 +4947,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Įkelia assets/earth.jpg ir sukuria rutulį su lygiakampe tekstūra. */
     private fun buildEarth() {
         earthProg = program(EARTH_VS, EARTH_FS)
+        tileProg = program(TILE_VS, TILE_FS); tileGl.clear()
+        GlobeTiles.init(appCtx.filesDir)
         val main = Handler(Looper.getMainLooper())
         try {
             appCtx.assets.open("earth.jpg").use { ins ->
@@ -6440,6 +6569,32 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vec3 c = day + night;
                 c = c / (vec3(1.0) + 0.25 * c);               // švelnus tonų suspaudimas, kontrastas išlieka
                 gl_FragColor = vec4(c, 1.0);
+            }
+        """
+        private const val TILE_VS = """
+            attribute vec3 aPos;
+            attribute vec2 aUV;
+            uniform mat4 uMVP;
+            uniform mat4 uModel;
+            varying vec2 vUV;
+            varying vec3 vS;
+            void main() {
+                vUV = aUV;
+                vS = mat3(uModel) * aPos;
+                gl_Position = uMVP * vec4(aPos, 1.0);
+            }
+        """
+        private const val TILE_FS = """
+            precision mediump float;
+            uniform sampler2D uTex;
+            uniform vec3 uLight;
+            uniform float uAlpha;
+            varying vec2 vUV;
+            varying vec3 vS;
+            void main() {
+                float soft = smoothstep(-0.12, 0.25, dot(normalize(vS), normalize(uLight)));
+                vec3 c = texture2D(uTex, vUV).rgb * (0.18 + 0.82 * soft);
+                gl_FragColor = vec4(c, uAlpha);
             }
         """
         private const val EARTH_RELIEF_VS = """
@@ -8697,6 +8852,17 @@ class MainActivity : AppCompatActivity() {
             skyHolder.addView(gRow, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, bSize, Gravity.BOTTOM or Gravity.START).apply {
                 val m = (10 * dp).toInt(); setMargins(m, m, m, m + (44 * dp).toInt() + (if (baro.hasSensor) bSize + (8 * dp).toInt() else 0)) })
         }
+        // palydovinių plytelių autorystė (licencijos reikalavimas) – tik kai plytelės matomos
+        run {
+            val att = TextView(this).apply { textSize = 9f; setTextColor(0xDDFFFFFF.toInt()); setShadowLayer(3f, 0f, 0f, 0xFF000000.toInt())
+                text = GlobeTiles.ATTRIBUTION; visibility = View.GONE }
+            val tk = object : Runnable { override fun run() {
+                att.visibility = if (System.currentTimeMillis() - GlobeTiles.shownMs < 2_000L) View.VISIBLE else View.GONE
+                att.postDelayed(this, 1000L) } }
+            att.post(tk)
+            skyHolder.addView(att, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.END).apply { val mm = (4 * dp).toInt(); setMargins(mm, mm, mm, mm) })
+        }
         toolCol = tools
         skyHolder.addView(tools, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
             val m = (10 * dp).toInt()
@@ -8764,7 +8930,7 @@ class MainActivity : AppCompatActivity() {
                         (AimDiag.lastSummary(this@MainActivity).takeIf { it.isNotEmpty() }?.let { it + "\n" } ?: "") +
                         (SunCal.lastLine(this@MainActivity)?.let { "Paskutinis kalibravimas pagal Saulę (${SunCal.FILE}): ${SunCal.HEADER.trim()}\n$it\n" } ?: "Kalibravimų pagal Saulę žurnale nėra\n") +
                         (if (Uvi.enabled) Uvi.text() + "\n" else "") + SunFrame.text() + "\n" +
-                        NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + SatHealth.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + KnownPos.text() + "\n" + CabinMap.text() + "\n" +
+                        NtripClient.text(obsLatNow, obsLonNow) + "\n" + LiveRtk.text() + "\n" + SatHealth.text() + "\n" + Crane.text(obsLatNow, obsLonNow) + "\n" + KnownPos.text() + "\n" + GlobeTiles.text() + "\n" + CabinMap.text() + "\n" +
                         KnownHeight.text() + "\n" + AppDiag.text() + SatStats.text() + (lastScreenTest?.let { "=== EKRANO TESTAS ===\n$it\n" } ?: "") +
                         (Readiness.knowledge()?.let { "Lusto žinios: ${it.text}\n" } ?: "") +
                         "Pasiruošimas: " + Readiness.state(LiveRtk.enabled, LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc).text + "\n" +

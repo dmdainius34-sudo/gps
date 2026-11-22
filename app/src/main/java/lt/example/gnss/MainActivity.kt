@@ -6083,7 +6083,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
         GLES20.glLineWidth(1f)                                              // 1 taško, kaip trikampio linijos
-        drawLines(pts.toFloatArray(), 0.8f, 0.8f, 0.85f, 0.35f)
+        drawLines(pts.toFloatArray(), 0.8f, 0.8f, 0.85f, 0.16f)      // blanki kaip žvilgsnio siūlas
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
     }
 

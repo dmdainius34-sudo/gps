@@ -2556,6 +2556,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             }
         }
         if (observerView()) observerCamera()          // kamera – pagal tikrą laiką (pinCam): laikui bėgant sukasi Žemė, ne visas modelis
+        // režimas „su orbita“ (▶): kamera pririšta prie Saulės ir nesisuka – Žemė sukasi ir keliauja orbita (link CME)
+        if (observerView() && simOffsetMs != 0L && !simHideOrbit) helioCamera() else helioRef = null
         // bakstelėjimui (palydovai, Saulė, Mėnulis) – ta pati matrica, kuria piešiama (po stebėtojo kameros; anksčiau – prieš ją, todėl pirštas „nepataikydavo“)
         System.arraycopy(mvpI, 0, lastMvpI, 0, 16)
         // Stebėtojo lokali sistema (dangaus kupolas, horizontas): ENU -> I + vieta
@@ -4550,6 +4552,19 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile var simRun = false
     /** Ilgai palaikius ▶: false – su orbita (pradinis), true – be orbitos. */
     @Volatile var simHideOrbit = false
+    private class HelioRef(val s0: DoubleArray, val cam0: FloatArray, val look0: FloatArray, val up0: FloatArray, val zoom0: Float)
+    private var helioRef: HelioRef? = null
+    private fun helioCamera() {
+        val sNow = bodyPos(1) ?: return
+        val ref = helioRef ?: HelioRef(sNow.copyOf(), camPos.copyOf(), lookI.copyOf(), if (camBasisOk) camUpW.copyOf() else floatArrayOf(0f, 0f, 1f), zoom)
+            .also { helioRef = it }
+        val k = zoom / ref.zoom0
+        val eye = FloatArray(3) { ((sNow[it] - ref.s0[it]) + ref.cam0[it] * k).toFloat() }
+        val lv = FloatArray(16)
+        Matrix.setLookAtM(lv, 0, eye[0], eye[1], eye[2], eye[0] + ref.look0[0], eye[1] + ref.look0[1], eye[2] + ref.look0[2], ref.up0[0], ref.up0[1], ref.up0[2])
+        Matrix.multiplyMM(mvpI, 0, proj, 0, lv, 0)
+        camPos = eye; lookI = ref.look0.copyOf()
+    }
     /** Kiek kartų greičiau už tikrą laiką. */
     @Volatile var simRate = 2_880.0
     private var simLastNs = 0L

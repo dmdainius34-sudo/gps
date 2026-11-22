@@ -4055,7 +4055,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glLineWidth(1f)
         }
         // antras (modelio) Saulės kryžius pašalintas – lieka vienas, tiksliai ties Saulės atspindžiu
-        Uvi.centerCached(now)?.let { cross(it[0], it[1], 1f, 0.3f, 0.8f, 2.0) }
+        // UV indekso kryžius pašalintas (duomenys lieka ataskaitoje)
         GLES20.glDepthMask(true); GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         // užrašas „Saulė zenite (modelis)“ pašalintas – lieka kryžius
     }
@@ -5846,14 +5846,63 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile private var moonPosLast: DoubleArray? = null
     private fun moonDistScene(): Double = 1.9
 
+    // ---------------- Mėnulio fazė, kaip ją mato stebėtojas ----------------
+    private var phaseTex = 0; private var phaseKey = ""
+    /**
+     * Mėnulio fazės paveikslėlis ant Mėnulio: apšviesta dalis ir šviesaus krašto kryptis – kaip mato stebėtojas iš savo vietos
+     * (kryptis nuo jo zenito). Paveikslėlio „viršus“ – stebėtojo zenito kryptis, todėl ekrane jis pasviręs taip pat, kaip
+     * Mėnulis atrodo pakreipus planšetę ar telefoną.
+     */
+    private fun drawMoonPhase() {
+        val mp = moonPosLast ?: return
+        val now = System.currentTimeMillis()
+        val s = sunDir(); val m = moonDir()
+        fun nrm(v: DoubleArray): DoubleArray { val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).coerceAtLeast(1e-12); return DoubleArray(3) { v[it] / l } }
+        val ml = nrm(m)
+        // fazės kampas (Saulė–Mėnulis–Žemė) iš elongacijos ir atstumų
+        val dSun = sunDistKm(); val dMoon = moonDistKm()
+        val cosE = (s[0] * ml[0] + s[1] * ml[1] + s[2] * ml[2]).coerceIn(-1.0, 1.0); val elong = kotlin.math.acos(cosE)
+        val i = kotlin.math.atan2(dSun * kotlin.math.sin(elong), dMoon - dSun * cosE)
+        val k = (1 + kotlin.math.cos(i)) / 2                       // apšviesta dalis
+        // šviesaus krašto kryptis nuo stebėtojo zenito (danguje prie Mėnulio)
+        val zen = doubleArrayOf(fU[0], fU[1], fU[2])
+        val zd = zen[0] * ml[0] + zen[1] * ml[1] + zen[2] * ml[2]
+        val up = nrm(DoubleArray(3) { zen[it] - zd * ml[it] })
+        val rt = nrm(doubleArrayOf(ml[1] * up[2] - ml[2] * up[1], ml[2] * up[0] - ml[0] * up[2], ml[0] * up[1] - ml[1] * up[0]))   // m × up
+        val bs = DoubleArray(3) { s[it] - cosE * ml[it] }
+        val chi = kotlin.math.atan2(bs[0] * rt[0] + bs[1] * rt[1] + bs[2] * rt[2], bs[0] * up[0] + bs[1] * up[1] + bs[2] * up[2])
+        val key = "%.0f_%.0f".format(java.util.Locale.US, k * 100, Math.toDegrees(chi))
+        if (key != phaseKey || phaseTex == 0) {
+            phaseKey = key
+            val n = 128; val px = IntArray(n * n); val ci = kotlin.math.cos(i); val sc = kotlin.math.sin(chi); val cc = kotlin.math.cos(chi)
+            for (y in 0 until n) for (x in 0 until n) {
+                val fx = (x + 0.5) / n * 2 - 1; val fy = -((y + 0.5) / n * 2 - 1)
+                val r2 = fx * fx + fy * fy; if (r2 > 1.0) continue
+                val xp = fx * sc + fy * cc; val yp = -fx * cc + fy * sc       // xp – link Saulės
+                val lit = xp > -ci * kotlin.math.sqrt((1 - yp * yp).coerceAtLeast(0.0))
+                val edge = ((1 - kotlin.math.sqrt(r2)) * 40).coerceIn(0.0, 1.0)  // glotnus kraštas
+                val g = if (lit) (235 * (0.85 + 0.15 * kotlin.math.sqrt(1 - r2))).toInt() else 45
+                px[y * n + x] = android.graphics.Color.argb((255 * edge).toInt(), g, g, (if (lit) g - 10 else g + 10).coerceIn(0, 255))
+            }
+            if (phaseTex != 0) GLES20.glDeleteTextures(1, intArrayOf(phaseTex), 0)
+            phaseTex = uploadTexture(Bitmap.createBitmap(px, n, n, Bitmap.Config.ARGB_8888))
+        }
+        // ant Mėnulio, šiek tiek kameros pusėje; dydis – kiek didesnis už Mėnulio rutulį
+        val c = FloatArray(3) { (mp[it] + eyeI[it] * 0.12).toFloat() }
+        val rad = (bodyRadius(2) * 1.25).toFloat()
+        System.arraycopy(mvpI, 0, mvp, 0, 16)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        billboardQuad(c, floatArrayOf(rt[0].toFloat(), rt[1].toFloat(), rt[2].toFloat()), floatArrayOf(up[0].toFloat(), up[1].toFloat(), up[2].toFloat()),
+            rad, rad, phaseTex, 1f, 1f, 1f, 0.92f)
+    }
+
     /** Mėnulio orbita (silpna linija) ir užrašas su atstumu – Mėnulis tikru masteliu mažas. */
     private fun drawMoonOrbit() {
         if (showSunGrid && moonMvp[15] != 0f) {
             val se = MoonFrame.subEarth(System.currentTimeMillis(), moonDir())
             drawBodyGrid(moonMvp, se[0], se[1], 0.25 * 1.03, floatArrayOf(0.85f, 0.9f, 1f))
-            val ss = MoonFrame.subSolar(System.currentTimeMillis(), moonDir(), moonDistKm(), sunDir(), sunDistKm())
-            drawModelCross(moonMvp, ss[0], ss[1], 0.25 * 1.035, 9.0, floatArrayOf(1f, 0.85f, 0.2f))
         }
+        drawMoonPhase()
         if (showSunGrid) drawCentersTriangle()
         val d = jdDays()
         val node = Math.toRadians(125.04 - 0.0529539 * d)
@@ -5921,8 +5970,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false); GLES20.glDisable(GLES20.GL_CULL_FACE)
         val (sLa, sLo) = ll(sd); val (mLa, mLo) = ll(md)
-        crossEarth(sLa, sLo, floatArrayOf(1f, 0.85f, 0.2f))          // Saulė zenite
-        crossEarth(mLa, mLo, floatArrayOf(0.8f, 0.85f, 0.95f))       // Mėnulis zenite
+        // Saulės ir Mėnulio zenito kryžiai pašalinti – Saulės vietą rodo atspindys vandenyne
         // linijos tarp centrų (Žemės centras – scenos pradžia)
         val m = moonPosLast
         // Saulė – ten, kur ji nupiešta (prie Žemės – nuo kameros, žr. skyO), kad linijos nenutrūktų nuo disko
@@ -5932,7 +5980,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val o = floatArrayOf(0f, 0f, 0f)
         val mf = m?.let { floatArrayOf(it[0].toFloat(), it[1].toFloat(), it[2].toFloat()) }
         ln(o, sp)
-        if (mf != null) { ln(o, mf); ln(mf, sp) }
+        // Mėnulio siūlas – iš stebėtojo (smeigtuko galvutės) į Mėnulį: kaip stebėtojas jį mato iš savo vietos
+        if (mf != null) { ln(pinWorld(), mf); ln(mf, sp) }
         // vos matomos plonytės (1 taškelio) linijos
         GLES20.glLineWidth(1f)
         GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 0.92f, 0.65f, 0.16f)
@@ -6185,9 +6234,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         fun seg(d: ArrayList<Float>, a: FloatArray, b: FloatArray) { d.add(a[0]); d.add(a[1]); d.add(a[2]); d.add(b[0]); d.add(b[1]); d.add(b[2]) }
         // koordinačių tinklelis ant Saulės ir Mėnulio pašalintas – liko ašis (strypas per polius) ir į Žemę atsuktas taškas
         seg(axis, pt(90.0, 0.0, r), pt(90.0, 0.0, 0.25 * 1.5)); seg(axis, pt(-90.0, 0.0, r), pt(-90.0, 0.0, 0.25 * 1.5))
-        val b0 = subLat; val l0 = subLon
-        val earthPt = ArrayList<Float>()
-        seg(earthPt, pt(b0 - 6, l0), pt(b0 + 6, l0)); seg(earthPt, pt(b0, l0 - 6), pt(b0, l0 + 6))
+        val earthPt = ArrayList<Float>()                  // į Žemę atsukto taško kryžius pašalintas – liko tik ašis
         GLES20.glUseProgram(colorProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpM, 0)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
@@ -7282,8 +7329,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vec3 skyRefl = mix(vec3(0.20, 0.42, 0.78), vec3(0.62, 0.75, 0.92), pow(1.0 - nvW, 2.0)) * Fv;
                 // Vanduo kaip iš kosmoso: lygus paviršius (be dugno reljefo), spalva pagal gylį – gelmės tamsiai mėlynos,
                 // šelfas šviesesnis, seklumos turkio; + dangaus atspindys pakraščiuose + Saulės atspindys ties zenito tašku
-                vec3 cDeep = vec3(0.012, 0.05, 0.15);
-                vec3 cShelf = vec3(0.03, 0.13, 0.27);
+                vec3 cDeep = vec3(0.01, 0.06, 0.21);
+                vec3 cShelf = vec3(0.03, 0.17, 0.34);
                 vec3 cShallow = vec3(0.09, 0.40, 0.44);
                 // gylis – iš vandenyno kaukės (4096×2048, glotni) vietoj stambaus 0,25° tinklelio, todėl nebelieka kvadratų prie krantų
                 float mDep = (uHasMask > 0.5) ? texture2D(uMask, vUV).r : 0.3;
@@ -7292,7 +7339,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vec3 waterCol = mix(cDeep, cShelf, shelfW);
                 waterCol = mix(waterCol, cShallow, shallowW * 0.6);
                 // permatomumas: matosi dugnas (NASA dugno reljefo spalvos) – seklesnėse vietose labiau
-                float transp = mix(0.35, 0.65, shelfW);
+                float transp = mix(0.15, 0.4, shelfW);           // dugnas matosi, bet vandens spalva vyrauja
                 vec3 wc = mix(waterCol, base * 0.85, transp);
                 float litW = 0.3 + 1.1 * max(nl, 0.0) * soft;
                 vec3 oceanDay = wc * litW * (1.0 - 0.6 * Fv) + skyRefl * soft * 0.9 + sunCol * glint * soft;

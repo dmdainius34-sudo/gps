@@ -4024,13 +4024,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 val p1 = sc(a1.first, a1.second, 1.01); val p2 = sc(b1.first, b1.second, 1.01)
                 seg.add(p1[0]); seg.add(p1[1]); seg.add(p1[2]); seg.add(p2[0]); seg.add(p2[1]); seg.add(p2[2])
             }
-            GLES20.glLineWidth(4f * density)
-            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), r, g, b, 1f)
+            GLES20.glLineWidth(1.5f * density)                     // plonesni ir permatomesni
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), r, g, b, 0.5f)
             bindPos(colorProg, floatBuf(seg.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, seg.size / 3)
             GLES20.glLineWidth(1f)
         }
-        cross(mLat, mLon, 1f, 0.95f, 0.2f, 6.0)
-        Uvi.centerCached(now)?.let { cross(it[0], it[1], 1f, 0.3f, 0.8f, 4.0) }
+        cross(mLat, mLon, 1f, 0.95f, 0.2f, 3.0)
+        Uvi.centerCached(now)?.let { cross(it[0], it[1], 1f, 0.3f, 0.8f, 2.0) }
         GLES20.glDepthMask(true); GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         // užrašas „Saulė zenite (modelis)“ pašalintas – lieka kryžius
     }
@@ -5885,9 +5885,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         fun crossEarth(la: Double, lo: Double, col: FloatArray) {
             val seg = ArrayList<Float>()
-            for ((a, b) in listOf(sc(la - 5, lo) to sc(la + 5, lo), sc(la, lo - 5) to sc(la, lo + 5))) { a.forEach { seg.add(it) }; b.forEach { seg.add(it) } }
-            GLES20.glLineWidth(4f * density)
-            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 1f)
+            for ((a, b) in listOf(sc(la - 2.5, lo) to sc(la + 2.5, lo), sc(la, lo - 2.5) to sc(la, lo + 2.5))) { a.forEach { seg.add(it) }; b.forEach { seg.add(it) } }
+            GLES20.glLineWidth(1.5f * density)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.5f)
             bindPos(colorProg, floatBuf(seg.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, seg.size / 3)
         }
         GLES20.glUseProgram(colorProg)
@@ -7241,21 +7241,21 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 float w2 = vnoise(wp * 2.3 - vec2(uTime * 0.18, -uTime * 0.21)) - 0.5;
                 vec3 nW = normalize(sN + (tE * w1 + tN * w2) * 0.06);
                 // 3) Saulės atspindys (mikropaviršių modelis: Beckmann pasiskirstymas × Schlick Fresnelis, F0 = 0,02)
-                vec3 hV = normalize(l + vD);
-                float nh = max(dot(nW, hV), 1e-3);
-                float nlW = max(dot(nW, l), 0.0);
+                // atspindys visada ties Saulės zenito tašku (kryžiumi): skaičiuojama tarsi žiūrint iš Saulės pusės –
+                // nepriklauso nuo to, kaip pasuktas gaublys
+                float nh = max(dot(nW, l), 1e-3);
                 float tan2 = (1.0 - nh * nh) / (nh * nh);
                 float D = exp(-tan2 / sig2) / (3.14159 * sig2 * nh * nh * nh * nh);
-                float Fh = 0.02 + 0.98 * pow(1.0 - max(dot(hV, vD), 0.0), 5.0);
-                float glint = D * Fh * nlW / (4.0 * nvW * max(nlW, 1e-3)) * step(0.0, nl);
+                float glint = D * 0.02 * 0.25 * step(0.0, nl);
                 vec3 sunCol = vec3(1.0, 0.96, 0.88) * mix(vec3(1.0, 0.55, 0.3), vec3(1.0), smoothstep(0.0, 0.3, nl));   // žemai – oranžinė
                 // 4) Dangaus atspindys (Fresnelis pagal žiūrėjimo kampą – pakraščiuose vanduo blizga kaip veidrodis)
                 float Fv = 0.02 + 0.98 * pow(1.0 - nvW, 5.0);
                 vec3 skyRefl = mix(vec3(0.20, 0.42, 0.78), vec3(0.62, 0.75, 0.92), pow(1.0 - nvW, 2.0)) * Fv;
-                vec3 waterDay = body * (0.25 + 1.2 * max(nl, 0.0)) * (1.0 - Fv) + skyRefl * soft + sunCol * glint * soft;
-                // Blue Marble vandenyno spalva (tikra nuotrauka: srovės, dumblas) + fizikinis modelis
-                vec3 photo = t.rgb * (0.2 + 1.1 * max(nl, 0.0) * soft);
-                vec3 oceanDay = mix(photo, waterDay, 0.6) + sunCol * glint * soft * 0.4;
+                // Vanduo: ryški Blue Marble vandenyno spalva (su gylio paryškinimu) + seklumų turkis (Beer–Lambert),
+                // + dangaus atspindys pakraščiuose + Saulės atspindys ties zenito tašku
+                float litW = 0.25 + 1.15 * max(nl, 0.0) * soft;
+                vec3 shallowTint = vec3(0.10, 0.55, 0.58) * exp(-K.g * depth * 0.6) * 0.55;
+                vec3 oceanDay = (base + shallowTint + body * 2.0) * litW * (1.0 - 0.5 * Fv) + skyRefl * soft * 0.8 + sunCol * glint * soft;
                 // Apšviesta pusė šviesesnė: daugiau išsklaidytos šviesos, šlaitų šešėliai švelnesni
                 float lit = mix(d, max(dot(sN, l), 0.0), 0.35);
                 vec3 land = base * (0.2 + 1.1 * lit * soft);

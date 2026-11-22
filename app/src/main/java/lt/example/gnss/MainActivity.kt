@@ -2534,7 +2534,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     val lv = FloatArray(16)
                     Matrix.setLookAtM(lv, 0, eye[0].toFloat(), eye[1].toFloat(), eye[2].toFloat(), mid[0].toFloat(), mid[1].toFloat(), mid[2].toFloat(),
                         u[0].toFloat(), u[1].toFloat(), u[2].toFloat())
-                    Matrix.multiplyMM(mvpI, 0, proj, 0, lv, 0)
+                    // dviem pirštais – poslinkis ekrano plokštumoje (kampas nesikeičia)
+                    val pk = (dist * 0.5 / focusZoom).toFloat()
+                    val tv = FloatArray(16); Matrix.setIdentityM(tv, 0); Matrix.translateM(tv, 0, panX * pk, panY * pk, 0f)
+                    val lv2 = FloatArray(16); Matrix.multiplyMM(lv2, 0, tv, 0, lv, 0)
+                    Matrix.multiplyMM(mvpI, 0, proj, 0, lv2, 0)
                     focusLevelEye = floatArrayOf(eye[0].toFloat(), eye[1].toFloat(), eye[2].toFloat())
                 }
             }
@@ -5064,6 +5068,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     fun arcRotate(p0: DoubleArray, p1: DoubleArray) {
+        if (focus != 0 && levelHorizon) return              // prie kūno su užrakintu horizontu kampo vienu pirštu keisti negalima (tik planšete)
         val ax = p0[1] * p1[2] - p0[2] * p1[1]
         val ay = p0[2] * p1[0] - p0[0] * p1[2]
         val az = p0[0] * p1[1] - p0[1] * p1[0]
@@ -5117,7 +5122,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Ritinimas aplink ekrano (žiūros) ašį – dviejų pirštų pasukimas. */
     fun rollBy(angle: Double) {
-        if (kotlin.math.abs(angle) < 1e-6) return
+        if (kotlin.math.abs(angle) < 1e-6 || (focus != 0 && levelHorizon)) return
         userR = mul3d(axisAngleMat(doubleArrayOf(0.0, 0.0, 1.0), angle), userR)
     }
 

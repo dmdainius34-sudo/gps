@@ -2511,7 +2511,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val mvT = FloatArray(16); Matrix.multiplyMM(mvT, 0, mvU, 0, tr, 0)
             Matrix.multiplyMM(mvpI, 0, pv, 0, mvT, 0)
             focusLevelEye = null
-            if (levelHorizon) {
+            if (!levelHorizon) {        // užrakintas (stabilus) horizontas – mygtukas šviečia
                 // Horizonto fiksavimas prie kūno (Saulės, Mėnulio): ekrano „aukštyn“ – stebėtojo Žemėje zenitas. Linija Žemė–kūnas guli
                 // ekrano plokštumoje ir pasvirusi tiek, kiek kūnas virš (po) stebėtojo horizonto; abu visada ekrane.
                 val e = doubleArrayOf(fP[0].toDouble(), fP[1].toDouble(), fP[2].toDouble())
@@ -5023,7 +5023,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun inertialCamera(out: DoubleArray) {
         // laikui bėgant (▶) su užrakintu horizontu kamera sukasi kartu su Žeme ir ekrano viršus – stebėtojo zenitas (horizontas gulsčias);
         // kitaip – pagal tikrą laiką (kamera lieka, Žemė sukasi po ja), viršus – dangaus šiaurė
-        val levelSim = levelHorizon && simOffsetMs != 0L && freeView && focus == 0
+        val levelSim = !levelHorizon && simOffsetMs != 0L && freeView && focus == 0
         val gA = if (levelSim) fG else fGc
         val cg = cos(gA); val sg = sin(gA)
         // laisvame gaublyje kamera sukasi kartu su Žeme (kaip Google Earth) – kitaip žemė po kamera slinktų ~15°/val.
@@ -5068,7 +5068,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     fun arcRotate(p0: DoubleArray, p1: DoubleArray) {
-        if (focus != 0 && levelHorizon) return              // prie kūno su užrakintu horizontu kampo vienu pirštu keisti negalima (tik planšete)
+        if (focus != 0 && !levelHorizon) return              // prie kūno su užrakintu horizontu kampo vienu pirštu keisti negalima (tik planšete)
         val ax = p0[1] * p1[2] - p0[2] * p1[1]
         val ay = p0[2] * p1[0] - p0[0] * p1[2]
         val az = p0[0] * p1[1] - p0[1] * p1[0]
@@ -5122,7 +5122,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Ritinimas aplink ekrano (žiūros) ašį – dviejų pirštų pasukimas. */
     fun rollBy(angle: Double) {
-        if (kotlin.math.abs(angle) < 1e-6 || (focus != 0 && levelHorizon)) return
+        if (kotlin.math.abs(angle) < 1e-6 || (focus != 0 && !levelHorizon)) return
         userR = mul3d(axisAngleMat(doubleArrayOf(0.0, 0.0, 1.0), angle), userR)
     }
 

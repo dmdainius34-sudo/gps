@@ -2580,6 +2580,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // laisvame gaublyje žiedas mažinamas pagal aukštį: priartinus N, E, S, W lieka aplink stebėtoją ekrane (buvo ~26 000 km atstumu – „šone“)
         val hs = if (freeView && focus == 0 && flight == null) ((zoom - EARTH_R) * 0.45f / 1.04f).coerceIn(0.0002f, 1f) else 1f
         for (d in 0 until 360 step 30) {
+            if (simOffsetMs != 0L) break                          // laikui bėgant (▶) kompasas paslepiamas
             val tex = labelTex[labelOf(d)] ?: continue
             val a = Math.toRadians(d.toDouble())
             val c = floatArrayOf((1.04 * hs * sin(a)).toFloat(), (1.04 * hs * cos(a)).toFloat(), 0f)
@@ -3167,7 +3168,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
         val sec = android.os.SystemClock.uptimeMillis() / 1000.0
         // tik stebėtojo matomos (virš jo horizonto) žvaigždės; eilė – nuo artimiausios iš jų (perskaičiuojama kas kadrą)
-        val vis = NearStars.list.withIndex().filter { (_, s) -> s.dir[0] * fU[0] + s.dir[1] * fU[1] + s.dir[2] * fU[2] > 0.0 }
+        // pagal tikrą laiką (fUc): paleidus laiką ▶ žvaigždės nesisuka kartu su Žeme
+        val vis = NearStars.list.withIndex().filter { (_, s) -> s.dir[0] * fUc[0] + s.dir[1] * fUc[1] + s.dir[2] * fUc[2] > 0.0 }
         if (vis.isEmpty()) return
         val starts = NearStars.starts(vis.map { it.value })
         for ((k, iv) in vis.withIndex()) {
@@ -6000,6 +6002,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * Mėnulis atrodo pakreipus planšetę ar telefoną.
      */
     private fun drawMoonPhase() {
+        if (simOffsetMs != 0L) return                              // laikui bėgant (▶) fazės paveikslėlis užgęsta
         val mp = moonPosLast ?: return
         val now = simNow()
         val s = sunDir(); val m = moonDir()
@@ -6593,18 +6596,26 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             if (q > 1.0) {
                 val fade = (1.0 - (q - 1.0) / 0.3).coerceIn(0.0, 1.0).toFloat()
                 val rnd = java.util.Random(c.id.hashCode().toLong())
-                val dust = ArrayList<Float>()
-                for (i in 0 until 400) {
+                // elektrinės mėlynos ir žydros smulkios dulkės (trys atspalviai, mirga)
+                val dust = arrayOf(ArrayList<Float>(), ArrayList<Float>(), ArrayList<Float>())
+                for (i in 0 until 900) {
                     val a = rnd.nextDouble() * 2 * Math.PI
                     val rr = rad * kotlin.math.sqrt(rnd.nextDouble()) * (1.0 + 0.4 * (q - 1.0) / 0.3)
                     val dd = cd * (1.0 + 0.06 * (rnd.nextDouble() - 0.5))
-                    pt(a, rr, dd).forEach { dust.add(it) }
+                    pt(a, rr, dd).forEach { dust[i % 3].add(it) }
                 }
+                val tt = (System.nanoTime() / 1e9).toFloat()
+                val dcol = arrayOf(floatArrayOf(0.25f, 0.55f, 1f), floatArrayOf(0.3f, 0.95f, 1f), floatArrayOf(0.7f, 0.85f, 1f))
                 GLES20.glUseProgram(dotProg)
                 GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(dotProg, "uMVP"), 1, false, mvpI, 0)
-                GLES20.glUniform4f(GLES20.glGetUniformLocation(dotProg, "uColor"), 1f, 0.82f, 0.55f, 0.8f * fade)
-                GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), 2.5f * density)
-                bindPos(dotProg, floatBuf(dust.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_POINTS, 0, dust.size / 3)
+                GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), 1.3f * density)
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+                for (k in 0..2) {
+                    val fl = 0.6f + 0.4f * sin(tt * (5f + 3f * k) + k * 2f)
+                    GLES20.glUniform4f(GLES20.glGetUniformLocation(dotProg, "uColor"), dcol[k][0], dcol[k][1], dcol[k][2], 0.9f * fade * fl)
+                    bindPos(dotProg, floatBuf(dust[k].toFloatArray())); GLES20.glDrawArrays(GLES20.GL_POINTS, 0, dust[k].size / 3)
+                }
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
                 GLES20.glUseProgram(colorProg)
                 GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
                 continue

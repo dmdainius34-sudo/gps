@@ -4547,6 +4547,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Žiūrėjimo kryptis (I erdvėje) – stebėtojo vaizde horizonto žymoms. */
     private var lookI = floatArrayOf(0f, 0f, 1f)
     /** Laisvo žvilgsnio kryptis ir ekrano viršus (planšetės nugarėlė ir viršus, I erdvėje), išlyginti. */
+    private var lookFreeL: DoubleArray? = null
+    private var upFreeL: DoubleArray? = null
     private var lookFreeSm: DoubleArray? = null
     private var upFreeSm: DoubleArray? = null
     private var rollSm = Double.NaN
@@ -4929,9 +4931,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         fun nrm(v: DoubleArray): DoubleArray { val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); return if (l < 1e-9) v else DoubleArray(3) { v[it] / l } }
         val lookFreeNow = nrm(DoubleArray(3) { -r[2] * east[it] - r[5] * north[it] - r[8] * up[it] })
         val upFreeNow = nrm(DoubleArray(3) { r[1] * east[it] + r[4] * north[it] + r[7] * up[it] })
-        val lf0 = lookFreeSm; val uf0 = upFreeSm
-        lookFreeSm = if (lf0 == null) lookFreeNow else nrm(DoubleArray(3) { lf0[it] + 0.2 * (lookFreeNow[it] - lf0[it]) })
-        upFreeSm = if (uf0 == null) upFreeNow else nrm(DoubleArray(3) { uf0[it] + 0.2 * (upFreeNow[it] - uf0[it]) })
+        // glotninama stebėtojo vietinėje sistemoje (R, Š, zenitas): paleidus laiką ▶ Žemė sukasi greitai, o glotninimas pasaulio
+        // sistemoje atsiliktų ir horizontas „nukristų“; vietinėje – horizontas visada tose pačiose ekrano vietose
+        val lNow = nrm(doubleArrayOf(-r[2].toDouble(), -r[5].toDouble(), -r[8].toDouble()))
+        val uNow = nrm(doubleArrayOf(r[1].toDouble(), r[4].toDouble(), r[7].toDouble()))
+        val lf0 = lookFreeL; val uf0 = upFreeL
+        lookFreeL = if (lf0 == null) lNow else nrm(DoubleArray(3) { lf0[it] + 0.2 * (lNow[it] - lf0[it]) })
+        upFreeL = if (uf0 == null) uNow else nrm(DoubleArray(3) { uf0[it] + 0.2 * (uNow[it] - uf0[it]) })
+        fun loc(v: DoubleArray) = nrm(DoubleArray(3) { v[0] * east[it] + v[1] * north[it] + v[2] * up[it] })
+        lookFreeSm = loc(lookFreeL!!); upFreeSm = loc(upFreeL!!)
         // horizonto režime laisvas žvilgsnis visada (ir arti); kitaip – tik toli
         val wFree = if (levelHorizon) 1.0 else freeze
         val lookB = nrm(DoubleArray(3) { look[it] * (1 - wFree) + lookFreeSm!![it] * wFree }).let { if (wFree > 0.5 && it.all { c -> kotlin.math.abs(c) < 1e-6 }) lookFreeSm!! else it }
@@ -4941,7 +4949,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // kameros vieta: arti seka žiūrėjimo kryptį (už nugaros), toli – sustingsta (I erdvėje, todėl ir Žemei sukantis lieka vietoje)
         lookI = floatArrayOf(lookB[0].toFloat(), lookB[1].toFloat(), lookB[2].toFloat())
         val pd0 = posDir
-        posDir = if (pd0 == null) lookB else nrm(DoubleArray(3) { pd0[it] + (1.0 - freeze) * (lookB[it] - pd0[it]) })
+        // laikui bėgant (▶) su užrakintu horizontu kamera seka stebėtoją (nesustingsta erdvėje), kitaip horizontas pasvyra
+        val freezeP = if (simOffsetMs != 0L && levelHorizon) 0.0 else freeze
+        posDir = if (pd0 == null) lookB else nrm(DoubleArray(3) { pd0[it] + (1.0 - freezeP) * (lookB[it] - pd0[it]) })
         val lookPos = posDir!!
         var eye = FloatArray(3) { (head[it] - lookPos[it] * dist).toFloat() }
         var lookC = lookB; var upC = camUpB; var wFl = 0.0

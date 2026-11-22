@@ -3402,8 +3402,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         GLES20.glLineWidth(1f)                                              // 1 taško, kaip kitos orbitos
         val gf = galFade()
-        drawLines(dn.toFloatArray(), 0.85f, 0.7f, 1f, 0.18f * (1f - gf))
-        drawLines(up.toFloatArray(), 0.85f, 0.7f, 1f, 0.6f * (1f - gf))
+        if (simOffsetMs != 0L) {
+            // laikui bėgant (▶) para praeina per sekundę – horizontas lekia ir žiedas „pulsuotų“; rodomas tolygiai
+            drawLines((up + dn).toFloatArray(), 0.85f, 0.7f, 1f, 0.4f * (1f - gf))
+        } else {
+            drawLines(dn.toFloatArray(), 0.85f, 0.7f, 1f, 0.18f * (1f - gf))
+            drawLines(up.toFloatArray(), 0.85f, 0.7f, 1f, 0.6f * (1f - gf))
+        }
         // galaktikos mastelyje – Saulės (ir Žemės) kelias aplink galaktikos centrą: ratas, kurio centras – galaktikos centras
         // (8,2 kpc nuo mūsų), o mes – ant jo krašto; punktyru
         if (gf > 0.01f) {
@@ -4842,18 +4847,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * Be horizonto režimo: žiūrima horizontaliai planšetės kryptimi, horizontas ekrano viduryje ir lygiagretus rėmui.
      * Kamera už stebėtojo galvos žiūrėjimo kryptimi; atstumas – priartinimas (zoom); toli (žvaigždės, galaktika) jos vieta sustingsta.
      */
-    /** Stebėtojo vieta kamerai: pagal tikrą laiką (fGc) – paleidus laiką ▶ kamera lieka, o Žemė su smeigtuku sukasi po ja. */
+    /**
+     * Stebėtojo vieta kamerai: pagal tikrą laiką (fGc) – paleidus laiką ▶ kamera lieka, o Žemė su smeigtuku sukasi po ja.
+     * Skaičiuojama tiesiogiai (ne iš praeito kadro Žemės matricos – laikui bėgant ji per kadrą pasisuka ~6°, todėl vaizdas drebėjo).
+     */
     private fun pinCam(): FloatArray {
-        val p = pinWorld()
-        val da = fGc - fG; if (kotlin.math.abs(da) < 1e-12) return p
+        val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon) + fGc
+        val k = 0.25 * 1.35
         val m = earthMat
-        val c = floatArrayOf(m[12], m[13], m[14])
-        val al = sqrt(m[8] * m[8] + m[9] * m[9] + m[10] * m[10]).coerceAtLeast(1e-9f)
-        val k = DoubleArray(3) { (m[8 + it] / al).toDouble() }
-        val v = DoubleArray(3) { (p[it] - c[it]).toDouble() }
-        val cs = cos(da); val sn = sin(da); val kv = k[0] * v[0] + k[1] * v[1] + k[2] * v[2]
-        val kx = doubleArrayOf(k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0])
-        return FloatArray(3) { (c[it] + v[it] * cs + kx[it] * sn + k[it] * kv * (1 - cs)).toFloat() }
+        return floatArrayOf((k * cos(la) * cos(lo)).toFloat() + m[12], (k * cos(la) * sin(lo)).toFloat() + m[13], (k * sin(la)).toFloat() + m[14])
     }
 
     private fun observerCamera() {

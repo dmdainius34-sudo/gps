@@ -22,6 +22,24 @@ jobs:
       - name: Unit tests (PositionSolver)
         run: gradle testDebugUnitTest --no-daemon
 
+      - name: EGM2008 geoido talpykla
+        uses: actions/cache@v4
+        with:
+          path: egm2008
+          key: egm2008-${{ hashFiles('tools/egm2008.py') }}
+
+      - name: EGM2008 geoidas (NGA, viešoji sritis) -> assets/WORLD_EGM2008.txt
+        continue-on-error: true
+        run: |
+          mkdir -p egm2008
+          if [ ! -s egm2008/WORLD_EGM2008.txt ]; then
+            curl -sSL -m 900 -o egm2008/egm08_25.tif -w "HTTP %{http_code} %{size_download}\n" https://cdn.proj.org/us_nga_egm08_25.tif
+            pip install -q numpy tifffile imagecodecs
+            python3 tools/egm2008.py egm2008/egm08_25.tif egm2008/WORLD_EGM2008.txt
+            rm -f egm2008/egm08_25.tif
+          fi
+          if [ -s egm2008/WORLD_EGM2008.txt ]; then cp egm2008/WORLD_EGM2008.txt app/src/main/assets/; ls -la app/src/main/assets/WORLD_EGM2008.txt; fi
+
       - name: NASA 8k žvaigždžių fono talpykla
         uses: actions/cache@v4
         with:

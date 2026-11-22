@@ -11,7 +11,7 @@ import kotlin.math.sqrt
 
 /**
  * Žinomas prietaiso aukštis („Žinomas aukštis virš žemės“, pvz. 42 m krano kabinoje) kaip etalonas:
- *  - prietaiso aukštis virš jūros = žinomas aukštis virš jūros arba žemės paviršius (Copernicus DEM per Open-Meteo) + aukštis virš žemės;
+ *  - prietaiso aukštis virš jūros = žinomas aukštis virš jūros arba žemės paviršius (Terrain Tiles: SRTM / EU-DEM) + aukštis virš žemės;
  *  - elipsoidinis aukštis h0 = H + N (geoidas) – RTK filtrui pridedamas pseudo-matavimas „aukštis = h0“
  *    (fiksuotas aukštis sumažina nežinomųjų skaičių ir pagerina horizontalią padėtį, ypač prastos geometrijos kabinoje);
  *  - stovint padėtis vidurkinama (svoriai 1/σ²), kartu – Android aukščio poslinkis nuo etalono.
@@ -220,13 +220,11 @@ object KnownHeight {
         busy = true
         Thread {
             try {
-                val c = (URL("https://api.open-meteo.com/v1/elevation?latitude=%.5f&longitude=%.5f".format(Locale.US, lat, lon)).openConnection() as HttpURLConnection)
-                    .apply { connectTimeout = 15_000; readTimeout = 30_000 }
-                if (c.responseCode == 200) {
-                    val e = org.json.JSONObject(c.inputStream.bufferedReader().readText()).getJSONArray("elevation").getDouble(0)
+                val e = Elev.get(lat, lon)
+                if (e != null) {
                     ground = e; gLat = lat; gLon = lon
-                    demStatus = "žemės paviršius %.1f m virš jūros (Copernicus DEM, Open-Meteo)".format(Locale.US, e)
-                } else demStatus = "žemės aukštis: HTTP ${c.responseCode}"
+                    demStatus = "žemės paviršius %.1f m virš jūros (Terrain Tiles: SRTM / EU-DEM)".format(Locale.US, e)
+                } else demStatus = "žemės aukštis: nepavyko gauti"
             } catch (e: Exception) { demStatus = "žemės aukštis: ${e.javaClass.simpleName}" }
             finally { busy = false }
         }.start()

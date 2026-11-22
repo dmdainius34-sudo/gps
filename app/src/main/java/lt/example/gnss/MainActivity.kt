@@ -310,7 +310,7 @@ class Barometer(context: Context) : SensorEventListener {
     }
 
     // ---- Oro slėgio pokyčio pataisa ----
-    // Jūros lygio slėgis (Open-Meteo) imamas valandine eilute ir interpoliuojamas tolygiai pagal laiką: oras keičia slėgį lėtai
+    // Jūros lygio slėgis (MET Norway) imamas valandine eilute ir interpoliuojamas tolygiai pagal laiką: oras keičia slėgį lėtai
     // (iki kelių hPa per valandą), todėl lipant į kraną (kelios minutės) pataisa pakinta vos dešimtadaliais metro, o per valandas
     // atima orų sukeltą dreifą. Gavus naują prognozę, skirtumas suvedamas palaipsniui per 15 min – be šuolių.
     @Volatile private var series: List<Pair<Long, Double>> = emptyList()
@@ -335,27 +335,30 @@ class Barometer(context: Context) : SensorEventListener {
         fetching = true
         Thread {
             try {
-                // koordinatės suapvalinamos (Open-Meteo tinklelis ~11 km), aiškus HTTP klaidos kodas; nepavykus – paprastesnė užklausa
-                fun get(q: String): String {
-                    val c = (URL("https://api.open-meteo.com/v1/forecast?latitude=%.3f&longitude=%.3f&%s".format(java.util.Locale.US, lat, lon, q))
-                        .openConnection() as java.net.HttpURLConnection).apply { connectTimeout = 15_000; readTimeout = 20_000; setRequestProperty("User-Agent", "GnssApp") }
-                    try {
-                        val code = c.responseCode
-                        if (code != 200) throw java.io.IOException("HTTP $code: " + (c.errorStream?.bufferedReader()?.readText()?.take(160) ?: ""))
-                        return c.inputStream.bufferedReader().readText()
-                    } finally { c.disconnect() }
-                }
-                val txt = try { get("hourly=pressure_msl&past_days=1&forecast_days=2&timeformat=unixtime") }
-                    catch (e: Exception) { get("hourly=pressure_msl&forecast_days=1&timeformat=unixtime") }
-                val hr = JSONObject(txt).getJSONObject("hourly")
-                val ts = hr.getJSONArray("time"); val ps = hr.getJSONArray("pressure_msl")
-                val ser = (0 until minOf(ts.length(), ps.length())).mapNotNull { i -> if (ps.isNull(i)) null else ts.getLong(i) * 1000L to ps.getDouble(i) }
+                // MET Norway (Norvegijos meteorologijos institutas, CC BY 4.0, leidžiamas ir komercinis naudojimas): jūros lygio slėgis
+                // valandiniais žingsniais; koordinatės – ne daugiau 4 skaitmenų po kablelio; būtinas programos pavadinimas User-Agent
+                val c = (URL("https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=%.3f&lon=%.3f".format(java.util.Locale.US, lat, lon))
+                    .openConnection() as java.net.HttpURLConnection).apply { connectTimeout = 15_000; readTimeout = 20_000
+                        setRequestProperty("User-Agent", "GnssApp/1.0 (Android; lt.example.gnss)") }
+                val txt = try {
+                    val code = c.responseCode
+                    if (code != 200) throw java.io.IOException("HTTP $code: " + (c.errorStream?.bufferedReader()?.readText()?.take(160) ?: ""))
+                    c.inputStream.bufferedReader().readText()
+                } finally { c.disconnect() }
+                val tsArr = JSONObject(txt).getJSONObject("properties").getJSONArray("timeseries")
+                val ser = (0 until tsArr.length()).mapNotNull { i ->
+                    val o = tsArr.getJSONObject(i)
+                    val det = o.optJSONObject("data")?.optJSONObject("instant")?.optJSONObject("details") ?: return@mapNotNull null
+                    if (!det.has("air_pressure_at_sea_level")) return@mapNotNull null
+                    val t = try { java.time.Instant.parse(o.getString("time")).toEpochMilli() } catch (_: Exception) { return@mapNotNull null }
+                    t to det.getDouble("air_pressure_at_sea_level")
+                }.filter { it.first < System.currentTimeMillis() + 3 * 86_400_000L }
                 val t = System.currentTimeMillis()
                 val old = refHpa(t); val nw = interp(ser, t)
                 blendFrom = if (old != null && nw != null) old - nw else 0.0; blendT0 = t
                 series = ser
                 mslpHpa = refHpa(t) ?: ser.lastOrNull()?.second
-                mslpSource = "Open-Meteo (valandinis, tolygiai pagal laiką)"
+                mslpSource = "MET Norway (valandinis, tolygiai pagal laiką)"
                 lastLat = lat
                 lastLon = lon
                 lastFetch = now
@@ -9067,7 +9070,7 @@ class MainActivity : AppCompatActivity() {
             .putBoolean("stable_north", true).putBoolean("level_horizon", true)     // stebėtojo horizontas visada lygus su ekranu
             .putBoolean("sun_log_fix", false).putBoolean("markers", true).putBoolean("orient", true)
             .putBoolean("earth_grid", true).putBoolean("grid", false).putBoolean("sun_grid", true).putBoolean("sun_sdo", true)
-            .putBoolean("sun_lasco", true).putBoolean("uv_layer", true).putBoolean("space_live", true).putBoolean("nav_bits", false).putBoolean("show_sats", false)
+            .putBoolean("sun_lasco", true).putBoolean("uv_layer", false).putBoolean("space_live", true).putBoolean("nav_bits", false).putBoolean("show_sats", false)
             .putBoolean("free_view", false).putBoolean("follow_device", false).apply()
         getSharedPreferences("cabin", Context.MODE_PRIVATE).edit().putBoolean("learn", false).putBoolean("use", false).apply()
         FixPoints.init(filesDir)
@@ -9249,15 +9252,7 @@ class MainActivity : AppCompatActivity() {
             setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("lasco_disk", on).apply()
                 if (::skyDome.isInitialized) skyDome.setLascoDisk(on) }
         }, LinearLayout.LayoutParams(mw, ww))
-        Uvi.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("uv_layer", false)
-        left.addView(CheckBox(this).apply {
-            text = "Saulės patikra pagal UV indeksą (Open-Meteo): kryžiai ant gaublio"
-            isChecked = Uvi.enabled
-            setOnCheckedChangeListener { _, on ->
-                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("uv_layer", on).apply()
-                Uvi.enabled = on; if (on) Uvi.refresh(this@MainActivity, force = true)
-            }
-        }, LinearLayout.LayoutParams(mw, ww))
+        Uvi.enabled = false                       // UV patikra (Open-Meteo) pašalinta – jos kryžiai nebenaudojami
         val cbBits = CheckBox(this).apply {
             text = "Navigacijos bitai spinduliuose (vietoje lazerio)"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("nav_bits", true)
@@ -9571,7 +9566,7 @@ class MainActivity : AppCompatActivity() {
                 cross.visibility = if (on) View.VISIBLE else View.GONE
                 info.visibility = if (on) View.VISIBLE else View.GONE
                 if (on) {
-                    // aukštis virš jūros (Copernicus DEM 90 m per Open-Meteo), jūroje – gylis (GEBCO, 0,25° tinklelis)
+                    // aukštis virš jūros ir jūroje gylis – Terrain Tiles; kol neatėjo – GEBCO (0,25° tinklelis)
                     val key = "%.3f,%.3f".format(Locale.US, ci[0], ci[1])
                     if (key != elevKey && System.currentTimeMillis() - elevAskMs > 1500L) { elevAskMs = System.currentTimeMillis(); fetchCentreElev(ci[0], ci[1], key) }
                     val sea = skyDome.reliefAt(ci[0], ci[1])
@@ -10151,17 +10146,12 @@ class MainActivity : AppCompatActivity() {
         return SunCal.wrap(view - tr) to e
     }
 
-    // ekrano centro aukštis (Open-Meteo elevation – Copernicus DEM 90 m)
+    // ekrano centro aukštis (Terrain Tiles – SRTM / EU-DEM sausumoje, ETOPO1 jūroje)
     @Volatile private var elevKey = ""; @Volatile private var elevVal: Double? = null; @Volatile private var elevAskMs = 0L
     private fun fetchCentreElev(lat: Double, lon: Double, key: String) {
         Thread {
             try {
-                val c = (URL("https://api.open-meteo.com/v1/elevation?latitude=%.4f&longitude=%.4f".format(Locale.US, lat, lon)).openConnection() as java.net.HttpURLConnection)
-                    .apply { connectTimeout = 10_000; readTimeout = 15_000 }
-                if (c.responseCode == 200) {
-                    val e = org.json.JSONObject(c.inputStream.bufferedReader().readText()).getJSONArray("elevation").getDouble(0)
-                    elevVal = e; elevKey = key
-                }
+                Elev.get(lat, lon)?.let { e -> elevVal = e; elevKey = key }      // Terrain Tiles (sausuma ir jūros dugnas)
             } catch (_: Exception) {}
         }.start()
     }

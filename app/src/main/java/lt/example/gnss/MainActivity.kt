@@ -5887,9 +5887,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             if (phaseTex != 0) GLES20.glDeleteTextures(1, intArrayOf(phaseTex), 0)
             phaseTex = uploadTexture(Bitmap.createBitmap(px, n, n, Bitmap.Config.ARGB_8888))
         }
-        // ant Mėnulio, šiek tiek kameros pusėje; dydis – kiek didesnis už Mėnulio rutulį
-        val c = FloatArray(3) { (mp[it] + eyeI[it] * 0.12).toFloat() }
-        val rad = (bodyRadius(2) * 1.25).toFloat()
+        // ant paties Mėnulio 3D modelio – taške, atsuktame į stebėtoją; mažas, kaip buvęs kryžius (~9° Mėnulio paviršiuje)
+        val pin = pinWorld()
+        val tp = DoubleArray(3) { pin[it] - mp[it] }; val tl = kotlin.math.sqrt(tp[0] * tp[0] + tp[1] * tp[1] + tp[2] * tp[2]).coerceAtLeast(1e-9)
+        val rM = bodyRadius(2)
+        val c = FloatArray(3) { (mp[it] + tp[it] / tl * rM * 1.04).toFloat() }
+        val rad = (rM * 0.17).toFloat()
         System.arraycopy(mvpI, 0, mvp, 0, 16)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         billboardQuad(c, floatArrayOf(rt[0].toFloat(), rt[1].toFloat(), rt[2].toFloat()), floatArrayOf(up[0].toFloat(), up[1].toFloat(), up[2].toFloat()),

@@ -2537,15 +2537,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     Matrix.perspectiveM(proj, 0, 40f, aspectNow, (dist * 0.01).toFloat(), (dist + L * 2 + 60).toFloat())
                     val lv = FloatArray(16)
                     val ud = u[0] * d[0] + u[1] * d[1] + u[2] * d[2]
-                    val upV = DoubleArray(3) { u[it] - ud * d[it] }      // horizontas gulsčias ir pakreipus žvilgsnį
-                    Matrix.setLookAtM(lv, 0, eye[0].toFloat(), eye[1].toFloat(), eye[2].toFloat(), mid[0].toFloat(), mid[1].toFloat(), mid[2].toFloat(),
+                    val upV = DoubleArray(3) { u[it] - ud * d[it] }.let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).coerceAtLeast(1e-9); DoubleArray(3) { v[it] / l } }
+                    // dviem pirštais – poslinkis: kartu slenka kamera (ne pasaulis), todėl tolimos žvaigždės ir Grįžulo Ratai lieka vietoje
+                    val rgt = doubleArrayOf(d[1] * upV[2] - d[2] * upV[1], d[2] * upV[0] - d[0] * upV[2], d[0] * upV[1] - d[1] * upV[0])
+                    val pk = dist * 0.5 / focusZoom
+                    val sh = DoubleArray(3) { -(rgt[it] * panX + upV[it] * panY) * pk }
+                    val eyeP = DoubleArray(3) { eye[it] + sh[it] }; val midP = DoubleArray(3) { mid[it] + sh[it] }
+                    Matrix.setLookAtM(lv, 0, eyeP[0].toFloat(), eyeP[1].toFloat(), eyeP[2].toFloat(), midP[0].toFloat(), midP[1].toFloat(), midP[2].toFloat(),
                         upV[0].toFloat(), upV[1].toFloat(), upV[2].toFloat())
-                    // dviem pirštais – poslinkis ekrano plokštumoje (kampas nesikeičia)
-                    val pk = (dist * 0.5 / focusZoom).toFloat()
-                    val tv = FloatArray(16); Matrix.setIdentityM(tv, 0); Matrix.translateM(tv, 0, panX * pk, panY * pk, 0f)
-                    val lv2 = FloatArray(16); Matrix.multiplyMM(lv2, 0, tv, 0, lv, 0)
-                    Matrix.multiplyMM(mvpI, 0, proj, 0, lv2, 0)
-                    focusLevelEye = floatArrayOf(eye[0].toFloat(), eye[1].toFloat(), eye[2].toFloat())
+                    Matrix.multiplyMM(mvpI, 0, proj, 0, lv, 0)
+                    focusLevelEye = floatArrayOf(eyeP[0].toFloat(), eyeP[1].toFloat(), eyeP[2].toFloat())
                 }
             }
         }

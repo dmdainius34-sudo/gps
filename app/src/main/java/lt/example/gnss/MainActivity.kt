@@ -6104,11 +6104,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawEquatorRing(t: Float) {
         val n = 240
         val r = 0.30
-        val phase = (t * 4f).toInt()                  // lėčiau: ratas per ~60 s
+        // kaip sekundinė rodyklė su tolygia eiga: lygiai vienas ratas per minutę, sinchronizuota su laikrodžiu
+        val off = 2 * Math.PI * (System.currentTimeMillis() % 60_000L) / 60_000.0
         val pts = ArrayList<Float>()
         for (i in 0 until n) {
-            if (((i - phase) % 12 + 12) % 12 >= 6) continue
-            val a0 = 2 * Math.PI * i / n; val a1 = 2 * Math.PI * (i + 1) / n
+            if (i % 12 >= 6) continue
+            val a0 = 2 * Math.PI * i / n + off; val a1 = 2 * Math.PI * (i + 1) / n + off
             pts.add((r * cos(a0)).toFloat()); pts.add((r * sin(a0)).toFloat()); pts.add(0f)
             pts.add((r * cos(a1)).toFloat()); pts.add((r * sin(a1)).toFloat()); pts.add(0f)
         }

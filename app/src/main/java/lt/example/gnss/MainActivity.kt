@@ -5621,6 +5621,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val sun = sunDir()
             GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
             GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uEye"), eyeI[0], eyeI[1], eyeI[2])
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uCam"), camPos[0], camPos[1], camPos[2])
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, earthTex)
             GLES20.glUniform1i(GLES20.glGetUniformLocation(prog, "uTex"), 0)
@@ -5661,6 +5662,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val sun = sunDir()
             GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
             GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uCam"), camPos[0], camPos[1], camPos[2])
             resetAttribs()
             val lp = GLES20.glGetAttribLocation(earthProg, "aPos")
             val lu = GLES20.glGetAttribLocation(earthProg, "aUV")
@@ -5985,6 +5987,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uModel"), 1, false, moonMat, 0)
         GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
         GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uCam"), camPos[0], camPos[1], camPos[2])
         resetAttribs()
         val lp = GLES20.glGetAttribLocation(earthProg, "aPos")
         val lu = GLES20.glGetAttribLocation(earthProg, "aUV")
@@ -6804,10 +6807,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             varying vec2 vUV;
             varying vec3 vN;
             varying vec3 vS;
+            varying float vH;
             void main() {
                 vUV = aUV;
                 vN = mat3(uModel) * aPos;
                 vS = vN;
+                vH = -4000.0;                     // be reljefo – laikoma gilu
                 gl_Position = uMVP * vec4(aPos, 1.0);
             }
         """
@@ -7139,11 +7144,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             varying vec2 vUV;
             varying vec3 vN;
             varying vec3 vS;
+            varying float vH;                     // aukštis / gylis, m (GEBCO; ×30 išryškinimas atimtas)
             void main() {
                 vUV = aUV;
                 vN = mat3(uModel) * aNormal;      // reljefo normalė – šlaitų šešėliai
                 vS = mat3(uModel) * aPos;         // rutulio normalė – diena/naktis, atmosfera, vandens blizgesys
                 float r = length(aPos);
+                vH = (r / 0.25 - 1.0) * 6371000.0 / 30.0;
                 vec3 p = aPos / r * (0.25 + (r - 0.25) * uRk);
                 gl_Position = uMVP * vec4(p, 1.0);
             }
@@ -7160,9 +7167,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform float uTime;
             uniform vec3 uLight;
             uniform vec3 uEye;
+            uniform vec3 uCam;        // kameros vieta (pasaulio sistema) – tikram žiūrėjimo kampui kiekviename taške
             varying vec2 vUV;
             varying vec3 vN;
             varying vec3 vS;
+            varying float vH;
+            float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+            float vnoise(vec2 p) {
+                vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+                return mix(mix(hash2(i), hash2(i + vec2(1.0, 0.0)), f.x), mix(hash2(i + vec2(0.0, 1.0)), hash2(i + vec2(1.0, 1.0)), f.x), f.y);
+            }
             float oceanAt(vec2 uv) {
                 if (uHasMask > 0.5) return step(0.004, texture2D(uMask, uv).r);
                 return 1.0 - smoothstep(0.08, 0.22, texture2D(uTex, uv).r);
@@ -7204,37 +7218,48 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     water *= exp(-1.2 * path) * 0.7 + 0.3;
                     base = mix(t.rgb, water, ocean);
                 }
-                // Blizgesys: ryškus Saulės atspindys ir dangaus atspindys pakraščiuose (lygus vandens paviršius)
-                vec3 h = normalize(l + v);
-                float nh = max(dot(sN, h), 0.0);
-                float spec = 0.0;          // Saulės blizgesys pašalintas (priklausė nuo žiūrėjimo kampo, ne nuo koordinačių)
-                vec3 foamCol = vec3(0.0);
-                if (uAnim > 0.5 && uHasMask > 0.5 && ocean > 0.5) {
-                    vec4 mk = texture2D(uMask, vUV);
-                    if (uAnim > 1.5) {
-                        // lėtos bangos: normalės iškraipymas iš kelių sinusoidžių (tekstūros koordinatėse), juda blizgesys
-                        vec3 tE = normalize(cross(vec3(0.0, 0.0, 1.0), sN) + vec3(1e-4, 0.0, 0.0));
-                        vec3 tN = cross(sN, tE);
-                        float a1 = sin(vUV.x * 2300.0 + vUV.y * 900.0 + uTime * 0.9);
-                        float a2 = sin(vUV.x * -1100.0 + vUV.y * 2100.0 + uTime * 0.7);
-                        float a3 = sin(vUV.x * 3700.0 - vUV.y * 2600.0 + uTime * 1.3);
-                        vec3 nW = normalize(sN + (tE * (a1 + 0.5 * a3) + tN * (a2 - 0.5 * a3)) * 0.035);
-                        float nhW = max(dot(nW, h), 0.0);
-                        spec = 0.0 * nhW;
-                    }
-                    // pakrantės puta: bangos bėga link kranto (atstumas iki kranto mk.g · 255 / 8 taškų)
-                    float dpx = mk.g * 31.875;
-                    if (dpx < 6.0) {
-                        float crest = fract(dpx * 0.45 + uTime * 0.35);
-                        float band = smoothstep(0.0, 0.12, crest) * (1.0 - smoothstep(0.12, 0.35, crest));
-                        foamCol = vec3(0.95) * band * (1.0 - dpx / 6.0) * 0.75;
-                    }
-                }
-                float wFres = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
-                vec3 sky = vec3(0.35, 0.55, 0.85) * wFres * ocean * soft;
+                // ===== Vandens fizika (vandenynuose ir jūrose) =====
+                // 1) Vandens storymės spalva (Beer–Lambert): raudona sugeriama per kelis metrus, žalia – per ~15 m, mėlyna – per ~35 m;
+                //    seklumose (< ~40 m) dar matosi šviesus dugnas, giliau – tamsiai mėlyna. Gylis – GEBCO (0,25°).
+                vec3 vD = normalize(uCam - vS);                    // tikras žiūrėjimo kampas kiekviename taške
+                float nvW = max(dot(sN, vD), 0.02);
+                float depth = clamp(-vH, 0.0, 6000.0);
+                vec3 K = vec3(0.45, 0.065, 0.028);                 // sugerties koeficientai, 1/m (grynas jūros vanduo)
+                float path = depth * (1.0 + 1.0 / nvW) * 0.5;
+                vec3 bottom = vec3(0.55, 0.5, 0.36) * exp(-K * min(path, 120.0) * 2.0);
+                vec3 deepCol = vec3(0.004, 0.018, 0.055);          // giliųjų vandenų sklaidos atspindys
+                vec3 body = deepCol + bottom * 0.35;
+                // šelfuose (dumblas, fitoplanktonas) – žalsvesnis atspalvis
+                body += vec3(0.0, 0.012, 0.006) * (1.0 - smoothstep(30.0, 200.0, depth));
+                // 2) Bangų nuolydžiai (Cox–Munk, vėjas ~7 m/s): nuolydžių dispersija σ² = 0,003 + 0,00512·U;
+                //    smulkus raibuliavimas – tik spindesiui, lėtai juda
+                float sig2 = 0.003 + 0.00512 * 7.0;
+                vec3 tE = normalize(cross(vec3(0.0, 0.0, 1.0), sN) + vec3(1e-4, 0.0, 0.0));
+                vec3 tN = cross(sN, tE);
+                vec2 wp = vUV * vec2(4000.0, 2000.0);
+                float w1 = vnoise(wp + vec2(uTime * 0.25, uTime * 0.1)) - 0.5;
+                float w2 = vnoise(wp * 2.3 - vec2(uTime * 0.18, -uTime * 0.21)) - 0.5;
+                vec3 nW = normalize(sN + (tE * w1 + tN * w2) * 0.06);
+                // 3) Saulės atspindys (mikropaviršių modelis: Beckmann pasiskirstymas × Schlick Fresnelis, F0 = 0,02)
+                vec3 hV = normalize(l + vD);
+                float nh = max(dot(nW, hV), 1e-3);
+                float nlW = max(dot(nW, l), 0.0);
+                float tan2 = (1.0 - nh * nh) / (nh * nh);
+                float D = exp(-tan2 / sig2) / (3.14159 * sig2 * nh * nh * nh * nh);
+                float Fh = 0.02 + 0.98 * pow(1.0 - max(dot(hV, vD), 0.0), 5.0);
+                float glint = D * Fh * nlW / (4.0 * nvW * max(nlW, 1e-3)) * step(0.0, nl);
+                vec3 sunCol = vec3(1.0, 0.96, 0.88) * mix(vec3(1.0, 0.55, 0.3), vec3(1.0), smoothstep(0.0, 0.3, nl));   // žemai – oranžinė
+                // 4) Dangaus atspindys (Fresnelis pagal žiūrėjimo kampą – pakraščiuose vanduo blizga kaip veidrodis)
+                float Fv = 0.02 + 0.98 * pow(1.0 - nvW, 5.0);
+                vec3 skyRefl = mix(vec3(0.20, 0.42, 0.78), vec3(0.62, 0.75, 0.92), pow(1.0 - nvW, 2.0)) * Fv;
+                vec3 waterDay = body * (0.25 + 1.2 * max(nl, 0.0)) * (1.0 - Fv) + skyRefl * soft + sunCol * glint * soft;
+                // Blue Marble vandenyno spalva (tikra nuotrauka: srovės, dumblas) + fizikinis modelis
+                vec3 photo = t.rgb * (0.2 + 1.1 * max(nl, 0.0) * soft);
+                vec3 oceanDay = mix(photo, waterDay, 0.6) + sunCol * glint * soft * 0.4;
                 // Apšviesta pusė šviesesnė: daugiau išsklaidytos šviesos, šlaitų šešėliai švelnesni
                 float lit = mix(d, max(dot(sN, l), 0.0), 0.35);
-                vec3 day = base * (0.2 + 1.1 * lit * soft) + vec3(1.0, 0.95, 0.85) * spec * soft + sky + atm + foamCol * soft;
+                vec3 land = base * (0.2 + 1.1 * lit * soft);
+                vec3 day = mix(land, oceanDay, ocean) + atm;
                 // Naktinė pusė: miestų šviesų nuotrauka vietoj šešėlio
                 vec3 night = texture2D(uNight, vUV).rgb * 1.6 + atm * 0.35;
                 float dayW = mix(1.0, smoothstep(-0.18, 0.12, nl), uHasNight);

@@ -20,15 +20,15 @@ import kotlin.math.tan
  * plytelių lygį (Web Mercator z), atsisiunčia matomas plyteles ir kaupia jas prietaiso atmintyje (filesDir/tiles/…) –
  * antrą kartą toje vietoje rodomos iš atminties, ir be interneto.
  *
- * Šaltinis – EOX „Sentinel-2 cloudless“ (Copernicus Sentinel-2, 10 m pikselis, be debesų; licencija CC BY-NC-SA 4.0 –
- * nekomercinis naudojimas su autorystės nuoroda, ji rodoma ekrane, kai plytelės matomos). Didžiausias lygis 14 (~6 m/pikselis
- * Lietuvoje) – tikslesnio vaizdo šis šaltinis neturi.
+ * Šaltinis – EOX „Sentinel-2 cloudless“ 2016 m. sluoksnis (Copernicus Sentinel-2, 10 m pikselis, be debesų; licencija CC BY 4.0 –
+ * leidžiamas ir komercinis naudojimas su autorystės nuoroda, ji rodoma ekrane, kai plytelės matomos). Naujesni sluoksniai (2018+)
+ * turi nekomercinę licenciją (CC BY-NC-SA), todėl parduodamoje programoje nenaudojami. Didžiausias lygis 14.
  */
 object GlobeTiles {
     const val MAX_Z = 14
     const val MIN_Z = 3
-    const val ATTRIBUTION = "Sentinel-2 cloudless – s2maps.eu, EOX IT Services GmbH (Copernicus Sentinel duomenys)"
-    private val LAYERS = listOf("s2cloudless-2023_3857", "s2cloudless-2021_3857", "s2cloudless-2020_3857")
+    const val ATTRIBUTION = "Sentinel-2 cloudless – s2maps.eu, EOX IT Services GmbH (modifikuoti Copernicus Sentinel 2016–2017 m. duomenys), CC BY 4.0"
+    private val LAYERS = listOf("s2cloudless_3857")
 
     /** Plytelė: lygis z, stulpelis x (nuo −180°), eilutė y (nuo šiaurės). */
     data class Key(val z: Int, val x: Int, val y: Int) {
@@ -84,7 +84,12 @@ object GlobeTiles {
     /** Kada paskutinį kartą plytelės buvo matomos (autorystės užrašui ekrane). */
     @Volatile var shownMs = 0L
 
-    fun init(filesDir: File) { if (dir == null) dir = File(filesDir, "tiles/s2") }
+    fun init(filesDir: File) {
+        if (dir != null) return
+        // ankstesnės (nekomercinės licencijos) plytelės ištrinamos – kaupiamos tik CC BY 2016 m. sluoksnio
+        try { File(filesDir, "tiles/s2").takeIf { it.exists() }?.deleteRecursively() } catch (_: Exception) {}
+        dir = File(filesDir, "tiles/s2_2016")
+    }
 
     private fun file(k: Key): File? = dir?.let { File(it, "${k.z}/${k.x}/${k.y}.jpg") }
 

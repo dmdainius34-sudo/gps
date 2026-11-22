@@ -9304,10 +9304,15 @@ class MainActivity : AppCompatActivity() {
             text = "Išvalyti kabinos žemėlapį"
             setOnClickListener { CabinMap.clear(); markCabinClean(); cv.invalidate(); Toast.makeText(this@MainActivity, "Žemėlapis išvalytas", Toast.LENGTH_SHORT).show() }
         }, LinearLayout.LayoutParams(mw, ww))
-        left.addView(TextView(this).apply {
-            text = "Moon: NASA SVS CGI Moon Kit (LRO LROC, LOLA) · Earth: NASA Blue Marble, GEBCO"
-            textSize = 11f
-            alpha = 0.7f
+        left.addView(Button(this).apply {
+            text = "Apie programą ir šaltiniai…"; isAllCaps = false
+            setOnClickListener {
+                android.app.AlertDialog.Builder(this@MainActivity).setTitle("Šaltiniai ir licencijos")
+                    .setView(ScrollView(this@MainActivity).apply { addView(TextView(this@MainActivity).apply {
+                        text = Credits.text; textSize = 13f; setTextIsSelectable(true)
+                        val pd = (16 * resources.displayMetrics.density).toInt(); setPadding(pd, pd / 2, pd, pd) }) })
+                    .setPositiveButton("Gerai", null).show()
+            }
         }, LinearLayout.LayoutParams(mw, ww))
         // senas informacijos rodymas (FIKSAS, BAROMETRAS, PALYDOVAI) nustatymuose pašalintas – viskas ZIP ataskaitoje
 

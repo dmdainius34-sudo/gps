@@ -3649,7 +3649,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         seg(p0, tip, arrow)
         seg(tip, DoubleArray(3) { tip[it] - mv[it] * r * 0.3 + side[it] * r * 0.15 }, arrow)
         seg(tip, DoubleArray(3) { tip[it] - mv[it] * r * 0.3 - side[it] * r * 0.15 }, arrow)
-        drawLines(arrow.toFloatArray(), 0.5f, 1f, 0.55f, 0.95f)
+        if (simOffsetMs == 0L) drawLines(arrow.toFloatArray(), 0.5f, 1f, 0.55f, 0.95f)   // laikui bėgant (▶) rodyklė užgęsta
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         labelAt(DoubleArray(3) { obs[it] + nn[it] * hr * 1.08 }, "N", 0.6f, 1f, 1f, 0.03f)
     }
@@ -4886,7 +4886,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      */
     private fun pinCam(): FloatArray {
         // stebėtojo vaizde kamera visada keliauja kartu su stebėtoju (ir laikui bėgant ▶): planšete valdomas jo horizontas
-        val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon) + fG
+        // toli (žvaigždės, galaktika) kamera nebeseka Žemės sukimosi (tikras laikas) – galaktika nesisuka; arti – keliauja su stebėtoju
+        val far = sstep(0f, 0.3f, collapse()).toDouble()
+        var dg = (fG - fGc) % (2 * Math.PI); if (dg > Math.PI) dg -= 2 * Math.PI; if (dg < -Math.PI) dg += 2 * Math.PI
+        val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon) + fGc + dg * (1.0 - far)
         val k = 0.25 * 1.35
         val m = earthMat
         val fz = if (earthFlat) FLAT_K else 1f

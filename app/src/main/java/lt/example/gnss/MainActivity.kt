@@ -1717,7 +1717,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         val alive = fInit && lastGyroNs != 0L && android.os.SystemClock.elapsedRealtimeNanos() - lastGyroNs < 3_000_000_000L
         if (!alive) { fInit = false; lastGyroNs = 0L; gValid = false }
         // kiekvieną paleidimą – vienas bandymas pataisyti šiaurę pagal palydovų signalus (per pirmas 2 min.)
-        reanchorTries = 0; reanchorD.clear(); handler.removeCallbacks(reanchor); handler.postDelayed(reanchor, 5_000L)
+        reanchorTries = 0; reanchorD.clear(); reanchorSeen = 0; reanchorBest = -1.0; handler.removeCallbacks(reanchor); handler.postDelayed(reanchor, 5_000L)
         if (!listening) {
             rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
             gyroSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
@@ -1732,6 +1732,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private val LANDMARK_HOLD_MS = 30 * 60_000L
     private var reanchorTries = 0
     private val reanchorD = ArrayList<Double>()
+    private var reanchorSeen = 0; private var reanchorBest = -1.0
     /**
      * Paleidus – vienas šiaurės pataisymas pagal palydovų signalus: kas 5 s iki 2 min. renkami patikimi įverčiai (koreliacija ≥ 0,6,
      * atotrūkis ≥ 0,15); kai ≥ 6 įverčiai sutampa (sklaida ≤ 8°), kryptis pataisoma vieną kartą (jei skiriasi > 2°) ir parodomas pranešimas.
@@ -1739,6 +1740,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
      */
     private val reanchor: Runnable = object : Runnable { override fun run() {
         val e = SignalHeading.last; val h = headingDeg()
+        if (e != null && System.currentTimeMillis() - e.ms <= 10_000L) { reanchorSeen++; reanchorBest = maxOf(reanchorBest, e.corr) }
         if (e != null && h != null && System.currentTimeMillis() - e.ms <= 10_000L && e.corr >= 0.6 && e.margin >= 0.15)
             reanchorD.add(SunCal.wrap(h - e.deg))
         if (reanchorD.size >= 6) {
@@ -1757,8 +1759,13 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             reanchorD.removeAt(0)                                   // nesutampa – laukiama stabilesnių
         }
         if (++reanchorTries < 24) { handler.postDelayed(this, 5_000L); return }
-        android.widget.Toast.makeText(context, if (reanchorD.isEmpty()) "Pagal palydovus šiaurės nustatyti nepavyko – per atviras dangus arba per mažai palydovų"
-            else "Pagal palydovus šiaurės nustatyti nepavyko – įverčiai nesutapo (laikykite prietaisą ramiai)", android.widget.Toast.LENGTH_LONG).show()
+        // priežastis: kryptis randama lyginant signalus su KABINOS žemėlapiu (išmoktu krano kabinoje), todėl kitur ji nesutampa
+        val why = when {
+            reanchorSeen == 0 -> "per mažai palydovų arba kabinos žemėlapis tuščias"
+            reanchorD.isEmpty() -> "signalai nesutampa su kabinos žemėlapiu (geriausia koreliacija %.2f) – veikia tik krano kabinoje".format(java.util.Locale.US, reanchorBest)
+            else -> "įverčiai nesutapo (laikykite prietaisą ramiai)"
+        }
+        android.widget.Toast.makeText(context, "Pagal palydovus šiaurės nustatyti nepavyko – $why", android.widget.Toast.LENGTH_LONG).show()
     } }
 
     fun stop() {
@@ -7174,7 +7181,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             }
         """
         private const val EARTH_FS = """
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;                // vandens fizikai (atspindžio formulė) – didelis tikslumas, kitaip planšetėje NaN (juodas vanduo)
+            #else
             precision mediump float;
+            #endif
             uniform sampler2D uTex;
             uniform sampler2D uNight;
             uniform sampler2D uMask;
@@ -7249,22 +7260,17 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vec3 body = deepCol + bottom * 0.35;
                 // šelfuose (dumblas, fitoplanktonas) – žalsvesnis atspalvis
                 body += vec3(0.0, 0.012, 0.006) * (1.0 - smoothstep(30.0, 200.0, depth));
-                // 2) Bangų nuolydžiai (Cox–Munk, vėjas ~7 m/s): nuolydžių dispersija σ² = 0,003 + 0,00512·U;
-                //    smulkus raibuliavimas – tik spindesiui, lėtai juda
-                float sig2 = 0.003 + 0.00512 * 7.0;
-                vec3 tE = normalize(cross(vec3(0.0, 0.0, 1.0), sN) + vec3(1e-4, 0.0, 0.0));
-                vec3 tN = cross(sN, tE);
-                vec2 wp = vUV * vec2(4000.0, 2000.0);
-                float w1 = vnoise(wp + vec2(uTime * 0.25, uTime * 0.1)) - 0.5;
-                float w2 = vnoise(wp * 2.3 - vec2(uTime * 0.18, -uTime * 0.21)) - 0.5;
-                vec3 nW = normalize(sN + (tE * w1 + tN * w2) * 0.06);
-                // 3) Saulės atspindys (mikropaviršių modelis: Beckmann pasiskirstymas × Schlick Fresnelis, F0 = 0,02)
-                // atspindys visada ties Saulės zenito tašku (kryžiumi): skaičiuojama tarsi žiūrint iš Saulės pusės –
-                // nepriklauso nuo to, kaip pasuktas gaublys
-                float nh = max(dot(nW, l), 1e-3);
-                float tan2 = (1.0 - nh * nh) / (nh * nh);
-                float D = exp(-tan2 / sig2) / (3.14159 * sig2 * nh * nh * nh * nh);
-                float glint = D * 0.02 * 0.5 * step(0.0, nl);
+                // 2) Bangų nuolydžiai (Cox–Munk, lengvas vėjas ~4 m/s): nuolydžių dispersija σ² = 0,003 + 0,00512·U
+                float sig2 = 0.003 + 0.00512 * 4.0;
+                // 3) Saulės atspindys (Beckmann pasiskirstymas × Fresnelis F0 = 0,02) – visada ties Saulės zenito tašku (kryžiumi).
+                //    Skaičiuojama tik arti jo (cos > 0,6), kad nebūtų dalybos iš beveik nulio (anksčiau – NaN, vanduo „dingdavo“).
+                float nh = clamp(dot(sN, l), 0.0, 1.0);
+                float glint = 0.0;
+                if (nh > 0.6) {
+                    float c2 = nh * nh;
+                    float D = exp(-((1.0 - c2) / c2) / sig2) / (3.14159 * sig2 * c2 * c2);
+                    glint = D * 0.02 * 3.5;               // centre ≈ baltas; HDR – ryškiau
+                }
                 vec3 sunCol = vec3(1.0, 0.96, 0.88) * mix(vec3(1.0, 0.55, 0.3), vec3(1.0), smoothstep(0.0, 0.3, nl));   // žemai – oranžinė
                 // 4) Dangaus atspindys (Fresnelis pagal žiūrėjimo kampą – pakraščiuose vanduo blizga kaip veidrodis)
                 float Fv = 0.02 + 0.98 * pow(1.0 - nvW, 5.0);

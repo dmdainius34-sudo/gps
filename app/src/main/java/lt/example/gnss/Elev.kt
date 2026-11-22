@@ -44,12 +44,13 @@ object Elev {
                 px = a; cachePx = a; cacheKey = key
             } finally { c.disconnect() }
         }
-        val size = kotlin.math.sqrt(px.size.toDouble()).toInt()
+        val p: IntArray = px ?: return null
+        val size = kotlin.math.sqrt(p.size.toDouble()).toInt()
         val fx = (xy[0] - tx) * size - 0.5; val fy = (xy[1] - ty) * size - 0.5
         val x0 = floor(fx).toInt().coerceIn(0, size - 1); val y0 = floor(fy).toInt().coerceIn(0, size - 1)
         val x1 = (x0 + 1).coerceAtMost(size - 1); val y1 = (y0 + 1).coerceAtMost(size - 1)
         val ax = (fx - x0).coerceIn(0.0, 1.0); val ay = (fy - y0).coerceIn(0.0, 1.0)
-        fun h(x: Int, y: Int) = decode(px[y * size + x])
+        fun h(x: Int, y: Int) = decode(p[y * size + x])
         return (h(x0, y0) * (1 - ax) + h(x1, y0) * ax) * (1 - ay) + (h(x0, y1) * (1 - ax) + h(x1, y1) * ax) * ay
     }
 }

@@ -2169,6 +2169,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     private class SatI(val sat: Sat, val pos: FloatArray)
     @Volatile private var satsI: List<SatI> = emptyList()
+    /** Sistemos, kurias šis prietaisas girdi (tariamoje vietoje rodomos tik jos). */
+    private val seenConsts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     private fun frameNow() {
         val d = System.currentTimeMillis() / 86400000.0 + 2440587.5 - 2451545.0
@@ -2235,6 +2237,24 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val tNow = Sp3Live.gpsNow()
         val useSp3 = Sp3Live.available(tNow) && earthMatLast[10] != 0f
         sp3Active = useSp3
+        l.forEach { if (Sp3Live.id(it.const, 1) != null) seenConsts.add(it.const) }
+        if (virtualPos != null) {
+            // Tariama vieta: visi palydovai, kurie iš ten virš horizonto (SP3 / efemeridės), tik tų sistemų, kurias girdi šis prietaisas.
+            // Signalų iš ten nėra – be spindulių ir be užtildymo žymų (tik vaizdas ir kortelės).
+            val vo = ArrayList<SatI>()
+            if (useSp3) for (c in seenConsts) {
+                val maxSv = when (c) { "GPS" -> 32; "GAL" -> 36; "GLO" -> 24; "BDS" -> 63; else -> 0 }
+                for (sv in 1..maxSv) {
+                    val id = Sp3Live.id(c, sv) ?: continue
+                    val ecef = Sp3Live.ecefKm(id, tNow) ?: continue
+                    val (az, el) = Sp3Live.azEl(ecef, obsLat, obsLon, 0.0)
+                    if (el < 0.0) continue
+                    vo.add(SatI(Sat(c, sv, 0f, el.toFloat(), az.toFloat(), false), ecefToScene(ecef)))
+                }
+            }
+            satsI = vo; approxSats = emptySet(); sp3Tracks = emptyList()
+            return
+        }
         val out = ArrayList<SatI>()
         val nowMs = System.currentTimeMillis()
         val makeTracks = false        // trajektorijos nebepiešiamos (palydovo duomenys – bakstelėjus)
@@ -2580,7 +2600,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val col = constRgb(sat.const)
             // programos „užtildytas“ (neįtrauktas į jos padėtį: žemiau slenksčio, be efemeridės, atmestas kaip klaidingas) – blyškus,
             // be spindulio ir su raudonu „užtildymo“ ženkliuku
-            val muted = LiveRtk.isMuted(sat.const, sat.svid, sat.cn0)
+            val virt = virtualPos != null
+            val muted = !virt && LiveRtk.isMuted(sat.const, sat.svid, sat.cn0)
             val usedK = if (muted) 0.25f else if (sat.used) 1f else 0.4f
             // Švytėjimas: 0 ties 20 dB-Hz, didžiausias ties 45 dB-Hz
             val glow = ((sat.cn0 - 20f) / 25f).coerceIn(0f, 1f)
@@ -2588,7 +2609,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             // navigacinių žinučių (efemeridžių, almanacho) juosta rodoma visada, kai palydovas jas siunčia – ir užtildytam
             // (užtildymas – tik programos padėčiai; anksčiau įjungus GLONASS BeiDou be SP3 orbitų tapdavo užtildyti ir jų juostos dingdavo)
             if (nb != null && sat.cn0 > 10f) drawNavBits(p, pin, sat.const + sat.svid, nb, if (muted) FloatArray(3) { col[it] * 0.55f } else col, sat.cn0)
-            else if (!muted) drawLaser(p, pin, sat.cn0, sat.svid, t)
+            else if (!muted && !virt) drawLaser(p, pin, sat.cn0, sat.svid, t)
             // nesveikas (sveikatos žyma efemeridėse) – vartosi kūliais
             val tumble = if (SatHealth.bad(sat.const, sat.svid)) t * 90f + sat.svid * 37f else 0f
             drawSatModel(p, col, glow, usedK, sat.const, tumble)
@@ -2619,7 +2640,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 billboard(floatArrayOf(p[0], p[1], p[2] - 0.07f), eyeI, 0.022f * asp, 0.022f, lt,
                     if (nb.eph) 0.6f else 0.8f, if (nb.eph) 1f else 0.8f, if (nb.eph) 0.7f else 0.8f, (if (nb.eph) 0.95f else 0.6f) * (0.4f + 0.6f * q) * blink)
             }
-            if (sat.cn0 >= 30f) {
+            if (sat.cn0 >= 30f || virt) {
                 val pn = prnTex.getOrPut(sat.const + sat.svid) { makeTexture("${sat.svid}", 0xFFFFFFFF.toInt(), 64) }
                 billboard(floatArrayOf(p[0], p[1], p[2] + 0.07f), eyeI, 0.05f, 0.025f, pn, col[0], col[1], col[2], 0.9f * usedK)
             }
@@ -4343,6 +4364,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     fun setVirtual(lat: Double?, lon: Double?) {
         if (lat == null || lon == null) { virtualPos = null; obsLat = realLat; obsLon = realLon }
         else { virtualPos = doubleArrayOf(lat, lon); obsLat = lat; obsLon = lon }
+        try { setSats(sats) } catch (_: Exception) {}
     }
 
 
@@ -4595,6 +4617,19 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val id = Sp3Live.id(s.const, s.svid)
         val title = (id ?: (s.const + " " + s.svid)) + " · " + sys
         val rows = ArrayList<Pair<String, String>>()
+        if (virtualPos != null) {
+            rows.add("Iš įvestos vietos" to "aukštis %.1f°, azimutas %.1f° – tik vaizdas, signalo iš ten gauti negalima".format(L, s.elev, s.az))
+            val real = sats.firstOrNull { it.const == s.const && it.svid == s.svid }
+            val realEl = id?.let { Sp3Live.ecefKm(it, Sp3Live.gpsNow()) }?.let { Sp3Live.azEl(it, realLat, realLon, 0.0).second }
+            rows.add("Jūsų prietaisas (tikroje vietoje)" to when {
+                real != null && real.cn0 > 0f -> "girdi: %.1f dB-Hz, %.0f° virš jūsų horizonto".format(L, real.cn0, real.elev)
+                realEl != null && realEl < 0 -> "negirdi – %.0f° po jūsų horizontu (Žemė užstoja)".format(L, -realEl)
+                realEl != null -> "negirdi, nors %.0f° virš jūsų horizonto (užstotas ar per žemai)".format(L, realEl)
+                else -> "negirdi"
+            })
+            rows.add("Riba" to "signalą galima gauti tik iš palydovų virš jūsų tikro horizonto (praktiškai > 5–10°, be kliūčių)")
+            return title to rows
+        }
         rows.add("Signalo stiprumas" to "%.1f dB-Hz".format(L, s.cn0) + when { s.cn0 >= 40 -> " (stiprus)"; s.cn0 >= 30 -> " (vidutinis)"; else -> " (silpnas)" })
         // programos padėtis: naudojamas ar užtildytas ir kodėl; liekana – kiek jo atstumas nesutampa su padėtimi iš visų palydovų
         val key = s.const + s.svid

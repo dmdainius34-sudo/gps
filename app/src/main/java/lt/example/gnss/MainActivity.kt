@@ -3498,12 +3498,23 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val d = eclToEq(nu + peri, 0.0)
             pts.add(floatArrayOf((sx + d[0] * r).toFloat(), (sy + d[1] * r).toFloat(), (sz + d[2] * r).toFloat()))
         }
-        val seg = FloatArray(n * 6)
-        var k = 0
+        // orbita „įeina“ į gaublį: dalis, kuri ekrane patenka ant Žemės disko, nepiešiama (nei už, nei prieš Žemę)
+        val em = earthMat
+        fun scr(q: FloatArray): FloatArray? { val v = FloatArray(4); Matrix.multiplyMV(v, 0, mvpI, 0, floatArrayOf(q[0], q[1], q[2], 1f), 0)
+            return if (v[3] <= 1e-6f) null else floatArrayOf((v[0] / v[3] + 1f) / 2f * lastW, (1f - v[1] / v[3]) / 2f * lastH) }
+        val ec = floatArrayOf(em[12], em[13], em[14])
+        val ecS = scr(ec); val edS = if (camBasisOk) scr(FloatArray(3) { ec[it] + camRightW[it] * EARTH_R }) else null
+        val eR = if (ecS != null && edS != null) kotlin.math.hypot(edS[0] - ecS[0], edS[1] - ecS[1]) else 0f
+        val segL = ArrayList<Float>(n * 6)
         for (i in 0 until n) {
             val p0 = pts[i]; val p1 = pts[(i + 1) % n]
-            seg[k++] = p0[0]; seg[k++] = p0[1]; seg[k++] = p0[2]; seg[k++] = p1[0]; seg[k++] = p1[1]; seg[k++] = p1[2]
+            if (eR > 0f && ecS != null) {
+                val mS = scr(FloatArray(3) { (p0[it] + p1[it]) / 2f })
+                if (mS != null && kotlin.math.hypot(mS[0] - ecS[0], mS[1] - ecS[1]) < eR) continue
+            }
+            segL.add(p0[0]); segL.add(p0[1]); segL.add(p0[2]); segL.add(p1[0]); segL.add(p1[1]); segL.add(p1[2])
         }
+        val seg = segL.toFloatArray()
         // Mėnesių žymės: Žemės vieta orbitoje kiekvieno mėnesio 1 d. (brūkšnelis skersai orbitos ir pavadinimas)
         val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
         val year = cal.get(java.util.Calendar.YEAR); val monthNow = cal.get(java.util.Calendar.MONTH)

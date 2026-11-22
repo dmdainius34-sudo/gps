@@ -6514,16 +6514,19 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val list = Donki.active(System.currentTimeMillis()); if (list.isEmpty()) return
         val ez = doubleArrayOf(pole[0], pole[1], pole[2])
         val now = System.currentTimeMillis()
-        // Saulė → Žemė iš tikros Saulės krypties (ne iš scenos – kitaip kryptis priklausė nuo kameros ir „į Žemę“ kartais dingdavo)
-        val e = Astro.sunEq(now).let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); DoubleArray(3) { -v[it] / l } }
         GLES20.glUseProgram(colorProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         val newest = list.sortedByDescending { it.t215Ms }.take(3).toSet()
         for (c in list) {
-            val (n, ex, ey) = Donki.frame(c, e, ez)
-            val toEarth = Donki.hitsEarth(c, e, ez)
+            // DONKI ilguma – nuo Saulės–Žemės linijos išmatavimo metu: kūgio kryptis erdvėje pastovi (Žemė per dieną nueina ~1°)
+            fun earthDir(ms: Long) = Astro.sunEq(ms).let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); DoubleArray(3) { -v[it] / l } }
+            val e0 = earthDir(c.t215Ms)
+            val (n, ex, ey) = Donki.frame(c, e0, ez)
+            // ar pataikys – tikrinama su Žeme ten, kur ji BUS, kai išmetimas atskris (ne kur ji dabar)
+            val eArr = earthDir(Donki.arrivalMs(c))
+            val toEarth = Math.toDegrees(kotlin.math.acos((n[0] * eArr[0] + n[1] * eArr[1] + n[2] * eArr[2]).coerceIn(-1.0, 1.0))) <= c.halfAngle
             val aMul = if (toEarth) 1f else if (c in newest) 0.55f else 0.3f
             val fr = Donki.frontRsun(c, now)                                    // Saulės spinduliais
             val dist = (fr / Donki.AU_RSUN * au).coerceAtLeast(rs * 1.05f.toDouble())

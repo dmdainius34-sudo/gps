@@ -2526,11 +2526,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     val tgtH = kotlin.math.atan2(he, hn)
                     focusHeadSm = if (focusHeadSm.isNaN()) tgtH else { var dh = tgtH - focusHeadSm
                         while (dh > Math.PI) dh -= 2 * Math.PI; while (dh < -Math.PI) dh += 2 * Math.PI; focusHeadSm + 0.1 * dh }
-                    val dh = DoubleArray(3) { sin(focusHeadSm) * fE[it] + cos(focusHeadSm) * fN[it] }
+                    val hY = focusHeadSm + (if (levelHorizon) focusYawOff else 0.0)
+                    val dh = DoubleArray(3) { sin(hY) * fE[it] + cos(hY) * fN[it] }
                     // atkabintas horizontas (mygtukas nešviečia): ieškoti ir aukštyn–žemyn, pakreipiant planšetės nugarėlę
                     val elT = if (levelHorizon) Math.toRadians(Math.toDegrees(kotlin.math.asin((-r[8]).toDouble().coerceIn(-1.0, 1.0))).coerceIn(-80.0, 80.0)) else 0.0
                     focusElSm = if (focusElSm.isNaN()) elT else focusElSm + 0.1 * (elT - focusElSm)
-                    val d = DoubleArray(3) { cos(focusElSm) * dh[it] + sin(focusElSm) * fU[it] }
+                    val elA = (focusElSm + (if (levelHorizon) focusPitchOff else 0.0)).coerceIn(-1.45, 1.45)
+                    val d = DoubleArray(3) { cos(elA) * dh[it] + sin(elA) * fU[it] }
                     val mid = DoubleArray(3) { (e[it] + tgt[it]) / 2 }
                     val dist = (L / 2 + bodyRadius(focus)) / kotlin.math.tan(Math.toRadians(20.0)) * 1.2 * (focusZoom / (bodyRadius(focus) * 5.0)).coerceIn(0.05, 3.0)
                     val eye = DoubleArray(3) { mid[it] - d[it] * dist }
@@ -4645,6 +4647,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var focusLevelEye: FloatArray? = null
     private var focusHeadSm = Double.NaN
     private var focusElSm = Double.NaN
+    private var focusYawOff = 0.0
+    private var focusPitchOff = 0.0
 
     private fun observerView() = flight != null || (!followDevice && !freeView && focus == 0)
     fun isObserverView() = observerView()
@@ -4807,6 +4811,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         focusFrom = if (focus != 0) focusPt.copyOf() else doubleArrayOf(0.0, 0.0, 0.0)
         focus = id; focusT0 = System.currentTimeMillis(); panX = 0f; panY = 0f
         if (id != 0) focusZoom = (bodyRadius(id) * 5).toFloat()
+        focusYawOff = 0.0; focusPitchOff = 0.0
     }
 
     fun panBy(dx: Float, dy: Float) { if (focus != 0) { panX += dx * focusZoom * 0.8f; panY -= dy * focusZoom * 0.8f } }
@@ -5139,6 +5144,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     fun arcRotate(p0: DoubleArray, p1: DoubleArray) {
         if (focus != 0 && !levelHorizon) return              // prie kūno su užrakintu horizontu kampo vienu pirštu keisti negalima (tik planšete)
+        if (focus != 0) {
+            // atkabintas horizontas prie kūno: pirštu – žvilgsnis į šonus ir aukštyn/žemyn, horizontas lieka gulsčias
+            focusYawOff -= (p1[0] - p0[0]) * 1.5
+            focusPitchOff = (focusPitchOff + (p1[1] - p0[1]) * 1.5).coerceIn(-1.4, 1.4)
+            return
+        }
         val ax = p0[1] * p1[2] - p0[2] * p1[1]
         val ay = p0[2] * p1[0] - p0[0] * p1[2]
         val az = p0[0] * p1[1] - p0[1] * p1[0]

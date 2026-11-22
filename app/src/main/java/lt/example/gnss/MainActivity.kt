@@ -2594,6 +2594,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawCmb()
         drawVignette()
         drawBigDipper()
+        drawDraco()
         drawStarCollapse(covers = true)
         drawStars3d()
         drawGalaxy3d()
@@ -3131,6 +3132,64 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private val dipperLinks = listOf("Alkaid" to "Mizar", "Mizar" to "Alioth", "Alioth" to "Megrez", "Megrez" to "Dubhe",
         "Dubhe" to "Merak", "Merak" to "Phecda", "Phecda" to "Megrez")
     private val dipperStars by lazy { NearStars.list.filter { it.name in dipperNames }.associateBy { it.name } }
+    /** Drakono žvaigždynas (J2000: RA val., Dec °, ryškis): galva β γ ξ ν, kaklas ir uodega iki λ. */
+    private val dracoStars = listOf(
+        Triple("β", 17.5072, 52.3014) to 2.79, Triple("γ", 17.9434, 51.4889) to 2.24, Triple("ξ", 17.8921, 56.8726) to 3.75,
+        Triple("ν", 17.5378, 55.1842) to 4.87, Triple("δ", 19.2092, 67.6617) to 3.07, Triple("ε", 19.8028, 70.2678) to 3.83,
+        Triple("χ", 18.3508, 72.7328) to 3.55, Triple("ζ", 17.1465, 65.7147) to 3.17, Triple("η", 16.3999, 61.5142) to 2.73,
+        Triple("θ", 16.0315, 58.5653) to 4.01, Triple("ι", 15.4155, 58.9661) to 3.29, Triple("α", 14.0731, 64.3758) to 3.65,
+        Triple("κ", 12.5581, 69.7881) to 3.87, Triple("λ", 11.5233, 69.3311) to 3.84)
+    private val dracoLinks = listOf("β" to "γ", "γ" to "ξ", "ξ" to "ν", "ν" to "β", "ξ" to "δ", "δ" to "ε", "ε" to "χ", "χ" to "ζ",
+        "ζ" to "η", "η" to "θ", "θ" to "ι", "ι" to "α", "α" to "κ", "κ" to "λ")
+    private fun raDecDir(raH: Double, decDeg: Double): FloatArray {
+        val ra = Math.toRadians(raH * 15.0); val de = Math.toRadians(decDeg)
+        return floatArrayOf((cos(de) * cos(ra)).toFloat(), (cos(de) * sin(ra)).toFloat(), sin(de).toFloat())
+    }
+    /**
+     * Drakonas fone (kaip Grįžulo Ratai, tik žalsvas) ir Saulės šiaurės ašigalio kryptis (IAU: RA 286,13°, Dec +63,87°) –
+     * matyti, kad Saulės ašies strypas rodo į Drakoną (tarp jo galvos ir δ).
+     */
+    private fun drawDraco() {
+        if (starTex == 0) return
+        val a0 = bgFade(); if (a0 < 0.01f) return
+        System.arraycopy(mvpI, 0, mvp, 0, 16)
+        val st = dracoStars.associate { (t, mag) -> t.first to (raDecDir(t.second, t.third) to mag) }
+        fun bg(n: String) = FloatArray(3) { camPos[it] + st.getValue(n).first[it] * 50f }
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        val seg = ArrayList<Float>()
+        for ((p, q) in dracoLinks) {
+            val a = bg(p); val b = bg(q)
+            val d = FloatArray(3) { b[it] - a[it] }; val l = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]); if (l < 1.0f) continue
+            val g = 0.45f / l
+            for (k in 0..2) seg.add(a[k] + d[k] * g); for (k in 0..2) seg.add(b[k] - d[k] * g)
+        }
+        GLES20.glLineWidth(1f)
+        drawLines(seg.toFloatArray(), 0.6f, 0.95f, 0.75f, 0.35f * a0)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        for ((n, v) in st) {
+            val c = bg(n); val br = ((5.0 - v.second) / 3.0).toFloat().coerceIn(0.2f, 1f)
+            val halo = 50f * 0.016f * br
+            billboard(c, eyeI, halo, halo, starTex, 0.6f, 1f, 0.75f, 0.30f * a0)
+            val core = 50f * 0.0055f * br
+            billboard(c, eyeI, core, core, starTex, 0.9f, 1f, 0.9f, 0.95f * a0)
+        }
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        // Saulės šiaurės ašigalio kryptis – mažas žiedas ir užrašas
+        val sp = FloatArray(3) { camPos[it] + raDecDir(286.13 / 15.0, 63.87)[it] * 50f }
+        val ring = ArrayList<Float>(); val rr = 50f * 0.012f
+        val rv = camRightW; val uv = camUpW
+        for (i in 0 until 24) { val a0r = 2 * Math.PI * i / 24; val a1r = 2 * Math.PI * (i + 1) / 24
+            for (aa in listOf(a0r, a1r)) for (k in 0..2) ring.add(sp[k] + (rv[k] * cos(aa).toFloat() + uv[k] * sin(aa).toFloat()) * rr) }
+        drawLines(ring.toFloatArray(), 1f, 0.85f, 0.3f, 0.8f * a0)
+        val (tx, ta) = wideLabel("Saulės ašis (šiaurė)")
+        billboard(FloatArray(3) { sp[it] - uv[it] * rr * 2.2f }, eyeI, 50f * 0.012f * ta, 50f * 0.012f, tx, 1f, 0.85f, 0.3f, 0.85f * a0)
+        val (tx2, ta2) = wideLabel("Drakonas")
+        val hp = bg("ξ")
+        billboard(FloatArray(3) { hp[it] + uv[it] * 50f * 0.03f }, eyeI, 50f * 0.012f * ta2, 50f * 0.012f, tx2, 0.6f, 1f, 0.75f, 0.7f * a0)
+        GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
     private fun drawBigDipper() {
         if (starTex == 0) return
         val a0 = bgFade(); if (a0 < 0.01f) return

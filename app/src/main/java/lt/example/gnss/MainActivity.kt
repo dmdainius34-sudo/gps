@@ -9374,11 +9374,10 @@ class MainActivity : AppCompatActivity() {
         // Gaublio valdymas: 🌍 – laisvas gaublys (kaip Google Earth, be jutiklių drebėjimo) / 👁 – stebėtojo vaizdas; + ir − priartinimui
         // (paspaudus – žingsnis, laikant – tolygiai)
         run {
-            fun rb(t: String) = TextView(this).apply {
-                text = t; textSize = 20f; gravity = Gravity.CENTER; setTextColor(0xFFFFFFFF.toInt())
-                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0x55000000); setStroke((1 * dp).toInt(), 0x66FFFFFF) } }
-            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
-            val bs = (40 * dp).toInt(); val gp = (5 * dp).toInt()
+            // visi mygtukai – viename dešiniajame stulpelyje, tokio pat mažo dydžio kaip ⌂ ⊖ 🧭 ⚙
+            fun rb(t: String) = small(t, if (t.length > 1) 13f else 16f).apply { alpha = 0.85f }
+            val col = tools
+            val bs = bSize; val gp = (3 * dp).toInt()
             val mode = rb(if (skyDome.freeView) "\uD83D\uDC41" else "\uD83C\uDF0D")
             modeBtn = mode
             mode.setOnClickListener {
@@ -9407,14 +9406,12 @@ class MainActivity : AppCompatActivity() {
                 btn.setOnTouchListener { v, ev ->
                     when (ev.actionMasked) {
                         MotionEvent.ACTION_DOWN -> { v.alpha = 0.6f; keyHaptic(v); skyDome.zoomStep(f * f * f); v.postDelayed(rep, 300L) }
-                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { v.alpha = 1f; v.removeCallbacks(rep) }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { v.alpha = 0.85f; v.removeCallbacks(rep) }
                     }
                     true
                 }
                 col.addView(btn, LinearLayout.LayoutParams(bs, bs).apply { setMargins(0, gp, 0, gp) })
             }
-            skyHolder.addView(col, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.END or Gravity.CENTER_VERTICAL).apply { val mm = (10 * dp).toInt(); setMargins(mm, mm, mm + bSize + (8 * dp).toInt(), mm) })   // kairiau įrankių stulpelio
         }
         // Kairėje: 🚀 skrydis
         run {

@@ -2544,10 +2544,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawVignette()
         drawBrightGlow()
         drawBigDipper()
-        drawStarCollapse(covers = true)
         drawStars3d()
         drawGalaxy3d()
-        drawStarCollapse(covers = false)
         drawAndromeda()
         drawPolarisBeacon()
 
@@ -3150,50 +3148,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val lp = GLES20.glGetAttribLocation(vigProg, "aPos"); GLES20.glEnableVertexAttribArray(lp)
         GLES20.glVertexAttribPointer(lp, 2, GLES20.GL_FLOAT, false, 0, floatBuf(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)))
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
-    }
-
-    private fun drawStarCollapse(covers: Boolean) {
-        if (flight != null) return
-        if (simOffsetMs != 0L) return                      // imitacinės žvaigždės – tik tolinimo perėjimui į galaktiką; laikui bėgant (▶) nerodomos                                       // skrydyje žvaigždės – tikrose 3D vietose (drawStars3d)
-        val c = collapse(); if (c <= 0f || starTex == 0) return
-        if (covers && bgFade() < 0.01f) return
-        val gone = starsGone(); if (!covers && gone > 0.99f) return
-        if (coverTex == 0) coverTex = makeCoverTexture()
-        System.arraycopy(mvpI, 0, mvp, 0, 16)
-        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
-        val sec = android.os.SystemClock.uptimeMillis() / 1000.0
-        // tik stebėtojo matomos (virš jo horizonto) žvaigždės; eilė – nuo artimiausios iš jų (perskaičiuojama kas kadrą)
-        // pagal tikrą laiką (fUc): paleidus laiką ▶ žvaigždės nesisuka kartu su Žeme
-        val vis = NearStars.list.withIndex().filter { (_, s) -> s.dir[0] * fUc[0] + s.dir[1] * fUc[1] + s.dir[2] * fUc[2] > 0.0 }
-        if (vis.isEmpty()) return
-        val starts = NearStars.starts(vis.map { it.value })
-        for ((k, iv) in vis.withIndex()) {
-            val i = iv.index; val s = iv.value
-            val t = sstep(0f, 1f, (c - starts[k]) / NearStars.SPAN)
-            val stay = 1f - bgFade()                                   // fonas temsta – dar neišskridusi žvaigždė lieka šviesti savo vietoje
-            if (t <= 0f && (covers || stay < 0.01f)) continue
-            val bg = FloatArray(3) { camPos[it] + s.dir[it] * 50f }
-            val bright = (1.5 - s.mag).toFloat().coerceIn(-2f, 3f)
-            if (covers) {
-                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-                val cr = 50f * (0.006f + 0.0015f * bright)
-                billboard(bg, eyeI, cr, cr, coverTex, 0f, 0f, 0f, (t * 4f).coerceAtMost(1f) * bgFade())
-                continue
-            }
-            // tikra 3D vieta aplink Saulę (galaktikos mastelis: starScale() = GAL_G vnt./kpc, 1 šm = 0,3066 pc)
-            val tgt = FloatArray(3) { (fP[it] + s.dir[it] * (s.ly * 0.3066 / 1000.0 * starScale())).toFloat() }
-            val p = FloatArray(3) { bg[it] + (tgt[it] - bg[it]) * t }
-            val dx = p[0] - camPos[0]; val dy = p[1] - camPos[1]; val dz = p[2] - camPos[2]
-            val dc = sqrt(dx * dx + dy * dy + dz * dz)
-            val sz = dc * (0.006f + 0.0012f * bright)
-            val tw = (0.7 + 0.3 * sin(sec * (2.5 + i % 5) + i * 1.7)).toFloat()
-            val a = maxOf((t * 4f).coerceAtMost(1f), stay) * tw * (1f - gone)
-            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
-            billboard(p, eyeI, sz, sz, starTex, s.rgb[0], s.rgb[1], s.rgb[2], a)
-            billboard(p, eyeI, sz * 0.4f, sz * 0.4f, starTex, 1f, 1f, 1f, a)
-        }
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 

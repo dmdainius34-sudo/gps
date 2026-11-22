@@ -4463,7 +4463,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Laiko šliaužiklis: poslinkis nuo dabar (ms). Žemės sukimasis, orbita, Saulė, Mėnulis ir CME – pagal šį laiką. */
     @Volatile var simOffsetMs = 0L
     private fun simNow() = System.currentTimeMillis() + simOffsetMs
-    /** Laiko eiga (▶): 1 para per sekundę, iki pusės metų; kamera lieka vietoje, sukasi Žemė. */
+    /** Laiko eiga (▶): 1 para per 2 s, iki pusės metų; kamera lieka vietoje, sukasi Žemė. */
     @Volatile var simRun = false
     private var simLastNs = 0L
     private var spaceRefreshNs = 0L
@@ -4477,7 +4477,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             try { Donki.refresh(appCtx) } catch (_: Exception) {}
         }
         if (simRun && simLastNs != 0L) {
-            simOffsetMs += ((ns - simLastNs) / 1e6 * 86_400.0).toLong()
+            simOffsetMs += ((ns - simLastNs) / 1e6 * 43_200.0).toLong()          // 1 para per 2 s
             if (simOffsetMs >= SIM_MAX_MS) { simOffsetMs = SIM_MAX_MS; simRun = false }
         }
         simLastNs = ns
@@ -9998,7 +9998,7 @@ class MainActivity : AppCompatActivity() {
             skyHolder.addView(att, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM or Gravity.END).apply { val mm = (4 * dp).toInt(); setMargins(mm, mm, mm, mm) })
         }
-        // ▶ – laiko eiga apačioje ekrano viduryje: 1 para per sekundę iki pusės metų; ⏸ – sustabdyti; ilgai palaikius – grįžti į dabartį
+        // ▶ – laiko eiga apačioje ekrano viduryje: 1 para per 2 s iki pusės metų; ⏸ – sustabdyti; ilgai palaikius – grįžti į dabartį
         run {
             val playB = small("\u25B6", 16f).apply { alpha = 0.75f }
             val lbl = TextView(this).apply { textSize = 12f; setTextColor(0xFFFFFFFF.toInt()); setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt()); gravity = Gravity.CENTER; visibility = View.GONE }

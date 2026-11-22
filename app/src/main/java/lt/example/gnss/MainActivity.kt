@@ -4547,6 +4547,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Žiūrėjimo kryptis (I erdvėje) – stebėtojo vaizde horizonto žymoms. */
     private var lookI = floatArrayOf(0f, 0f, 1f)
     /** Laisvo žvilgsnio kryptis ir ekrano viršus (planšetės nugarėlė ir viršus, I erdvėje), išlyginti. */
+    private var posDirL: DoubleArray? = null
     private var lookFreeL: DoubleArray? = null
     private var upFreeL: DoubleArray? = null
     private var lookFreeSm: DoubleArray? = null
@@ -4949,9 +4950,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // kameros vieta: arti seka žiūrėjimo kryptį (už nugaros), toli – sustingsta (I erdvėje, todėl ir Žemei sukantis lieka vietoje)
         lookI = floatArrayOf(lookB[0].toFloat(), lookB[1].toFloat(), lookB[2].toFloat())
         val pd0 = posDir
-        // laikui bėgant (▶) su užrakintu horizontu kamera seka stebėtoją (nesustingsta erdvėje), kitaip horizontas pasvyra
-        val freezeP = if (simOffsetMs != 0L && levelHorizon) 0.0 else freeze
-        posDir = if (pd0 == null) lookB else nrm(DoubleArray(3) { pd0[it] + (1.0 - freezeP) * (lookB[it] - pd0[it]) })
+        // laikui bėgant (▶) su užrakintu horizontu: kameros kampas stebėtojo atžvilgiu užfiksuojamas tokį, koks buvo paspaudus ▶,
+        // ir keliauja kartu su juo (horizonto žiedas matomas tuo pačiu kampu, nesispaudžia prie Žemės)
+        if (simOffsetMs != 0L && levelHorizon) {
+            val pl = posDirL ?: (pd0 ?: lookB).let { v -> doubleArrayOf(v[0] * east[0] + v[1] * east[1] + v[2] * east[2],
+                v[0] * north[0] + v[1] * north[1] + v[2] * north[2], v[0] * up[0] + v[1] * up[1] + v[2] * up[2]) }.also { posDirL = it }
+            posDir = loc(pl)
+        } else {
+            posDirL = null
+            posDir = if (pd0 == null) lookB else nrm(DoubleArray(3) { pd0[it] + (1.0 - freeze) * (lookB[it] - pd0[it]) })
+        }
         val lookPos = posDir!!
         var eye = FloatArray(3) { (head[it] - lookPos[it] * dist).toFloat() }
         var lookC = lookB; var upC = camUpB; var wFl = 0.0

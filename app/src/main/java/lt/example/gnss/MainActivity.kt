@@ -1415,6 +1415,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     var simRate: Double
         get() = renderer.simRate
         set(v) { renderer.simRate = v }
+    var simHideOrbit: Boolean
+        get() = renderer.simHideOrbit
+        set(v) { renderer.simHideOrbit = v }
     var simRun: Boolean
         get() = renderer.simRun
         set(v) { renderer.simRun = v }
@@ -3584,7 +3587,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * šiuo metu gulėtų ant orbitos, o Saulė būtų SUN_DIST atstumu. Piešiama per mvpI.
      */
     private fun drawEarthOrbit() {
-        if (simOffsetMs != 0L && observerView()) return                 // laikui bėgant (▶) stebėtojo vaizde orbita paslepiama (sukasi su dangumi – painu)
+        if (simHideOrbit && simOffsetMs != 0L && observerView()) return   // laikui bėgant (▶) – orbitą galima paslėpti (ilgai palaikius ▶)
         val ecc = 0.0167
         val peri = Math.toRadians(102.9372)
         val lEarth = sunEclLon() + Math.PI                  // Žemės heliocentrinė ilguma
@@ -4545,6 +4548,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun simNow() = System.currentTimeMillis() + simOffsetMs
     /** Laiko eiga (▶): 1 para per 2 s, iki pusės metų; kamera lieka vietoje, sukasi Žemė. */
     @Volatile var simRun = false
+    /** Ilgai palaikius ▶: false – su orbita (pradinis), true – be orbitos. */
+    @Volatile var simHideOrbit = false
     /** Kiek kartų greičiau už tikrą laiką. */
     @Volatile var simRate = 2_880.0
     private var simLastNs = 0L
@@ -10126,8 +10131,9 @@ class MainActivity : AppCompatActivity() {
                 if (skyDome.simRun) skyDome.simRun = false
                 else { if (skyDome.simOffsetMs >= 182L * 86_400_000L) skyDome.simOffsetMs = 0L; skyDome.simRun = true }
             }
-            playB.setOnLongClickListener { keyHaptic(playB); skyDome.simRun = false; skyDome.simOffsetMs = 0L
-                Toast.makeText(this, "Grąžinta dabartis", Toast.LENGTH_SHORT).show(); true }
+            // ilgai palaikius – režimas: su orbita (pradinis) ↔ be orbitos; į dabartį grąžina ⌂
+            playB.setOnLongClickListener { keyHaptic(playB); skyDome.simHideOrbit = !skyDome.simHideOrbit
+                Toast.makeText(this, if (skyDome.simHideOrbit) "Režimas: be orbitos" else "Režimas: su orbita", Toast.LENGTH_SHORT).show(); true }
             box.post(tick)
             // ▶ laiko eiga – kairėje po 🚀 (ne apačioje – ten lusto duomenys)
             leftColRef?.addView(box, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, bSize).apply { topMargin = (6 * dp).toInt() })

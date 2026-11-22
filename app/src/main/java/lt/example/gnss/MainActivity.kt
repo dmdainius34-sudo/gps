@@ -6542,7 +6542,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.4f * aMul)
             bindPos(colorProg, floatBuf(sides.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, sides.size / 3)
             if (!toEarth && c !in newest) continue
-            val lab = "CME %.0f km/s".format(java.util.Locale.US, c.speed) + (if (toEarth) " → Žemė" else "")
+            val lab = "CME %.0f km/s".format(java.util.Locale.US, c.speed) + (if (!toEarth) "" else {
+                // kryptis į Žemę: kada pasieks (atvykimas = 21,5 R☉ momentas + likęs kelias / greitis)
+                val arr = c.t215Ms + ((Donki.AU_RSUN - 21.5) * 696_000.0 / c.speed * 1000.0).toLong()
+                val dh = (arr - now) / 3_600_000.0
+                fun span(h: Double) = if (kotlin.math.abs(h) < 48) "%.0f val.".format(java.util.Locale.US, kotlin.math.abs(h)) else "%.1f".format(java.util.Locale.US, kotlin.math.abs(h) / 24).replace('.', ',') + " d."
+                if (dh > 0) " · pasieks Žemę po " + span(dh) else " · pasiekė Žemę prieš " + span(dh)
+            })
             val (tx, ta) = wideLabel(lab)
             val lp = FloatArray(3) { (sp[it] + n[it] * cd * 1.05).toFloat() }
             val hh = rs * 0.22f

@@ -1409,6 +1409,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     var simOffsetMs: Long
         get() = renderer.simOffsetMs
         set(v) { renderer.simOffsetMs = v }
+    var earthFlat: Boolean
+        get() = renderer.earthFlat
+        set(v) { renderer.earthFlat = v; calPrefs.edit().putBoolean("earth_flat", v).apply() }
     var simRun: Boolean
         get() = renderer.simRun
         set(v) { renderer.simRun = v }
@@ -1646,6 +1649,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.showGrid = calPrefs.getBoolean("grid", true)
         renderer.showEarthGrid = calPrefs.getBoolean("earth_grid", false)
         renderer.showSats = calPrefs.getBoolean("show_sats", false)
+        renderer.earthFlat = calPrefs.getBoolean("earth_flat", false)
         renderer.showSunGrid = calPrefs.getBoolean("sun_grid", true)
         renderer.showLasco = calPrefs.getBoolean("sun_lasco", true)
         renderer.obstacleMode = calPrefs.getInt("obst_mode", 1)
@@ -4848,7 +4852,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon) + fGc
         val k = 0.25 * 1.35
         val m = earthMat
-        return floatArrayOf((k * cos(la) * cos(lo)).toFloat() + m[12], (k * cos(la) * sin(lo)).toFloat() + m[13], (k * sin(la)).toFloat() + m[14])
+        val fz = if (earthFlat) FLAT_K else 1f
+        return floatArrayOf((k * cos(la) * cos(lo)).toFloat() + m[12], (k * cos(la) * sin(lo)).toFloat() + m[13], (k * sin(la)).toFloat() * fz + m[14])
     }
 
     private fun observerCamera() {
@@ -5288,11 +5293,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Platumų ir ilgumų tinklelis laisvame gaublyje: žingsnis pagal aukštį (ekrane ~4–10 linijų), linijos ant reljefo, už horizonto – nepiešiamos. */
     private fun drawGlobeGrid() {
         if (focus != 0 || flight != null || zoom > EARTH_R + SOLAR_ZOOM) { centreLat = Double.NaN; gridStepDeg = Double.NaN; return }
-        val m = earthMat; val r0 = EARTH_R.toDouble(); val cw = camPos
+        val m = earthMatLast; val r0 = EARTH_R.toDouble(); val cw = camPos
         val cm = DoubleArray(3) { i -> m[i * 4] * cw[0].toDouble() + m[i * 4 + 1] * cw[1].toDouble() + m[i * 4 + 2] * cw[2].toDouble() }
         val cl = kotlin.math.sqrt(cm[0] * cm[0] + cm[1] * cm[1] + cm[2] * cm[2]); if (cl < 1e-6) return
-        val lat0 = Math.toDegrees(kotlin.math.asin((cm[2] / cl).coerceIn(-1.0, 1.0))); val lon0 = Math.toDegrees(kotlin.math.atan2(cm[1], cm[0]))
-        val alt = cl - r0
+        // suplota Žemė: tos krypties taškas paviršiuje – platuma atstatoma (z / k), paviršiaus spindulys toje kryptyje mažesnis
+        val fk = if (earthFlat) FLAT_K.toDouble() else 1.0
+        val hxy = kotlin.math.hypot(cm[0], cm[1])
+        val lat0 = Math.toDegrees(kotlin.math.atan2(cm[2] / fk, hxy)); val lon0 = Math.toDegrees(kotlin.math.atan2(cm[1], cm[0]))
+        val sc = cm[2] / cl; val cc = hxy / cl
+        val alt = cl - r0 / kotlin.math.sqrt(cc * cc + sc * sc / (fk * fk))
         centreLat = lat0; centreLon = lon0; centreAltKm = alt / r0 * 6371.0
         // tinklelis rodomas tik priartinus – kartu su palydovinėmis plytelėmis (žemiau ~400 km, ryškėja iki ~200 km)
         val gA = (1.0 - ((alt - 0.008) / 0.008).coerceIn(0.0, 1.0).let { it * it * (3 - 2 * it) }).toFloat()
@@ -5785,8 +5794,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             earthMat[4] = out[1].toFloat(); earthMat[5] = out[4].toFloat(); earthMat[6] = out[7].toFloat()
             earthMat[8] = out[2].toFloat(); earthMat[9] = out[5].toFloat(); earthMat[10] = out[8].toFloat()
         }
+        earthMatLast = earthMat.copyOf()                 // palydovams ir ECEF taškams – tikra (nesuplota) sistema
+        // Žemės suplojimas ×30 (varnelė): ašigaliai suspausti, pusiaujas išpūstas – gaublys, smeigtukas, plytelės, tinklelis
+        if (earthFlat) for (i in 8..10) earthMat[i] *= FLAT_K
         Matrix.multiplyMM(earthMvp, 0, mvpI, 0, earthMat, 0)
-        earthMatLast = earthMat.copyOf()
 
         if (earthTex == 0) {
             GLES20.glUseProgram(colorProg)
@@ -5893,6 +5904,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     private val EARTH_R = 0.25f
+    /** Žemės suplojimas (WGS84 f = 1/298,257) padidintas ×30: ašigalio spindulys / pusiaujo = 0,8994. */
+    private val FLAT_K = (1.0 - 30.0 / 298.257223563).toFloat()
+    @Volatile var earthFlat = false
     private val SIM_MAX_MS = 182L * 86_400_000L
 
     /** Palydovo aukštis virš Žemės (km) pagal konstelaciją. */
@@ -9487,6 +9501,12 @@ class MainActivity : AppCompatActivity() {
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("earth_grid", false)
             setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.earthGrid = on
                 else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("earth_grid", on).apply() }
+        }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(CheckBox(this).apply {
+            text = "Žemės suplojimas ×30 (ašigaliai suploti, pusiaujas išpūstas)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("earth_flat", false)
+            setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.earthFlat = on
+                else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("earth_flat", on).apply() }
         }, LinearLayout.LayoutParams(mw, ww))
         left.addView(CheckBox(this).apply {
             text = "Rodyti palydovus"

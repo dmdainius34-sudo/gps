@@ -1426,10 +1426,12 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         set(v) { renderer.dustK = v; calPrefs.edit().putFloat("dust_k", v).apply() }
     /** Skrydis pro Šiaurinę žvaigždę: true – pradėtas, false – grįžtama. */
     fun toggleFlight(): Boolean {
-        renderer.onFlightMsg = { m -> handler.post { android.widget.Toast.makeText(context, m, android.widget.Toast.LENGTH_LONG).show() } }
+        renderer.onFlightMsg = { m -> handler.post { onFlightText?.invoke(m) ?: android.widget.Toast.makeText(context, m, android.widget.Toast.LENGTH_LONG).show() } }
         renderer.onFlightSfx = null                    // garsas skrendant pro žvaigždę pašalintas
         return renderer.toggleFlight()
     }
+    /** Skrydžio paaiškinimų rodymas (veikla – permatoma kortelė ekrano apačioje). */
+    var onFlightText: ((String) -> Unit)? = null
     /** ⌂ – grįžti į pradinį vaizdą (kaip paleidus programą). */
     fun goHome() { renderer.goHome() }
     fun setOcean(on: Boolean) { renderer.oceanOn = on; if (on) renderer.oceanLevel = 2 }
@@ -4511,12 +4513,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         fun ly(k: Double) = "%,d".format(Locale.US, (k * PolarFlight.LY_PER_KPC / 100).toLong() * 100).replace(',', ' ')
         val msg = when {
             fl.stage == 0 && sKpc >= (if (fl.north) 0.133 else 0.090) ->
-                (if (fl.north) "Šiaurinė žvaigždė – 433 šviesmečiai (133 pc)" else "σ Octantis – ~290 šviesmečių (90 pc)") +
-                    ". Kelias kerta galaktikos plokštumą %.0f° kampu".format(Locale.US, cross)
-            fl.stage == 1 && z >= 0.3 -> "Išnirote iš plonojo disko: ${ly(sKpc)} šm nuo Žemės, 0,3 kpc virš plokštumos"
-            fl.stage == 2 && z >= 1.0 -> "Storasis diskas baigėsi: ${ly(sKpc)} šm. Žvilgsnis leidžiasi į galaktiką po kojomis"
-            fl.stage == 3 && sKpc >= 15.0 -> "15 kpc (${ly(sKpc)} šm): galaktika po jumis – centras už %.0f kpc, matote ją %.0f° kampu".format(Locale.US, dGc, view)
-            fl.stage == 4 && sKpc >= 49.9 -> "50 kpc (${ly(sKpc)} šm): galaktika – blyno dydžio, matote ją %.0f° kampu iš $side pusės. Grįžti – dar kartą \uD83D\uDE80".format(Locale.US, view)
+                (if (fl.north) "Šiaurinė žvaigždė – 433 šviesmečiai nuo Žemės" else "σ Octantis – ~290 šviesmečių nuo Žemės") +
+                    ". Skrendate %.0f° kampu į galaktikos plokštumą".format(Locale.US, cross)
+            fl.stage == 1 && z >= 0.3 -> "Išnirote iš galaktikos disko: ${ly(sKpc)} šviesmečių nuo Žemės"
+            fl.stage == 2 && z >= 1.0 -> "Jau ${ly(sKpc)} šviesmečių. Galaktika lieka po jumis"
+            fl.stage == 3 && sKpc >= 15.0 -> "${ly(sKpc)} šviesmečių: galaktika po jumis, iki jos centro ${ly(dGc)} šviesmečių"
+            fl.stage == 4 && sKpc >= 49.9 -> "${ly(sKpc)} šviesmečių: visa galaktika kaip blynas. Grįžti – dar kartą \uD83D\uDE80"
             else -> null
         } ?: return
         // palikus Šiaurinę žvaigždę (pietuose – σ Octantis) – spjūvis per bambuko vamzdį
@@ -7894,15 +7896,6 @@ class DraggablePanel(
         orientation = LinearLayout.VERTICAL
         setPadding(0, 0, 0, (6 * context.resources.displayMetrics.density).toInt())
         addView(fixText)
-        addView(Button(context).apply {
-            text = "Kopijuoti FIX taškus"; textSize = 12f; isAllCaps = false
-            setOnClickListener {
-                val t = FixPoints.copyText()
-                if (t.isEmpty()) { Toast.makeText(context, "FIX taškų dar nėra", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
-                (context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("FIX", t))
-                Toast.makeText(context, "Nukopijuota", Toast.LENGTH_SHORT).show()
-            }
-        })
         val tick = object : Runnable { override fun run() {
             if (FixPoints.version != fixShown) { fixShown = FixPoints.version; fixText.text = FixPoints.text() }
             postDelayed(this, 1000L)
@@ -8044,7 +8037,8 @@ class DraggablePanel(
 
         // ZIP visada su naudingomis dalimis (geoidas, barometras, palydovų būsena, klaidos, įrenginys); atskirai – tik ekrano kopija.
         // Fiksas, C/N0 istorija ir palydovų sąrašas pašalinti – kartojo kitas ataskaitos dalis ir CSV failus.
-        val opts = linkedMapOf("screenshot" to "Įtraukti ekrano kopiją")
+        val opts = linkedMapOf("screenshot" to "Įtraukti ekrano kopiją",
+            "raw" to "Rinkti GNSS matavimus tikslumo tyrimui (CSV į tą patį ZIP)")
         for ((k, v) in opts) {
             val cb = CheckBox(context).apply {
                 text = v
@@ -8053,7 +8047,11 @@ class DraggablePanel(
                 isChecked = false
             }
             boxes[k] = cb
-            optionsLayout.addView(cb)
+            if (k == "raw") {
+                rawRow.addView(cb, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                rawRow.addView(rawSecs)
+                rawRow.addView(secLabel)
+            } else optionsLayout.addView(cb)
         }
 
         header.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -8062,8 +8060,6 @@ class DraggablePanel(
         inputRow.addView(questionInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         inputRow.addView(sp3UpdateBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         inputRow.addView(shareBtn)
-        recRow.addView(coldBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
-        recRow.addView(screenBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
         recRow.addView(navLiveBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
         recRow.addView(endRecBtn, LinearLayout.LayoutParams(0, (48 * density).toInt(), 1f))
 
@@ -8084,6 +8080,7 @@ class DraggablePanel(
         bodyInner.addView(fixBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         // žinutės Claude su raktu (API, GitHub) pašalintos iš programos
         bodyInner.addView(optionsLayout)
+        bodyInner.addView(rawRow)
         bodyInner.addView(alphaLabel)
         bodyInner.addView(alphaSeek)
         bodyInner.addView(envSpinner)
@@ -9373,12 +9370,12 @@ class MainActivity : AppCompatActivity() {
             if (::skyDome.isInitialized) skyDome.setFollowDevice(on)
         }
         fun setLevel(on: Boolean) {
-            sp.edit().putBoolean("level_horizon", on).apply(); mark(levelBtn, on)
+            sp.edit().putBoolean("level_horizon", on).apply(); mark(levelBtn, !on)   // mygtukas šviečia – stabilus horizontas
             if (::skyDome.isInitialized) skyDome.setLevelHorizon(on)
             requestedOrientation = if (on) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
         if (sp.getBoolean("follow_device", false) && sp.getBoolean("level_horizon", true)) setLevel(false)
-        mark(followBtn, sp.getBoolean("follow_device", false)); mark(levelBtn, sp.getBoolean("level_horizon", true))
+        mark(followBtn, sp.getBoolean("follow_device", false)); mark(levelBtn, !sp.getBoolean("level_horizon", true))
         followBtn.setOnClickListener {
             val on = !sp.getBoolean("follow_device", false)
             setFollow(on); if (on) setLevel(false)
@@ -9387,7 +9384,7 @@ class MainActivity : AppCompatActivity() {
         levelBtn.setOnClickListener {
             val on = !sp.getBoolean("level_horizon", true)
             setLevel(on); if (on) setFollow(false)
-            Toast.makeText(this@MainActivity, if (on) "Sklandus sukimas 360°: horizontas lieka lygus" else "Sklandus sukimas išjungtas", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this@MainActivity, if (on) "Laisvas vaizdas – horizontas laikomas lygus" else "Stabilus horizontas (ekrano viduryje)", Toast.LENGTH_SHORT).show()
         }
         val calBtn = small("\uD83E\uDDED", 15f).apply { alpha = 0.85f; setOnClickListener { toggleCalibDrum() } }   // 🧭
         val setBtn = small("\u2699", 17f).apply { alpha = 0.85f; setOnClickListener { openSettings() } }               // ⚙ nustatymai
@@ -9529,6 +9526,22 @@ class MainActivity : AppCompatActivity() {
                 col.addView(btn, LinearLayout.LayoutParams(bs, bs).apply { setMargins(0, gp, 0, gp) })
             }
         }
+        // Skrydžio paaiškinimai: permatoma kortelė ekrano apačioje, rodoma 10 s
+        run {
+            val tv = TextView(this).apply {
+                textSize = 14f; setTextColor(0xFFFFFFFF.toInt()); gravity = Gravity.CENTER; visibility = View.GONE
+                val pd = (10 * dp).toInt(); setPadding(pd + pd / 2, pd, pd + pd / 2, pd)
+                background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 14 * dp; setColor(0x44000000) }
+                setShadowLayer(3f, 0f, 0f, 0xFF000000.toInt())
+            }
+            val hide = Runnable { tv.animate().alpha(0f).setDuration(600).withEndAction { tv.visibility = View.GONE }.start() }
+            skyDome.onFlightText = { m ->
+                tv.text = m; tv.visibility = View.VISIBLE; tv.alpha = 0f; tv.animate().alpha(1f).setDuration(300).start()
+                tv.removeCallbacks(hide); tv.postDelayed(hide, 10_000L)
+            }
+            skyHolder.addView(tv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = (70 * dp).toInt(); val m = (24 * dp).toInt(); leftMargin = m; rightMargin = m })
+        }
         // Kairėje: 🚀 skrydis
         run {
             val lc = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL
@@ -9588,9 +9601,9 @@ class MainActivity : AppCompatActivity() {
                 Gravity.BOTTOM or Gravity.END).apply { val mm = (4 * dp).toInt(); setMargins(mm, mm, mm, mm) })
         }
         toolCol = tools
-        skyHolder.addView(tools, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
+        skyHolder.addView(tools, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
             val m = (10 * dp).toInt()
-            setMargins(m, m, m, m)
+            setMargins(m, m, m, (24 * dp).toInt())                 // mygtukai – nuo apačios
         })
         skyHolderParent = right
         skyHolderLp = LinearLayout.LayoutParams(skySide, skySide)
@@ -9633,6 +9646,8 @@ class MainActivity : AppCompatActivity() {
             container.post { container.post { root.alpha = 1f } }
         }
         container.post { go3d(30) }
+        // ekrano testas (mygtukas pašalintas iš NLO) – tyliai kartą po paleidimo; rezultatas patenka į ZIP ataskaitą
+        container.postDelayed({ if (::skyDome.isInitialized && lastScreenTest == null) skyDome.screenTest { lastScreenTest = it } }, 25_000L)
         
         // Pradedame su iš karto aktyviu burbulu (minimizuota būsena)
         setupShareBubble()

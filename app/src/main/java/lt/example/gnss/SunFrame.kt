@@ -69,8 +69,8 @@ object SunImage {
     /** Didžiausia raiška pagal įrenginio grafiką: 4096 px nuotrauka ir 4096×2048 žemėlapis, jei leidžia tekstūros dydis. */
     private val big get() = GlCaps.maxTex >= 8192
     val urlHmi get() = URL_BASE.format(if (big) 4096 else 2048)
-    const val MAP_FILE = "sun_synoptic.png"
-    const val COV_FILE = "sun_synoptic_cov.txt"
+    const val MAP_FILE = "sun_synoptic2.png"
+    const val COV_FILE = "sun_synoptic2_cov.txt"
     val MW get() = if (big) 4096 else 2048
     val MH get() = MW / 2
     @Volatile var map: Bitmap? = null
@@ -95,6 +95,8 @@ object SunImage {
         if (loaded) return; loaded = true
         try {
             val d = ctx.applicationContext.filesDir
+            // senas žemėlapis (su kraštų dryžiais) ištrinamas – kaupiama iš naujo
+            File(d, "sun_synoptic.png").delete(); File(d, "sun_synoptic_cov.txt").delete()
             File(d, COV_FILE).takeIf { it.exists() }?.readLines()?.forEachIndexed { i, l -> if (i < 360) cov[i] = l.trim().toLongOrNull() ?: 0L }
             File(d, MAP_FILE).takeIf { it.exists() }?.let { f -> BitmapFactory.decodeFile(f.path)?.let { map = it.copy(Bitmap.Config.ARGB_8888, true); version++ } }
         } catch (_: Exception) {}
@@ -178,7 +180,7 @@ object SunImage {
                 val b1 = cl * clo * ax[1] + cl * slo * ay[1] + sl * az[1]
                 val b2 = cl * clo * ax[2] + cl * slo * ay[2] + sl * az[2]
                 val mu = b0 * s[0] + b1 * s[1] + b2 * s[2]
-                if (mu <= 0.15) continue
+                if (mu <= 0.45) continue                                      // prie krašto – ištempta ir netiksliai išlyginta (dryžiai)
                 val ix = (cx + rad * (b0 * right[0] + b1 * right[1] + b2 * right[2])).toInt()
                 val iy = (cy - rad * (b0 * up[0] + b1 * up[1] + b2 * up[2])).toInt()
                 if (ix !in 0 until w || iy !in 0 until h) continue
@@ -192,7 +194,7 @@ object SunImage {
                 val newPx = (0xFF shl 24) or (red shl 16) or (grn shl 8) or blu
                 val old = out[r * MW + cc]
                 // naujas vaizdas sumaišomas su ankstesniu (ir centre – ne daugiau 60 %), kraštuose – švelniai: dienų siūlės išsilygina
-                val k = (((mu - 0.15) / 0.45).coerceIn(0.0, 1.0)).let { it * it * (3 - 2 * it) } * 0.6
+                val k = (((mu - 0.45) / 0.4).coerceIn(0.0, 1.0)).let { it * it * (3 - 2 * it) } * 0.6
                 out[r * MW + cc] = if (old == 0 || k >= 1.0) newPx else {
                     fun ch(a: Int, b: Int, sh: Int) = (((a shr sh) and 255) * k + ((b shr sh) and 255) * (1 - k)).toInt()
                     (0xFF shl 24) or (ch(newPx, old, 16) shl 16) or (ch(newPx, old, 8) shl 8) or ch(newPx, old, 0)

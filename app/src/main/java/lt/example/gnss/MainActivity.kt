@@ -6959,7 +6959,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 if (uHasTex > 1.5) {
                     // tikras SDO žemėlapis (ryškus, be triukšmo); nepadengtos vietos (alfa 0) – fotosferos spalva su granuliacija
                     vec4 tx = texture2D(uTex, vUV);
-                    col = mix(mix(warm, hot, 0.55 + 0.25 * n), tx.rgb * 1.15, tx.a);
+                    col = mix(vec3(0.78, 0.54, 0.09) * (0.94 + 0.12 * n), tx.rgb * 1.15, tx.a);   // ta pati fotosferos spalva kaip žemėlapyje – be siūlės
                 } else if (uHasTex > 0.5) {
                     // NASA SDO žemėlapis + lengvas mirgėjimas, kad paviršius „gyventų“
                     col = texture2D(uTex, vUV).rgb * 1.25 * (0.92 + 0.16 * n);

@@ -3505,6 +3505,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * šiuo metu gulėtų ant orbitos, o Saulė būtų SUN_DIST atstumu. Piešiama per mvpI.
      */
     private fun drawEarthOrbit() {
+        if (simOffsetMs != 0L && observerView()) return                 // laikui bėgant (▶) stebėtojo vaizde orbita paslepiama (sukasi su dangumi – painu)
         val ecc = 0.0167
         val peri = Math.toRadians(102.9372)
         val lEarth = sunEclLon() + Math.PI                  // Žemės heliocentrinė ilguma

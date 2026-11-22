@@ -3154,7 +3154,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     private fun drawStarCollapse(covers: Boolean) {
-        if (flight != null) return                                       // skrydyje žvaigždės – tikrose 3D vietose (drawStars3d)
+        if (flight != null) return
+        if (simOffsetMs != 0L) return                      // imitacinės žvaigždės – tik tolinimo perėjimui į galaktiką; laikui bėgant (▶) nerodomos                                       // skrydyje žvaigždės – tikrose 3D vietose (drawStars3d)
         val c = collapse(); if (c <= 0f || starTex == 0) return
         if (covers && bgFade() < 0.01f) return
         val gone = starsGone(); if (!covers && gone > 0.99f) return
@@ -9860,7 +9861,8 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this@MainActivity, "Centro koordinatės nukopijuotos", Toast.LENGTH_SHORT).show(); true } }
             val tk = object : Runnable { override fun run() {
                 val ci = skyDome.centreInfo()
-                val on = skyDome.freeView && !ci[0].isNaN()
+                // laikui bėgant (▶) kryželis ir centro koordinatės užgęsta (Žemė sukasi po kryželiu)
+                val on = skyDome.freeView && !ci[0].isNaN() && skyDome.simOffsetMs == 0L
                 cross.visibility = if (on) View.VISIBLE else View.GONE
                 info.visibility = if (on) View.VISIBLE else View.GONE
                 if (on) {

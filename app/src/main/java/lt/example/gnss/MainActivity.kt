@@ -4994,17 +4994,23 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Kamera -> I matrica (eilutėmis): Z – į kamerą (iš pradžių stebėtojo zenitas), Y – dangaus šiaurė. */
     private fun inertialCamera(out: DoubleArray) {
-        val cg = cos(fGc); val sg = sin(fGc)
+        // laikui bėgant (▶) su užrakintu horizontu kamera sukasi kartu su Žeme ir ekrano viršus – stebėtojo zenitas (horizontas gulsčias);
+        // kitaip – pagal tikrą laiką (kamera lieka, Žemė sukasi po ja), viršus – dangaus šiaurė
+        val levelSim = levelHorizon && simOffsetMs != 0L && freeView && focus == 0
+        val gA = if (levelSim) fG else fGc
+        val cg = cos(gA); val sg = sin(gA)
         // laisvame gaublyje kamera sukasi kartu su Žeme (kaip Google Earth) – kitaip žemė po kamera slinktų ~15°/val.
-        // (pagal tikrą laiką: pastūmus laiką ▶ kamera lieka, o Žemė sukasi po ja)
         val z = if (freeView && focus == 0) {
-            val e = baseEyeE ?: doubleArrayOf(cg * fUc[0] + sg * fUc[1], -sg * fUc[0] + cg * fUc[1], fUc[2]).also { baseEyeE = it }
+            val c0 = cos(fGc); val s0 = sin(fGc)
+            val e = baseEyeE ?: doubleArrayOf(c0 * fUc[0] + s0 * fUc[1], -s0 * fUc[0] + c0 * fUc[1], fUc[2]).also { baseEyeE = it }
             doubleArrayOf(cg * e[0] - sg * e[1], sg * e[0] + cg * e[1], e[2])
         } else baseEye ?: doubleArrayOf(fUc[0], fUc[1], fUc[2]).also { baseEye = it }
-        var x = doubleArrayOf(-z[1], z[0], 0.0)                      // (0,0,1) × z
-        var xl = kotlin.math.sqrt(x[0] * x[0] + x[1] * x[1])
+        val ref = if (levelSim) doubleArrayOf(fU[0], fU[1], fU[2]) else doubleArrayOf(0.0, 0.0, 1.0)
+        var x = doubleArrayOf(ref[1] * z[2] - ref[2] * z[1], ref[2] * z[0] - ref[0] * z[2], ref[0] * z[1] - ref[1] * z[0])   // ref × z
+        var xl = kotlin.math.sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2])
+        if (xl < 1e-3) { x = doubleArrayOf(-z[1], z[0], 0.0); xl = kotlin.math.sqrt(x[0] * x[0] + x[1] * x[1]) }   // žiūrima iš zenito – šiaurė viršuje
         if (xl < 1e-6) { x = doubleArrayOf(1.0, 0.0, 0.0); xl = 1.0 }
-        x = doubleArrayOf(x[0] / xl, x[1] / xl, 0.0)
+        x = doubleArrayOf(x[0] / xl, x[1] / xl, x[2] / xl)
         val y = doubleArrayOf(z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0])
         for (i in 0..2) { out[i * 3] = x[i]; out[i * 3 + 1] = y[i]; out[i * 3 + 2] = z[i] }
     }

@@ -7246,7 +7246,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 float nh = max(dot(nW, l), 1e-3);
                 float tan2 = (1.0 - nh * nh) / (nh * nh);
                 float D = exp(-tan2 / sig2) / (3.14159 * sig2 * nh * nh * nh * nh);
-                float glint = D * 0.02 * 0.25 * step(0.0, nl);
+                float glint = D * 0.02 * 0.5 * step(0.0, nl);
                 vec3 sunCol = vec3(1.0, 0.96, 0.88) * mix(vec3(1.0, 0.55, 0.3), vec3(1.0), smoothstep(0.0, 0.3, nl));   // žemai – oranžinė
                 // 4) Dangaus atspindys (Fresnelis pagal žiūrėjimo kampą – pakraščiuose vanduo blizga kaip veidrodis)
                 float Fv = 0.02 + 0.98 * pow(1.0 - nvW, 5.0);

@@ -6513,8 +6513,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawCmeCones(sp: FloatArray, rs: Float, au: Float, pole: DoubleArray) {
         val list = Donki.active(System.currentTimeMillis()); if (list.isEmpty()) return
         val ez = doubleArrayOf(pole[0], pole[1], pole[2])
-        val e = doubleArrayOf(-sp[0].toDouble() / au, -sp[1].toDouble() / au, -sp[2].toDouble() / au)   // Saulė → Žemė
         val now = System.currentTimeMillis()
+        // Saulė → Žemė iš tikros Saulės krypties (ne iš scenos – kitaip kryptis priklausė nuo kameros ir „į Žemę“ kartais dingdavo)
+        val e = Astro.sunEq(now).let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); DoubleArray(3) { -v[it] / l } }
         GLES20.glUseProgram(colorProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
@@ -6559,7 +6560,18 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.4f * aMul)
             bindPos(colorProg, floatBuf(sides.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, sides.size / 3)
             if (!toEarth && c !in newest) continue
-            val lab = "CME %.0f km/s".format(java.util.Locale.US, c.speed) + (if (!toEarth) "" else {
+            val lp = FloatArray(3) { (sp[it] + n[it] * cd * 1.05).toFloat() }
+            // užrašas – tik kai kamera atsukta į išmetimą (jo priekis ekrano vidurinėje dalyje)
+            run { val v = FloatArray(4); Matrix.multiplyMV(v, 0, mvpI, 0, floatArrayOf(lp[0], lp[1], lp[2], 1f), 0)
+                if (v[3] <= 1e-6f || kotlin.math.abs(v[0] / v[3]) > 0.7f || kotlin.math.abs(v[1] / v[3]) > 0.7f) return@run null else Unit } ?: continue
+            // stiprumas pagal greitį (NOAA SWPC / CCMC klasės S, C, O, R, ER) ir galima geomagnetinė audra
+            val power = when {
+                c.speed < 500 -> "silpnas, nepavojingas"
+                c.speed < 1000 -> "vidutinis, galima silpna audra (G1–G2)"
+                c.speed < 2000 -> "stiprus, galima stipri audra (G3–G4): GNSS ir radijo trikdžiai"
+                else -> "labai stiprus, galima ekstremali audra (G4–G5)"
+            }
+            val lab = "CME %.0f km/s".format(java.util.Locale.US, c.speed) + (if (!toEarth) "" else " · $power" + run {
                 // kryptis į Žemę: kada pasieks (atvykimas = 21,5 R☉ momentas + likęs kelias / greitis)
                 val arr = c.t215Ms + ((Donki.AU_RSUN - 21.5) * 696_000.0 / c.speed * 1000.0).toLong()
                 val dh = (arr - now) / 3_600_000.0
@@ -6567,7 +6579,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 if (dh > 0) " · pasieks Žemę po " + span(dh) else " · pasiekė Žemę prieš " + span(dh)
             })
             val (tx, ta) = wideLabel(lab)
-            val lp = FloatArray(3) { (sp[it] + n[it] * cd * 1.05).toFloat() }
             val hh = rs * 0.22f
             billboard(lp, eyeI, hh * ta, hh, tx, col[0], col[1], col[2], 0.95f)
             GLES20.glUseProgram(colorProg)

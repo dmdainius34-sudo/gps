@@ -1405,6 +1405,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setFreeView(on: Boolean) { renderer.freeView = on; renderer.resetUser() }
     val freeView get() = renderer.freeView
     fun centreOnMe() { renderer.centreOnMe() }
+    fun setVirtual(lat: Double?, lon: Double?) = renderer.setVirtual(lat, lon)
+    val virtualPos get() = renderer.virtualPos
     fun setSunTrue(on: Boolean) { renderer.sunTrue = on }
     fun setLascoDisk(on: Boolean) { renderer.showLascoDisk = on }
     fun centreInfo(): DoubleArray = doubleArrayOf(renderer.centreLat, renderer.centreLon, renderer.centreAltKm, renderer.gridStepDeg)
@@ -4332,7 +4334,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     // ---------------- ŽEMĖ GAUBLIO VIDUJE ----------------
     @Volatile private var obsLat = 54.7
     @Volatile private var obsLon = 25.25
-    fun setLocation(lat: Double, lon: Double) { obsLat = lat; obsLon = lon }
+    @Volatile private var realLat = 54.7
+    @Volatile private var realLon = 25.25
+    /** Įvestos (tariamos) stebėtojo koordinatės: smeigtukas, horizontas ir siūlai – iš ten; null – tikra vieta. */
+    @Volatile var virtualPos: DoubleArray? = null
+        private set
+    fun setLocation(lat: Double, lon: Double) { realLat = lat; realLon = lon; if (virtualPos == null) { obsLat = lat; obsLon = lon } }
+    fun setVirtual(lat: Double?, lon: Double?) {
+        if (lat == null || lon == null) { virtualPos = null; obsLat = realLat; obsLon = realLon }
+        else { virtualPos = doubleArrayOf(lat, lon); obsLat = lat; obsLon = lon }
+    }
 
 
     @Volatile var zoom = 3f
@@ -8610,6 +8621,56 @@ class MainActivity : AppCompatActivity() {
      * ⚙ Nustatymai: visas buvęs pradžios puslapis (mygtukai, varnelės, fiksas, palydovai, C/N0 grafikas) viename lange.
      * Turinys laikinai perkeliamas į langą ir uždarius grąžinamas atgal (paslėptas, nes programa rodo 3D).
      */
+    /** Koordinačių įvedimas (pvz. „-7.40068, 23.84271 · 857 m“ iš centro žymeklio): stebėtojas perkeliamas ten. */
+    private fun openPlaceDialog(btn: TextView) {
+        if (!::skyDome.isInitialized) return
+        val dp = resources.displayMetrics.density
+        val clip = try { (getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).primaryClip?.getItemAt(0)?.text?.toString() } catch (_: Exception) { null }
+        val cur = skyDome.virtualPos
+        val et = android.widget.EditText(this).apply {
+            setTextColor(0xFFFFFFFF.toInt()); setHintTextColor(0x88FFFFFF.toInt()); textSize = 16f; isSingleLine = true
+            hint = "platuma, ilguma (pvz. -7.40068, 23.84271)"
+            setText(cur?.let { "%.5f, %.5f".format(Locale.US, it[0], it[1]) } ?: clip?.takeIf { parseLatLon(it) != null } ?: "")
+            setSelectAllOnFocus(true)
+        }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL
+            val pd = (18 * dp).toInt(); setPadding(pd, pd, pd, pd / 2)
+            background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 16 * dp; setColor(0x99000000.toInt()) }
+            addView(TextView(this@MainActivity).apply { text = "Persikelti į koordinates"; textSize = 15f; setTextColor(0xFFFFFFFF.toInt()) })
+            addView(et)
+        }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
+        box.addView(row)
+        val dlg = android.app.Dialog(this)
+        dlg.setContentView(box)
+        dlg.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+        dlg.window?.setDimAmount(0.1f)
+        fun b(t: String, f: () -> Unit) = Button(this).apply { text = t; isAllCaps = false; setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0); setOnClickListener { f(); dlg.dismiss() } }.also { row.addView(it) }
+        if (cur != null) b("Tikra vieta") {
+            skyDome.setVirtual(null, null); btn.alpha = 0.6f
+            Toast.makeText(this, "Grąžinta tikra vieta", Toast.LENGTH_SHORT).show()
+        }
+        b("Atšaukti") {}
+        b("Persikelti") {
+            val ll = parseLatLon(et.text.toString())
+            if (ll == null) Toast.makeText(this, "Neatpažintos koordinatės", Toast.LENGTH_SHORT).show()
+            else {
+                skyDome.setVirtual(ll[0], ll[1]); btn.alpha = 1f
+                if (skyDome.freeView) skyDome.centreOnMe()
+                Toast.makeText(this, "Stebėtojas: %.5f, %.5f (tariama vieta)".format(Locale.US, ll[0], ll[1]), Toast.LENGTH_SHORT).show()
+            }
+        }
+        dlg.show()
+    }
+
+    private fun parseLatLon(t: String): DoubleArray? {
+        val n = Regex("[-+]?\\d+(?:[.,]\\d+)?").findAll(t.replace(", ", " ; ")).map { it.value.replace(',', '.').toDoubleOrNull() }.toList()
+        if (n.size < 2) return null
+        val la = n[0] ?: return null; val lo = n[1] ?: return null
+        return if (la in -90.0..90.0 && lo in -180.0..180.0) doubleArrayOf(la, lo) else null
+    }
+
     private fun openSettings() {
         val l = leftCol ?: return
         val lParent = l.parent as? ViewGroup ?: return
@@ -9392,10 +9453,14 @@ class MainActivity : AppCompatActivity() {
                 if (::skyDome.isInitialized) skyDome.goHome()
                 modeBtn?.text = "\uD83C\uDF0D"; flightBtn.alpha = 0.6f
             } }
+        // 📍 – persikelti į įvestas koordinates (smeigtukas, horizontas, siūlai – iš ten)
+        val placeBtn = small("\uD83D\uDCCD", 14f)
+        placeBtn.alpha = if (::skyDome.isInitialized && skyDome.virtualPos != null) 1f else 0.6f
+        placeBtn.setOnClickListener { keyHaptic(placeBtn); openPlaceDialog(placeBtn) }
         val tools = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val gap = (6 * dp).toInt()
-            for (b in listOf(homeBtn, levelBtn, calBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
+            for (b in listOf(homeBtn, levelBtn, calBtn, placeBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
         }
         // barometras: apačioje kairėje – paspaudus nulis čia, toliau rodoma, kiek pakilote ar nusileidote
         if (baro.hasSensor) {

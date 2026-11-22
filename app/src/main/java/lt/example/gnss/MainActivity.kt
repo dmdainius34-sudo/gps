@@ -4477,8 +4477,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             try { Donki.refresh(appCtx) } catch (_: Exception) {}
         }
         if (simRun && simLastNs != 0L) {
-            // užrakintas horizontas – 1 para per 2 s; atkabintas (planšete vartomas horizontas) – dar dvigubai lėčiau, 1 para per 4 s
-            simOffsetMs += ((ns - simLastNs) / 1e6 * (if (levelHorizon) 43_200.0 else 21_600.0)).toLong()
+            // užrakintas horizontas – 1 para per 4 s; atkabintas (planšete vartomas horizontas) – dvigubai lėčiau, 1 para per 8 s
+            simOffsetMs += ((ns - simLastNs) / 1e6 * (if (levelHorizon) 21_600.0 else 10_800.0)).toLong()
             if (simOffsetMs >= SIM_MAX_MS) { simOffsetMs = SIM_MAX_MS; simRun = false }
         }
         simLastNs = ns

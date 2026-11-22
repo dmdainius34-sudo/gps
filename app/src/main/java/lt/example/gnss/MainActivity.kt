@@ -8714,6 +8714,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var info: TextView
     private lateinit var skyView: GnssView
     private lateinit var skyDome: SkyDomeGL
+    private var leftColRef: LinearLayout? = null
+    private var homeSimReset: (() -> Unit)? = null
 
     /** Perjungia 2D dangų ir 3D gaublį jų vietoje (dvigubas bakstelėjimas). */
     private fun setGlobe(on: Boolean) {
@@ -9469,7 +9471,11 @@ class MainActivity : AppCompatActivity() {
             text = "Rodyti palydovus"
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("show_sats", false)
             setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.showSats = on
-                else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("show_sats", on).apply() }
+                else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("show_sats", on).apply()
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("show_sats", on).commit()
+                // palydovų informacijos gavimas įjungiamas / išjungiamas kartu su varnele
+                if (on) recordEnded = false
+                unregisterGnss(); if (activityStarted) startGnss() }
         }, LinearLayout.LayoutParams(mw, ww))
         left.addView(CheckBox(this).apply {
             text = "Saulės koordinatės (heliografinis tinklelis, ašis, į Žemę atsuktas taškas)"
@@ -9648,6 +9654,7 @@ class MainActivity : AppCompatActivity() {
                 keyHaptic(this)
                 getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("free_view", false).putBoolean("follow_device", false).apply()
                 if (::skyDome.isInitialized) skyDome.goHome()
+                homeSimReset?.invoke()                                   // ⌂ – ir išėjimas iš laiko eigos (grįžtama į dabartį)
                 modeBtn?.text = "\uD83C\uDF0D"; flightBtn.alpha = 0.6f
             } }
         // 📍 – persikelti į įvestas koordinates (smeigtukas, horizontas, siūlai – iš ten)
@@ -9801,6 +9808,7 @@ class MainActivity : AppCompatActivity() {
         run {
             val lc = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL
                 addView(flightBtn, LinearLayout.LayoutParams(bSize, bSize)) }
+            leftColRef = lc
             skyHolder.addView(lc, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply {
                 val mm = (10 * dp).toInt(); setMargins(mm, (84 * dp).toInt(), mm, mm) })
         }
@@ -9859,8 +9867,9 @@ class MainActivity : AppCompatActivity() {
         run {
             val playB = small("\u25B6", 16f).apply { alpha = 0.75f }
             val lbl = TextView(this).apply { textSize = 12f; setTextColor(0xFFFFFFFF.toInt()); setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt()); gravity = Gravity.CENTER; visibility = View.GONE }
-            val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
-                addView(lbl); addView(playB, LinearLayout.LayoutParams(bSize, bSize)) }
+            val box = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                addView(playB, LinearLayout.LayoutParams(bSize, bSize)); addView(lbl) }
+            lbl.setPadding((6 * dp).toInt(), 0, 0, 0)
             val tick = object : Runnable { override fun run() {
                 val off = skyDome.simOffsetMs
                 if (off != 0L) {
@@ -9878,8 +9887,9 @@ class MainActivity : AppCompatActivity() {
             playB.setOnLongClickListener { keyHaptic(playB); skyDome.simRun = false; skyDome.simOffsetMs = 0L
                 Toast.makeText(this, "Grąžinta dabartis", Toast.LENGTH_SHORT).show(); true }
             box.post(tick)
-            skyHolder.addView(box, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = (12 * dp).toInt() })
+            // ▶ laiko eiga – kairėje po 🚀 (ne apačioje – ten lusto duomenys)
+            leftColRef?.addView(box, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, bSize).apply { topMargin = (6 * dp).toInt() })
+            homeSimReset = { skyDome.simRun = false; skyDome.simOffsetMs = 0L }
         }
         toolCol = tools
         skyHolder.addView(tools, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
@@ -10265,6 +10275,16 @@ class MainActivity : AppCompatActivity() {
             render()
         }
         NavRecordService.onEnded = { sharePanel?.setRecording(false) }
+        // „Rodyti palydovus“ neuždėta – palydovų informacija negaunama: tik vieta (fiksas), be GNSS srauto ir fono paslaugos
+        if (!getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("show_sats", false)) {
+            if (!gnssRegistered) {
+                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
+                SessionFiles.activityWritesFixes = true
+                gnssRegistered = true
+            }
+            if (NavRecordService.running) startService(Intent(this, NavRecordService::class.java).setAction(NavRecordService.ACTION_END))
+            return
+        }
         if (!gnssRegistered) {
             lm.registerGnssStatusCallback(statusCallback, mainHandler)
             try { lm.registerGnssNavigationMessageCallback(navUiCallback, mainHandler) } catch (e: Exception) { android.util.Log.w("GnssApp", "nav UI: ${e.message}") }

@@ -123,7 +123,11 @@ class NavRecordService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        GapLog.event(this, "paslauga onTaskRemoved (programa pašalinta iš naujausių)")
+        GapLog.event(this, "paslauga onTaskRemoved (programa pašalinta iš naujausių) – viskas išjungiama")
+        // išmetus programą iš fono – įrašymas baigiamas ir paslauga sustabdoma (fone dirbama tik kol programa neišmesta)
+        try { SessionFiles.end(this) } catch (_: Exception) {}
+        stopForegroundCompat()
+        stopSelf()
         super.onTaskRemoved(rootIntent)
     }
 

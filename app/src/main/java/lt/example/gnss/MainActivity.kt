@@ -2503,12 +2503,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val mvT = FloatArray(16); Matrix.multiplyMM(mvT, 0, mvU, 0, tr, 0)
             Matrix.multiplyMM(mvpI, 0, pv, 0, mvT, 0)
         }
-        if (observerView()) {
-            // laikui bėgant (▶) stebėtojo kamera sustingsta ten, kur buvo – sukasi Žemė, ne visas modelis
-            val fz = camFreeze
-            if (simOffsetMs != 0L && fz != null) { System.arraycopy(fz.first, 0, mvpI, 0, 16); camPos = fz.second.copyOf(); lookI = fz.third.copyOf() }
-            else { observerCamera(); camFreeze = if (simRun) Triple(mvpI.copyOf(), camPos.copyOf(), lookI.copyOf()) else null }
-        }
+        if (observerView()) observerCamera()          // kamera – pagal tikrą laiką (pinCam): laikui bėgant sukasi Žemė, ne visas modelis
         // bakstelėjimui (palydovai, Saulė, Mėnulis) – ta pati matrica, kuria piešiama (po stebėtojo kameros; anksčiau – prieš ją, todėl pirštas „nepataikydavo“)
         System.arraycopy(mvpI, 0, lastMvpI, 0, 16)
         // Stebėtojo lokali sistema (dangaus kupolas, horizontas): ENU -> I + vieta
@@ -4439,15 +4434,21 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Laiko eiga (▶): 1 para per sekundę, iki pusės metų; kamera lieka vietoje, sukasi Žemė. */
     @Volatile var simRun = false
     private var simLastNs = 0L
-    private var camFreeze: Triple<FloatArray, FloatArray, FloatArray>? = null
+    private var spaceRefreshNs = 0L
     private fun simTick() {
         val ns = System.nanoTime()
+        // Saulės vaizdas, LASCO ir DONKI CME – atnaujinami nepriklausomai nuo GNSS (anksčiau – tik per palydovų srautą)
+        if (ns - spaceRefreshNs > 15_000_000_000L) {
+            spaceRefreshNs = ns
+            try { SunImage.refresh(appCtx) } catch (_: Exception) {}
+            try { Lasco.refresh(appCtx) } catch (_: Exception) {}
+            try { Donki.refresh(appCtx) } catch (_: Exception) {}
+        }
         if (simRun && simLastNs != 0L) {
             simOffsetMs += ((ns - simLastNs) / 1e6 * 86_400.0).toLong()
             if (simOffsetMs >= SIM_MAX_MS) { simOffsetMs = SIM_MAX_MS; simRun = false }
         }
         simLastNs = ns
-        if (simOffsetMs == 0L && !simRun) camFreeze = null
     }
     @Volatile private var realLat = 54.7
     @Volatile private var realLon = 25.25
@@ -4841,8 +4842,22 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * Be horizonto režimo: žiūrima horizontaliai planšetės kryptimi, horizontas ekrano viduryje ir lygiagretus rėmui.
      * Kamera už stebėtojo galvos žiūrėjimo kryptimi; atstumas – priartinimas (zoom); toli (žvaigždės, galaktika) jos vieta sustingsta.
      */
+    /** Stebėtojo vieta kamerai: pagal tikrą laiką (fGc) – paleidus laiką ▶ kamera lieka, o Žemė su smeigtuku sukasi po ja. */
+    private fun pinCam(): FloatArray {
+        val p = pinWorld()
+        val da = fGc - fG; if (kotlin.math.abs(da) < 1e-12) return p
+        val m = earthMat
+        val c = floatArrayOf(m[12], m[13], m[14])
+        val al = sqrt(m[8] * m[8] + m[9] * m[9] + m[10] * m[10]).coerceAtLeast(1e-9f)
+        val k = DoubleArray(3) { (m[8 + it] / al).toDouble() }
+        val v = DoubleArray(3) { (p[it] - c[it]).toDouble() }
+        val cs = cos(da); val sn = sin(da); val kv = k[0] * v[0] + k[1] * v[1] + k[2] * v[2]
+        val kx = doubleArrayOf(k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0])
+        return FloatArray(3) { (c[it] + v[it] * cs + kx[it] * sn + k[it] * kv * (1 - cs)).toFloat() }
+    }
+
     private fun observerCamera() {
-        val head = pinWorld()
+        val head = pinCam()
         val hl = kotlin.math.sqrt((head[0] * head[0] + head[1] * head[1] + head[2] * head[2]).toDouble())
         if (hl < 1e-6) return                                           // Žemės matrica dar neparuošta
         val up = DoubleArray(3) { head[it] / hl }                       // vietinis zenitas
@@ -6611,7 +6626,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), 1.3f * density)
                 GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
                 for (k in 0..2) {
-                    val fl = 0.6f + 0.4f * sin(tt * (5f + 3f * k) + k * 2f)
+                    val fl = 0.7f + 0.3f * sin(tt * (0.8f + 0.5f * k) + k * 2f)       // lėtas mirgėjimas
                     GLES20.glUniform4f(GLES20.glGetUniformLocation(dotProg, "uColor"), dcol[k][0], dcol[k][1], dcol[k][2], 0.9f * fade * fl)
                     bindPos(dotProg, floatBuf(dust[k].toFloatArray())); GLES20.glDrawArrays(GLES20.GL_POINTS, 0, dust[k].size / 3)
                 }

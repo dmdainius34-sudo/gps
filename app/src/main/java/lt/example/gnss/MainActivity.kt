@@ -6535,9 +6535,26 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 pt(a0, rad, cd).forEach { ring.add(it) }; pt(a1, rad, cd).forEach { ring.add(it) } }
             val r0 = rs * kotlin.math.sin(ha); val d0 = rs * kotlin.math.cos(ha)
             for (i in 0 until 4) { val a = i * Math.PI / 2; pt(a, r0, d0).forEach { sides.add(it) }; pt(a, rad, cd).forEach { sides.add(it) } }
-            GLES20.glLineWidth((if (toEarth) 3f else 1.5f) * density)
-            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.9f * aMul)
-            bindPos(colorProg, floatBuf(ring.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, ring.size / 3)
+            if (toEarth) {
+                // į Žemę nukreiptas – apvalus kraštas žaižaruoja kaip žarija: kiekvienas lanko gabalėlis rusena savu ritmu
+                val tt = (System.nanoTime() / 1e9).toFloat()
+                val rb = floatBuf(ring.toFloatArray())
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+                for (i in 0 until 36) {
+                    val f = 0.5f + 0.25f * sin(tt * 3.1f + i * 1.7f) + 0.25f * sin(tt * 7.3f + i * 4.1f)   // 0..1
+                    bindPos(colorProg, rb)
+                    for ((w, a, g) in listOf(Triple(9f, 0.18f, 0.25f), Triple(5f, 0.35f, 0.4f), Triple(2.5f, 0.9f, 0.55f + 0.4f * f))) {
+                        GLES20.glLineWidth(w * density)
+                        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, g * (0.45f + 0.5f * f), 0.08f * f, a * (0.35f + 0.65f * f))
+                        GLES20.glDrawArrays(GLES20.GL_LINES, i * 2, 2)
+                    }
+                }
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+            } else {
+                GLES20.glLineWidth(1.5f * density)
+                GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.9f * aMul)
+                bindPos(colorProg, floatBuf(ring.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, ring.size / 3)
+            }
             GLES20.glLineWidth(1f * density)
             GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.4f * aMul)
             bindPos(colorProg, floatBuf(sides.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, sides.size / 3)

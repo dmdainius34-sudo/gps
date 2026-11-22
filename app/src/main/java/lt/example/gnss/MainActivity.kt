@@ -2557,7 +2557,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         if (observerView()) observerCamera()          // kamera – pagal tikrą laiką (pinCam): laikui bėgant sukasi Žemė, ne visas modelis
         // režimas „su orbita“ (▶): kamera pririšta prie Saulės ir nesisuka – Žemė sukasi ir keliauja orbita (link CME)
-        if (observerView() && simOffsetMs != 0L && !simHideOrbit) helioCamera() else helioRef = null
+        if (helioMode()) helioCamera() else helioS0 = null
         // bakstelėjimui (palydovai, Saulė, Mėnulis) – ta pati matrica, kuria piešiama (po stebėtojo kameros; anksčiau – prieš ją, todėl pirštas „nepataikydavo“)
         System.arraycopy(mvpI, 0, lastMvpI, 0, 16)
         // Stebėtojo lokali sistema (dangaus kupolas, horizontas): ENU -> I + vieta
@@ -3733,7 +3733,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         seg(p0, tip, arrow)
         seg(tip, DoubleArray(3) { tip[it] - mv[it] * r * 0.3 + side[it] * r * 0.15 }, arrow)
         seg(tip, DoubleArray(3) { tip[it] - mv[it] * r * 0.3 - side[it] * r * 0.15 }, arrow)
-        if (simOffsetMs == 0L) drawLines(arrow.toFloatArray(), 0.5f, 1f, 0.55f, 0.95f)   // laikui bėgant (▶) rodyklė užgęsta
+        if (simOffsetMs == 0L || !simHideOrbit) drawLines(arrow.toFloatArray(), 0.5f, 1f, 0.55f, 0.95f)   // režime „be orbitos“ laikui bėgant užgęsta
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         labelAt(DoubleArray(3) { obs[it] + nn[it] * hr * 1.08 }, "N", 0.6f, 1f, 1f, 0.03f)
     }
@@ -4552,18 +4552,16 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile var simRun = false
     /** Ilgai palaikius ▶: false – su orbita (pradinis), true – be orbitos. */
     @Volatile var simHideOrbit = false
-    private class HelioRef(val s0: DoubleArray, val cam0: FloatArray, val look0: FloatArray, val up0: FloatArray, val zoom0: Float)
-    private var helioRef: HelioRef? = null
+    private var helioS0: DoubleArray? = null
+    private fun helioMode() = simOffsetMs != 0L && !simHideOrbit && observerView()
+    /** Režimas „su orbita“: stebėtojo kamera (planšetė, horizonto užraktas – kaip įprastai) perkeliama kartu su Saule. */
     private fun helioCamera() {
         val sNow = bodyPos(1) ?: return
-        val ref = helioRef ?: HelioRef(sNow.copyOf(), camPos.copyOf(), lookI.copyOf(), if (camBasisOk) camUpW.copyOf() else floatArrayOf(0f, 0f, 1f), zoom)
-            .also { helioRef = it }
-        val k = zoom / ref.zoom0
-        val eye = FloatArray(3) { ((sNow[it] - ref.s0[it]) + ref.cam0[it] * k).toFloat() }
-        val lv = FloatArray(16)
-        Matrix.setLookAtM(lv, 0, eye[0], eye[1], eye[2], eye[0] + ref.look0[0], eye[1] + ref.look0[1], eye[2] + ref.look0[2], ref.up0[0], ref.up0[1], ref.up0[2])
-        Matrix.multiplyMM(mvpI, 0, proj, 0, lv, 0)
-        camPos = eye; lookI = ref.look0.copyOf()
+        val s0 = helioS0 ?: sNow.copyOf().also { helioS0 = it }
+        val dx = (sNow[0] - s0[0]).toFloat(); val dy = (sNow[1] - s0[1]).toFloat(); val dz = (sNow[2] - s0[2]).toFloat()
+        val t = FloatArray(16); Matrix.setIdentityM(t, 0); Matrix.translateM(t, 0, -dx, -dy, -dz)
+        val m = FloatArray(16); Matrix.multiplyMM(m, 0, mvpI, 0, t, 0); System.arraycopy(m, 0, mvpI, 0, 16)
+        camPos = floatArrayOf(camPos[0] + dx, camPos[1] + dy, camPos[2] + dz)
     }
     /** Kiek kartų greičiau už tikrą laiką. */
     @Volatile var simRate = 2_880.0
@@ -4998,7 +4996,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // toli (žvaigždės, galaktika) kamera nebeseka Žemės sukimosi (tikras laikas) – galaktika nesisuka; arti – keliauja su stebėtoju
         val far = sstep(0f, 0.3f, collapse()).toDouble()
         var dg = (fG - fGc) % (2 * Math.PI); if (dg > Math.PI) dg -= 2 * Math.PI; if (dg < -Math.PI) dg += 2 * Math.PI
-        val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon) + fGc + dg * (1.0 - far)
+        // režimas „su orbita“ – kamera nesisuka su Žeme (Žemė sukasi po ja)
+        val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon) + fGc + (if (helioMode()) 0.0 else dg * (1.0 - far))
         val k = 0.25 * 1.35
         val m = earthMat
         val fz = if (earthFlat) FLAT_K else 1f

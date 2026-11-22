@@ -4477,7 +4477,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             try { Donki.refresh(appCtx) } catch (_: Exception) {}
         }
         if (simRun && simLastNs != 0L) {
-            simOffsetMs += ((ns - simLastNs) / 1e6 * 43_200.0).toLong()          // 1 para per 2 s
+            // užrakintas horizontas – 1 para per 2 s; atkabintas (planšete vartomas horizontas) – dar dvigubai lėčiau, 1 para per 4 s
+            simOffsetMs += ((ns - simLastNs) / 1e6 * (if (levelHorizon) 43_200.0 else 21_600.0)).toLong()
             if (simOffsetMs >= SIM_MAX_MS) { simOffsetMs = SIM_MAX_MS; simRun = false }
         }
         simLastNs = ns
@@ -4883,8 +4884,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * Skaičiuojama tiesiogiai (ne iš praeito kadro Žemės matricos – laikui bėgant ji per kadrą pasisuka ~6°, todėl vaizdas drebėjo).
      */
     private fun pinCam(): FloatArray {
-        // užrakintas horizontas – kamera sukasi kartu su Žeme (diskas visada gulsčias, sukasi dangus); atrakintas – stovi, sukasi Žemė
-        val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon) + (if (levelHorizon) fG else fGc)
+        // stebėtojo vaizde kamera visada keliauja kartu su stebėtoju (ir laikui bėgant ▶): planšete valdomas jo horizontas
+        val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon) + fG
         val k = 0.25 * 1.35
         val m = earthMat
         val fz = if (earthFlat) FLAT_K else 1f
@@ -4952,7 +4953,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val pd0 = posDir
         // laikui bėgant (▶) su užrakintu horizontu: kameros kampas stebėtojo atžvilgiu užfiksuojamas tokį, koks buvo paspaudus ▶,
         // ir keliauja kartu su juo (horizonto žiedas matomas tuo pačiu kampu, nesispaudžia prie Žemės)
-        if (simOffsetMs != 0L && levelHorizon) {
+        if (simOffsetMs != 0L) {
             val pl = posDirL ?: (pd0 ?: lookB).let { v -> doubleArrayOf(v[0] * east[0] + v[1] * east[1] + v[2] * east[2],
                 v[0] * north[0] + v[1] * north[1] + v[2] * north[2], v[0] * up[0] + v[1] * up[1] + v[2] * up[2]) }.also { posDirL = it }
             posDir = loc(pl)

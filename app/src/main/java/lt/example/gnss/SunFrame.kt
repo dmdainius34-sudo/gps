@@ -183,13 +183,16 @@ object SunImage {
                 val iy = (cy - rad * (b0 * up[0] + b1 * up[1] + b2 * up[2])).toInt()
                 if (ix !in 0 until w || iy !in 0 until h) continue
                 // krašto šešėliavimo išlyginimas (I(μ) = 1 − 0,6·(1 − μ)) ir kontrasto ištempimas
-                val ld = 1 - 0.6 * (1 - mu)
+                // tikslesnis kraštų patamsėjimas (kvadratinis dėsnis, ~617 nm) ir švelnesnis kontrastas – dienų sandūros nesimato
+                val om = 1 - mu
+                val ld = 1 - 0.56 * om - 0.16 * om * om
                 val rel = (lum(ix, iy) / (i0 * ld)).coerceIn(0.0, 1.3)
-                val g = (0.5 + (rel - 1.0) * 2.2).coerceIn(0.0, 1.0)     // dėmės – tamsios, fotosfera – šviesi
+                val g = (0.5 + (rel - 1.0) * 1.5).coerceIn(0.0, 1.0)     // dėmės – tamsios, fotosfera – šviesi
                 val red = (255 * (0.35 + 0.65 * g)).toInt().coerceIn(0, 255); val grn = (255 * (0.16 + 0.62 * g)).toInt().coerceIn(0, 255); val blu = (255 * (0.02 + 0.22 * g * g)).toInt().coerceIn(0, 255)
                 val newPx = (0xFF shl 24) or (red shl 16) or (grn shl 8) or blu
                 val old = out[r * MW + cc]
-                val k = ((mu - 0.15) / 0.25).coerceIn(0.0, 1.0)            // kraštuose – sulieti su ankstesniais duomenimis
+                // naujas vaizdas sumaišomas su ankstesniu (ir centre – ne daugiau 60 %), kraštuose – švelniai: dienų siūlės išsilygina
+                val k = (((mu - 0.15) / 0.45).coerceIn(0.0, 1.0)).let { it * it * (3 - 2 * it) } * 0.6
                 out[r * MW + cc] = if (old == 0 || k >= 1.0) newPx else {
                     fun ch(a: Int, b: Int, sh: Int) = (((a shr sh) and 255) * k + ((b shr sh) and 255) * (1 - k)).toInt()
                     (0xFF shl 24) or (ch(newPx, old, 16) shl 16) or (ch(newPx, old, 8) shl 8) or ch(newPx, old, 0)

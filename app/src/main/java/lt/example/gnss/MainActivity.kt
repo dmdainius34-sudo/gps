@@ -4518,7 +4518,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             fl.stage == 1 && z >= 0.3 -> "Išnirote iš galaktikos disko: ${ly(sKpc)} šviesmečių nuo Žemės"
             fl.stage == 2 && z >= 1.0 -> "Jau ${ly(sKpc)} šviesmečių. Galaktika lieka po jumis"
             fl.stage == 3 && sKpc >= 15.0 -> "${ly(sKpc)} šviesmečių: galaktika po jumis, iki jos centro ${ly(dGc)} šviesmečių"
-            fl.stage == 4 && sKpc >= 49.9 -> "${ly(sKpc)} šviesmečių: visa galaktika kaip blynas. Grįžti – dar kartą \uD83D\uDE80"
+            fl.stage == 4 && sKpc >= 49.9 -> "${ly(sKpc)} šviesmečių: matote visą galaktikos spiralinį diską iš viršaus. Grįžti – dar kartą \uD83D\uDE80"
             else -> null
         } ?: return
         // palikus Šiaurinę žvaigždę (pietuose – σ Octantis) – spjūvis per bambuko vamzdį
@@ -9387,6 +9387,7 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this@MainActivity, if (on) "Laisvas vaizdas – horizontas laikomas lygus" else "Stabilus horizontas (ekrano viduryje)", Toast.LENGTH_SHORT).show()
         }
         val calBtn = small("\uD83E\uDDED", 15f).apply { alpha = 0.85f; setOnClickListener { toggleCalibDrum() } }   // 🧭
+        calBtnRef = calBtn
         val setBtn = small("\u2699", 17f).apply { alpha = 0.85f; setOnClickListener { openSettings() } }               // ⚙ nustatymai
         // 🚀 skrydis pro Šiaurinę žvaigždę iš šios vietos (savo platumos kampu) iki galaktikos „blyno“; dar kartą – grįžti
         val flightBtn = small("\uD83D\uDE80", 14f).apply { alpha = 0.6f
@@ -10253,6 +10254,7 @@ class MainActivity : AppCompatActivity() {
      * Kalibravimo „būgnas“ ant 3D vaizdo, šalia 🧭 mygtuko (dešinėje, permatomas fonas): N, Saulė, Mėnulis, Šiaurinė žvaigždė, Orionas, žurnalas.
      * Sukamas pirštu aukštyn–žemyn; bakstelėtas paveikslėlis atidaromas; dar kartą 🧭 – uždaroma.
      */
+    private var calBtnRef: View? = null
     private fun toggleCalibDrum() {
         calDrum?.let { (it.parent as? ViewGroup)?.removeView(it); calDrum = null; return }
         val keys = listOf("north", "sun", "moon", "polaris", "orion", "log")
@@ -10282,7 +10284,12 @@ class MainActivity : AppCompatActivity() {
         calDrum = drum
         // 🧭 – ketvirtas mygtukas (viršus 10 dp + 3 × (32 + 6) dp), jo centras ~140 dp; būgnas – kairiau nuo mygtukų stulpelio
         val h = (drum.itemH * 5).toInt()
-        val top = ((140 * dp) - h / 2f).toInt().coerceAtLeast((4 * dp).toInt())
+        // būgnas – greta 🧭 mygtuko (mygtukai dabar ekrano apačioje)
+        val top = calBtnRef?.let { b ->
+            val a = IntArray(2); val bh = IntArray(2); b.getLocationOnScreen(a); skyHolder.getLocationOnScreen(bh)
+            (a[1] - bh[1] + b.height / 2f - h / 2f).toInt()
+        }?.coerceIn((4 * dp).toInt(), (skyHolder.height - h - (4 * dp).toInt()).coerceAtLeast((4 * dp).toInt()))
+            ?: ((140 * dp) - h / 2f).toInt().coerceAtLeast((4 * dp).toInt())
         skyHolder.addView(drum, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
             setMargins(0, top, (48 * dp).toInt(), 0) })
     }

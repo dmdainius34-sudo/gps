@@ -2562,6 +2562,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawEarth()
         drawTiles()
         drawGlobeGrid()
+        drawEquatorScale()
         if (SpaceLive.enabled) drawAurora()            // TKS ir zondai pašalinti (ne ta tema)
         drawEquatorRing(t)
         drawMoon()
@@ -5290,6 +5291,41 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile var centreAltKm = Double.NaN; private set
     @Volatile var gridStepDeg = Double.NaN; private set
     private val GRID_STEPS = doubleArrayOf(30.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005)
+
+    /**
+     * Priartinus prie pusiaujo (laisvas gaublys, < ~300 km): ant pusiaujo – 500 m brūkšneliai, nejudantys erdvėje.
+     * Žemė po jais sukasi tikru greičiu (465 m/s), todėl brūkšneliai slenka į vakarus ~1 brūkšnelį per sekundę.
+     */
+    private fun drawEquatorScale() {
+        if (!freeView || focus != 0 || simOffsetMs != 0L || earthMatLast[10] == 0f) return
+        val la = centreLat; val lo = centreLon; val alt = centreAltKm
+        if (la.isNaN() || alt.isNaN() || alt > 300.0) return
+        if (kotlin.math.abs(la) * 111.0 > 3.0 * alt + 20.0) return                 // pusiaujas nematomas
+        val a = 6378137.0; val v = 2 * Math.PI * a / 86164.0905                       // 465,1 m/s
+        val off = ((System.currentTimeMillis() % 86_164_091L) / 1000.0 * v) % 1000.0  // brūkšnelis 500 m + tarpas 500 m
+        val span = (alt * 3000.0).coerceIn(5_000.0, 400_000.0)                        // kiek metrų į abi puses
+        val cM = Math.toRadians(lo) * a
+        val m0 = Math.floor((cM - span) / 1000.0) * 1000.0
+        fun pt(m: Double): FloatArray { val l = m / a
+            return ecefToScene(doubleArrayOf(a / 1000 * cos(l) * 1.00002, a / 1000 * sin(l) * 1.00002, 0.0), surf = true) }
+        val seg = ArrayList<Float>()
+        var m = m0 - off
+        while (m < cM + span) { pt(m).forEach { seg.add(it) }; pt(m + 500.0).forEach { seg.add(it) }; m += 1000.0 }
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        GLES20.glLineWidth(3f * density)
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 0.55f, 0.9f, 1f, 0.85f)
+        bindPos(colorProg, floatBuf(seg.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, seg.size / 3)
+        GLES20.glLineWidth(1f)
+        // užrašas virš pusiaujo ties ekrano centru
+        val (tx, ta) = wideLabel("pusiaujas juda 465 m/s · brūkšnelis 500 m")
+        val lp = pt(cM).let { q -> val n = ecefToScene(doubleArrayOf(0.0, 0.0, 1.0)); val k = (alt * 0.06 / 6371.0 * EARTH_R).toFloat()
+            FloatArray(3) { q[it] + n[it] / sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) * k } }
+        val hh = (alt * 0.025 / 6371.0 * EARTH_R).toFloat()
+        System.arraycopy(mvpI, 0, mvp, 0, 16)
+        billboard(lp, eyeI, hh * ta, hh, tx, 0.8f, 0.95f, 1f, 0.95f)
+    }
 
     /** Platumų ir ilgumų tinklelis laisvame gaublyje: žingsnis pagal aukštį (ekrane ~4–10 linijų), linijos ant reljefo, už horizonto – nepiešiamos. */
     private fun drawGlobeGrid() {

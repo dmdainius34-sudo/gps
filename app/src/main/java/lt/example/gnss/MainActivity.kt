@@ -2241,10 +2241,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var tracksAt = 0L
 
     /** ECEF (km) -> scena: mastelis kaip Žemės (EARTH_R = 6371 km), sukimas earthMat (+ papildomas Žemės pasisukimas). */
-    private fun ecefToScene(km: DoubleArray, extraRot: Double = 0.0): FloatArray {
+    private fun ecefToScene(km: DoubleArray, extraRot: Double = 0.0, surf: Boolean = false): FloatArray {
         val k = EARTH_R / 6371.0
         val c = cos(extraRot); val sn = sin(extraRot)
-        val x = (c * km[0] - sn * km[1]) * k; val y = (sn * km[0] + c * km[1]) * k; val z = km[2] * k
+        // surf – taškas ant Žemės paviršiaus: suplotai Žemei (×30) z suspaudžiamas kaip gaublys
+        val x = (c * km[0] - sn * km[1]) * k; val y = (sn * km[0] + c * km[1]) * k; val z = km[2] * k * (if (surf && earthFlat) FLAT_K.toDouble() else 1.0)
         val m = earthMatLast
         return floatArrayOf((m[0] * x + m[4] * y + m[8] * z).toFloat(), (m[1] * x + m[5] * y + m[9] * z).toFloat(), (m[2] * x + m[6] * y + m[10] * z).toFloat())
     }
@@ -4040,7 +4041,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (earthMatLast[10] == 0f) return
         fun sc(la: Double, lo: Double): FloatArray {
             val e = PositionSolver.llhToEcef(Math.toRadians(la), Math.toRadians(lo), 0.0)
-            return ecefToScene(doubleArrayOf(e[0] / 1000 * 1.003, e[1] / 1000 * 1.003, e[2] / 1000 * 1.003))
+            return ecefToScene(doubleArrayOf(e[0] / 1000 * 1.003, e[1] / 1000 * 1.003, e[2] / 1000 * 1.003), surf = true)
         }
         val normal = ArrayList<Float>(); val main = ArrayList<Float>(); val special = ArrayList<Float>()
         fun seg(dst: ArrayList<Float>, a: FloatArray, b: FloatArray) { dst.add(a[0]); dst.add(a[1]); dst.add(a[2]); dst.add(b[0]); dst.add(b[1]); dst.add(b[2]) }
@@ -4092,7 +4093,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (Uvi.field(now).isEmpty()) return
         fun sc(la: Double, lo: Double, k: Double = 1.004): FloatArray {
             val e = PositionSolver.llhToEcef(Math.toRadians(la), Math.toRadians(lo), 0.0)
-            return ecefToScene(doubleArrayOf(e[0] / 1000 * k, e[1] / 1000 * k, e[2] / 1000 * k))
+            return ecefToScene(doubleArrayOf(e[0] / 1000 * k, e[1] / 1000 * k, e[2] / 1000 * k), surf = true)
         }
         GLES20.glUseProgram(colorProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
@@ -5253,7 +5254,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val prog = tileProg
         GLES20.glUseProgram(prog)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uMVP"), 1, false, earthMvp, 0)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uModel"), 1, false, earthMat, 0)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uModel"), 1, false, earthMatLast, 0)   // šviesa pagal tikrą (nesuplotą) vietą
         val sun = sunDir()
         GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
         GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uAlpha"), alpha.toFloat())
@@ -5809,7 +5810,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val prog = earthReliefProg
             GLES20.glUseProgram(prog)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uMVP"), 1, false, earthMvp, 0)
-            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uModel"), 1, false, earthMat, 0)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uModel"), 1, false, earthMatLast, 0)   // šviesa pagal tikrą (nesuplotą) vietą
             GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uRk"), reliefK)
             val sun = sunDir()
             GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
@@ -5852,7 +5853,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             // 3D apšvietimas: saulės šviesa iš viršaus-dešinės, žemynai matomi tekstūroje
             GLES20.glUseProgram(earthProg)
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uMVP"), 1, false, earthMvp, 0)
-            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uModel"), 1, false, earthMat, 0)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(earthProg, "uModel"), 1, false, earthMatLast, 0)   // šviesa pagal tikrą (nesuplotą) vietą
             val sun = sunDir()
             GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
             GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
@@ -5970,7 +5971,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val m = FloatArray(16)
         java.util.Arrays.fill(m, 0f)
         val k = 1.06f
-        m[0] = k; m[5] = k; m[10] = k; m[15] = 1f
+        m[0] = k; m[5] = k; m[10] = k * (if (earthFlat) FLAT_K else 1f); m[15] = 1f   // atmosfera suplojama kartu su Žeme
         val mvpA = FloatArray(16)
         Matrix.multiplyMM(mvpA, 0, mvpI, 0, m, 0)
         GLES20.glEnable(GLES20.GL_BLEND)
@@ -6133,7 +6134,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         fun sc(la: Double, lo: Double, k: Double = 1.012): FloatArray {
             val e = PositionSolver.llhToEcef(Math.toRadians(la), Math.toRadians(lo), 0.0)
-            return ecefToScene(doubleArrayOf(e[0] / 1000 * k, e[1] / 1000 * k, e[2] / 1000 * k))
+            return ecefToScene(doubleArrayOf(e[0] / 1000 * k, e[1] / 1000 * k, e[2] / 1000 * k), surf = true)
         }
         fun crossEarth(la: Double, lo: Double, col: FloatArray) {
             val seg = ArrayList<Float>()

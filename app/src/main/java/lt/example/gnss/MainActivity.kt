@@ -7854,14 +7854,6 @@ class DraggablePanel(
             override fun afterTextChanged(s: android.text.Editable?) { claudePrefs.edit().putString("api_key", s?.toString()?.trim() ?: "").apply() }
         })
     }
-    private val claudeModel = android.widget.Spinner(context).apply {
-        adapter = android.widget.ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, ClaudeAsk.MODELS.map { it[1] })
-        setSelection(ClaudeAsk.MODELS.indexOfFirst { it[0] == claudePrefs.getString("model", ClaudeAsk.MODELS[0][0]) }.coerceAtLeast(0))
-        onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) { claudePrefs.edit().putString("model", ClaudeAsk.MODELS[pos][0]).apply() }
-            override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
-        }
-    }
     private val claudeBtn = Button(context).apply { text = "Klausti Claude (atskiras, be šio pokalbio)"; textSize = 12f; isAllCaps = false }
     private val claudeAnswer = TextView(context).apply {
         textSize = 13f; setTextColor(Color.BLACK); setTextIsSelectable(true)
@@ -9780,16 +9772,6 @@ class MainActivity : AppCompatActivity() {
         container.addView(panel, params)
         panel.onPin = { pinBubble() }
         panel.onSendPk = { q, _, _ -> openPkChat(q) }
-        panel.onAskClaude = { q, model, key ->
-            panel.setClaudeAnswer("Siunčiama Claude (${model})… ataskaita su fiksu, palydovais, kalibravimais.", busy = true)
-            val report = try { buildClaudeReport(q) } catch (e: Exception) { "Ataskaitos klaida: ${e.message}" }
-            Thread {
-                val ans = ClaudeAsk.ask(key, model, q, report)
-                try { File(filesDir, CLAUDE_LOG).appendText("=== " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()) +
-                    " · $model ===\nKlausimas: $q\n\n$ans\n\n") } catch (_: Exception) {}
-                runOnUiThread { panel.setClaudeAnswer(ans) }
-            }.start()
-        }
         panel.onEndRecord = { toggleRecording() }
         panel.onColdStart = { askColdStart() }
         panel.onScreenTest = { runScreenTest() }

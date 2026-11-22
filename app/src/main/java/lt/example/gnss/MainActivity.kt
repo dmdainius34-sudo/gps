@@ -1412,6 +1412,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     var earthFlat: Boolean
         get() = renderer.earthFlat
         set(v) { renderer.earthFlat = v; calPrefs.edit().putBoolean("earth_flat", v).apply() }
+    var simRate: Double
+        get() = renderer.simRate
+        set(v) { renderer.simRate = v }
     var simRun: Boolean
         get() = renderer.simRun
         set(v) { renderer.simRun = v }
@@ -4466,6 +4469,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun simNow() = System.currentTimeMillis() + simOffsetMs
     /** Laiko eiga (▶): 1 para per 2 s, iki pusės metų; kamera lieka vietoje, sukasi Žemė. */
     @Volatile var simRun = false
+    /** Kiek kartų greičiau už tikrą laiką. */
+    @Volatile var simRate = 2_880.0
     private var simLastNs = 0L
     private var spaceRefreshNs = 0L
     private fun simTick() {
@@ -4478,8 +4483,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             try { Donki.refresh(appCtx) } catch (_: Exception) {}
         }
         if (simRun && simLastNs != 0L) {
-            // abiem režimais vienodai: 1 para per 2 s
-            simOffsetMs += ((ns - simLastNs) / 1e6 * 43_200.0).toLong()
+            // greitis (×1 – 1 para per 30 s, ×10 – per 3 s, ×100 – per 0,3 s)
+            simOffsetMs += ((ns - simLastNs) / 1e6 * simRate).toLong()
             if (simOffsetMs >= SIM_MAX_MS) { simOffsetMs = SIM_MAX_MS; simRun = false }
         }
         simLastNs = ns
@@ -10003,12 +10008,18 @@ class MainActivity : AppCompatActivity() {
             skyHolder.addView(att, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM or Gravity.END).apply { val mm = (4 * dp).toInt(); setMargins(mm, mm, mm, mm) })
         }
-        // ▶ – laiko eiga apačioje ekrano viduryje: 1 para per 2 s iki pusės metų; ⏸ – sustabdyti; ilgai palaikius – grįžti į dabartį
+        // ▶ – laiko eiga (greitis ×1/×10/×100) iki pusės metų; ⏸ – sustabdyti; ilgai palaikius – grįžti į dabartį
         run {
             val playB = small("\u25B6", 16f).apply { alpha = 0.75f }
             val lbl = TextView(this).apply { textSize = 12f; setTextColor(0xFFFFFFFF.toInt()); setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt()); gravity = Gravity.CENTER; visibility = View.GONE }
+            // greičio mygtukas: ×1 (1 para per 30 s) → ×10 (3 s) → ×100 (0,3 s)
+            val rates = doubleArrayOf(2_880.0, 28_800.0, 288_000.0); val names = arrayOf("\u00D71", "\u00D710", "\u00D7100")
+            var ri = 0; skyDome.simRate = rates[0]
+            val speedB = small(names[0], 12f).apply { alpha = 0.8f
+                setOnClickListener { keyHaptic(this); ri = (ri + 1) % rates.size; skyDome.simRate = rates[ri]; text = names[ri]
+                    Toast.makeText(this@MainActivity, when (ri) { 0 -> "1 para per 30 s"; 1 -> "1 para per 3 s"; else -> "1 para per 0,3 s" }, Toast.LENGTH_SHORT).show() } }
             val box = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                addView(playB, LinearLayout.LayoutParams(bSize, bSize)); addView(lbl) }
+                addView(playB, LinearLayout.LayoutParams(bSize, bSize)); addView(speedB, LinearLayout.LayoutParams(bSize, bSize)); addView(lbl) }
             lbl.setPadding((6 * dp).toInt(), 0, 0, 0)
             val tick = object : Runnable { override fun run() {
                 val off = skyDome.simOffsetMs

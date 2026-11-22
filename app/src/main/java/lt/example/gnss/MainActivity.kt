@@ -1715,10 +1715,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         // Jei giroskopas veikė ir fone (stabili šiaurė) – kryptis išlaikoma. Kitaip pradinė kryptis iš magnetometro,
         // kuris kabinoje klysta dešimtimis laipsnių, todėl po kelių sekundžių ji pataisoma pagal signalų stiprumą.
         val alive = fInit && lastGyroNs != 0L && android.os.SystemClock.elapsedRealtimeNanos() - lastGyroNs < 3_000_000_000L
-        if (!alive) {
-            fInit = false; lastGyroNs = 0L; gValid = false
-            reanchorTries = 0; handler.removeCallbacks(reanchor); handler.postDelayed(reanchor, 5_000L)
-        }
+        if (!alive) { fInit = false; lastGyroNs = 0L; gValid = false }
+        // kiekvieną paleidimą – vienas bandymas pataisyti šiaurę pagal palydovų signalus (per pirmas 2 min.)
+        reanchorTries = 0; reanchorD.clear(); handler.removeCallbacks(reanchor); handler.postDelayed(reanchor, 5_000L)
         if (!listening) {
             rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
             gyroSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
@@ -1732,15 +1731,34 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     /** Po pradinės krypties iš magnetometro: pataisa pagal patikimą kryptį iš signalų (jei ji šviežia). */
     private val LANDMARK_HOLD_MS = 30 * 60_000L
     private var reanchorTries = 0
-    /** Bandoma kas 5 s iki 2 min., kol atsiranda patikima kryptis iš signalų (paleidus GNSS jos dar nėra). */
+    private val reanchorD = ArrayList<Double>()
+    /**
+     * Paleidus – vienas šiaurės pataisymas pagal palydovų signalus: kas 5 s iki 2 min. renkami patikimi įverčiai (koreliacija ≥ 0,6,
+     * atotrūkis ≥ 0,15); kai ≥ 6 įverčiai sutampa (sklaida ≤ 8°), kryptis pataisoma vieną kartą (jei skiriasi > 2°) ir parodomas pranešimas.
+     * Nepavykus – pranešimas, kodėl. Toliau kryptį laiko giroskopas.
+     */
     private val reanchor: Runnable = object : Runnable { override fun run() {
         val e = SignalHeading.last; val h = headingDeg()
-        if (e == null || h == null || System.currentTimeMillis() - e.ms > 10_000L || e.corr < 0.6 || e.margin < 0.15) {
-            if (++reanchorTries < 24) handler.postDelayed(this, 5_000L)
-            return
+        if (e != null && h != null && System.currentTimeMillis() - e.ms <= 10_000L && e.corr >= 0.6 && e.margin >= 0.15)
+            reanchorD.add(SunCal.wrap(h - e.deg))
+        if (reanchorD.size >= 6) {
+            val sx = reanchorD.sumOf { cos(Math.toRadians(it)) }; val sy = reanchorD.sumOf { sin(Math.toRadians(it)) }
+            val mean = Math.toDegrees(kotlin.math.atan2(sy, sx))
+            val spread = reanchorD.maxOf { kotlin.math.abs(SunCal.wrap(it - mean)) }
+            if (spread <= 8.0) {
+                val corr = e?.corr ?: 0.0
+                if (kotlin.math.abs(mean) > 2.0) {
+                    nudgeNorth(mean, "pagal palydovus (paleidus)")
+                    HeadingTrust.set(true, "pataisyta pagal palydovų signalus")
+                    android.widget.Toast.makeText(context, "Šiaurė pataisyta pagal palydovus: %+.0f° (patikimumas %.2f)".format(java.util.Locale.US, -mean, corr), android.widget.Toast.LENGTH_LONG).show()
+                } else android.widget.Toast.makeText(context, "Šiaurė pagal palydovus patikrinta – sutampa (%+.0f°)".format(java.util.Locale.US, -mean), android.widget.Toast.LENGTH_SHORT).show()
+                return
+            }
+            reanchorD.removeAt(0)                                   // nesutampa – laukiama stabilesnių
         }
-        // šiaurės pataisa pagal signalus pašalinta (vartotojo prašymu) – kryptis iš signalų tik ataskaitai
-        return
+        if (++reanchorTries < 24) { handler.postDelayed(this, 5_000L); return }
+        android.widget.Toast.makeText(context, if (reanchorD.isEmpty()) "Pagal palydovus šiaurės nustatyti nepavyko – per atviras dangus arba per mažai palydovų"
+            else "Pagal palydovus šiaurės nustatyti nepavyko – įverčiai nesutapo (laikykite prietaisą ramiai)", android.widget.Toast.LENGTH_LONG).show()
     } }
 
     fun stop() {

@@ -2519,10 +2519,14 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 if (L > 1e-6) {
                     val sd = DoubleArray(3) { sv[it] / L }
                     val u = doubleArrayOf(fU[0], fU[1], fU[2])
-                    var d = doubleArrayOf(u[1] * sd[2] - u[2] * sd[1], u[2] * sd[0] - u[0] * sd[2], u[0] * sd[1] - u[1] * sd[0])
-                    var dl = kotlin.math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
-                    if (dl < 1e-4) { d = doubleArrayOf(fN[0], fN[1], fN[2]); dl = 1.0 }       // kūnas zenite – žiūrima iš šiaurės
-                    d = DoubleArray(3) { d[it] / dl }
+                    // žiūrima iš stebėtojo nugaros ta kryptimi, kur atsuktas planšetės galas (gulsčiai): ekrano kairė – tikra kairė
+                    val r = rot
+                    var he = -r[2].toDouble(); var hn = -r[5].toDouble()
+                    if (kotlin.math.hypot(he, hn) < 0.3) { val sg = if (-r[8] > 0f) -1.0 else 1.0; he = sg * r[1].toDouble(); hn = sg * r[4].toDouble() }
+                    val tgtH = kotlin.math.atan2(he, hn)
+                    focusHeadSm = if (focusHeadSm.isNaN()) tgtH else { var dh = tgtH - focusHeadSm
+                        while (dh > Math.PI) dh -= 2 * Math.PI; while (dh < -Math.PI) dh += 2 * Math.PI; focusHeadSm + 0.1 * dh }
+                    val d = DoubleArray(3) { sin(focusHeadSm) * fE[it] + cos(focusHeadSm) * fN[it] }
                     val mid = DoubleArray(3) { (e[it] + tgt[it]) / 2 }
                     val dist = (L / 2 + bodyRadius(focus)) / kotlin.math.tan(Math.toRadians(20.0)) * 1.2 * (focusZoom / (bodyRadius(focus) * 5.0)).coerceIn(0.05, 3.0)
                     val eye = DoubleArray(3) { mid[it] - d[it] * dist }
@@ -4566,6 +4570,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Horizontas lygus su tikru, sukant prietaisą apie žiūrėjimo ašį (ekrano kryptis užrakinta). */
     @Volatile var levelHorizon = true
     private var focusLevelEye: FloatArray? = null
+    private var focusHeadSm = Double.NaN
 
     private fun observerView() = flight != null || (!followDevice && !freeView && focus == 0)
     fun isObserverView() = observerView()
@@ -4719,7 +4724,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         else -> null
     }
     private fun bodyRadius(id: Int): Double = when (id) {
-        1 -> 0.24
+        1 -> 1.0                     // Saulė piešiama 4 × Žemės spindulio (anksčiau 0,24 – priartėjus kamera atsidurdavo Saulės viduje)
         2 -> 0.10
         else -> EARTH_R.toDouble()
     }

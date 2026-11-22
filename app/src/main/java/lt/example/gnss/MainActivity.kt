@@ -4552,9 +4552,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Saulės vaizdas, LASCO ir DONKI CME – atnaujinami nepriklausomai nuo GNSS (anksčiau – tik per palydovų srautą)
         if (ns - spaceRefreshNs > 15_000_000_000L) {
             spaceRefreshNs = ns
-            try { SunImage.refresh(appCtx) } catch (_: Exception) {}
-            try { Lasco.refresh(appCtx) } catch (_: Exception) {}
-            try { Donki.refresh(appCtx) } catch (_: Exception) {}
+            // ne GL gijoje: pirmas kartas skaito didelius failus (Saulės žemėlapis 4096×2048) – vaizdas „užstrigdavo“
+            Thread {
+                try { SunImage.refresh(appCtx) } catch (_: Exception) {}
+                try { Lasco.refresh(appCtx) } catch (_: Exception) {}
+                try { Donki.refresh(appCtx) } catch (_: Exception) {}
+            }.apply { priority = Thread.MIN_PRIORITY }.start()
         }
         if (simRun && simLastNs != 0L) {
             // greitis (×1 – 1 para per 30 s, ×10 – per 3 s, ×100 – per 0,3 s)

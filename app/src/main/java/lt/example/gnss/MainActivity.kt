@@ -2646,8 +2646,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             }
         }
         glowT = nowS
-        drawCorrectionWaves(pin, t)
-        if (obstacleMode > 0) drawObstacleSky(pin)
+        if (virtualPos != null) drawPortal(pin, t)            // tariama vieta: vietoj kabinos žemėlapio ir NTRIP bangų – portalas
+        else {
+            drawCorrectionWaves(pin, t)
+            if (obstacleMode > 0) drawObstacleSky(pin)
+        }
         if (Uvi.enabled) drawUvi()
         // senas tinklelis (kas 15°) pašalintas – liko vienas prisitaikantis (drawGlobeGrid); atogrąžos ir poliariniai ratai – su juo
         if (showEarthGrid) drawGraticule()
@@ -4154,6 +4157,53 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, a.size / 3)
         }
         GLES20.glDepthMask(true); GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+    }
+
+    /** Portalas tariamoje vietoje: švytintys žiedai horizonto plokštumoje, besisukanti spiralė ir šviesos stulpelis. */
+    private fun drawPortal(pin: FloatArray, t: Float) {
+        val m = earthMat
+        val c = floatArrayOf(m[12], m[13], m[14])
+        val o = FloatArray(3) { c[it] + (pin[it] - c[it]) / 1.35f }
+        val up = FloatArray(3) { o[it] - c[it] }.let { v -> val l = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); FloatArray(3) { v[it] / l } }
+        val ax = floatArrayOf(m[8], m[9], m[10])
+        var e = floatArrayOf(ax[1] * up[2] - ax[2] * up[1], ax[2] * up[0] - ax[0] * up[2], ax[0] * up[1] - ax[1] * up[0])
+        val el0 = sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]); if (el0 < 1e-7f) e = floatArrayOf(1f, 0f, 0f) else e = FloatArray(3) { e[it] / el0 }
+        val n = floatArrayOf(up[1] * e[2] - up[2] * e[1], up[2] * e[0] - up[0] * e[2], up[0] * e[1] - up[1] * e[0])
+        val R = 0.022f
+        fun p(a: Double, r: Float, h: Float) = FloatArray(3) { o[it] + r * (cos(a).toFloat() * e[it] + sin(a).toFloat() * n[it]) + h * up[it] }
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        val col = GLES20.glGetUniformLocation(colorProg, "uColor")
+        // pulsuojantys žiedai: plečiasi iš centro ir blėsta
+        for (k in 0 until 3) {
+            val f = ((t * 0.35f + k / 3f) % 1f)
+            val rr = R * (0.35f + 0.65f * f)
+            val a = ArrayList<Float>()
+            for (i in 0..72) { val q = p(2 * Math.PI * i / 72, rr, 0.0004f); a.add(q[0]); a.add(q[1]); a.add(q[2]) }
+            GLES20.glUniform4f(col, 0.55f, 0.35f, 1f, 0.9f * (1f - f))
+            bindPos(colorProg, floatBuf(a.toFloatArray())); GLES20.glLineWidth(3f)
+            GLES20.glDrawArrays(GLES20.GL_LINE_STRIP, 0, a.size / 3)
+        }
+        // išorinis kraštas ir besisukanti dviguba spiralė
+        val rim = ArrayList<Float>()
+        for (i in 0..96) { val q = p(2 * Math.PI * i / 96, R, 0.0004f); rim.add(q[0]); rim.add(q[1]); rim.add(q[2]) }
+        GLES20.glUniform4f(col, 0.4f, 0.9f, 1f, 0.95f)
+        bindPos(colorProg, floatBuf(rim.toFloatArray())); GLES20.glLineWidth(4f)
+        GLES20.glDrawArrays(GLES20.GL_LINE_STRIP, 0, rim.size / 3)
+        for (arm in 0 until 2) {
+            val a = ArrayList<Float>()
+            for (i in 0..60) {
+                val u = i / 60.0
+                val q = p(arm * Math.PI + u * 3 * Math.PI - t * 2.0, R * u.toFloat(), 0.0005f)
+                a.add(q[0]); a.add(q[1]); a.add(q[2])
+            }
+            GLES20.glUniform4f(col, 0.75f, 0.55f, 1f, 0.7f)
+            bindPos(colorProg, floatBuf(a.toFloatArray())); GLES20.glLineWidth(2f)
+            GLES20.glDrawArrays(GLES20.GL_LINE_STRIP, 0, a.size / 3)
+        }
+        GLES20.glLineWidth(1f)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
     }
 
     private fun drawCorrectionWaves(pin: FloatArray, t: Float) {

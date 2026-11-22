@@ -4880,7 +4880,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * Skaičiuojama tiesiogiai (ne iš praeito kadro Žemės matricos – laikui bėgant ji per kadrą pasisuka ~6°, todėl vaizdas drebėjo).
      */
     private fun pinCam(): FloatArray {
-        val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon) + fGc
+        // užrakintas horizontas – kamera sukasi kartu su Žeme (diskas visada gulsčias, sukasi dangus); atrakintas – stovi, sukasi Žemė
+        val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon) + (if (levelHorizon) fG else fGc)
         val k = 0.25 * 1.35
         val m = earthMat
         val fz = if (earthFlat) FLAT_K else 1f

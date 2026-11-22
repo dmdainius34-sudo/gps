@@ -2157,6 +2157,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      */
     private fun drawSunShot() {
         val sh = sunShot ?: return
+        if (simOffsetMs != 0L || focus != 0) return                  // laikui bėgant (▶) ir prie Saulės – nerodoma (šokinėdavo)
         val d = sunDir()
         val e = doubleArrayOf(fN[1] * fU[2] - fN[2] * fU[1], fN[2] * fU[0] - fN[0] * fU[2], fN[0] * fU[1] - fN[1] * fU[0])
         val dn = d[0] * fN[0] + d[1] * fN[1] + d[2] * fN[2]; val de = d[0] * e[0] + d[1] * e[1] + d[2] * e[2]; val du = d[0] * fU[0] + d[1] * fU[1] + d[2] * fU[2]

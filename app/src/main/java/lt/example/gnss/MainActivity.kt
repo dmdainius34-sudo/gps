@@ -5647,6 +5647,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
             GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uEye"), eyeI[0], eyeI[1], eyeI[2])
             GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uCam"), camPos[0], camPos[1], camPos[2])
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uGlow"), if (Hdr.on) 1.6f else 1f)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, earthTex)
             GLES20.glUniform1i(GLES20.glGetUniformLocation(prog, "uTex"), 0)
@@ -5688,6 +5689,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
             GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
             GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uCam"), camPos[0], camPos[1], camPos[2])
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(earthProg, "uGlow"), if (Hdr.on) 1.6f else 1f)
             resetAttribs()
             val lp = GLES20.glGetAttribLocation(earthProg, "aPos")
             val lu = GLES20.glGetAttribLocation(earthProg, "aUV")
@@ -6013,6 +6015,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uLight"), sun[0].toFloat(), sun[1].toFloat(), sun[2].toFloat())
         GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
             GLES20.glUniform3f(GLES20.glGetUniformLocation(earthProg, "uCam"), camPos[0], camPos[1], camPos[2])
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(earthProg, "uGlow"), if (Hdr.on) 1.6f else 1f)
         resetAttribs()
         val lp = GLES20.glGetAttribLocation(earthProg, "aPos")
         val lu = GLES20.glGetAttribLocation(earthProg, "aUV")
@@ -7198,6 +7201,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform vec3 uLight;
             uniform vec3 uEye;
             uniform vec3 uCam;        // kameros vieta (pasaulio sistema) – tikram žiūrėjimo kampui kiekviename taške
+            uniform float uGlow;      // HDR: Saulės apšviesta Žemė šviečia ryškiau (1 – be HDR)
             varying vec2 vUV;
             varying vec3 vN;
             varying vec3 vS;
@@ -7208,7 +7212,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 return mix(mix(hash2(i), hash2(i + vec2(1.0, 0.0)), f.x), mix(hash2(i + vec2(0.0, 1.0)), hash2(i + vec2(1.0, 1.0)), f.x), f.y);
             }
             float oceanAt(vec2 uv) {
-                if (uHasMask > 0.5) return step(0.004, texture2D(uMask, uv).r);
+                if (uHasMask > 0.5) return smoothstep(0.0, 0.012, texture2D(uMask, uv).r);   // švelnus krantas (be laiptelių)
                 return 1.0 - smoothstep(0.08, 0.22, texture2D(uTex, uv).r);
             }
             void main() {
@@ -7281,14 +7285,22 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 vec3 cDeep = vec3(0.012, 0.05, 0.15);
                 vec3 cShelf = vec3(0.03, 0.13, 0.27);
                 vec3 cShallow = vec3(0.09, 0.40, 0.44);
-                vec3 waterCol = mix(cDeep, cShelf, 1.0 - smoothstep(60.0, 400.0, depth));
-                waterCol = mix(waterCol, cShallow, exp(-depth / 18.0));
+                // gylis – iš vandenyno kaukės (4096×2048, glotni) vietoj stambaus 0,25° tinklelio, todėl nebelieka kvadratų prie krantų
+                float mDep = (uHasMask > 0.5) ? texture2D(uMask, vUV).r : 0.3;
+                float shelfW = 1.0 - smoothstep(0.03, 0.25, mDep);
+                float shallowW = 1.0 - smoothstep(0.004, 0.03, mDep);
+                vec3 waterCol = mix(cDeep, cShelf, shelfW);
+                waterCol = mix(waterCol, cShallow, shallowW * 0.6);
+                // permatomumas: matosi dugnas (NASA dugno reljefo spalvos) – seklesnėse vietose labiau
+                float transp = mix(0.35, 0.65, shelfW);
+                vec3 wc = mix(waterCol, base * 0.85, transp);
                 float litW = 0.3 + 1.1 * max(nl, 0.0) * soft;
-                vec3 oceanDay = waterCol * litW * (1.0 - 0.6 * Fv) + skyRefl * soft * 0.9 + sunCol * glint * soft;
+                vec3 oceanDay = wc * litW * (1.0 - 0.6 * Fv) + skyRefl * soft * 0.9 + sunCol * glint * soft;
                 // Apšviesta pusė šviesesnė: daugiau išsklaidytos šviesos, šlaitų šešėliai švelnesni
                 float lit = mix(d, max(dot(sN, l), 0.0), 0.35);
                 vec3 land = base * (0.2 + 1.1 * lit * soft);
                 vec3 day = mix(land, oceanDay, ocean) + atm;
+                day *= mix(1.0, uGlow, soft * max(nl, 0.0));   // HDR: apšviesta pusė švyti (stipriausiai – po Saule)
                 // Naktinė pusė: miestų šviesų nuotrauka vietoj šešėlio
                 vec3 night = texture2D(uNight, vUV).rgb * 1.6 + atm * 0.35;
                 float dayW = mix(1.0, smoothstep(-0.18, 0.12, nl), uHasNight);

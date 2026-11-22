@@ -1406,6 +1406,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     val freeView get() = renderer.freeView
     fun centreOnMe() { renderer.centreOnMe() }
     fun setVirtual(lat: Double?, lon: Double?) = renderer.setVirtual(lat, lon)
+    var simOffsetMs: Long
+        get() = renderer.simOffsetMs
+        set(v) { renderer.simOffsetMs = v }
     val virtualPos get() = renderer.virtualPos
     fun setSunTrue(on: Boolean) { renderer.sunTrue = on }
     fun setLascoDisk(on: Boolean) { renderer.showLascoDisk = on }
@@ -2173,7 +2176,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private val seenConsts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     private fun frameNow() {
-        val d = System.currentTimeMillis() / 86400000.0 + 2440587.5 - 2451545.0
+        val d = simNow() / 86400000.0 + 2440587.5 - 2451545.0
         var gm = (280.46061837 + 360.98564736629 * d) % 360.0
         if (gm < 0) gm += 360.0
         fG = Math.toRadians(gm)
@@ -2590,7 +2593,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val phaseIdsNow = LiveRtk.phaseIds()
         val nowS = android.os.SystemClock.uptimeMillis() / 1000.0
         for (si in satsI) {
-            if (!showSats) break                              // palydovai rodomi tik uždėjus varnelę „Rodyti palydovus“
+            if (!showSats || simOffsetMs != 0L) break                 // pastūmus laiką palydovai nerodomi (jų padėtis – dabar)                              // palydovai rodomi tik uždėjus varnelę „Rodyti palydovus“
             val sat = si.sat
             val p = si.pos
             // Už Žemės: kamera -> palydovas kerta Žemės rutulį – nerodome
@@ -3586,7 +3589,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         seg(DoubleArray(3) { obs[it] - e[it] * hr }, DoubleArray(3) { obs[it] + e[it] * hr }, ring)
         drawLines(ring.toFloatArray(), 0.45f, 0.95f, 1f, 0.75f)
         // 4) Žemės judėjimas orbitoje (ekliptikoje, 90° nuo Saulės): rodyklė iš Žemės
-        val mv = SpaceOrientation.motionEq(System.currentTimeMillis())
+        val mv = SpaceOrientation.motionEq(simNow())
         val side = doubleArrayOf(mv[1] * ax[2] - mv[2] * ax[1], mv[2] * ax[0] - mv[0] * ax[2], mv[0] * ax[1] - mv[1] * ax[0])
         val p0 = DoubleArray(3) { c[it] + mv[it] * r * 1.5 }; val tip = DoubleArray(3) { c[it] + mv[it] * r * 2.8 }
         val arrow = ArrayList<Float>()
@@ -4405,6 +4408,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     // ---------------- ŽEMĖ GAUBLIO VIDUJE ----------------
     @Volatile private var obsLat = 54.7
     @Volatile private var obsLon = 25.25
+    /** Laiko šliaužiklis: poslinkis nuo dabar (ms). Žemės sukimasis, orbita, Saulė, Mėnulis ir CME – pagal šį laiką. */
+    @Volatile var simOffsetMs = 0L
+    private fun simNow() = System.currentTimeMillis() + simOffsetMs
     @Volatile private var realLat = 54.7
     @Volatile private var realLon = 25.25
     /** Įvestos (tariamos) stebėtojo koordinatės: smeigtukas, horizontas ir siūlai – iš ten; null – tikra vieta. */
@@ -5409,6 +5415,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** TKS (Celestrak elementai): taškas su užrašu ir orbitos ratas (±45 min.), tikru aukščiu virš Žemės. */
     private fun drawIss() {
+        if (simOffsetMs != 0L) return
         val el = SpaceLive.iss ?: return
         val now = System.currentTimeMillis()
         val k = EARTH_R / 6371.0
@@ -5441,7 +5448,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawSunLive(sp: FloatArray, rs: Float) {
         val dl = sqrt(sp[0] * sp[0] + sp[1] * sp[1] + sp[2] * sp[2]); if (dl < 1e-6f) return
         val d = floatArrayOf(sp[0] / dl, sp[1] / dl, sp[2] / dl)                  // Žemė → Saulė
-        val now = System.currentTimeMillis()
+        val now = simNow()
         val z = SunFrame.axes(now)[2]
         val pz = (z[0] * d[0] + z[1] * d[1] + z[2] * d[2]).toFloat()
         val u = floatArrayOf(z[0].toFloat() - pz * d[0], z[1].toFloat() - pz * d[1], z[2].toFloat() - pz * d[2])
@@ -5924,7 +5931,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private val moonMat = FloatArray(16)
     private val moonMvp = FloatArray(16)
 
-    private fun jdDays(): Double = System.currentTimeMillis() / 86400000.0 + 2440587.5 - 2451545.0
+    private fun jdDays(): Double = simNow() / 86400000.0 + 2440587.5 - 2451545.0
 
     /** Ekliptikos vektorius -> pusiaujo (sideralinė) sistema. */
     private fun eclToEq(lon: Double, lat: Double): DoubleArray {
@@ -5935,7 +5942,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Saulės kryptis (apytikslė, ~0,01°). */
     /** Saulės kryptis – Astro.sunEq (ta pati funkcija naudojama ataskaitos Saulės patikrai). */
-    private fun sunDir(): DoubleArray = Astro.sunEq(System.currentTimeMillis())
+    private fun sunDir(): DoubleArray = Astro.sunEq(simNow())
 
     /** Mėnulio atstumas nuo Žemės centro (km), pagrindiniai Meeus nariai (~±500 km). */
     private fun moonDistKm(): Double {
@@ -5956,7 +5963,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      */
     private fun drawMoonPhase() {
         val mp = moonPosLast ?: return
-        val now = System.currentTimeMillis()
+        val now = simNow()
         val s = sunDir(); val m = moonDir()
         fun nrm(v: DoubleArray): DoubleArray { val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).coerceAtLeast(1e-12); return DoubleArray(3) { v[it] / l } }
         val ml = nrm(m)
@@ -6003,7 +6010,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Mėnulio orbita (silpna linija) ir užrašas su atstumu – Mėnulis tikru masteliu mažas. */
     private fun drawMoonOrbit() {
         if (showSunGrid && moonMvp[15] != 0f) {
-            val se = MoonFrame.subEarth(System.currentTimeMillis(), moonDir())
+            val se = MoonFrame.subEarth(simNow(), moonDir())
             drawBodyGrid(moonMvp, se[0], se[1], 0.25 * 1.03, floatArrayOf(0.85f, 0.9f, 1f))
         }
         drawMoonPhase()
@@ -6052,7 +6059,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      */
     private fun drawCentersTriangle() {
         if (earthMatLast[10] == 0f) return
-        val now = System.currentTimeMillis()
+        val now = simNow()
         val sd = sunDir(); val md = moonDir()
         fun ll(v: DoubleArray): Pair<Double, Double> {
             val la = Math.toDegrees(kotlin.math.asin(v[2].coerceIn(-1.0, 1.0)))
@@ -6115,7 +6122,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         moonPosLast = doubleArrayOf(fP[0] + dir[0] * dist, fP[1] + dir[1] * dist, fP[2] + dir[2] * dist)
         val px = fP[0] + dir[0] * dist; val py = fP[1] + dir[1] * dist; val pz = fP[2] + dir[2] * dist
         // Tikra Mėnulio orientacija (IAU): x – nulinis dienovidinis, z – šiaurės polius; libracija įskaityta
-        val mAx = MoonFrame.axes(System.currentTimeMillis())
+        val mAx = MoonFrame.axes(simNow())
         val x = mAx[0]; val y = mAx[1]; val z = mAx[2]
         java.util.Arrays.fill(moonMat, 0f)
         for (i in 0..2) {
@@ -6327,7 +6334,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Heliografinis tinklelis (kas 15°), pusiaujas ir nulinis dienovidinis ryškesni, ašis per polius, į Žemę atsuktas taškas. */
     private fun drawSunGrid() {
-        val pbl = SunFrame.pbl(System.currentTimeMillis())
+        val pbl = SunFrame.pbl(simNow())
         drawBodyGrid(sunMvp, if (pbl[2] > 180) pbl[2] - 360 else pbl[2], pbl[1], 0.25 * 1.006, floatArrayOf(1f, 0.9f, 0.6f))
     }
 
@@ -6358,7 +6365,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // spindulys 4× Žemės (1,0 scenos vnt.) – kartu su dvigubai didesniu atstumu
         val k = 4.0f
         // tikra Saulės orientacija: IAU ašis ir Carringtono sukimasis (tinklelio u = 0,5 – nulinis dienovidinis)
-        val ax = SunFrame.axes(System.currentTimeMillis())
+        val ax = SunFrame.axes(simNow())
         java.util.Arrays.fill(sunMat, 0f)
         for (i in 0..2) { sunMat[i] = (ax[0][i] * k).toFloat(); sunMat[4 + i] = (ax[1][i] * k).toFloat(); sunMat[8 + i] = (ax[2][i] * k).toFloat() }
         // tikras NASA SDO vaizdas, jei atsisiųstas (perkeliamas į GL tekstūrą)
@@ -6451,7 +6458,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (!showLasco) return
         val dl = kotlin.math.sqrt(sp[0] * sp[0] + sp[1] * sp[1] + sp[2] * sp[2]); if (dl < 1e-6f) return
         val d = floatArrayOf(sp[0] / dl, sp[1] / dl, sp[2] / dl)                 // Žemė → Saulė
-        val z = SunFrame.axes(System.currentTimeMillis())[2]
+        val z = SunFrame.axes(simNow())[2]
         val pz = (z[0] * d[0] + z[1] * d[1] + z[2] * d[2]).toFloat()
         val u = floatArrayOf(z[0].toFloat() - pz * d[0], z[1].toFloat() - pz * d[1], z[2].toFloat() - pz * d[2])
         val ul = kotlin.math.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]); for (i in 0..2) u[i] /= ul
@@ -6511,9 +6518,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** DONKI išmetimų kūgiai: viršūnė Saulės centre, priekis – nuskriestas atstumas (21,5 R + greitis × laikas), mastelis iki Žemės orbitos. */
     private fun drawCmeCones(sp: FloatArray, rs: Float, au: Float, pole: DoubleArray) {
-        val list = Donki.active(System.currentTimeMillis()); if (list.isEmpty()) return
+        val list = Donki.active(simNow()); if (list.isEmpty()) return
         val ez = doubleArrayOf(pole[0], pole[1], pole[2])
-        val now = System.currentTimeMillis()
+        val now = simNow()
         GLES20.glUseProgram(colorProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
@@ -9577,13 +9584,15 @@ class MainActivity : AppCompatActivity() {
                 modeBtn?.text = "\uD83C\uDF0D"; flightBtn.alpha = 0.6f
             } }
         // 📍 – persikelti į įvestas koordinates (smeigtukas, horizontas, siūlai – iš ten)
+        // ⏳ – laiko šliaužiklis (±1 metai valandos žingsniu): Žemė sukasi ir keliauja orbita
+        val timeBtn = small("\u23F3", 14f).apply { alpha = 0.6f }
         val placeBtn = small("\uD83D\uDCCD", 14f)
         placeBtn.alpha = if (::skyDome.isInitialized && skyDome.virtualPos != null) 1f else 0.6f
         placeBtn.setOnClickListener { keyHaptic(placeBtn); openPlaceDialog(placeBtn) }
         val tools = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val gap = (6 * dp).toInt()
-            for (b in listOf(homeBtn, levelBtn, calBtn, placeBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
+            for (b in listOf(homeBtn, levelBtn, calBtn, timeBtn, placeBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
         }
         // barometras: apačioje kairėje – paspaudus nulis čia, toliau rodoma, kiek pakilote ar nusileidote
         if (baro.hasSensor) {
@@ -9780,6 +9789,43 @@ class MainActivity : AppCompatActivity() {
             att.post(tk)
             skyHolder.addView(att, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM or Gravity.END).apply { val mm = (4 * dp).toInt(); setMargins(mm, mm, mm, mm) })
+        }
+        // laiko šliaužiklis: permatoma juosta apačioje; vidurys – dabar, kraštai – ±1 metai (valandos žingsniu)
+        run {
+            val H = 365 * 24
+            val lbl = TextView(this).apply { textSize = 13f; setTextColor(0xFFFFFFFF.toInt()); setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt()); gravity = Gravity.CENTER }
+            val bar = SeekBar(this).apply { max = 2 * H; progress = H }
+            val nowB = Button(this).apply { text = "Dabar"; isAllCaps = false; setTextColor(0xFFFFFFFF.toInt()); setBackgroundColor(0); textSize = 13f }
+            val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE
+                val pd = (8 * dp).toInt(); setPadding(pd, pd / 2, pd, pd / 2)
+                background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 14 * dp; setColor(0x55000000) }
+                addView(LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    addView(lbl, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)); addView(nowB) })
+                addView(bar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            }
+            fun show() {
+                val h = (bar.progress - H).toLong()
+                skyDome.simOffsetMs = h * 3_600_000L
+                val d = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(java.util.Date(System.currentTimeMillis() + h * 3_600_000L))
+                lbl.text = if (h == 0L) "Dabar · $d" else "$d · " + (if (kotlin.math.abs(h) < 48) "%+d val.".format(Locale.US, h)
+                    else "%+.1f".format(Locale.US, h / 24.0).replace('.', ',') + " d.") + " · palydovai nerodomi"
+            }
+            bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) = show()
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+            nowB.setOnClickListener { bar.progress = H; show() }
+            timeBtn.setOnClickListener {
+                keyHaptic(timeBtn)
+                val on = panel.visibility != View.VISIBLE
+                panel.visibility = if (on) View.VISIBLE else View.GONE
+                if (!on) { bar.progress = H; skyDome.simOffsetMs = 0L }       // uždarius – grįžtama į dabartį
+                timeBtn.alpha = if (on) 1f else 0.6f
+                show()
+            }
+            skyHolder.addView(panel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM).apply {
+                val m = (10 * dp).toInt(); setMargins(m + (50 * dp).toInt(), m, m + (60 * dp).toInt(), (24 * dp).toInt()) })
         }
         toolCol = tools
         skyHolder.addView(tools, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {

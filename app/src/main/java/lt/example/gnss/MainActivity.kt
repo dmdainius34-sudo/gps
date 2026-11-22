@@ -3083,6 +3083,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (starTex == 0) return
         val a0 = bgFade(); if (a0 < 0.01f) return
         val st = dipperStars; if (st.size < 7) return
+        // KLAIDA BUVO: žvaigždės piešiamos stebėtojo vietine matrica (mvp = mvpI · ENU) – jos buvo ne savo vietose (linijos – kitur)
+        // ir sukosi kartu su Žeme (ypač paleidus laiką ▶). Dabar – dangaus (I) matrica, kaip linijos.
+        System.arraycopy(mvpI, 0, mvp, 0, 16)
         fun bg(n: String) = FloatArray(3) { camPos[it] + st.getValue(n).dir[it] * 50f }
         GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
@@ -3528,6 +3531,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             // einamasis mėnuo (Žemė dabar tarp šios ir kitos žymės) – ryškesnis
             val cur = mo == monthNow
             val ls = (sDist / 3.6).toFloat()                                // užrašai didėja kartu su orbita
+            // Žemė prie šios žymės (laikui bėgant ▶ ji keliauja orbita) – užrašas neberodomas, kad neuždengtų Žemės
+            if (sqrt((p[0] - fP[0]) * (p[0] - fP[0]) + (p[1] - fP[1]) * (p[1] - fP[1]) + (p[2] - fP[2]) * (p[2] - fP[2])) < 0.35f * ls) continue
             billboard(p, eyeI, (if (cur) 0.2f else 0.16f) * ls, (if (cur) 0.1f else 0.08f) * ls, tex, if (cur) 1f else 0.6f, if (cur) 1f else 0.78f, 1f, if (cur) 1f else 0.8f)
         }
     }

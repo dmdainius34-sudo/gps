@@ -4478,8 +4478,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             try { Donki.refresh(appCtx) } catch (_: Exception) {}
         }
         if (simRun && simLastNs != 0L) {
-            // abiem režimais vienodai: 1 para per 8 s
-            simOffsetMs += ((ns - simLastNs) / 1e6 * 10_800.0).toLong()
+            // abiem režimais vienodai: 1 para per 2 s
+            simOffsetMs += ((ns - simLastNs) / 1e6 * 43_200.0).toLong()
             if (simOffsetMs >= SIM_MAX_MS) { simOffsetMs = SIM_MAX_MS; simRun = false }
         }
         simLastNs = ns

@@ -2507,6 +2507,30 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val tr = FloatArray(16); Matrix.setIdentityM(tr, 0); Matrix.translateM(tr, 0, -focusPt[0].toFloat(), -focusPt[1].toFloat(), -focusPt[2].toFloat())
             val mvT = FloatArray(16); Matrix.multiplyMM(mvT, 0, mvU, 0, tr, 0)
             Matrix.multiplyMM(mvpI, 0, pv, 0, mvT, 0)
+            focusLevelEye = null
+            if (levelHorizon) {
+                // Horizonto fiksavimas prie kūno (Saulės, Mėnulio): ekrano „aukštyn“ – stebėtojo Žemėje zenitas. Linija Žemė–kūnas guli
+                // ekrano plokštumoje ir pasvirusi tiek, kiek kūnas virš (po) stebėtojo horizonto; abu visada ekrane.
+                val e = doubleArrayOf(fP[0].toDouble(), fP[1].toDouble(), fP[2].toDouble())
+                val sv = DoubleArray(3) { tgt[it] - e[it] }; val L = kotlin.math.sqrt(sv[0] * sv[0] + sv[1] * sv[1] + sv[2] * sv[2])
+                if (L > 1e-6) {
+                    val sd = DoubleArray(3) { sv[it] / L }
+                    val u = doubleArrayOf(fU[0], fU[1], fU[2])
+                    var d = doubleArrayOf(u[1] * sd[2] - u[2] * sd[1], u[2] * sd[0] - u[0] * sd[2], u[0] * sd[1] - u[1] * sd[0])
+                    var dl = kotlin.math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+                    if (dl < 1e-4) { d = doubleArrayOf(fN[0], fN[1], fN[2]); dl = 1.0 }       // kūnas zenite – žiūrima iš šiaurės
+                    d = DoubleArray(3) { d[it] / dl }
+                    val mid = DoubleArray(3) { (e[it] + tgt[it]) / 2 }
+                    val dist = (L / 2 + bodyRadius(focus)) / kotlin.math.tan(Math.toRadians(20.0)) * 1.2 * (focusZoom / (bodyRadius(focus) * 5.0)).coerceIn(0.05, 3.0)
+                    val eye = DoubleArray(3) { mid[it] - d[it] * dist }
+                    Matrix.perspectiveM(proj, 0, 40f, aspectNow, (dist * 0.01).toFloat(), (dist + L * 2 + 60).toFloat())
+                    val lv = FloatArray(16)
+                    Matrix.setLookAtM(lv, 0, eye[0].toFloat(), eye[1].toFloat(), eye[2].toFloat(), mid[0].toFloat(), mid[1].toFloat(), mid[2].toFloat(),
+                        u[0].toFloat(), u[1].toFloat(), u[2].toFloat())
+                    Matrix.multiplyMM(mvpI, 0, proj, 0, lv, 0)
+                    focusLevelEye = floatArrayOf(eye[0].toFloat(), eye[1].toFloat(), eye[2].toFloat())
+                }
+            }
         }
         if (observerView()) observerCamera()          // kamera – pagal tikrą laiką (pinCam): laikui bėgant sukasi Žemė, ne visas modelis
         // bakstelėjimui (palydovai, Saulė, Mėnulis) – ta pati matrica, kuria piešiama (po stebėtojo kameros; anksčiau – prieš ją, todėl pirštas „nepataikydavo“)
@@ -2519,6 +2543,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (observerView()) {
             val l = kotlin.math.sqrt(camPos[0] * camPos[0] + camPos[1] * camPos[1] + camPos[2] * camPos[2]).coerceAtLeast(1e-6f)
             eyeI = floatArrayOf(camPos[0] / l, camPos[1] / l, camPos[2] / l)
+        } else if (focus != 0 && focusLevelEye != null) {
+            val fe = focusLevelEye!!; camPos = fe.copyOf()
+            val l = sqrt(fe[0] * fe[0] + fe[1] * fe[1] + fe[2] * fe[2]).coerceAtLeast(1e-6f)
+            eyeI = floatArrayOf(fe[0] / l, fe[1] / l, fe[2] / l)
         } else if (focus != 0) {
             eyeI = floatArrayOf(mvU[2], mvU[6], mvU[10])
             camPos = floatArrayOf((focusPt[0] + eyeI[0] * focusZoom).toFloat(), (focusPt[1] + eyeI[1] * focusZoom).toFloat(), (focusPt[2] + eyeI[2] * focusZoom).toFloat())
@@ -4527,6 +4555,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var botSm = Double.NaN
     /** Horizontas lygus su tikru, sukant prietaisą apie žiūrėjimo ašį (ekrano kryptis užrakinta). */
     @Volatile var levelHorizon = true
+    private var focusLevelEye: FloatArray? = null
 
     private fun observerView() = flight != null || (!followDevice && !freeView && focus == 0)
     fun isObserverView() = observerView()

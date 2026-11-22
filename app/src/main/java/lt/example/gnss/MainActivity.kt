@@ -2542,7 +2542,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Žvaigždžių fonas – didelė sfera pusiaujo (RA/Dec) sistemoje, sukasi kartu su žvaigždėmis
         drawCmb()
         drawVignette()
-        drawBrightGlow()
         drawBigDipper()
         drawStarCollapse(covers = true)
         drawStars3d()
@@ -3071,29 +3070,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * Fono žvaigždė yra kamera + 50 · kryptis.
      * covers = true – tik uždengimai (prieš galaktiką), false – pačios žvaigždės (virš galaktikos).
      */
-    /**
-     * Įprastame vaizde (prie Žemės): ryškiausios žvaigždės fone – didesnės, su švelniu spalvotu švytėjimu ir lėtu mirgėjimu
-     * (kiekviena savo ritmu). Vietos – tikros (J2000 kryptys ant fono sferos), keičiasi tik išvaizda.
-     */
-    private fun drawBrightGlow() {
-        if (starTex == 0) return
-        val a0 = bgFade(); if (a0 < 0.01f) return
-        GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
-        val sec = android.os.SystemClock.uptimeMillis() / 1000.0
-        for ((i, s) in NearStars.list.withIndex()) {
-            val bright = (2.5 - s.mag).toFloat().coerceIn(0f, 4f)               // 0 – 2,5 ryškio, 4 – Sirijus
-            if (bright <= 0.05f) continue
-            val bg = FloatArray(3) { camPos[it] + s.dir[it] * 50f }
-            val tw = (0.78 + 0.22 * sin(sec * (0.9 + (i % 7) * 0.23) + i * 2.1) * sin(sec * (2.3 + (i % 5) * 0.31) + i)).toFloat()
-            val halo = 50f * (0.010f + 0.006f * bright)
-            billboard(bg, eyeI, halo, halo, starTex, s.rgb[0], s.rgb[1], s.rgb[2], (0.10f + 0.07f * bright) * tw * a0)
-            val core = 50f * (0.0035f + 0.0016f * bright)
-            billboard(bg, eyeI, core, core, starTex, 1f, 1f, 1f, (0.35f + 0.12f * bright) * tw * a0)
-        }
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-        GLES20.glDepthMask(true); GLES20.glEnable(GLES20.GL_DEPTH_TEST)
-    }
 
     /**
      * Grįžulo Ratai (tik „samtis“, ne visas Didysis Lokys): 7 žvaigždės paryškintos, sujungtos plonomis sidabrinėmis linijomis

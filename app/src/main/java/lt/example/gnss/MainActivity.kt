@@ -1212,7 +1212,7 @@ class MsaaConfigChooser : GLSurfaceView.EGLConfigChooser {
         val E = javax.microedition.khronos.egl.EGL10.EGL_NONE
         // 10 bitų spalvos (1024 pakopos kanalui) – sklandūs Saulės vainiko ir galaktikos perėjimai be juostelių
         if (Hdr.tenWanted && Build.VERSION.SDK_INT >= 26) {
-            val ms10 = intArrayOf(0x3024, 10, 0x3023, 10, 0x3022, 10, 0x3021, 2, 0x3025, 16, 0x3040, 4, 0x3032, 1, 0x3031, 4, E)
+            val ms10 = intArrayOf(0x3024, 10, 0x3023, 10, 0x3022, 10, 0x3021, 2, 0x3025, 16, 0x3040, 4, 0x3032, 1, 0x3031, 2, E)
             val plain10 = intArrayOf(0x3024, 10, 0x3023, 10, 0x3022, 10, 0x3021, 2, 0x3025, 16, 0x3040, 4, E)
             for (attrs in arrayOf(ms10, plain10)) {
                 val num = IntArray(1); val cfg = arrayOfNulls<EGLConfig>(1)
@@ -1224,7 +1224,7 @@ class MsaaConfigChooser : GLSurfaceView.EGLConfigChooser {
         }
         Hdr.tenBit = false
         val ms = intArrayOf(0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3021, 8, 0x3025, 16,
-            0x3040, 4, 0x3032, 1, 0x3031, 4, E)          // RGBA8, depth16, ES2, sample buffers=1, samples=4
+            0x3040, 4, 0x3032, 1, 0x3031, 2, E)          // RGBA8, depth16, ES2, sample buffers=1, samples=2 (buvo 4 – per lėta 60 kadrų/s)
         val plain = intArrayOf(0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3021, 8, 0x3025, 16, 0x3040, 4, E)
         for (attrs in arrayOf(ms, plain)) {
             val num = IntArray(1)
@@ -7549,9 +7549,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 float hs = b * b - (dot(oc, oc) - uRs * uRs);
                 if (hs > 0.0) { float ts = -b - sqrt(hs); if (ts > t0) tEnd = min(tEnd, ts); }
                 if (tEnd <= t0) discard;
-                const int N = 28;
+                const int N = 14;                                     // 14 žingsnių (buvo 28) – sklandus kadrų dažnis prie Saulės
                 float dt = (tEnd - t0) / float(N);
                 vec3 acc = vec3(0.0);
+                vec3 w3 = vec3(0.3333, 0.3333, 0.3334);               // filtruotas pilkas vaizdas
+                float fw = 0.06 * (uOut - uIn) / 0.8;
                 for (int i = 0; i < N; i++) {
                     vec3 p = (uCam + rd * (t0 + (float(i) + 0.5) * dt) - uCenter) / uRs;
                     float rho = length(p);
@@ -7563,14 +7565,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     float src = 2.3 + (rho - uIn) / (uOut - uIn) * 3.5;
                     vec2 uv = 0.5 + vec2(q.x, -q.y) / ql * src / (2.0 * uHalf);
                     // skaistis normalizuotas pagal kadro foną ir šviesiausius taškus (0 – fonas, 1 – ryškiausi srautai)
-                    vec3 w3 = vec3(0.3333, 0.3333, 0.3334);           // filtruotas pilkas vaizdas
                     float la = clamp((dot(texture2D(uTex, uv).rgb, w3) - uLvA.x) * uLvA.y, 0.0, 1.0);
                     float lb = clamp((dot(texture2D(uTex2, uv).rgb, w3) - uLvB.x) * uLvB.y, 0.0, 1.0);
                     float t = mix(la, lb, uMix);
                     t = t * t * t;                                    // lieka tik ryškiausi srautai ir išmetimai
-                    float beta = asin(clamp(dot(p, uD) / rho, -1.0, 1.0));   // kampas nuo dangaus plokštumos
+                    float sb = clamp(dot(p, uD) / rho, -1.0, 1.0);
+                    float beta = sb * (1.0 + 0.1667 * sb * sb);         // ≈ asin (kampas nuo dangaus plokštumos), pigiau
                     float w = exp(-(beta * beta) / 0.5);
-                    float fw = 0.06 * (uOut - uIn) / 0.8;
                     float m = smoothstep(uIn, uIn + fw, rho) * (1.0 - smoothstep(uOut - 1.6 * fw, uOut, rho));
                     acc += vec3(t * w * m);
                 }

@@ -1822,7 +1822,10 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                     nudgeNorth(mean, "pagal palydovus (paleidus)")
                     HeadingTrust.set(true, "pataisyta pagal palydovų signalus")
                     android.widget.Toast.makeText(context, "Šiaurė pataisyta pagal palydovus: %+.0f° (patikimumas %.2f)".format(java.util.Locale.US, -mean, corr), android.widget.Toast.LENGTH_LONG).show()
-                } else android.widget.Toast.makeText(context, "Šiaurė pagal palydovus patikrinta – sutampa (%+.0f°)".format(java.util.Locale.US, -mean), android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    HeadingTrust.set(true, "patvirtinta pagal palydovų signalus")   // sutampa – kryptis patikima, žemėlapis gali mokytis
+                    android.widget.Toast.makeText(context, "Šiaurė pagal palydovus patikrinta – sutampa (%+.0f°)".format(java.util.Locale.US, -mean), android.widget.Toast.LENGTH_SHORT).show()
+                }
                 return
             }
             reanchorD.removeAt(0)                                   // nesutampa – laukiama stabilesnių
@@ -9711,8 +9714,12 @@ class MainActivity : AppCompatActivity() {
             .putBoolean("earth_grid", true).putBoolean("grid", false).putBoolean("sun_grid", true).putBoolean("sun_sdo", true)
             .putBoolean("sun_lasco", true).putBoolean("uv_layer", false).putBoolean("space_live", true).putBoolean("nav_bits", false).putBoolean("show_sats", false)
             .putBoolean("free_view", false).putBoolean("follow_device", false).apply()
-        // kabinos žemėlapio mokymasis paliekamas toks, kokį paliko naudotojas (ilgai palaikius 🧭 – išvaloma ir įjungiama)
-        getSharedPreferences("cabin", Context.MODE_PRIVATE).edit().putBoolean("use", false).apply()
+        // kabinos žemėlapio mokymasis paliekamas toks, kokį paliko naudotojas (ilgai palaikius 🧭 – išvaloma ir įjungiama);
+        // vieną kartą įjungiamas (anksčiau kiekvieną paleidimą būdavo išjungiamas)
+        getSharedPreferences("cabin", Context.MODE_PRIVATE).let { cp ->
+            val e = cp.edit().putBoolean("use", false)
+            if (!cp.getBoolean("learn_on_v3", false)) e.putBoolean("learn", true).putBoolean("learn_on_v3", true)
+            e.apply() }
         FixPoints.init(filesDir)
         // HDR: langas prašo HDR ryškumo atsargos (ekranas leidžia taškams šviesti ryškiau už įprastą baltą)
         if (Build.VERSION.SDK_INT >= 26 && getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("hdr", true))
@@ -9861,8 +9868,9 @@ class MainActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(mw, ww))
         left.addView(CheckBox(this).apply {
             text = "Rodyti palydovus"
+            cbShowSatsRef = this
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("show_sats", false)
-            setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.showSats = on
+            setOnCheckedChangeListener { _, on -> satBtnMark?.invoke(); if (::skyDome.isInitialized) skyDome.showSats = on
                 else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("show_sats", on).apply()
                 getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("show_sats", on).commit()
                 // palydovų informacijos gavimas įjungiamas / išjungiamas kartu su varnele
@@ -10042,13 +10050,18 @@ class MainActivity : AppCompatActivity() {
         fun satMark() { satBtn.alpha = if (spSky.getBoolean("show_sats", false)) 1f else 0.4f
             (satBtn.background as? android.graphics.drawable.GradientDrawable)?.setColor(if (spSky.getBoolean("nav_bits", false)) 0x8822C55E.toInt() else 0x44000000) }
         satMark()
+        satBtnMark = { satMark() }
         satBtn.setOnClickListener {
             keyHaptic(satBtn)
             val on = !spSky.getBoolean("show_sats", false)
-            spSky.edit().putBoolean("show_sats", on).commit()
-            if (::skyDome.isInitialized) skyDome.showSats = on
-            if (on) recordEnded = false
-            unregisterGnss(); if (activityStarted) startGnss()
+            val cb = cbShowSatsRef
+            if (cb != null) cb.isChecked = on          // ta pati varnelė nustatymuose – kartu įjungia GNSS srautą
+            else {
+                spSky.edit().putBoolean("show_sats", on).commit()
+                if (::skyDome.isInitialized) skyDome.showSats = on
+                if (on) recordEnded = false
+                unregisterGnss(); if (activityStarted) startGnss()
+            }
             satMark()
             Toast.makeText(this, if (on) "Palydovai įjungti" else "Palydovai išjungti (tik vieta)", Toast.LENGTH_SHORT).show()
         }
@@ -11002,6 +11015,8 @@ class MainActivity : AppCompatActivity() {
      * Sukamas pirštu aukštyn–žemyn; bakstelėtas paveikslėlis atidaromas; dar kartą 🧭 – uždaroma.
      */
     private var calBtnRef: View? = null
+    private var cbShowSatsRef: CheckBox? = null
+    private var satBtnMark: (() -> Unit)? = null
     private fun toggleCalibDrum() {
         calDrum?.let { (it.parent as? ViewGroup)?.removeView(it); calDrum = null; return }
         val keys = listOf("north", "sun", "moon", "polaris", "orion", "log")

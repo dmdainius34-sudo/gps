@@ -1269,7 +1269,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setMarkers(on: Boolean) { renderer.showMarkers = on }
     fun setOrient(on: Boolean) { renderer.showOrient = on }
     /** Paskutinis kalibravimo pagal Saulę „šūvis“: nugarėlės kryptis minus Saulės centras (azimutu ir aukščiu, °). */
-    fun setSunShot(dAz: Double, dEl: Double) { renderer.sunShot = doubleArrayOf(dAz, dEl) }
+    fun setSunShot(dAz: Double, dEl: Double) { renderer.sunShot = doubleArrayOf(dAz, dEl); renderer.sunShotMs = System.currentTimeMillis() }
     fun setNavBits(on: Boolean) { renderer.showNavBits = on }
     fun setGrid(on: Boolean) { renderer.showGrid = on; calPrefs.edit().putBoolean("grid", on).apply() }
     fun setSunGrid(on: Boolean) { renderer.showSunGrid = on; calPrefs.edit().putBoolean("sun_grid", on).apply() }
@@ -1667,7 +1667,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
         renderer.showMarkers = calPrefs.getBoolean("markers", true)
         renderer.showOrient = calPrefs.getBoolean("orient", true)
-        if (calPrefs.contains("sun_shot_daz")) renderer.sunShot = doubleArrayOf(calPrefs.getFloat("sun_shot_daz", 0f).toDouble(), calPrefs.getFloat("sun_shot_del", 0f).toDouble())
+        // sena kalibravimo „šūvio“ žymė nebeatkuriama (likdavo kabėti danguje) – ištrinama
+        calPrefs.edit().remove("sun_shot_daz").remove("sun_shot_del").apply()
         renderer.showNavBits = calPrefs.getBoolean("nav_bits", true)
         renderer.showGrid = calPrefs.getBoolean("grid", true)
         renderer.showEarthGrid = calPrefs.getBoolean("earth_grid", false)
@@ -2112,6 +2113,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var fN = DoubleArray(3)
     private var fU = DoubleArray(3)
     @Volatile var sunShot: DoubleArray? = null
+    @Volatile var sunShotMs = 0L
 
     // Rašiklio spindulys: azimutas/aukštis (laipsniais); po rašiklio pakėlimo dar 5 s blėsta
     @Volatile var penAzEl: DoubleArray? = null
@@ -2174,6 +2176,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      */
     private fun drawSunShot() {
         val sh = sunShot ?: return
+        if (System.currentTimeMillis() - sunShotMs > 60_000L) { sunShot = null; return }   // rodoma tik minutę po kalibravimo
         if (simOffsetMs != 0L || focus != 0) return                  // laikui bėgant (▶) ir prie Saulės – nerodoma (šokinėdavo)
         val d = sunDir()
         val e = doubleArrayOf(fN[1] * fU[2] - fN[2] * fU[1], fN[2] * fU[0] - fN[0] * fU[2], fN[0] * fU[1] - fN[1] * fU[0])

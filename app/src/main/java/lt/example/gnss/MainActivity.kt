@@ -1261,6 +1261,10 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private val gBias = DoubleArray(3)
     private var stillSinceNs = 0L
     private var stillW = 1.0
+    /** Krypties žurnalui: giroskopo poslinkis °/s, ar ramu, šiaurės poslinkis. */
+    fun gyroBiasDps(): DoubleArray = DoubleArray(3) { Math.toDegrees(gBias[it]) }
+    fun gyroStill(): Boolean = stillSinceNs != 0L
+    fun northOffsetDeg(): Double = offsetDeg.toDouble()
     private val gUp = DoubleArray(3)         // gravitacijos kryptis įrenginio koordinatėmis (normuota)
     private var gValid = false
     private var spikeSinceNs = 0L            // magnetinio šuolio pradžia (ne stabiliame režime)
@@ -9353,12 +9357,18 @@ class MainActivity : AppCompatActivity() {
             try { northFromLogTick() } catch (_: Exception) {}
             // kryptis iš signalų stiprumo (prieš mokymąsi – kad dabartinis mėginys netaptų savo paties įrodymu)
             // nuolatinė šiaurės pataisa pagal signalus (kabinoje, kai patikima ir ilgai stabili; ne anksčiau kaip 30 min. po kalibravimo ranka)
+            var fixNow: Double? = null
             try { SignalHeading.update(list, hd) { d ->
                 if (::skyDome.isInitialized && skyDome.nudgeNorth(d, "automatinė pagal palydovus")) {
+                    fixNow = -d
                     HeadingTrust.set(true, "pataisyta pagal palydovų signalus")
                     Toast.makeText(this@MainActivity, "Šiaurė pataisyta pagal palydovus: %+.0f°".format(Locale.US, -d), Toast.LENGTH_LONG).show()
                 }
             } } catch (_: Exception) {}
+            // krypties žurnalas (heading_log.csv – į ZIP)
+            try { HeadingLog.write(cacheDir, System.currentTimeMillis(), hd, SignalHeading.last, devAxisZ?.first,
+                if (::skyDome.isInitialized) skyDome.gyroBiasDps() else null, ::skyDome.isInitialized && skyDome.gyroStill(),
+                if (::skyDome.isInitialized) skyDome.northOffsetDeg() else null, HeadingTrust.trusted, fixNow) } catch (_: Exception) {}
             CabinMap.learnStatus(if (HeadingTrust.trusted) hd else null, list)
             cabinView?.let { it.heading = hd; it.sats = list; it.invalidate() }
             lastSats = list
@@ -10347,6 +10357,8 @@ class MainActivity : AppCompatActivity() {
                         val rk = sp3TestCsvUri(Rtk.OUT_FILE)
                         LiveRtk.flushLog()
                         val rl = sp3TestCsvUri(LiveRtk.LOG)
+                        HeadingLog.flush()
+                        val hlog = sp3TestCsvUri(HeadingLog.FILE)
                         val orb = PositionSolver.lastSp3Copy?.let { sp3TestCsvUri(it) }
                         val brd = try {
                             Brdc.dir(this).listFiles()?.filter { it.name.endsWith(".rnx") }?.maxByOrNull { it.lastModified() }?.let { f ->
@@ -10357,7 +10369,7 @@ class MainActivity : AppCompatActivity() {
                             }
                         } catch (_: Exception) { null }
                         val d = solverDiagUri()
-                        listOf(u, s, s2, s3, s4, s5, s6, sd, rk, rl, orb, brd, d).forEach { it?.let { x -> extra.add(x) } }
+                        listOf(u, s, s2, s3, s4, s5, s6, sd, rk, rl, hlog, orb, brd, d).forEach { it?.let { x -> extra.add(x) } }
                       } catch (e: Throwable) {
                         report += "SKAIČIUOKLĖS KLAIDA (matavimai eksportuoti be jos rezultatų): ${e.javaClass.simpleName}: ${e.message}\n"
                         logError("Eksporto skaičiuoklė: ${e.javaClass.simpleName}: ${e.message}")

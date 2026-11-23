@@ -113,3 +113,35 @@ object HeadingTrust {
     fun text(): String = "Krypties patikimumas: " + (if (trusted) "patikima" else "NEPATIKIMA – kabinos žemėlapis nemokomas") +
         " (%s, nuo %s)".format(java.util.Locale.US, why, java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date(since)))
 }
+
+
+/**
+ * Krypties žurnalas heading_log.csv (kas sekundę, kol gaunami palydovai): vaizdo kryptis, kryptis iš signalų ir jų patikimumas,
+ * magnetometro kryptis, giroskopo likutinis poslinkis, ramybė, šiaurės poslinkis ir pritaikytos pataisos – šiaurės dreifo tyrimui.
+ */
+object HeadingLog {
+    const val FILE = "heading_log.csv"
+    private var w: java.io.BufferedWriter? = null
+    private var n = 0
+    @Synchronized fun write(dir: java.io.File, ms: Long, view: Double?, sig: SignalHeading.Est?, magAz: Double?, bias: DoubleArray?,
+                            still: Boolean, offset: Double?, trusted: Boolean, fix: Double?) {
+        try {
+            val f = java.io.File(dir, FILE)
+            if (w == null || !f.exists()) {
+                if (f.exists() && f.length() > 20_000_000L) f.delete()            // ne daugiau ~20 MB
+                val fresh = !f.exists()
+                w = java.io.BufferedWriter(java.io.FileWriter(f, true)).also {
+                    if (fresh) it.write("laikas_ms,vaizdo_kryptis_deg,signalu_kryptis_deg,koreliacija,atotrukis,palydovu,skirtumas_deg," +
+                        "magnetometro_kryptis_deg,gyro_bias_x_dps,gyro_bias_y_dps,gyro_bias_z_dps,ramybe,siaures_poslinkis_deg,patikima,pataisa_deg\n") }
+            }
+            fun d(v: Double?, p: Int = 1) = if (v == null || v.isNaN()) "" else String.format(Locale.US, "%.${p}f", v)
+            val sg = sig?.takeIf { ms - it.ms <= 10_000L }
+            val diff = if (view != null && sg != null) { var x = (view - sg.deg + 540.0) % 360.0; if (x < 0) x += 360.0; x - 180.0 } else null
+            w?.write(listOf(ms.toString(), d(view), d(sg?.deg), d(sg?.corr, 3), d(sg?.margin, 3), sg?.n?.toString() ?: "", d(diff),
+                d(magAz), d(bias?.getOrNull(0), 4), d(bias?.getOrNull(1), 4), d(bias?.getOrNull(2), 4),
+                if (still) "1" else "0", d(offset), if (trusted) "1" else "0", d(fix)).joinToString(",") + "\n")
+            if (++n % 30 == 0) w?.flush()
+        } catch (_: Exception) {}
+    }
+    @Synchronized fun flush() { try { w?.flush() } catch (_: Exception) {} }
+}

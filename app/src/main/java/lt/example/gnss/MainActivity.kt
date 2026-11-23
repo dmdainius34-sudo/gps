@@ -1238,7 +1238,8 @@ class MsaaConfigChooser : GLSurfaceView.EGLConfigChooser {
 class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener {
 
     private val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-    private val rotSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+    // be magnetometro: žaidimų orientacija (giroskopas + akselerometras); šiaurė – iš paskutinės išsaugotos krypties, kalibravimo ir palydovų
+    private val rotSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR) ?: sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
     private val gyroSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
     private val gravSensor: Sensor? = sm.getDefaultSensor(Sensor.TYPE_GRAVITY)
         ?: sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -1862,7 +1863,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
 
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
-            Sensor.TYPE_ROTATION_VECTOR -> { nRv++; onRotationVector(event) }
+            Sensor.TYPE_ROTATION_VECTOR, Sensor.TYPE_GAME_ROTATION_VECTOR -> { nRv++; onRotationVector(event) }
             Sensor.TYPE_GYROSCOPE -> { nGyro++; onGyro(event) }
             Sensor.TYPE_GRAVITY, Sensor.TYPE_ACCELEROMETER -> { nGrav++; onGravity(event) }
         }
@@ -1883,15 +1884,25 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             publish()
             return
         }
-        if (!fInit) {                                  // pradinė orientacija (vienintelis kartas, kai naudojamas magnetometras)
+        if (!fInit) {                                  // pradinė orientacija: polinkis iš jutiklių, kryptis – paskutinė išsaugota (magnetometras nenaudojamas)
             for (i in 0..8) fR[i] = rv[i].toDouble()
             fInit = true
-            HeadingTrust.set(false, "kryptis iš magnetometro (paleidus)")
-            headingEvent("pradinė kryptis iš magnetometro (giroskopo būsena neišliko)")
             publish()
+            val saved = calPrefs.getFloat("last_heading", Float.NaN)
+            val h0 = headingDeg()
+            if (!saved.isNaN() && h0 != null) {
+                var d = (h0 - saved + 540.0) % 360.0; if (d < 0) d += 360.0; d -= 180.0
+                offsetDeg += d.toFloat()
+                publish()
+                HeadingTrust.set(false, "paskutinė išsaugota kryptis (paleidus) – laukiama patvirtinimo pagal palydovus")
+                headingEvent("pradinė kryptis – paskutinė išsaugota %.0f° (be magnetometro)".format(java.util.Locale.US, saved))
+            } else {
+                HeadingTrust.set(false, "kryptis nežinoma (paleidus) – kalibruokite")
+                headingEvent("pradinė kryptis nežinoma (be magnetometro, išsaugotos nėra)")
+            }
             return
         }
-        if (stableNorth) return                        // stabili šiaurė: magnetometro nebeklausome
+        if (stableNorth || event.sensor.type == Sensor.TYPE_GAME_ROTATION_VECTOR) return   // magnetometro nebeklausome
         // Lėta yaw korekcija; trumpi magnetiniai šuoliai (>20°, trumpiau nei 2 s) ignoruojami
         // Δ = RV · Rᵀ – pasaulio posūkis nuo filtro iki rotation vector; imame jo dalį apie vertikalę
         val d = DoubleArray(9)
@@ -1944,6 +1955,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         }
         if (++gyroSteps % 50 == 0) orthonormalize()
         publish()
+        // kas ~2 s išsaugoma patikima kryptis – kitą kartą paleidus nuo jos pradedama (vietoj magnetometro)
+        if (gyroSteps % 400 == 0 && HeadingTrust.trusted) headingDeg()?.let { calPrefs.edit().putFloat("last_heading", it.toFloat()).apply() }
     }
 
     private fun onGravity(event: SensorEvent) {

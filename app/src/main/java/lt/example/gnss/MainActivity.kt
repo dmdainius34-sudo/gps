@@ -9997,6 +9997,18 @@ class MainActivity : AppCompatActivity() {
         }
         val calBtn = small("\uD83E\uDDED", 15f).apply { alpha = 0.85f; setOnClickListener { toggleCalibDrum() } }   // 🧭
         calBtnRef = calBtn
+        // 🧭 spalva – kabinos šiaurės (pagal palydovų signalus) būklė: mėlyna – dar neišmoko, geltona – išmoko (patikima)
+        run {
+            val bg = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0x662563EB) }
+            calBtn.background = bg
+            val tk = object : Runnable { override fun run() {
+                val e = SignalHeading.last
+                val learned = e != null && System.currentTimeMillis() - e.ms < 30_000L && e.corr >= 0.6 && e.margin >= 0.15
+                bg.setColor(if (learned) 0x99FACC15.toInt() else 0x662563EB)
+                calBtn.postDelayed(this, 2_000L)
+            } }
+            calBtn.post(tk)
+        }
         val setBtn = small("\u2699", 17f).apply { alpha = 0.85f; setOnClickListener { openSettings() } }               // ⚙ nustatymai
         // 🚀 skrydis pro Šiaurinę žvaigždę iš šios vietos (savo platumos kampu) iki galaktikos „blyno“; dar kartą – grįžti
         val flightBtn = small("\uD83D\uDE80", 14f).apply { alpha = 0.6f

@@ -1388,6 +1388,10 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         headingEvent("kalibravimas pagal „%s“ %+.1f°".format(java.util.Locale.US, src, -d))
         offsetDeg += d.toFloat()
         HeadingTrust.set(true, "kalibruota pagal orientyrą")
+        // kalibravimas – nauja tiesa: kabinos žemėlapis pasukamas kartu (išmokta neprarandama, signalai šiaurės „neatsuka“ atgal),
+        // o paleidimo pataisa pagal palydovus atšaukiama
+        try { CabinMap.cabin.rotateAz(d); CabinMap.save(true) } catch (_: Exception) {}
+        handler.removeCallbacks(reanchor)
         calPrefs.edit().putFloat("offset", offsetDeg).putFloat("decl0", declDeg).putBoolean("north_saved", true)
             .putFloat("sun_cal_deg", d.toFloat()).putLong("sun_cal_ms", now).putFloat("sun_cal_az", az.toFloat()).putString("cal_src", src).apply()
         manual = false
@@ -10015,11 +10019,16 @@ class MainActivity : AppCompatActivity() {
         calBtn.setOnLongClickListener {
             try { (getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.let { v ->
                 if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 60, 80, 60), -1)) else @Suppress("DEPRECATION") v.vibrate(150) } } catch (_: Exception) {}
-            CabinMap.cabin.clear(); CabinMap.save(true); markCabinClean()
-            CabinMap.learn = true
-            getSharedPreferences("cabin", Context.MODE_PRIVATE).edit().putBoolean("learn", true).apply()
-            cabinView?.invalidate()
-            Toast.makeText(this, "Kabinos žemėlapis išvalytas – mokomasi iš naujo (šiaurė turi būti teisinga)", Toast.LENGTH_LONG).show()
+            // patvirtinimas – kad netyčia (kalibruojant) neištrintų išmokto
+            android.app.AlertDialog.Builder(this).setTitle("Ištrinti kabinos žemėlapį?")
+                .setMessage("Išmoktas kabinos žemėlapis bus ištrintas ir mokomasi iš naujo. Daryti tik perkėlus planšetę kitur kabinoje ar kitame krane.")
+                .setPositiveButton("Ištrinti") { _, _ ->
+                    CabinMap.cabin.clear(); CabinMap.save(true); markCabinClean()
+                    CabinMap.learn = true
+                    getSharedPreferences("cabin", Context.MODE_PRIVATE).edit().putBoolean("learn", true).apply()
+                    cabinView?.invalidate()
+                    Toast.makeText(this, "Kabinos žemėlapis išvalytas – mokomasi iš naujo", Toast.LENGTH_LONG).show() }
+                .setNegativeButton("Ne", null).show()
             true
         }
         // 🧭 spalva – kabinos šiaurės (pagal palydovų signalus) būklė: mėlyna – dar neišmoko, geltona – išmoko (patikima)
@@ -11274,7 +11283,7 @@ class MainActivity : AppCompatActivity() {
         val warn = if (kotlin.math.abs(r.devEl - r.sunEl) > SunCal.WARN_DEL)
             "\nĮSPĖJIMAS: nugarėlės aukštis %.0f°, orientyro %.0f° – skirtumas > 10°, tikriausiai nenukreipta".format(Locale.US, r.devEl, r.sunEl) else ""
         Toast.makeText(this, "${t.name}: az %.1f°, aukštis %.1f°; kompaso pataisa %+.1f°; laukiamas krypties tikslumas %s".format(Locale.US, r.sunAz, r.sunEl, r.corr, SunCal.accText(r.sunEl, camVec != null)) + warn, Toast.LENGTH_LONG).show()
-        if (kotlin.math.abs(r.corr) > 15.0 && CabinMap.cabin.samples > 0)
+        if (false && kotlin.math.abs(r.corr) > 15.0 && CabinMap.cabin.samples > 0)   // nebereikia – žemėlapis pasukamas kartu su kalibravimu
             android.app.AlertDialog.Builder(this).setTitle("Išvalyti kabinos žemėlapį?")
                 .setMessage("Prieš kalibravimą kryptis buvo klaidinga %+.0f°. Kabinos žemėlapis (kryptys planšetės atžvilgiu) galėjo būti mokytas su klaidinga kryptimi – tada kryptis iš signalų stiprumo klaidina. Išvalius jis išmoks iš naujo su teisinga kryptimi.".format(Locale.US, r.corr))
                 .setPositiveButton("Išvalyti") { _, _ -> CabinMap.cabin.clear(); CabinMap.save(true); markCabinClean(); cabinView?.invalidate()

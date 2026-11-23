@@ -27,6 +27,20 @@ class SkyMap(val file: String) {
     private fun ie(el: Double) = (el / CabinMap.STEP).toInt().coerceIn(0, CabinMap.EL - 1)
     private fun idx(az: Double, el: Double): Int? = if (el < 0 || el > 90) null else ie(el) * CabinMap.AZ + ia(az)
 
+    /**
+     * Pasukti žemėlapį azimutu (°): po šiaurės kalibravimo kabinos žemėlapis (kryptys prietaiso atžvilgiu) buvo mokytas
+     * su ankstesne, klaidinga kryptimi – jis perstumiamas tiek, kiek pataisyta, užuot ištrynus (išmokta nedingsta).
+     */
+    @Synchronized fun rotateAz(deg: Double) {
+        val k = Math.round(deg / CabinMap.STEP).toInt()
+        if (k % CabinMap.AZ == 0) return
+        val old = cells.copyOf()
+        for (e in 0 until CabinMap.EL) for (a in 0 until CabinMap.AZ) {
+            val na = ((a + k) % CabinMap.AZ + CabinMap.AZ) % CabinMap.AZ
+            cells[e * CabinMap.AZ + na] = old[e * CabinMap.AZ + a]
+        }
+    }
+
     @Synchronized fun load(d: File) {
         val f = File(d, file); if (!f.exists()) return
         try {

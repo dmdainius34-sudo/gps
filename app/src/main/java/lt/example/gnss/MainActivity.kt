@@ -11374,14 +11374,8 @@ class MainActivity : AppCompatActivity() {
         }.toTypedArray()
         val checked = BooleanArray(items.size) { !list[it].good }      // abejotini pažymėti iš anksto
         calCache = 0L to null
-        val near = headingVsLog()
-        val goodNear = SunCal.nearestGood(this, obsLatNow, obsLonNow)
-        val flat = devAxisZ?.let { kotlin.math.abs(it.second) > 60.0 } ?: true
         val msg = "Failas: ${SunCal.FILE} (programos vidinė atmintis; kopija – kiekviename ZIP). ✓ – planšetės kampas sutapo su Saulės (≤ 10°). " +
-            "Pažymėti įrašai bus ištrinti." + (near?.let { "\nDabar: vaizdo kryptis nuo žurnalo + magnetometro skiriasi %+.1f°".format(Locale.US, it.first) }
-                ?: if (goodNear != null && flat) "\nGeras įrašas yra, bet planšetė guli – palyginimui laikykite ją stačiau (nugarėle į horizontą)"
-                else if (goodNear != null) "\nGeras įrašas yra, bet magnetometro duomenų dar nėra"
-                else "\nArti (≤ 100 m) gero įrašo nėra")
+            "Pažymėti įrašai bus ištrinti."                    // magnetometro palyginimas pašalintas (kabinoje klysta)
         val b = android.app.AlertDialog.Builder(this).setTitle("Saulės kalibravimų žurnalas (${items.size})")
         if (items.isEmpty()) b.setMessage("Įrašų dar nėra – paspauskite „Kalibruoti pagal Saulę“.")
         else b.setMultiChoiceItems(items, checked) { _, i, on -> checked[i] = on }
@@ -11389,12 +11383,6 @@ class MainActivity : AppCompatActivity() {
             val del = list.indices.filter { checked[it] }.map { list[it].line }.toSet()
             if (del.isNotEmpty()) { SunCal.delete(this, del); calCache = 0L to null
                 Toast.makeText(this, "Ištrinta įrašų: ${del.size}", Toast.LENGTH_SHORT).show() }
-        }
-        b.setNeutralButton("Atkurti šiaurę") { _, _ ->
-            val h = headingVsLog(allowWarn = true)
-            if (h == null) Toast.makeText(this, "Atkurti negalima: arti nėra gero kalibravimo įrašo arba planšetė guli (laikykite stačiau)", Toast.LENGTH_LONG).show()
-            else { skyDome.nudgeNorth(h.first, "atkūrimas iš žurnalo (mygtukas)")
-                Toast.makeText(this, "Šiaurė atkurta iš žurnalo: pataisa %+.1f°".format(Locale.US, h.first), Toast.LENGTH_LONG).show() }
         }
         b.setNegativeButton("Uždaryti", null)
         // antraštė su paaiškinimu (kartu su sąrašu žinutės rodyti negalima)

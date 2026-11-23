@@ -1778,7 +1778,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         reanchorTries = 0; reanchorWaits = 0; reanchorD.clear(); reanchorSeen = 0; reanchorBest = -1.0; handler.removeCallbacks(reanchor); handler.postDelayed(reanchor, 5_000L)
         if (!listening) {
             rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-            gyroSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+            gyroSensor?.let { sm.registerListener(this, it, 5_000) }   // 200 Hz: vaizdas sklandus 60–120 kadrų/s ekrane (buvo ~50 Hz – trūkčiojo)
             gravSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
             listening = true
         }
@@ -1844,7 +1844,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         if (listening) return
         fInit = false; lastGyroNs = 0L; gValid = false
         rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-        gyroSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        gyroSensor?.let { sm.registerListener(this, it, 5_000) }   // 200 Hz: vaizdas sklandus 60–120 kadrų/s ekrane (buvo ~50 Hz – trūkčiojo)
         gravSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         listening = true
     }

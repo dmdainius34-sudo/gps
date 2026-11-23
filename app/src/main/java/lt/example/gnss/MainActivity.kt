@@ -9673,7 +9673,8 @@ class MainActivity : AppCompatActivity() {
             .putBoolean("earth_grid", true).putBoolean("grid", false).putBoolean("sun_grid", true).putBoolean("sun_sdo", true)
             .putBoolean("sun_lasco", true).putBoolean("uv_layer", false).putBoolean("space_live", true).putBoolean("nav_bits", false).putBoolean("show_sats", false)
             .putBoolean("free_view", false).putBoolean("follow_device", false).apply()
-        getSharedPreferences("cabin", Context.MODE_PRIVATE).edit().putBoolean("learn", false).putBoolean("use", false).apply()
+        // kabinos žemėlapio mokymasis paliekamas toks, kokį paliko naudotojas (ilgai palaikius 🧭 – išvaloma ir įjungiama)
+        getSharedPreferences("cabin", Context.MODE_PRIVATE).edit().putBoolean("use", false).apply()
         FixPoints.init(filesDir)
         // HDR: langas prašo HDR ryškumo atsargos (ekranas leidžia taškams šviesti ryškiau už įprastą baltą)
         if (Build.VERSION.SDK_INT >= 26 && getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("hdr", true))
@@ -9997,6 +9998,17 @@ class MainActivity : AppCompatActivity() {
         }
         val calBtn = small("\uD83E\uDDED", 15f).apply { alpha = 0.85f; setOnClickListener { toggleCalibDrum() } }   // 🧭
         calBtnRef = calBtn
+        // ilgai palaikius 🧭 – suvibruoja, senas kabinos žemėlapis ištrinamas ir mokymasis įjungiamas iš naujo
+        calBtn.setOnLongClickListener {
+            try { (getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.let { v ->
+                if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 60, 80, 60), -1)) else @Suppress("DEPRECATION") v.vibrate(150) } } catch (_: Exception) {}
+            CabinMap.cabin.clear(); CabinMap.save(true); markCabinClean()
+            CabinMap.learn = true
+            getSharedPreferences("cabin", Context.MODE_PRIVATE).edit().putBoolean("learn", true).apply()
+            cabinView?.invalidate()
+            Toast.makeText(this, "Kabinos žemėlapis išvalytas – mokomasi iš naujo (šiaurė turi būti teisinga)", Toast.LENGTH_LONG).show()
+            true
+        }
         // 🧭 spalva – kabinos šiaurės (pagal palydovų signalus) būklė: mėlyna – dar neišmoko, geltona – išmoko (patikima)
         run {
             val bg = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0x662563EB) }

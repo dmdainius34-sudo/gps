@@ -10044,6 +10044,24 @@ class MainActivity : AppCompatActivity() {
         }
         val calBtn = small("\uD83E\uDDED", 15f).apply { alpha = 0.85f; setOnClickListener { toggleCalibDrum() } }   // 🧭
         calBtnRef = calBtn
+        // paleidus: išsaugota kryptis patvirtinama magnetometru + Saulės žurnalu (magnetometro klaida įrašyta kalibruojant).
+        // Tik jei abu nepriklausomi šaltiniai sutampa (≤ 10°) – kryptis laikoma patikima ir kabinos žemėlapis mokosi toliau.
+        run {
+            var tries = 0
+            val chk = object : Runnable { override fun run() {
+                if (!HeadingTrust.trusted && ::skyDome.isInitialized) {
+                    headingVsLog()?.let { (d, _) ->
+                        if (kotlin.math.abs(d) <= 10.0) {
+                            HeadingTrust.set(true, "išsaugota kryptis sutampa su magnetometru + Saulės žurnalu (%+.0f°)".format(Locale.US, d))
+                            skyDome.headingEvent("patvirtinta: išsaugota kryptis ir magnetometras + Saulės žurnalas sutampa %+.1f°".format(Locale.US, d))
+                            Toast.makeText(this@MainActivity, "Šiaurė patvirtinta (magnetometras + Saulės žurnalas sutampa %+.0f°) – žemėlapis mokosi".format(Locale.US, d), Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+                if (!HeadingTrust.trusted && ++tries < 60) calBtn.postDelayed(this, 10_000L)
+            } }
+            calBtn.postDelayed(chk, 15_000L)
+        }
         // 🛰 – palydovai: paspaudus įjungiama / išjungiama („Rodyti palydovus“ ir GNSS srautas); ilgai palaikius – efemeridžių (navigacinių žinučių) srautas
         val satBtn = small("\uD83D\uDEF0", 14f)
         val spSky = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)

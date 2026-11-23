@@ -10036,6 +10036,32 @@ class MainActivity : AppCompatActivity() {
         }
         val calBtn = small("\uD83E\uDDED", 15f).apply { alpha = 0.85f; setOnClickListener { toggleCalibDrum() } }   // 🧭
         calBtnRef = calBtn
+        // 🛰 – palydovai: paspaudus įjungiama / išjungiama („Rodyti palydovus“ ir GNSS srautas); ilgai palaikius – efemeridžių (navigacinių žinučių) srautas
+        val satBtn = small("\uD83D\uDEF0", 14f)
+        val spSky = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
+        fun satMark() { satBtn.alpha = if (spSky.getBoolean("show_sats", false)) 1f else 0.4f
+            (satBtn.background as? android.graphics.drawable.GradientDrawable)?.setColor(if (spSky.getBoolean("nav_bits", false)) 0x8822C55E.toInt() else 0x44000000) }
+        satMark()
+        satBtn.setOnClickListener {
+            keyHaptic(satBtn)
+            val on = !spSky.getBoolean("show_sats", false)
+            spSky.edit().putBoolean("show_sats", on).commit()
+            if (::skyDome.isInitialized) skyDome.showSats = on
+            if (on) recordEnded = false
+            unregisterGnss(); if (activityStarted) startGnss()
+            satMark()
+            Toast.makeText(this, if (on) "Palydovai įjungti" else "Palydovai išjungti (tik vieta)", Toast.LENGTH_SHORT).show()
+        }
+        satBtn.setOnLongClickListener {
+            try { (getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.let { v ->
+                if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createOneShot(40, 180)) else @Suppress("DEPRECATION") v.vibrate(40) } } catch (_: Exception) {}
+            val on = !spSky.getBoolean("nav_bits", false)
+            spSky.edit().putBoolean("nav_bits", on).apply()
+            if (::skyDome.isInitialized) skyDome.setNavBits(on)
+            satMark()
+            Toast.makeText(this, if (on) "Efemeridžių (navigacinių žinučių) srautas rodomas" else "Efemeridžių srautas paslėptas", Toast.LENGTH_SHORT).show()
+            true
+        }
         // ilgai palaikius 🧭 – suvibruoja, senas kabinos žemėlapis ištrinamas ir mokymasis įjungiamas iš naujo
         calBtn.setOnLongClickListener {
             try { (getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.let { v ->
@@ -10084,7 +10110,7 @@ class MainActivity : AppCompatActivity() {
         val tools = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val gap = (6 * dp).toInt()
-            for (b in listOf(homeBtn, levelBtn, calBtn, placeBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
+            for (b in listOf(homeBtn, levelBtn, satBtn, calBtn, placeBtn, setBtn)) addView(b, LinearLayout.LayoutParams(bSize, bSize).apply { bottomMargin = gap })
         }
         // barometras: apačioje kairėje – paspaudus nulis čia, toliau rodoma, kiek pakilote ar nusileidote
         if (baro.hasSensor) {

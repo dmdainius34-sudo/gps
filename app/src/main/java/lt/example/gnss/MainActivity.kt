@@ -10095,10 +10095,17 @@ class MainActivity : AppCompatActivity() {
         run {
             val bg = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0x662563EB) }
             calBtn.background = bg
+            var warned = false; val t0 = System.currentTimeMillis()
             val tk = object : Runnable { override fun run() {
                 val e = SignalHeading.last
                 val learned = e != null && System.currentTimeMillis() - e.ms < 30_000L && e.corr >= 0.6 && e.margin >= 0.15
-                bg.setColor(if (learned) 0x99FACC15.toInt() else 0x662563EB)
+                // pilka – šiaurė nepatvirtinta (po paleidimo, kol nekalibruota ir palydovai nepatvirtino) – žemėlapis tada nesimoko
+                bg.setColor(if (!HeadingTrust.trusted) 0x669CA3AF.toInt() else if (learned) 0x99FACC15.toInt() else 0x662563EB)
+                if (!HeadingTrust.trusted && !warned && System.currentTimeMillis() - t0 > 180_000L && CabinMap.learn) {
+                    warned = true
+                    Toast.makeText(this@MainActivity, "Šiaurė nepatvirtinta – kabinos žemėlapis nesimoko. Sukalibruokite šiaurę (🧭), tada mokymasis tęsis.", Toast.LENGTH_LONG).show()
+                }
+                if (HeadingTrust.trusted) warned = false
                 calBtn.postDelayed(this, 2_000L)
             } }
             calBtn.post(tk)

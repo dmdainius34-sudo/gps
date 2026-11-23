@@ -1261,6 +1261,10 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private val gBias = DoubleArray(3)
     private var stillSinceNs = 0L
     private var stillW = 1.0
+    private val gSlow = DoubleArray(2)
+    var parallaxOn: Boolean
+        get() = renderer.parallaxOn
+        set(v) { renderer.parallaxOn = v; calPrefs.edit().putBoolean("parallax", v).apply() }
     /** Krypties žurnalui: giroskopo poslinkis °/s, ar ramu, šiaurės poslinkis. */
     fun gyroBiasDps(): DoubleArray = DoubleArray(3) { Math.toDegrees(gBias[it]) }
     fun gyroStill(): Boolean = stillSinceNs != 0L
@@ -1686,6 +1690,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         renderer.showEarthGrid = calPrefs.getBoolean("earth_grid", false)
         renderer.showSats = calPrefs.getBoolean("show_sats", false)
         renderer.earthFlat = calPrefs.getBoolean("earth_flat", false)
+        renderer.parallaxOn = calPrefs.getBoolean("parallax", true)
         renderer.showSunGrid = calPrefs.getBoolean("sun_grid", true)
         renderer.showLasco = calPrefs.getBoolean("sun_lasco", true)
         renderer.obstacleMode = calPrefs.getInt("obst_mode", 1)
@@ -1947,6 +1952,9 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             gUp[0] = x / n; gUp[1] = y / n; gUp[2] = z / n
         }
         gValid = true
+        // gylio efektas: greitas pakreipimas – skirtumas nuo lėto vidurkio (~1 s), atiduodamas vaizdui (paralaksas)
+        for (i in 0..1) gSlow[i] += 0.02 * (gUp[i] - gSlow[i])
+        renderer.parX = (gUp[0] - gSlow[0]).toFloat(); renderer.parY = (gUp[1] - gSlow[1]).toFloat()
         if (!fInit || gyroSensor == null) return
         // Pitch/roll korekcija: R·g turi rodyti į pasaulio viršų (0,0,1); posūkis tik apie horizontalią ašį
         val ux = fR[0] * gUp[0] + fR[1] * gUp[1] + fR[2] * gUp[2]
@@ -2610,6 +2618,19 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // režimas „su orbita“ (▶): kamera pririšta prie Saulės ir nesisuka – Žemė sukasi ir keliauja orbita (link CME)
         if (helioMode()) helioCamera() else helioS0 = null
         // bakstelėjimui (palydovai, Saulė, Mėnulis) – ta pati matrica, kuria piešiama (po stebėtojo kameros; anksčiau – prieš ją, todėl pirštas „nepataikydavo“)
+        // Gylio efektas (paralaksas): pakreipus planšetę kamera truputį pasislenka į šoną – artimi kūnai (Žemė, palydovai, Mėnulis)
+        // pasislenka daugiau nei tolimos žvaigždės, todėl gaublys atrodo „iškilęs“ virš ekrano
+        if (parallaxOn && flight == null && (parX != 0f || parY != 0f)) {
+            val ref = if (focus != 0) focusZoom else sqrt(camPos[0] * camPos[0] + camPos[1] * camPos[1] + camPos[2] * camPos[2]).coerceAtLeast(zoom - EARTH_R)
+            val k = 0.35f * ref
+            val inv = FloatArray(16)
+            if (Matrix.invertM(inv, 0, proj, 0)) {
+                val t = FloatArray(16); Matrix.setIdentityM(t, 0); Matrix.translateM(t, 0, -parX * k, -parY * k, 0f)
+                val a = FloatArray(16); Matrix.multiplyMM(a, 0, inv, 0, mvpI, 0)
+                val b = FloatArray(16); Matrix.multiplyMM(b, 0, t, 0, a, 0)
+                Matrix.multiplyMM(mvpI, 0, proj, 0, b, 0)
+            }
+        }
         System.arraycopy(mvpI, 0, lastMvpI, 0, 16)
         // Stebėtojo lokali sistema (dangaus kupolas, horizontas): ENU -> I + vieta
         java.util.Arrays.fill(lMat, 0f)
@@ -4603,6 +4624,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile var simRun = false
     /** Ilgai palaikius ▶: false – su orbita (pradinis), true – be orbitos. */
     @Volatile var simHideOrbit = false
+    @Volatile var parallaxOn = true
+    @Volatile var parX = 0f
+    @Volatile var parY = 0f
     private var helioS0: DoubleArray? = null
     private fun helioMode() = simOffsetMs != 0L && !simHideOrbit && observerView()
     /** Režimas „su orbita“: stebėtojo kamera (planšetė, horizonto užraktas – kaip įprastai) perkeliama kartu su Saule. */
@@ -9777,6 +9801,12 @@ class MainActivity : AppCompatActivity() {
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("earth_grid", false)
             setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.earthGrid = on
                 else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("earth_grid", on).apply() }
+        }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(CheckBox(this).apply {
+            text = "Gylio efektas pakreipiant planšetę (paralaksas)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("parallax", true)
+            setOnCheckedChangeListener { _, on -> if (::skyDome.isInitialized) skyDome.parallaxOn = on
+                else getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("parallax", on).apply() }
         }, LinearLayout.LayoutParams(mw, ww))
         left.addView(CheckBox(this).apply {
             text = "Žemės suplojimas ×30 (ašigaliai suploti, pusiaujas išpūstas)"

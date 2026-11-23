@@ -2248,12 +2248,33 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val t2 = DoubleArray(3) { -sin(el) * (cos(az) * fN[it] + sin(az) * e[it]) + cos(el) * fU[it] }
         val r = SUN_DIST * 0.8; val k = 0.14
         fun p(dir: DoubleArray, a: Double = 0.0, b: Double = 0.0) = FloatArray(3) { (skyO[it] + dir[it] * r + t1[it] * a + t2[it] * b).toFloat() }
-        val c = p(v); val sc = p(d)
-        val seg = floatArrayOf(*p(v, -k, 0.0), *p(v, k, 0.0), *p(v, 0.0, -k), *p(v, 0.0, k), *c, *sc)
+        // „karščio“ efektas: linijos virpa kaip oras virš įkaitusio paviršiaus (plazmos srautai), o per minutę išgaruoja
+        val age = (System.currentTimeMillis() - sunShotMs) / 60_000f          // 0..1
+        val tt = (System.nanoTime() / 1e9)
+        val amp = k * (0.06 + 0.25 * age)                                      // kuo seniau – tuo labiau linksta
+        val seg = ArrayList<Float>()
+        fun wavy(a0: Double, b0: Double, a1: Double, b1: Double, dir0: DoubleArray?, phase: Double) {
+            val n = 24
+            var prev: FloatArray? = null
+            for (i in 0..n) {
+                val u = i.toDouble() / n
+                val a = a0 + (a1 - a0) * u; val b = b0 + (b1 - b0) * u
+                // skersinis poslinkis – keli banguojantys sluoksniai (kaip įkaitęs oras)
+                val w = amp * (sin(tt * 3.1 + u * 9.0 + phase) * 0.6 + sin(tt * 5.7 - u * 17.0 + phase * 1.7) * 0.4) * sin(Math.PI * u).coerceAtLeast(0.25)
+                val q = if (dir0 == null) p(v, a - (b1 - b0).let { if (it == 0.0) 0.0 else 1.0 } * 0.0 + (if (a1 == a0) w else 0.0), b + (if (b1 == b0) w else 0.0))
+                        else FloatArray(3) { (p(v)[it] + (p(dir0)[it] - p(v)[it]) * u.toFloat()) + (t2[it] * w).toFloat() }
+                prev?.let { pv -> pv.forEach { seg.add(it) }; q.forEach { seg.add(it) } }
+                prev = q
+            }
+        }
+        wavy(-k, 0.0, k, 0.0, null, 0.0)
+        wavy(0.0, -k, 0.0, k, null, 2.0)
+        wavy(0.0, 0.0, 0.0, 0.0, d, 4.0)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)   // Saulė piešiama pridedamai – raudona ant geltonos išnyktų
         GLES20.glLineWidth(4f * density)
-        drawLines(seg, 1f, 0.1f, 0.1f, 1f)
+        // spalva: raudona → oranžinė, permatomumas mažėja (išgaruoja)
+        drawLines(seg.toFloatArray(), 1f, 0.1f + 0.5f * age, 0.1f, (1f - age * age).coerceAtLeast(0f))
         GLES20.glDepthMask(true)
         GLES20.glLineWidth(1f)
     }

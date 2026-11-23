@@ -1257,6 +1257,10 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private var fInit = false
     private var lastGyroNs = 0L
     private var gyroSteps = 0
+    /** Giroskopo likutinis poslinkis (rad/s), įvertintas ramybėje. */
+    private val gBias = DoubleArray(3)
+    private var stillSinceNs = 0L
+    private var stillW = 1.0
     private val gUp = DoubleArray(3)         // gravitacijos kryptis įrenginio koordinatėmis (normuota)
     private var gValid = false
     private var spikeSinceNs = 0L            // magnetinio šuolio pradžia (ne stabiliame režime)
@@ -1760,7 +1764,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         val alive = fInit && lastGyroNs != 0L && android.os.SystemClock.elapsedRealtimeNanos() - lastGyroNs < 3_000_000_000L
         if (!alive) { fInit = false; lastGyroNs = 0L; gValid = false }
         // kiekvieną paleidimą – vienas bandymas pataisyti šiaurę pagal palydovų signalus (per pirmas 2 min.)
-        reanchorTries = 0; reanchorD.clear(); reanchorSeen = 0; reanchorBest = -1.0; handler.removeCallbacks(reanchor); handler.postDelayed(reanchor, 5_000L)
+        reanchorTries = 0; reanchorWaits = 0; reanchorD.clear(); reanchorSeen = 0; reanchorBest = -1.0; handler.removeCallbacks(reanchor); handler.postDelayed(reanchor, 5_000L)
         if (!listening) {
             rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
             gyroSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
@@ -1774,6 +1778,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     /** Po pradinės krypties iš magnetometro: pataisa pagal patikimą kryptį iš signalų (jei ji šviežia). */
     private val LANDMARK_HOLD_MS = 30 * 60_000L
     private var reanchorTries = 0
+    private var reanchorWaits = 0
     private val reanchorD = ArrayList<Double>()
     private var reanchorSeen = 0; private var reanchorBest = -1.0
     /**
@@ -1801,7 +1806,10 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
             }
             reanchorD.removeAt(0)                                   // nesutampa – laukiama stabilesnių
         }
-        if (++reanchorTries < 24) { handler.postDelayed(this, 5_000L); return }
+        // bandymai skaičiuojami tik kai yra šviežias įvertis (GNSS po paleidimo pasileidžia vėliau); iš viso ne ilgiau ~10 min.
+        val fresh = e != null && System.currentTimeMillis() - e.ms <= 10_000L
+        reanchorWaits++
+        if ((if (fresh) ++reanchorTries else reanchorTries) < 24 && reanchorWaits < 120) { handler.postDelayed(this, 5_000L); return }
         // priežastis: kryptis randama lyginant signalus su KABINOS žemėlapiu (išmoktu krano kabinoje), todėl kitur ji nesutampa
         val why = when {
             reanchorSeen == 0 -> "per mažai palydovų arba kabinos žemėlapis tuščias"
@@ -1891,7 +1899,21 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         if (!fInit || prev == 0L) return
         val dt = (ts - prev) / 1e9
         if (dt <= 0.0 || dt > 0.2) return
-        val wx = event.values[0].toDouble(); val wy = event.values[1].toDouble(); val wz = event.values[2].toDouble()
+        val rx = event.values[0].toDouble(); val ry = event.values[1].toDouble(); val rz = event.values[2].toDouble()
+        // Giroskopo likutinio poslinkio (bias) įvertis ramybėje: kai prietaisas nejuda (|ω| < 0,6°/s ilgiau nei 3 s),
+        // bet koks matuojamas sukimasis – poslinkis (ir Žemės sukimasis), todėl jis lėtai įsimenamas ir atimamas visada.
+        // Kitaip šiaurė per valandą „nuplaukia“ dešimtis laipsnių (planšetės ZIP: ~25° per 40 min.).
+        val raw = kotlin.math.sqrt(rx * rx + ry * ry + rz * rz)
+        stillW += (dt / 0.3).coerceAtMost(1.0) * (raw - stillW)       // išlygintas |ω| (~0,3 s) – pavienis triukšmo šuolis ramybės nenutraukia
+        if (stillW < 0.008 && raw < 0.03) {
+            if (stillSinceNs == 0L) stillSinceNs = ts
+            if (ts - stillSinceNs > 3_000_000_000L) {
+                val a = (dt / 20.0).coerceAtMost(0.05)              // laiko konstanta ~20 s
+                gBias[0] += a * (rx - gBias[0]); gBias[1] += a * (ry - gBias[1]); gBias[2] += a * (rz - gBias[2])
+                for (i in 0..2) gBias[i] = gBias[i].coerceIn(-0.005, 0.005)   // ne daugiau ~0,3°/s
+            }
+        } else stillSinceNs = 0L
+        val wx = rx - gBias[0]; val wy = ry - gBias[1]; val wz = rz - gBias[2]
         val w = kotlin.math.sqrt(wx * wx + wy * wy + wz * wz)
         if (w * dt > 1e-9) {
             // R ← R · exp([ω]·dt) (posūkis įrenginio koordinatėmis)

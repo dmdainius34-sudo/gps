@@ -9946,6 +9946,7 @@ class MainActivity : AppCompatActivity() {
             val baroRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 addView(baroBtn, LinearLayout.LayoutParams(bSize, bSize)); addView(baroLbl) }
             var zeroSet = false
+            KnownHeight.baroRel = { if (zeroSet) baro.altitude() else null }
             val tick = object : Runnable { override fun run() {
                 if (zeroSet) baro.altitude()?.let { h -> val nz = baro.noiseM()
                     baroLbl.text = (if (h > 0.05) "\u25B2 " else if (h < -0.05) "\u25BC " else "") + "%+.2f m".format(Locale.US, h) +

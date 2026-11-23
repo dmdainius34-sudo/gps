@@ -198,7 +198,14 @@ object KnownHeight {
     /** Įvestas aukštis (be barometro). */
     fun enteredMsl(): Double? = msl ?: agl?.let { a -> groundMsl()?.let { it + a } }
     /** Prietaiso aukštis: telefone su barometru – įvestas + barometro pokytis (BaroFuse), kitaip – įvestas. */
-    fun deviceMsl(): Double? { val e = enteredMsl(); BaroFuse.anchor(e); return if (e == null) null else BaroFuse.msl() ?: e }
+    /** Barometro aukščio pokytis nuo ⏲ nulio (m) arba null – nustato MainActivity. */
+    @Volatile var baroRel: (() -> Double?)? = null
+    fun deviceMsl(): Double? {
+        val e = enteredMsl()
+        // nieko neįvesta, bet žemė išmatuota (⏚) ir barometro nulis nustatytas ant žemės (⏲): prietaisas = žemė + barometro pokytis
+        if (e == null) { val r = baroRel?.invoke() ?: return null; val g = measuredGround() ?: return null; return g + r }
+        BaroFuse.anchor(e); return BaroFuse.msl() ?: e
+    }
 
     /**
      * σ: įvestas aukštis virš jūros – 2 m (dažnai jis pats išmatuotas ±3–5 m; 0,3 m buvo per griežta ir kabinoje „išmušdavo“ RTK filtrą);

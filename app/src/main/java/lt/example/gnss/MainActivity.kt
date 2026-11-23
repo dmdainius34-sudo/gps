@@ -1397,18 +1397,20 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         try { GapLog.event(context, "KRYPTIS " + what + " (vaizdo kryptis " + (headingDeg()?.let { "%.0f°".format(java.util.Locale.US, it) } ?: "?") + ")") } catch (_: Exception) {}
     }
 
-    fun nudgeNorth(d: Double, src: String = "pataisa") {
+    /** Šiaurės pataisa; grąžina true, jei pritaikyta (automatinė gali būti atmesta po neseno kalibravimo pagal orientyrą). */
+    fun nudgeNorth(d: Double, src: String = "pataisa"): Boolean {
         // Po kalibravimo pagal Saulę / Polaris / kamerą automatinės pataisos (magnetometras, signalai) 30 min. neleidžiamos – jos mažiau tikslios ir „nusuka“ kryptį
         val auto = src.startsWith("automatinė") || src.startsWith("po paleidimo")
         val since = System.currentTimeMillis() - calPrefs.getLong("sun_cal_ms", 0L)
         if (auto && since in 0 until LANDMARK_HOLD_MS) {
             headingEvent("atmesta „%s“ %+.1f° – prieš %d min. kalibruota pagal orientyrą".format(java.util.Locale.US, src, -d, since / 60_000L))
-            return
+            return false
         }
         headingEvent("%s %+.1f°".format(java.util.Locale.US, src, -d))
         offsetDeg += d.toFloat()
         calPrefs.edit().putFloat("offset", offsetDeg).putBoolean("north_saved", true).apply()
         publish()
+        return true
     }
 
     fun northText(magAz: Double): String = "Kryptis: vaizdo %s°, magnetometro (be pataisų) %.0f°; šiaurės poslinkis %.1f°, deklinacija %.1f°; stabili šiaurė %s (giroskopas, kompasas tik pradžioje)".format(
@@ -9350,7 +9352,13 @@ class MainActivity : AppCompatActivity() {
             // kryptis iš magnetometro + Saulės kalibravimų žurnalo (nuokrypio stebėjimas ir taisymas)
             try { northFromLogTick() } catch (_: Exception) {}
             // kryptis iš signalų stiprumo (prieš mokymąsi – kad dabartinis mėginys netaptų savo paties įrodymu)
-            try { SignalHeading.update(list, hd) { _ -> } } catch (_: Exception) {}     // tik ataskaitai, vaizdo nesuka
+            // nuolatinė šiaurės pataisa pagal signalus (kabinoje, kai patikima ir ilgai stabili; ne anksčiau kaip 30 min. po kalibravimo ranka)
+            try { SignalHeading.update(list, hd) { d ->
+                if (::skyDome.isInitialized && skyDome.nudgeNorth(d, "automatinė pagal palydovus")) {
+                    HeadingTrust.set(true, "pataisyta pagal palydovų signalus")
+                    Toast.makeText(this@MainActivity, "Šiaurė pataisyta pagal palydovus: %+.0f°".format(Locale.US, -d), Toast.LENGTH_LONG).show()
+                }
+            } } catch (_: Exception) {}
             CabinMap.learnStatus(if (HeadingTrust.trusted) hd else null, list)
             cabinView?.let { it.heading = hd; it.sats = list; it.invalidate() }
             lastSats = list
@@ -9728,8 +9736,8 @@ class MainActivity : AppCompatActivity() {
         CnoMask.min = cnoSp.getFloat("cno_min", 20f).toDouble()
         CnoMask.auto = cnoSp.getBoolean("cno_auto", true)
         // signalo slenkstis reguliuojamas NLO meniu po C/N0 kriokliu (slankiklis ir juoda riba krioklyje)
-        // šiaurės pataisa pagal signalų stiprumą pašalinta (kryptis tik skaičiuojama ataskaitai)
-        SignalHeading.autoFix = false
+        // šiaurės pataisa pagal signalų stiprumą – nuolat (kabinoje, kai patikima)
+        SignalHeading.autoFix = true
         SignalHeading.mapClean = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("cabin_clean_v2", false)
         val cbMarkers = CheckBox(this).apply {
             text = "Rodyti orientyrus"

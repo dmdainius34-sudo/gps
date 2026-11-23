@@ -9952,7 +9952,7 @@ class MainActivity : AppCompatActivity() {
             KnownHeight.baroRel = { if (zeroSet) baro.altitude() else null }
             val tick = object : Runnable { override fun run() {
                 if (zeroSet) baro.altitude()?.let { h -> val nz = baro.noiseM()
-                    baroLbl.text = (if (h > 0.05) "\u25B2 " else if (h < -0.05) "\u25BC " else "") + "%+.2f m".format(Locale.US, h) +
+                    baroLbl.text = "%+.2f m".format(Locale.US, h) +
                         (if (nz.isNaN()) "" else " \u00B1%.2f".format(Locale.US, maxOf(nz, 0.01))) }
                 baroRow.postDelayed(this, 500L)
             } }

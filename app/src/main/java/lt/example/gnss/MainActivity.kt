@@ -298,16 +298,18 @@ class Barometer(context: Context) : SensorEventListener {
     /** Paskutinių ~5 s rodmenys (laikas ms, slėgis hPa): vidurkis – stabilus aukštis, sklaida – realus triukšmas. */
     private val win = java.util.ArrayDeque<Pair<Long, Double>>()
     @Volatile var noiseHpa = Double.NaN; private set
+    private val means = java.util.ArrayDeque<Double>()
+    private var lastMeanMs = 0L
     override fun onSensorChanged(event: SensorEvent) {
         val now = System.currentTimeMillis(); val p = event.values[0].toDouble()
         synchronized(win) {
             win.addLast(now to p)
-            while (win.isNotEmpty() && now - win.first.first > 5_000L) win.removeFirst()
-            val n = win.size; val m = win.sumOf { it.second } / n
-            val sd = if (n > 2) kotlin.math.sqrt(win.sumOf { (it.second - m) * (it.second - m) } / (n - 1)) else Double.NaN
-            // vidurkio neapibrėžtis (gretimi rodmenys koreliuoti – laikoma ~5 nepriklausomų per 5 s)
-            noiseHpa = if (sd.isNaN()) Double.NaN else sd / kotlin.math.sqrt(minOf(n, 5).toDouble())
-            stationHpa = m
+            while (win.isNotEmpty() && now - win.first.first > 10_000L) win.removeFirst()
+            val m = win.sumOf { it.second } / win.size
+            stationHpa = m                                     // 10 s vidurkis – gūsiai ir durų trinktelėjimai išlyginami
+            // ± – kaip vidurkis „klaidžioja“ per paskutinę minutę (ne tik trumpas triukšmas): kas 1 s įrašomas vidurkis
+            if (now - lastMeanMs >= 1_000L) { lastMeanMs = now; means.addLast(m); while (means.size > 60) means.removeFirst() }
+            noiseHpa = if (means.size < 5) Double.NaN else { val mm = means.average(); kotlin.math.sqrt(means.sumOf { (it - mm) * (it - mm) } / (means.size - 1)) }
         }
         lastMs = now
     }

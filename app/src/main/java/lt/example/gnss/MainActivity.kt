@@ -1778,13 +1778,18 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         reanchorTries = 0; reanchorWaits = 0; reanchorD.clear(); reanchorSeen = 0; reanchorBest = -1.0; handler.removeCallbacks(reanchor); handler.postDelayed(reanchor, 5_000L)
         if (!listening) {
             rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-            gyroSensor?.let { sm.registerListener(this, it, 5_000) }   // 200 Hz: vaizdas sklandus 60–120 kadrų/s ekrane (buvo ~50 Hz – trūkčiojo)
+            gyroSensor?.let { regGyro(it) }
             gravSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
             listening = true
         }
     }
 
     private var listening = false
+    /** Giroskopas 200 Hz (sklandus vaizdas 60–120 kadrų/s); jei sistema neleidžia – kaip anksčiau (~50 Hz). */
+    private fun regGyro(s: Sensor) {
+        val ok = try { sm.registerListener(this, s, 5_000) } catch (_: Exception) { false }
+        if (!ok) sm.registerListener(this, s, SensorManager.SENSOR_DELAY_GAME)
+    }
 
     /** Po pradinės krypties iš magnetometro: pataisa pagal patikimą kryptį iš signalų (jei ji šviežia). */
     private val LANDMARK_HOLD_MS = 30 * 60_000L
@@ -1844,7 +1849,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         if (listening) return
         fInit = false; lastGyroNs = 0L; gValid = false
         rotSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-        gyroSensor?.let { sm.registerListener(this, it, 5_000) }   // 200 Hz: vaizdas sklandus 60–120 kadrų/s ekrane (buvo ~50 Hz – trūkčiojo)
+        gyroSensor?.let { regGyro(it) }
         gravSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         listening = true
     }
@@ -9663,7 +9668,7 @@ class MainActivity : AppCompatActivity() {
         // po paleidimo įjungta: stabili šiaurė, orientyrai, erdvės orientacija, tinklelis, Saulės koordinatės, SDO, LASCO, UV; palydovai – išjungti
         // (HDR paliekamas, nes jis įsigalioja tik atidarius programą iš naujo)
         getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit()
-            .putBoolean("stable_north", true).putBoolean("level_horizon", true)     // stebėtojo horizontas visada lygus su ekranu
+            .putBoolean("stable_north", true).putBoolean("level_horizon", false)    // paleidus – horizonto fiksavimas įjungtas (mygtukas šviečia)
             .putBoolean("sun_log_fix", false).putBoolean("markers", true).putBoolean("orient", true)
             .putBoolean("earth_grid", true).putBoolean("grid", false).putBoolean("sun_grid", true).putBoolean("sun_sdo", true)
             .putBoolean("sun_lasco", true).putBoolean("uv_layer", false).putBoolean("space_live", true).putBoolean("nav_bits", false).putBoolean("show_sats", false)

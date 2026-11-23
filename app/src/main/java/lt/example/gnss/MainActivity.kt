@@ -8236,7 +8236,7 @@ class DraggablePanel(
 
     private val numType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
     private val aglInput = refField("Žinomas aukštis virš žemės, m", "agl", numType)
-    private val mslInput = refField("Žinomas aukštis virš jūros, m", "msl", numType)
+    private val mslInput = refField("Žinomas PRIETAISO aukštis virš jūros, m (ne žemės; žemė + aukštis virš žemės)", "msl", numType)
     private val coordInput = refField("Žinomos koordinatės: platuma, ilguma", "coord", InputType.TYPE_CLASS_TEXT)
     private val coordSigInput = refField("± kiek tikite koordinatėmis, m (numatyta 10)", "coord_sig", numType)
     private val coordUse = android.widget.CheckBox(context).apply {
@@ -9992,6 +9992,9 @@ class MainActivity : AppCompatActivity() {
                     KnownHeight.gResult.startsWith("Žemės matavimas nebaigtas") && System.currentTimeMillis() - gFailMs < 8_000L ->
                         { gLbl.alpha = 1f; gLbl.text = "\u2715" }
                     meas != null -> { gLbl.alpha = 1f; gLbl.text = "%.0f m".format(Locale.US, meas) }
+                    // įvesti abu (prietaiso aukštis virš jūros ir virš žemės) – žemė = skirtumas
+                    KnownHeight.msl != null && KnownHeight.agl != null -> { gLbl.alpha = 1f
+                        gLbl.text = "%.0f m".format(Locale.US, KnownHeight.msl!! - KnownHeight.agl!!) }
                     dem != null -> { gLbl.alpha = 0.5f; gLbl.text = "~%.0f m".format(Locale.US, dem) }
                     else -> gLbl.text = ""
                 }

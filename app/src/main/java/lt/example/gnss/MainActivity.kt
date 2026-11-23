@@ -290,12 +290,29 @@ class Barometer(context: Context) : SensorEventListener {
         get() = prefs.getFloat("offset", 0f).toDouble()
         private set(v) { prefs.edit().putFloat("offset", v.toFloat()).apply() }
 
-    fun start() { sensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) } }
+    fun start() { sensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) } }
     fun stop() { sm.unregisterListener(this) }
 
     @Volatile var lastMs = 0L
         private set
-    override fun onSensorChanged(event: SensorEvent) { stationHpa = event.values[0].toDouble(); lastMs = System.currentTimeMillis() }
+    /** Paskutinių ~5 s rodmenys (laikas ms, slėgis hPa): vidurkis – stabilus aukštis, sklaida – realus triukšmas. */
+    private val win = java.util.ArrayDeque<Pair<Long, Double>>()
+    @Volatile var noiseHpa = Double.NaN; private set
+    override fun onSensorChanged(event: SensorEvent) {
+        val now = System.currentTimeMillis(); val p = event.values[0].toDouble()
+        synchronized(win) {
+            win.addLast(now to p)
+            while (win.isNotEmpty() && now - win.first.first > 5_000L) win.removeFirst()
+            val n = win.size; val m = win.sumOf { it.second } / n
+            val sd = if (n > 2) kotlin.math.sqrt(win.sumOf { (it.second - m) * (it.second - m) } / (n - 1)) else Double.NaN
+            // vidurkio neapibrėžtis (gretimi rodmenys koreliuoti – laikoma ~5 nepriklausomų per 5 s)
+            noiseHpa = if (sd.isNaN()) Double.NaN else sd / kotlin.math.sqrt(minOf(n, 5).toDouble())
+            stationHpa = m
+        }
+        lastMs = now
+    }
+    /** Aukščio neapibrėžtis, m (~8,3 m / hPa prie žemės). */
+    fun noiseM(): Double = noiseHpa * 8.3
     override fun onAccuracyChanged(s: Sensor?, accuracy: Int) {}
 
     fun altitude(): Double? {
@@ -9930,7 +9947,9 @@ class MainActivity : AppCompatActivity() {
                 addView(baroBtn, LinearLayout.LayoutParams(bSize, bSize)); addView(baroLbl) }
             var zeroSet = false
             val tick = object : Runnable { override fun run() {
-                if (zeroSet) baro.altitude()?.let { h -> baroLbl.text = (if (h > 0.05) "\u25B2 " else if (h < -0.05) "\u25BC " else "") + "%+.1f m".format(Locale.US, h) }
+                if (zeroSet) baro.altitude()?.let { h -> val nz = baro.noiseM()
+                    baroLbl.text = (if (h > 0.05) "\u25B2 " else if (h < -0.05) "\u25BC " else "") + "%+.2f m".format(Locale.US, h) +
+                        (if (nz.isNaN()) "" else " \u00B1%.2f".format(Locale.US, maxOf(nz, 0.01))) }
                 baroRow.postDelayed(this, 500L)
             } }
             baroBtn.setOnLongClickListener {

@@ -2747,6 +2747,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawEarth()
         drawTiles()
         drawPgd()
+        updatePlanning()
         drawGlobeGrid()
         drawEquatorScale()
         if (SpaceLive.enabled) drawAurora()            // TKS ir zondai pašalinti (ne ta tema)
@@ -5633,6 +5634,63 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * Arti (< ~2 km) planas piešiamas ne GPU, o Android sluoksniu virš gaublio (PlanOverlayView): kampų vietos ekrane
      * apskaičiuojamos dvigubu tikslumu – GPU arti paviršiaus (float ties Žemės spinduliu) planą rodydavo tarsi iš ~600 m.
      */
+    /** Žemės paviršiaus taškas (kryptis ECEF, reljefo aukštis m) akies sistemoje dvigubu tikslumu (laisvas gaublys). */
+    private fun eyeOfDir(dx: Double, dy: Double, dz: Double, hM: Double, out: DoubleArray) {
+        val r0 = EARTH_R.toDouble()
+        val g = fG; val cg = cos(g); val sg = sin(g)
+        val fk = if (earthFlat) flatK.toDouble() else 1.0
+        val a = camAM; val u = userR
+        val rr = r0 * (1.0 + EARTH_RELIEF_X * hM / 6_371_000.0 * reliefK)
+        val x = dx * rr; val y = dy * rr; val z = dz * rr * fk
+        val wx = cg * x - sg * y; val wy = sg * x + cg * y; val wz = z
+        val c0 = a[0] * wx + a[3] * wy + a[6] * wz; val c1 = a[1] * wx + a[4] * wy + a[7] * wz; val c2 = a[2] * wx + a[5] * wy + a[8] * wz
+        out[0] = u[0] * c0 + u[1] * c1 + u[2] * c2 + camParX
+        out[1] = u[3] * c0 + u[4] * c1 + u[5] * c2 + camParY
+        out[2] = u[6] * c0 + u[7] * c1 + u[8] * c2 - (r0 + altNow())
+    }
+    /** Akies taškas → ekranas (px) arba null (už kameros). */
+    private fun eyeToScreen(e: DoubleArray, out: FloatArray, o: Int): Boolean {
+        val p = camProj; val x = e[0]; val y = e[1]; val z = e[2]
+        val cx = p[0] * x + p[4] * y + p[8] * z + p[12]
+        val cy = p[1] * x + p[5] * y + p[9] * z + p[13]
+        val cw = p[3] * x + p[7] * y + p[11] * z + p[15]
+        if (cw <= 1e-12) return false
+        out[o] = ((cx / cw + 1) / 2 * lastW).toFloat(); out[o + 1] = ((1 - cy / cw) / 2 * lastH).toFloat()
+        return true
+    }
+
+    /**
+     * Teritorijų planavimo plytelės (PlanningTiles) arti žemės (< ~10 km): kampų vietos ekrane dvigubu tikslumu,
+     * piešia PlanOverlayView. Pirma – stambesnis lygis (kol kraunasi tikslusis).
+     */
+    private fun updatePlanning() {
+        if (!PlanningTiles.enabled || !freeView || focus != 0 || flight != null || helioMode() || southUp || altNow() > 0.0004 || centreLat.isNaN()) {
+            PlanningTiles.shown = emptyList(); return
+        }
+        val altM = altNow() / EARTH_R * 6_371_000.0
+        val mpp = 2.0 * altM * kotlin.math.tan(Math.toRadians(20.0)) / maxOf(lastH, 1)
+        val z = PlanningTiles.zoomFor(mpp, centreLat)
+        val keys = (if (z - 2 >= 12) GlobeTiles.around(centreLat, centreLon, z - 2, 1) else emptyList()) + GlobeTiles.around(centreLat, centreLon, z, 2)
+        val out = ArrayList<Pair<GlobeTiles.Key, FloatArray>>(keys.size)
+        val e = DoubleArray(3)
+        for (k in keys) {
+            val sc = FloatArray(8); var ok = true
+            for ((i, c) in PlanningTiles.corners(k).withIndex()) {
+                val la = Math.toRadians(c[0]); val lo = Math.toRadians(c[1])
+                eyeOfDir(cos(la) * cos(lo), cos(la) * sin(lo), sin(la), maxOf(0.0, reliefH(c[0], c[1])), e)
+                if (!eyeToScreen(e, sc, i * 2)) { ok = false; break }
+            }
+            if (!ok) continue
+            // ekrane nematoma – praleidžiama
+            val minX = minOf(sc[0], sc[2], sc[4], sc[6]); val maxX = maxOf(sc[0], sc[2], sc[4], sc[6])
+            val minY = minOf(sc[1], sc[3], sc[5], sc[7]); val maxY = maxOf(sc[1], sc[3], sc[5], sc[7])
+            if (maxX < 0 || maxY < 0 || minX > lastW || minY > lastH) continue
+            out.add(k to sc)
+            PlanningTiles.request(k)
+        }
+        PlanningTiles.shown = out
+    }
+
     private fun pgdScreenCorners(): FloatArray? {
         if (altNow() > 0.00008) return null
         val p = camProj; val out = FloatArray(8)
@@ -6112,6 +6170,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         earthProg = program(EARTH_VS, EARTH_FS)
         tileProg = program(TILE_VS, TILE_FS); tileGl.clear(); pgdTex = 0; pgdVer = -1
         GlobeTiles.init(appCtx.filesDir)
+        PlanningTiles.dir = java.io.File(appCtx.filesDir, "vplanas")
+        PlanningTiles.enabled = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("planning", false)
         Thread { try { if (PgdOverlay.bitmap == null) PgdOverlay.restore(appCtx) } catch (_: Exception) {} }.start()
         val main = Handler(Looper.getMainLooper())
         try {
@@ -8812,6 +8872,8 @@ class DraggablePanel(
     var onOpenPgd: (() -> Unit)? = null
     var onClearPgd: (() -> Unit)? = null
     var onViewPgd: (() -> Unit)? = null
+    /** Vilniaus teritorijų planavimas (gis.vplanas.lt) ant gaublio – įjungti / išjungti. */
+    val planningCb = CheckBox(context).apply { text = "Teritorijų planavimas (Vilnius, gis.vplanas.lt) – priartinus gaublį"; textSize = 13f }
     private val pgdViewBtn = Button(context).apply { text = "Plano peržiūra (plokščiai)"; textSize = 12f; isAllCaps = false }
     private val pgdBtn = Button(context).apply {
         text = "Atidaryti PGD planą (AlpineQuest)"; textSize = 12f; isAllCaps = false
@@ -8913,6 +8975,7 @@ class DraggablePanel(
         bodyInner.addView(sp3Btn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(pgdBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(pgdViewBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
+        bodyInner.addView(planningCb)
 
         addView(panel)
         addView(bubble)
@@ -10682,7 +10745,9 @@ class MainActivity : AppCompatActivity() {
             val att = TextView(this).apply { textSize = 9f; setTextColor(0xDDFFFFFF.toInt()); setShadowLayer(3f, 0f, 0f, 0xFF000000.toInt())
                 text = GlobeTiles.ATTRIBUTION; visibility = View.GONE }
             val tk = object : Runnable { override fun run() {
-                att.visibility = if (System.currentTimeMillis() - GlobeTiles.shownMs < 2_000L) View.VISIBLE else View.GONE
+                val pl = PlanningTiles.shown.isNotEmpty()
+                att.text = if (pl) GlobeTiles.ATTRIBUTION + " · " + PlanningTiles.ATTRIBUTION else GlobeTiles.ATTRIBUTION
+                att.visibility = if (pl || System.currentTimeMillis() - GlobeTiles.shownMs < 2_000L) View.VISIBLE else View.GONE
                 att.postDelayed(this, 1000L) } }
             att.post(tk)
             skyHolder.addView(att, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -10910,6 +10975,12 @@ class MainActivity : AppCompatActivity() {
         panel.onPickSp3 = { launchSp3Picker() }
         panel.onOpenPgd = { try { pgdPickLauncher.launch(arrayOf("*/*")) } catch (e: Exception) { Toast.makeText(this, "Failo pasirinkimas nepasiekiamas", Toast.LENGTH_SHORT).show() } }
         panel.onViewPgd = { openPlanView() }
+        panel.planningCb.isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("planning", false)
+        panel.planningCb.setOnCheckedChangeListener { _, on ->
+            PlanningTiles.enabled = on
+            getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("planning", on).apply()
+            if (on) Toast.makeText(this, "Teritorijų planavimas: laisvame gaublyje priartinkite Vilnių (< 10 km) – ${PlanningTiles.ATTRIBUTION}", Toast.LENGTH_LONG).show()
+        }
         panel.onClearPgd = { PgdOverlay.clear(this); Toast.makeText(this, "PGD planas pašalintas", Toast.LENGTH_SHORT).show() }
         panel.onUpdateSp3 = { updateSp3() }
         refreshSp3Status()

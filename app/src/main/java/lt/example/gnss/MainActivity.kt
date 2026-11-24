@@ -1443,6 +1443,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun setFreeView(on: Boolean) { renderer.freeView = on; renderer.resetUser() }
     val freeView get() = renderer.freeView
     fun centreOnMe() { renderer.centreOnMe() }
+    fun zoomNear() { renderer.zoomNear() }
     fun setVirtual(lat: Double?, lon: Double?) = renderer.setVirtual(lat, lon)
     var simOffsetMs: Long
         get() = renderer.simOffsetMs
@@ -4766,6 +4767,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     fun resetUser() { userR = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0); spinAngle = 0.0; baseEye = null; baseEyeE = null }
 
     /** „Mano padėtis“: laisvas gaublys virš stebėtojo; jei toli (> 100 km) – priartinama iki ~30 km. */
+    /** Arti paviršiaus (~1,5 km) – kad matytųsi statybvietės dydžio planas. */
+    fun zoomNear() { zoom = EARTH_R + 0.00006f }
+
     fun centreOnMe() {
         resetUser()
         if (zoom - EARTH_R > 0.004f) zoom = EARTH_R + 0.0012f
@@ -9775,6 +9779,17 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent); setIntent(intent); handleViewIntent(intent)
     }
 
+    private var placeBtnRef: TextView? = null
+    /** Nukeliauti prie įkelto PGD plano: toli nuo tikros vietos (> 1 km) – tariama vieta 📍 plano centre; laisvas gaublys, priartinta. */
+    private fun travelToPlan() {
+        val c = PgdOverlay.centre() ?: return
+        if (!::skyDome.isInitialized) return
+        val far = (obsLatNow == 0.0 && obsLonNow == 0.0) || PositionSolver.horizDist(obsLatNow, obsLonNow, c[0], c[1]) > 1000.0
+        if (far) { skyDome.setVirtual(c[0], c[1]); placeBtnRef?.alpha = 1f }
+        if (!skyDome.freeView) { getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("free_view", true).apply(); skyDome.setFreeView(true); modeBtn?.text = "\uD83D\uDC41" }
+        skyDome.centreOnMe(); skyDome.zoomNear()
+    }
+
     private fun openPgd(uri: Uri) {
         Thread {
             val err = try {
@@ -9783,7 +9798,9 @@ class MainActivity : AppCompatActivity() {
                 PgdOverlay.load(this, bytes, name)
             } catch (e: Exception) { e.message ?: "klaida" }
             runOnUiThread {
-                Toast.makeText(this, if (err == null) "PGD planas „${PgdOverlay.name}“ įkeltas – priartinkite gaublį ties ta vieta (ilgai palaikius mygtuką – pašalinti)" else "PGD neįkeltas: $err", Toast.LENGTH_LONG).show()
+                if (err == null) travelToPlan()
+                Toast.makeText(this, if (err == null) "PGD planas „${PgdOverlay.name}“ įkeltas – nukeliauta prie jo" +
+                    (if (::skyDome.isInitialized && skyDome.virtualPos != null) " (tariama vieta 📍; tikra vieta – per 📍 „Tikra vieta“)" else "") else "PGD neįkeltas: $err", Toast.LENGTH_LONG).show()
             }
         }.start()
     }
@@ -10317,6 +10334,7 @@ class MainActivity : AppCompatActivity() {
             } }
         // 📍 – persikelti į įvestas koordinates (smeigtukas, horizontas, siūlai – iš ten)
         val placeBtn = small("\uD83D\uDCCD", 14f)
+        placeBtnRef = placeBtn
         placeBtn.alpha = if (::skyDome.isInitialized && skyDome.virtualPos != null) 1f else 0.6f
         placeBtn.setOnClickListener { keyHaptic(placeBtn); openPlaceDialog(placeBtn) }
         val tools = LinearLayout(this).apply {

@@ -4752,7 +4752,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // arčiausiai ~300 m virš žemės (laisvame gaublyje reljefas tada tikro aukščio); stebėtojo vaizde – kaip anksčiau (atstumas ≥ 10 km)
         val ground = if (centreLat.isNaN()) 0.0 else EARTH_R * maxOf(0.0, reliefH(centreLat, centreLon)) / 6_371_000.0
         // šalia įkelto PGD plano – iki ~30 m virš žemės (matyti plano pikseliai); kitaip ~300 m (palydovinė nuotrauka stambesnė nebūna)
-        val nearPlan = PgdOverlay.visible && !centreLat.isNaN() && PgdOverlay.centre()?.let { c -> PositionSolver.horizDist(centreLat, centreLon, c[0], c[1]) < 3000.0 } == true
+        // įkeltas PGD planas – leidžiama iki ~1,5 m (anksčiau tik kai ekrano centras ≤ 3 km nuo plano – tikrinimas kartais nesuveikdavo)
+        val nearPlan = PgdOverlay.visible && PgdOverlay.corners != null
         val minAlt = if (nearPlan) 1.5 / 6_371_000.0 * EARTH_R else 0.000012
         // aukštis laikomas dvigubu tikslumu (float ties Žemės spinduliu – ~0,75 m žingsnis; arti plano mastelis „laiptuotųsi“)
         val a0 = if (kotlin.math.abs((EARTH_R + altD).toFloat() - zoom) < 1e-7f) altD else (zoom - EARTH_R).toDouble()
@@ -5370,7 +5371,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * (arti – lėtai ir tiksliai, toli – greičiau, bet ne daugiau ~0,2°/px).
      */
     fun dragGlobe(dx: Float, dy: Float) {
-        val alt = (zoom - EARTH_R).toDouble().coerceAtLeast(1e-5)
+        val alt = altNow().coerceAtLeast(1e-8)
         val k = minOf(2.0 * kotlin.math.tan(Math.toRadians(20.0)) * alt / maxOf(lastH, 1) / EARTH_R, 0.0035)
         val ax = dy * k; val ay = dx * k
         val ang = kotlin.math.hypot(ax, ay); if (ang < 1e-9) return

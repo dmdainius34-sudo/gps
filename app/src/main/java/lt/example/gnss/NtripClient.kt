@@ -72,6 +72,8 @@ object NtripClient {
     val counts = java.util.concurrent.ConcurrentHashMap<Int, Int>()
     /** Paskutinis MSM pagal sistemą: palydovų skaičius. */
     val satsBySys = java.util.concurrent.ConcurrentHashMap<Char, Int>()
+    /** BeiDou palydovai paskutinėje bazės MSM žinutėje (LitPOS stotys priima tik BeiDou-2: C01–C16). */
+    @Volatile var bdsPrns: List<Int> = emptyList()
     @Volatile private var thread: Thread? = null
     @Volatile private var stop = false
     @Volatile private var sock: Socket? = null
@@ -159,7 +161,8 @@ object NtripClient {
                         Rtcm3.station(p)?.let { base = it }
                         Rtcm3.physStation(p)?.let { phys = it }
                         if (Rtcm3.sysOf(type) != null) lastMsmMs = tMs
-                        if (Rtcm3.sysOf(type) != null) Rtcm3.msm(p)?.let { m -> satsBySys[m.sys] = m.obs.map { it.prn }.distinct().size }
+                        if (Rtcm3.sysOf(type) != null) Rtcm3.msm(p)?.let { m -> satsBySys[m.sys] = m.obs.map { it.prn }.distinct().size
+                            if (m.sys == 'C') bdsPrns = m.obs.map { it.prn }.distinct().sorted() }
                     }
                 }
                 s.close()
@@ -190,5 +193,17 @@ object NtripClient {
             if (lat != null && lon != null) append(", %.1f km".format(Locale.US, PositionSolver.horizDist(lat, lon, Math.toDegrees(l[0]), Math.toDegrees(l[1])) / 1000.0))
         }
         if (lastMsgMs > 0) append("; paskutinė žinutė prieš %d s".format(Locale.US, (System.currentTimeMillis() - lastMsgMs) / 1000))
+        if (bytes > 0) append("\n" + bdsText())
+    }
+
+    /** BeiDou ataskaitai: kuriems palydovams bazė siunčia pataisas ir kiek jų panaudota RTK. */
+    fun bdsText(): String = buildString {
+        val b = bdsPrns
+        append("BeiDou pataisos (bazė): ")
+        append(if (b.isEmpty()) "nėra" else b.joinToString(" ") { "C%02d".format(Locale.US, it) } +
+            " (BeiDou-2: ${b.count { it <= 16 }}, BeiDou-3: ${b.count { it > 16 }})")
+        val u = Rtk.bdsUsedNow
+        append("; RTK naudota dabar: ${if (u.isEmpty()) "0" else u.sorted().joinToString(" ")}")
+        append("; epochų su BeiDou RTK: ${Rtk.bdsEpochs} iš ${Rtk.allEpochs}")
     }
 }

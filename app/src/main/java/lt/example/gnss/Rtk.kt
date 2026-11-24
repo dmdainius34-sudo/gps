@@ -14,6 +14,10 @@ import kotlin.math.sqrt
  * tarpas > 2 s, inovacija > 5σ. Sveikųjų dviprasmybių sprendimas nedaromas (tik plaukiojantis sprendinys).
  */
 object Rtk {
+    /** BeiDou palydovai paskutinėje RTK epochoje (dvigubų skirtumų) ir epochų skaičius – ataskaitai. */
+    @Volatile var bdsUsedNow: Set<String> = emptySet()
+    @Volatile var bdsEpochs = 0
+    @Volatile var allEpochs = 0
     const val OUT_FILE = "gnss_solver_rtk.csv"
     private const val C = PositionSolver.C
     private const val W = Sp3Reader.WEEK
@@ -336,6 +340,9 @@ object Rtk {
         // kabinos kaukė ir paskutinės epochos palydovų informacija (žemėlapio mokymuisi – visi, ir užmaskuoti)
         masked += masks.count { it.value }
         val codeRes = dds.filter { it.key % 2 == 0 }.associate { it.id to it.v } + maskedRes
+        // BeiDou ataskaitai (LitPOS: pataisos tik BeiDou-2)
+        val bdsNow = dds.map { it.id }.filter { it.startsWith("C") }.toSet()
+        bdsUsedNow = bdsNow; allEpochs++; if (bdsNow.isNotEmpty()) bdsEpochs++
         lastObs = geo.associate { g -> g.o.id to doubleArrayOf(g.az, Math.toDegrees(g.el), g.o.s.cn0, codeRes[g.o.id] ?: Double.NaN,
             if (g.o.slip) 1.0 else 0.0, if (masks[g.o.id] == true) 1.0 else 0.0) }
         // inovacijų patikra: kodo – atspindžiai (> 15 m, kai filtras jau suartėjęs); fazės – nepastebėti šuoliai

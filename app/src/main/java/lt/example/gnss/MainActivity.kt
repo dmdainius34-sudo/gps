@@ -2662,7 +2662,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         if (observerView()) observerCamera()          // kamera – pagal tikrą laiką (pinCam): laikui bėgant sukasi Žemė, ne visas modelis
         // režimas „su orbita“ (▶): kamera pririšta prie Saulės ir nesisuka – Žemė sukasi ir keliauja orbita (link CME)
-        if (helioMode()) helioCamera() else helioS0 = null
+        if (helioMode()) helioCamera() else { helioS0 = null; helioD = FloatArray(3) }
         // bakstelėjimui (palydovai, Saulė, Mėnulis) – ta pati matrica, kuria piešiama (po stebėtojo kameros; anksčiau – prieš ją, todėl pirštas „nepataikydavo“)
         // Gylio efektas (paralaksas): pakreipus planšetę kamera truputį pasislenka į šoną – artimi kūnai (Žemė, palydovai, Mėnulis)
         // pasislenka daugiau nei tolimos žvaigždės, todėl gaublys atrodo „iškilęs“ virš ekrano
@@ -2700,7 +2700,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 if (Matrix.invertM(vmInv, 0, vmF, 0)) camPos = floatArrayOf(vmInv[12], vmInv[13], vmInv[14]) }
         } else {
             eyeI = floatArrayOf(mvU[2], mvU[6], mvU[10])
-            camPos = floatArrayOf(eyeI[0] * zoom, eyeI[1] * zoom, eyeI[2] * zoom)
+            camPos = floatArrayOf(eyeI[0] * zoom + helioD[0], eyeI[1] * zoom + helioD[1], eyeI[2] * zoom + helioD[2])   // + kelionė su Saule (režimas su orbita)
         }
         updateCamBasis()
         updateSkyOrigin()
@@ -4674,7 +4674,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     @Volatile var parX = 0f
     @Volatile var parY = 0f
     private var helioS0: DoubleArray? = null
-    private fun helioMode() = simOffsetMs != 0L && !simHideOrbit && observerView()
+    /** Režimas „su orbita“ laikui bėgant – ir stebėtojo vaizde, ir laisvame gaublyje (👁): kamera su Saule, Žemė rieda orbita ir sukasi. */
+    private fun helioMode() = simOffsetMs != 0L && !simHideOrbit && (observerView() || (freeView && focus == 0))
+    private var helioD = FloatArray(3)
     /** Režimas „su orbita“: stebėtojo kamera (planšetė, horizonto užraktas – kaip įprastai) perkeliama kartu su Saule. */
     private fun helioCamera() {
         val sNow = bodyPos(1) ?: return
@@ -4682,7 +4684,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val dx = (sNow[0] - s0[0]).toFloat(); val dy = (sNow[1] - s0[1]).toFloat(); val dz = (sNow[2] - s0[2]).toFloat()
         val t = FloatArray(16); Matrix.setIdentityM(t, 0); Matrix.translateM(t, 0, -dx, -dy, -dz)
         val m = FloatArray(16); Matrix.multiplyMM(m, 0, mvpI, 0, t, 0); System.arraycopy(m, 0, mvpI, 0, 16)
-        camPos = floatArrayOf(camPos[0] + dx, camPos[1] + dy, camPos[2] + dz)
+        helioD = floatArrayOf(dx, dy, dz)
+        if (observerView()) camPos = floatArrayOf(camPos[0] + dx, camPos[1] + dy, camPos[2] + dz)
     }
     /** Kiek kartų greičiau už tikrą laiką. */
     @Volatile var simRate = 2_880.0
@@ -5238,7 +5241,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun inertialCamera(out: DoubleArray) {
         // laikui bėgant (▶) su užrakintu horizontu kamera sukasi kartu su Žeme ir ekrano viršus – stebėtojo zenitas (horizontas gulsčias);
         // kitaip – pagal tikrą laiką (kamera lieka, Žemė sukasi po ja), viršus – dangaus šiaurė
-        val levelSim = !levelHorizon && simOffsetMs != 0L && freeView && focus == 0
+        val levelSim = !levelHorizon && simOffsetMs != 0L && freeView && focus == 0 && !helioMode()
         val gA = if (levelSim) fG else fGc
         val cg = cos(gA); val sg = sin(gA)
         // laisvame gaublyje kamera sukasi kartu su Žeme (kaip Google Earth) – kitaip žemė po kamera slinktų ~15°/val.

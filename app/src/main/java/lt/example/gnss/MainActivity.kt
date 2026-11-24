@@ -8722,6 +8722,8 @@ class DraggablePanel(
     /** „Atidaryti PGD planą“ – AlpineQuest kalibruotas vaizdas ant gaublio; ilgai palaikius – pašalinti. */
     var onOpenPgd: (() -> Unit)? = null
     var onClearPgd: (() -> Unit)? = null
+    var onViewPgd: (() -> Unit)? = null
+    private val pgdViewBtn = Button(context).apply { text = "Plano peržiūra (plokščiai)"; textSize = 12f; isAllCaps = false }
     private val pgdBtn = Button(context).apply {
         text = "Atidaryti PGD planą (AlpineQuest)"; textSize = 12f; isAllCaps = false
     }
@@ -8821,6 +8823,7 @@ class DraggablePanel(
         bodyInner.addView(coordUse)
         bodyInner.addView(sp3Btn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(pgdBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
+        bodyInner.addView(pgdViewBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
 
         addView(panel)
         addView(bubble)
@@ -8833,6 +8836,7 @@ class DraggablePanel(
         sp3Btn.setOnClickListener { onPickSp3?.invoke() }
         pgdBtn.setOnClickListener { onOpenPgd?.invoke() }
         pgdBtn.setOnLongClickListener { onClearPgd?.invoke(); true }
+        pgdViewBtn.setOnClickListener { onViewPgd?.invoke() }
         sp3UpdateBtn.setOnClickListener { onUpdateSp3?.invoke() }
 
         bubble.setOnTouchListener { _, ev -> bubbleGd.onTouchEvent(ev); false }
@@ -9804,6 +9808,35 @@ class MainActivity : AppCompatActivity() {
         skyDome.centreOnMe(); skyDome.zoomNear()
     }
 
+    /** Plano peržiūra plokščiai visame ekrane (kaip AlpineQuest): iki pat plano taškų, su dabartine padėtimi. */
+    private fun openPlanView() {
+        if (PgdOverlay.corners == null) { Toast.makeText(this, "PGD planas neįkeltas", Toast.LENGTH_SHORT).show(); return }
+        Thread {
+            val img = try { PgdOverlay.fullImage() } catch (e: Throwable) { null }
+            runOnUiThread {
+                if (img == null) { Toast.makeText(this, "Plano vaizdo nepavyko paruošti", Toast.LENGTH_SHORT).show(); return@runOnUiThread }
+                val dp = resources.displayMetrics.density
+                val pv = PlanView(this, img) {
+                    if (obsLatNow == 0.0 && obsLonNow == 0.0) null else doubleArrayOf(obsLatNow, obsLonNow, lastFixAcc)
+                }
+                val dlg = android.app.Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+                val root = android.widget.FrameLayout(this)
+                root.addView(pv, android.widget.FrameLayout.LayoutParams(-1, -1))
+                fun btn(t: String, g: Int, f: () -> Unit) = TextView(this).apply {
+                    text = t; textSize = 20f; gravity = Gravity.CENTER; setTextColor(0xFFFFFFFF.toInt())
+                    background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0x88000000.toInt()) }
+                    setOnClickListener { f() }
+                    root.addView(this, android.widget.FrameLayout.LayoutParams((52 * dp).toInt(), (52 * dp).toInt(), g).apply { val mg = (14 * dp).toInt(); setMargins(mg, mg, mg, mg) })
+                }
+                btn("\u2715", Gravity.TOP or Gravity.END) { dlg.dismiss() }
+                btn("\u25CE", Gravity.BOTTOM or Gravity.END) { pv.centreOnMe() }
+                dlg.setContentView(root)
+                dlg.show()
+                Toast.makeText(this, "${PgdOverlay.name}: žiupsneliu – priartinti iki taškų, ◎ – mano vieta", Toast.LENGTH_SHORT).show()
+            }
+        }.start()
+    }
+
     private fun openPgd(uri: Uri) {
         Thread {
             val err = try {
@@ -9813,7 +9846,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) { e.message ?: "klaida" }
             runOnUiThread {
                 if (err == null) travelToPlan()
-                Toast.makeText(this, if (err == null) "PGD planas „${PgdOverlay.name}“ įkeltas – nukeliauta prie jo" +
+                Toast.makeText(this, if (err == null) "PGD planas „${PgdOverlay.name}“ įkeltas – nukeliauta prie jo; arti iki taškų – NLO „Plano peržiūra (plokščiai)“" +
                     (if (::skyDome.isInitialized && skyDome.virtualPos != null) " (tariama vieta 📍; tikra vieta – per 📍 „Tikra vieta“)" else "") else "PGD neįkeltas: $err", Toast.LENGTH_LONG).show()
             }
         }.start()
@@ -10781,6 +10814,7 @@ class MainActivity : AppCompatActivity() {
         panel.onScreenTest = { runScreenTest() }
         panel.onPickSp3 = { launchSp3Picker() }
         panel.onOpenPgd = { try { pgdPickLauncher.launch(arrayOf("*/*")) } catch (e: Exception) { Toast.makeText(this, "Failo pasirinkimas nepasiekiamas", Toast.LENGTH_SHORT).show() } }
+        panel.onViewPgd = { openPlanView() }
         panel.onClearPgd = { PgdOverlay.clear(this); Toast.makeText(this, "PGD planas pašalintas", Toast.LENGTH_SHORT).show() }
         panel.onUpdateSp3 = { updateSp3() }
         refreshSp3Status()

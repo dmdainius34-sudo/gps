@@ -98,11 +98,54 @@ object PgdOverlay {
         return out
     }
 
+    @Volatile private var rawBytes: ByteArray? = null
+    @Volatile private var rawParsed: Parsed? = null
+    @Volatile private var full: Bitmap? = null
+    /** Plokščiai peržiūrai – pilnos raiškos vaizdas (iki 8192 px šono), tikrų proporcijų; kviesti fone. */
+    fun fullImage(): Bitmap? {
+        full?.let { if (!it.isRecycled) return it }
+        val b = rawBytes ?: return null; val p = rawParsed ?: return null
+        val lay = layout(p.w, p.h); if (lay.size != p.tiles.size) return null
+        var sz = 1; while ((p.w + sz - 1) / sz > 8192 || (p.h + sz - 1) / sz > 8192) sz *= 2
+        val img = Bitmap.createBitmap((p.w + sz - 1) / sz, (p.h + sz - 1) / sz, Bitmap.Config.ARGB_8888)
+        val c = Canvas(img)
+        for ((k, t) in lay.withIndex()) {
+            if (t.first != sz) continue
+            val r = p.tiles[k]
+            val tb = BitmapFactory.decodeByteArray(b, r.first, r.last - r.first + 1) ?: continue
+            c.drawBitmap(tb, t.second * 256f, t.third * 256f, null); tb.recycle()
+        }
+        full = img
+        return img
+    }
+
+    /**
+     * Taško (lat, lon) vieta plane: (u, v) 0..1 nuo kairio viršutinio kampo (už plano – už 0..1 ribų) arba null.
+     * Afininė pagal tris kampus vietinėje metrinėje sistemoje (planas mažas – iškraipymas nereikšmingas).
+     */
+    fun uvOf(lat: Double, lon: Double): DoubleArray? {
+        val c = corners ?: return null
+        val k = 111_320.0 * kotlin.math.cos(Math.toRadians(c[0][0]))
+        fun xy(p: DoubleArray) = doubleArrayOf((p[1] - c[0][1]) * k, (p[0] - c[0][0]) * 111_320.0)
+        val a = xy(c[1]); val b = xy(c[3]); val q = xy(doubleArrayOf(lat, lon))
+        val det = a[0] * b[1] - a[1] * b[0]; if (kotlin.math.abs(det) < 1e-9) return null
+        return doubleArrayOf((q[0] * b[1] - q[1] * b[0]) / det, (a[0] * q[1] - a[1] * q[0]) / det)
+    }
+
+    /** Plano plotis ir aukštis metrais (pagal kampus). */
+    fun sizeM(): DoubleArray? {
+        val c = corners ?: return null
+        val k = 111_320.0 * kotlin.math.cos(Math.toRadians(c[0][0]))
+        fun d(p: DoubleArray, q: DoubleArray) = kotlin.math.hypot((q[1] - p[1]) * k, (q[0] - p[0]) * 111_320.0)
+        return doubleArrayOf(d(c[0], c[1]), d(c[0], c[3]))
+    }
+
     /** Įkelia failą (kviesti fone); ok – išsaugo kaip dabartinį planą. Grąžina klaidos tekstą arba null. */
     fun load(ctx: Context, bytes: ByteArray, srcName: String, save: Boolean = true): String? {
         val p = parse(bytes, srcName) ?: return "ne PGD failas arba nerasta kampų koordinačių"
         val bmp = compose(bytes, p) ?: return "nepavyko sudėti plytelių (${p.tiles.size} plytelių, laukta ${layout(p.w, p.h).size})"
         if (save) try { File(ctx.filesDir, FILE).writeBytes(bytes); ctx.getSharedPreferences("pgd", Context.MODE_PRIVATE).edit().putString("name", srcName).apply() } catch (_: Exception) {}
+        full?.recycle(); full = null; rawBytes = bytes; rawParsed = p
         bitmap = bmp; corners = p.corners; name = srcName; visible = true; version++
         return null
     }
@@ -115,6 +158,7 @@ object PgdOverlay {
 
     fun clear(ctx: Context) {
         try { File(ctx.filesDir, FILE).delete() } catch (_: Exception) {}
+        full?.recycle(); full = null; rawBytes = null; rawParsed = null
         bitmap = null; corners = null; name = ""; version++
     }
 

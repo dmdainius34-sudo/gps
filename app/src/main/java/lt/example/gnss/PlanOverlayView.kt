@@ -22,8 +22,23 @@ class PlanOverlayView(ctx: Context) : View(ctx) {
 
     override fun onAttachedToWindow() { super.onAttachedToWindow(); postInvalidateOnAnimation() }
 
+    private val dp = ctx.resources.displayMetrics.density
+    private val pDot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFF2D2D.toInt() }
+    private val pDotE = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); style = Paint.Style.STROKE; strokeWidth = 2f * dp }
+    private val pRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x44FF2D2D }
+    private val pRingE = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCCFF2D2D.toInt(); style = Paint.Style.STROKE; strokeWidth = 1.5f * dp }
+
     override fun onDraw(c: Canvas) {
         postInvalidateOnAnimation()
+        drawPlans(c)
+        // mano padėtis (virš plano): tikslumo apskritimas ir taškas
+        PgdOverlay.meScreen?.let { p ->
+            if (p[2] > 3f) { c.drawCircle(p[0], p[1], p[2], pRing); c.drawCircle(p[0], p[1], p[2], pRingE) }
+            c.drawCircle(p[0], p[1], 6f * dp, pDot); c.drawCircle(p[0], p[1], 6f * dp, pDotE)
+        }
+    }
+
+    private fun drawPlans(c: Canvas) {
         // teritorijų planavimo plytelės (po PGD planu)
         val tiles = PlanningTiles.shown
         if (tiles.isNotEmpty()) {

@@ -2748,6 +2748,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         drawTiles()
         drawPgd()
         updatePlanning()
+        updateMe()
         drawGlobeGrid()
         drawEquatorScale()
         if (SpaceLive.enabled) drawAurora()            // TKS ir zondai pašalinti (ne ta tema)
@@ -5689,6 +5690,22 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             PlanningTiles.request(k)
         }
         PlanningTiles.shown = out
+    }
+
+    /** Mano padėtis sluoksnyje arti žemės (GL smeigtukas būtų po planu): taškas ir tikslumo apskritimas ekrane. */
+    private fun updateMe() {
+        val me = PgdOverlay.me
+        if (me == null || !freeView || focus != 0 || flight != null || helioMode() || southUp || altNow() > 0.0004 ||
+            (PgdOverlay.screenCorners == null && PlanningTiles.shown.isEmpty())) { PgdOverlay.meScreen = null; return }
+        val e = DoubleArray(3); val o = FloatArray(4)
+        fun at(lat: Double, lon: Double, i: Int): Boolean {
+            val la = Math.toRadians(lat); val lo = Math.toRadians(lon)
+            eyeOfDir(cos(la) * cos(lo), cos(la) * sin(lo), sin(la), maxOf(0.0, reliefH(lat, lon)), e)
+            return eyeToScreen(e, o, i)
+        }
+        val acc = if (me[2].isNaN()) 0.0 else me[2]
+        if (!at(me[0], me[1], 0) || !at(me[0], me[1] + acc / (111_320.0 * cos(Math.toRadians(me[0]))), 2)) { PgdOverlay.meScreen = null; return }
+        PgdOverlay.meScreen = floatArrayOf(o[0], o[1], kotlin.math.hypot(o[2] - o[0], o[3] - o[1]))
     }
 
     private fun pgdScreenCorners(): FloatArray? {
@@ -11278,6 +11295,7 @@ class MainActivity : AppCompatActivity() {
         @Suppress("DEPRECATION") val ownFix = loc.isFromMockProvider
         if (loc.hasAccuracy()) Readiness.onFix(loc.accuracy.toDouble())
         obsLatNow = loc.latitude; obsLonNow = loc.longitude
+        PgdOverlay.me = doubleArrayOf(loc.latitude, loc.longitude, if (loc.hasAccuracy()) loc.accuracy.toDouble() else Double.NaN)
         lastFixWallMs = System.currentTimeMillis(); lastFixAcc = if (loc.hasAccuracy()) loc.accuracy.toDouble() else Double.NaN
         if (loc.hasAltitude()) obsHNow = loc.altitude
         if (loc.hasSpeed() && loc.hasBearing() && loc.speed >= CourseHeading.MIN_SPEED &&

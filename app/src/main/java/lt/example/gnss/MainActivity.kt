@@ -6978,8 +6978,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
                 GLES20.glUseProgram(colorProg)
                 GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+                continue
             }
-            if (toEarth) continue
             run {
                 // kūgis – žarijų debesis: į Žemę – raudonos (be užrašo), pro šalį – pilkos (su greičiu)
                 val rnd = java.util.Random(c.id.hashCode().toLong() xor 0x5EED)
@@ -7006,8 +7006,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
                 GLES20.glUseProgram(colorProg)
                 GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
-                continue
             }
+            if (toEarth) continue
             if (!toEarth && c !in newest) continue
             val lp = FloatArray(3) { (sp[it] + n[it] * cd * 1.05).toFloat() }
             // užrašas – tik kai kamera atsukta į išmetimą (jo priekis ekrano vidurinėje dalyje)

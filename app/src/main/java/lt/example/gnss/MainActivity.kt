@@ -10624,7 +10624,10 @@ class MainActivity : AppCompatActivity() {
                     val hTxt = elevVal?.takeIf { elevKey == key }?.let { e ->
                         if (e <= 0.5 && sea < -5) "%.0f m".format(Locale.US, sea) else "%.0f m".format(Locale.US, e) }
                         ?: "%.0f m".format(Locale.US, if (sea < -5) sea else maxOf(0.0, sea))     // be minuso – virš jūros, su minusu – gylis
-                    info.text = "%.5f, %.5f · %s".format(Locale.US, ci[0], ci[1], hTxt)
+                    // kameros aukštis virš žemės (pagal GEBCO) – kad matytųsi, kiek dar galima priartinti
+                    val camAgl = ci[2] * 1000.0 - maxOf(0.0, sea)
+                    val camTxt = if (camAgl < 10_000) "kamera %.0f m virš žemės".format(Locale.US, camAgl) else "kamera %.0f km".format(Locale.US, ci[2])
+                    info.text = "%.5f, %.5f · %s · %s".format(Locale.US, ci[0], ci[1], hTxt, camTxt)
                 }
                 info.postDelayed(this, 200L)
             } }

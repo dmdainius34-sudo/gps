@@ -17,12 +17,11 @@ import kotlin.math.ln
  * permatomos PNG plytelės Web Mercator tinkleliu (z/x/y), užklausa „export“ su plytelės ribomis (EPSG:3857, 256×256).
  * Kaupiamos prietaiso atmintyje (filesDir/vplanas/…); piešiamos sluoksniu virš gaublio (PlanOverlayView), todėl priartinti galima iki pat smulkmenų.
  */
-object PlanningTiles {
-    const val ATTRIBUTION = "Teritorijų planavimas – © gis.vplanas.lt (Vilniaus m. savivaldybė)"
-    private const val BASE = "https://gis.vplanas.lt/arcgis/rest/services/Interaktyvus_zemelapis/Teritoriju_planavimas/MapServer"
-    private const val LAYERS = "show:0,1,2,3,4,5,6,9,15,7,8,10,11,12,13,14,17,18,19,20,16,127,21,22,23,24,25,26,121,122,123,124,125,126,114,115,116,117,118,119,90,80,81,82,83,84,85,86,87,88,89,91,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,79,77,78,93,94,95,96,97,98,112,113,99,100,101,102,103,104,105,106,107,108,109,110,111"
-    const val MAX_Z = 21
-    private const val HALF = 20037508.342789244
+class ArcLayer(val ATTRIBUTION: String, private val BASE: String, private val LAYERS: String?, private val format: String, private val transparent: Boolean) {
+    companion object {
+        const val MAX_Z = 21
+        private const val HALF = 20037508.342789244
+    }
 
     @Volatile var enabled = false
     @Volatile var dir: File? = null
@@ -47,7 +46,8 @@ object PlanningTiles {
     fun url(k: GlobeTiles.Key): String {
         val n = (1 shl k.z).toDouble(); val s = 2 * HALF / n
         val x0 = -HALF + k.x * s; val x1 = x0 + s; val y1 = HALF - k.y * s; val y0 = y1 - s
-        return "$BASE/export?f=image&bbox=%.3f,%.3f,%.3f,%.3f&imageSR=102100&bboxSR=102100&layers=%s&size=256,256&transparent=true&format=png32".format(Locale.US, x0, y0, x1, y1, LAYERS)
+        return "$BASE/export?f=image&bbox=%.3f,%.3f,%.3f,%.3f&imageSR=102100&bboxSR=102100".format(Locale.US, x0, y0, x1, y1) +
+            (if (LAYERS != null) "&layers=$LAYERS" else "") + "&size=256,256&transparent=$transparent&format=$format"
     }
 
     @Synchronized fun get(k: GlobeTiles.Key): Bitmap? = mem[k]
@@ -83,3 +83,14 @@ object PlanningTiles {
         return arrayOf(doubleArrayOf(la0, lo0), doubleArrayOf(la0, lo1), doubleArrayOf(la1, lo1), doubleArrayOf(la1, lo0))
     }
 }
+
+/** Vilniaus teritorijų planavimas (permatomas, virš ortofoto). */
+val PlanningTiles = ArcLayer("Teritorijų planavimas – © gis.vplanas.lt (Vilniaus m. savivaldybė)",
+    "https://gis.vplanas.lt/arcgis/rest/services/Interaktyvus_zemelapis/Teritoriju_planavimas/MapServer",
+    "show:0,1,2,3,4,5,6,9,15,7,8,10,11,12,13,14,17,18,19,20,16,127,21,22,23,24,25,26,121,122,123,124,125,126,114,115,116,117,118,119,90,80,81,82,83,84,85,86,87,88,89,91,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,79,77,78,93,94,95,96,97,98,112,113,99,100,101,102,103,104,105,106,107,108,109,110,111",
+    "png32", true)
+
+/** Vilniaus miesto ortofoto (aerofotonuotrauka, smulkiausias taškas ~5 cm; LKS-94 → Web Mercator serveryje). */
+val OrthoTiles = ArcLayer("Ortofoto – © gis.vplanas.lt (Vilniaus m. savivaldybė)",
+    "https://gis.vplanas.lt/arcgis/rest/services/Baziniai_zemelapiai/ORTOFOTO_2019_LKS_FULL/MapServer",
+    null, "jpg", false)

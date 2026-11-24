@@ -40,17 +40,25 @@ class PlanOverlayView(ctx: Context) : View(ctx) {
 
     private fun drawPlans(c: Canvas) {
         // teritorijų planavimo plytelės (po PGD planu)
-        val tiles = PlanningTiles.shown
+        for (L in arrayOf(OrthoTiles, PlanningTiles)) drawLayer(c, L)
+        drawPgd(c)
+    }
+
+    private fun drawLayer(c: Canvas, L: ArcLayer) {
+        val tiles = L.shown
         if (tiles.isNotEmpty()) {
             val src = floatArrayOf(0f, 0f, 256f, 0f, 256f, 256f, 0f, 256f)
             for ((k, q) in tiles) {
-                val b = PlanningTiles.get(k) ?: continue
+                val b = L.get(k) ?: continue
                 if (b.width != 256) { src[2] = b.width.toFloat(); src[4] = b.width.toFloat(); src[5] = b.height.toFloat(); src[7] = b.height.toFloat() }
                 if (!m.setPolyToPoly(src, 0, q, 0, 4)) continue
                 val sc0 = kotlin.math.hypot(q[2] - q[0], q[3] - q[1]) / b.width
                 c.drawBitmap(b, m, if (sc0 > 2f) sharp else smooth)
             }
         }
+    }
+
+    private fun drawPgd(c: Canvas) {
         val sc = PgdOverlay.screenCorners
         if (ver != PgdOverlay.version) { ver = PgdOverlay.version; img = null }
         if (sc == null || PgdOverlay.corners == null) return

@@ -5664,19 +5664,20 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * Teritorijų planavimo plytelės (PlanningTiles) arti žemės (< ~10 km): kampų vietos ekrane dvigubu tikslumu,
      * piešia PlanOverlayView. Pirma – stambesnis lygis (kol kraunasi tikslusis).
      */
-    private fun updatePlanning() {
-        if (!PlanningTiles.enabled || !freeView || focus != 0 || flight != null || helioMode() || southUp || altNow() > 0.0004 || centreLat.isNaN()) {
-            PlanningTiles.shown = emptyList(); return
+    private fun updatePlanning() { updateLayer(OrthoTiles); updateLayer(PlanningTiles) }
+    private fun updateLayer(L: ArcLayer) {
+        if (!L.enabled || !freeView || focus != 0 || flight != null || helioMode() || southUp || altNow() > 0.0004 || centreLat.isNaN()) {
+            L.shown = emptyList(); return
         }
         val altM = altNow() / EARTH_R * 6_371_000.0
         val mpp = 2.0 * altM * kotlin.math.tan(Math.toRadians(20.0)) / maxOf(lastH, 1)
-        val z = PlanningTiles.zoomFor(mpp, centreLat)
+        val z = L.zoomFor(mpp, centreLat)
         val keys = (if (z - 2 >= 12) GlobeTiles.around(centreLat, centreLon, z - 2, 1) else emptyList()) + GlobeTiles.around(centreLat, centreLon, z, 2)
         val out = ArrayList<Pair<GlobeTiles.Key, FloatArray>>(keys.size)
         val e = DoubleArray(3)
         for (k in keys) {
             val sc = FloatArray(8); var ok = true
-            for ((i, c) in PlanningTiles.corners(k).withIndex()) {
+            for ((i, c) in L.corners(k).withIndex()) {
                 val la = Math.toRadians(c[0]); val lo = Math.toRadians(c[1])
                 eyeOfDir(cos(la) * cos(lo), cos(la) * sin(lo), sin(la), maxOf(0.0, reliefH(c[0], c[1])), e)
                 if (!eyeToScreen(e, sc, i * 2)) { ok = false; break }
@@ -5687,9 +5688,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val minY = minOf(sc[1], sc[3], sc[5], sc[7]); val maxY = maxOf(sc[1], sc[3], sc[5], sc[7])
             if (maxX < 0 || maxY < 0 || minX > lastW || minY > lastH) continue
             out.add(k to sc)
-            PlanningTiles.request(k)
+            L.request(k)
         }
-        PlanningTiles.shown = out
+        L.shown = out
     }
 
     /** Mano padėtis sluoksnyje arti žemės (GL smeigtukas būtų po planu): taškas ir tikslumo apskritimas ekrane. */
@@ -5697,7 +5698,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // tik Vault paties sprendinys (programos padėtis / RTK), ne lusto fiksas; išjungus 🛰 – žymeklio nėra
         val me = LiveRtk.ownPos()
         if (me == null || !freeView || focus != 0 || flight != null || helioMode() || southUp || altNow() > 0.0004 ||
-            (PgdOverlay.screenCorners == null && PlanningTiles.shown.isEmpty())) { PgdOverlay.meScreen = null; return }
+            (PgdOverlay.screenCorners == null && PlanningTiles.shown.isEmpty() && OrthoTiles.shown.isEmpty())) { PgdOverlay.meScreen = null; return }
         val e = DoubleArray(3); val o = FloatArray(4)
         fun at(lat: Double, lon: Double, i: Int): Boolean {
             val la = Math.toRadians(lat); val lo = Math.toRadians(lon)
@@ -6189,6 +6190,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         tileProg = program(TILE_VS, TILE_FS); tileGl.clear(); pgdTex = 0; pgdVer = -1
         GlobeTiles.init(appCtx.filesDir)
         PlanningTiles.dir = java.io.File(appCtx.filesDir, "vplanas")
+        OrthoTiles.dir = java.io.File(appCtx.filesDir, "vplanas_orto")
+        OrthoTiles.enabled = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("ortho", false)
         PgdOverlay.dark = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("pgd_dark", false)
         PlanningTiles.enabled = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("planning", false)
         Thread { try { if (PgdOverlay.bitmap == null) PgdOverlay.restore(appCtx) } catch (_: Exception) {} }.start()
@@ -8893,6 +8896,7 @@ class DraggablePanel(
     var onViewPgd: (() -> Unit)? = null
     /** Vilniaus teritorijų planavimas (gis.vplanas.lt) ant gaublio – įjungti / išjungti. */
     val pgdDarkCb = CheckBox(context).apply { text = "PGD planas tamsus (naktinis, kaip AlpineQuest)"; textSize = 13f }
+    val orthoCb = CheckBox(context).apply { text = "Vilniaus ortofoto (aerofoto ~5 cm, gis.vplanas.lt) – priartinus gaublį"; textSize = 13f }
     val planningCb = CheckBox(context).apply { text = "Teritorijų planavimas (Vilnius, gis.vplanas.lt) – priartinus gaublį"; textSize = 13f }
     private val pgdViewBtn = Button(context).apply { text = "Plano peržiūra (plokščiai)"; textSize = 12f; isAllCaps = false }
     private val pgdBtn = Button(context).apply {
@@ -8996,6 +9000,7 @@ class DraggablePanel(
         bodyInner.addView(pgdBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(pgdViewBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(pgdDarkCb)
+        bodyInner.addView(orthoCb)
         bodyInner.addView(planningCb)
 
         addView(panel)
@@ -10769,8 +10774,9 @@ class MainActivity : AppCompatActivity() {
             val att = TextView(this).apply { textSize = 9f; setTextColor(0xDDFFFFFF.toInt()); setShadowLayer(3f, 0f, 0f, 0xFF000000.toInt())
                 text = GlobeTiles.ATTRIBUTION; visibility = View.GONE }
             val tk = object : Runnable { override fun run() {
-                val pl = PlanningTiles.shown.isNotEmpty()
-                att.text = if (pl) GlobeTiles.ATTRIBUTION + " · " + PlanningTiles.ATTRIBUTION else GlobeTiles.ATTRIBUTION
+                val pl = PlanningTiles.shown.isNotEmpty() || OrthoTiles.shown.isNotEmpty()
+                att.text = GlobeTiles.ATTRIBUTION + (if (OrthoTiles.shown.isNotEmpty()) " · " + OrthoTiles.ATTRIBUTION else "") +
+                    (if (PlanningTiles.shown.isNotEmpty()) " · " + PlanningTiles.ATTRIBUTION else "")
                 att.visibility = if (pl || System.currentTimeMillis() - GlobeTiles.shownMs < 2_000L) View.VISIBLE else View.GONE
                 att.postDelayed(this, 1000L) } }
             att.post(tk)
@@ -11003,6 +11009,12 @@ class MainActivity : AppCompatActivity() {
         panel.pgdDarkCb.isChecked = PgdOverlay.dark
         panel.pgdDarkCb.setOnCheckedChangeListener { _, on -> PgdOverlay.dark = on
             getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("pgd_dark", on).apply() }
+        panel.orthoCb.isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("ortho", false)
+        panel.orthoCb.setOnCheckedChangeListener { _, on ->
+            OrthoTiles.enabled = on
+            getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("ortho", on).apply()
+            if (on) Toast.makeText(this, "Vilniaus ortofoto: laisvame gaublyje priartinkite Vilnių (< 10 km) – ${OrthoTiles.ATTRIBUTION}", Toast.LENGTH_LONG).show()
+        }
         panel.planningCb.isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("planning", false)
         panel.planningCb.setOnCheckedChangeListener { _, on ->
             PlanningTiles.enabled = on

@@ -2733,6 +2733,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // 2b) Žemė gaublio viduryje (pasvirusi į Polaris, sukasi realiu laiku)
         drawEarth()
         drawTiles()
+        drawPgd()
         drawGlobeGrid()
         drawEquatorScale()
         if (SpaceLive.enabled) drawAurora()            // TKS ir zondai pašalinti (ne ta tema)
@@ -5583,6 +5584,71 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (drawn > 0) GlobeTiles.shownMs = System.currentTimeMillis()
     }
 
+    // ---------------- PGD PLANAS (AlpineQuest kalibruotas vaizdas) ant gaublio ----------------
+    private var pgdTex = 0; private var pgdVer = -1; private var pgdVbo: FloatBuffer? = null; private var pgdDir = DoubleArray(3)
+    private fun drawPgd() {
+        if (tileProg == 0 || focus != 0 || flight != null) return
+        if (pgdVer != PgdOverlay.version) {
+            pgdVer = PgdOverlay.version
+            if (pgdTex != 0) { GLES20.glDeleteTextures(1, intArrayOf(pgdTex), 0); pgdTex = 0 }
+            pgdVbo = null
+            val bmp = PgdOverlay.bitmap; val c = PgdOverlay.corners
+            if (bmp != null && !bmp.isRecycled && c != null) {
+                val ids = IntArray(1); GLES20.glGenTextures(1, ids, 0); pgdTex = ids[0]
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, pgdTex)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+                GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
+                GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
+                // tinklelis: kampai kairė viršus, dešinė viršus, dešinė apačia, kairė apačia – dvitiesinis (lat, lon)
+                val n = TILE_N; val r0 = EARTH_R.toDouble(); val data = FloatArray((n + 1) * (n + 1) * 5)
+                for (j in 0..n) for (i in 0..n) {
+                    val u = i.toDouble() / n; val v = j.toDouble() / n
+                    fun mix(k: Int) = (1 - v) * ((1 - u) * c[0][k] + u * c[1][k]) + v * ((1 - u) * c[3][k] + u * c[2][k])
+                    val lat = mix(0); val lon = mix(1)
+                    val la = Math.toRadians(lat); val lo = Math.toRadians(lon)
+                    val r = r0 * (1.0 + EARTH_RELIEF_X * maxOf(0.0, reliefH(lat, lon)) / 6_371_000.0)
+                    val d = doubleArrayOf(cos(la) * cos(lo), cos(la) * sin(lo), sin(la))
+                    val o = (j * (n + 1) + i) * 5
+                    data[o] = (r * d[0]).toFloat(); data[o + 1] = (r * d[1]).toFloat(); data[o + 2] = (r * d[2]).toFloat()
+                    data[o + 3] = u.toFloat(); data[o + 4] = v.toFloat()
+                    if (i == n / 2 && j == n / 2) pgdDir = d
+                }
+                pgdVbo = floatBuf(data)
+            }
+        }
+        val vbo = pgdVbo ?: return
+        if (!PgdOverlay.visible || pgdTex == 0) return
+        val m = earthMat; val cw = camPos
+        val cm = DoubleArray(3) { i -> m[i * 4] * cw[0].toDouble() + m[i * 4 + 1] * cw[1].toDouble() + m[i * 4 + 2] * cw[2].toDouble() }
+        if (pgdDir[0] * cm[0] + pgdDir[1] * cm[1] + pgdDir[2] * cm[2] < EARTH_R * 0.999) return   // už horizonto
+        val prog = tileProg
+        GLES20.glUseProgram(prog)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uMVP"), 1, false, earthMvp, 0)
+        // apšvietimas – visada šviesus (šviesa iš plano centro krypties), kad planas matytųsi ir naktį
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uModel"), 1, false, FloatArray(16).also { android.opengl.Matrix.setIdentityM(it, 0) }, 0)
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), pgdDir[0].toFloat(), pgdDir[1].toFloat(), pgdDir[2].toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uAlpha"), 0.9f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uRk"), reliefK)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(prog, "uTex"), 0)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        resetAttribs()
+        val lp = GLES20.glGetAttribLocation(prog, "aPos"); val lu = GLES20.glGetAttribLocation(prog, "aUV")
+        GLES20.glEnableVertexAttribArray(lp); GLES20.glEnableVertexAttribArray(lu)
+        val depthWas = GLES20.glIsEnabled(GLES20.GL_DEPTH_TEST); val blendWas = GLES20.glIsEnabled(GLES20.GL_BLEND)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, pgdTex)
+        vbo.position(0); GLES20.glVertexAttribPointer(lp, 3, GLES20.GL_FLOAT, false, 20, vbo)
+        vbo.position(3); GLES20.glVertexAttribPointer(lu, 2, GLES20.GL_FLOAT, false, 20, vbo)
+        vbo.position(0); tileIdx.position(0)
+        GLES20.glDrawElements(GLES20.GL_TRIANGLES, TILE_N * TILE_N * 6, GLES20.GL_UNSIGNED_SHORT, tileIdx)
+        if (depthWas) GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        if (!blendWas) GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
     /** Laisvo gaublio ekrano centras: platuma, ilguma (°), aukštis virš paviršiaus (km), tinklelio žingsnis (°); NaN – ne laisvas gaublys. */
     @Volatile var centreLat = Double.NaN; private set
     @Volatile var centreLon = Double.NaN; private set
@@ -5931,8 +5997,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Įkelia assets/earth.jpg ir sukuria rutulį su lygiakampe tekstūra. */
     private fun buildEarth() {
         earthProg = program(EARTH_VS, EARTH_FS)
-        tileProg = program(TILE_VS, TILE_FS); tileGl.clear()
+        tileProg = program(TILE_VS, TILE_FS); tileGl.clear(); pgdTex = 0; pgdVer = -1
         GlobeTiles.init(appCtx.filesDir)
+        Thread { try { if (PgdOverlay.bitmap == null) PgdOverlay.restore(appCtx) } catch (_: Exception) {} }.start()
         val main = Handler(Looper.getMainLooper())
         try {
             appCtx.assets.open("earth.jpg").use { ins ->
@@ -8613,6 +8680,12 @@ class DraggablePanel(
     fun setSp3Busy(busy: Boolean) { sp3UpdateBtn.isEnabled = !busy; if (busy) sp3Status.text = "SP3 ir BRDC: atsisiunčiama…" }
 
     var onPickSp3: (() -> Unit)? = null
+    /** „Atidaryti PGD planą“ – AlpineQuest kalibruotas vaizdas ant gaublio; ilgai palaikius – pašalinti. */
+    var onOpenPgd: (() -> Unit)? = null
+    var onClearPgd: (() -> Unit)? = null
+    private val pgdBtn = Button(context).apply {
+        text = "Atidaryti PGD planą (AlpineQuest)"; textSize = 12f; isAllCaps = false
+    }
     private val sp3Btn = Button(context).apply {
         text = "Pasirinkti SP3 aplanką"
         textSize = 12f
@@ -8708,6 +8781,7 @@ class DraggablePanel(
         bodyInner.addView(coordSigInput)
         bodyInner.addView(coordUse)
         bodyInner.addView(sp3Btn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
+        bodyInner.addView(pgdBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
 
         addView(panel)
         addView(bubble)
@@ -8718,6 +8792,8 @@ class DraggablePanel(
         coldBtn.setOnClickListener { onColdStart?.invoke() }
         screenBtn.setOnClickListener { onScreenTest?.invoke() }
         sp3Btn.setOnClickListener { onPickSp3?.invoke() }
+        pgdBtn.setOnClickListener { onOpenPgd?.invoke() }
+        pgdBtn.setOnLongClickListener { onClearPgd?.invoke(); true }
         sp3UpdateBtn.setOnClickListener { onUpdateSp3?.invoke() }
 
         bubble.setOnTouchListener { _, ev -> bubbleGd.onTouchEvent(ev); false }
@@ -9661,6 +9737,23 @@ class MainActivity : AppCompatActivity() {
             return "Download/GNSS/$name"
         }
         val f = File(getExternalFilesDir(null), name); f.writeBytes(bytes); return f.absolutePath
+    }
+
+    /** PGD failas (AlpineQuest): nuskaitomas fone, išsaugomas ir piešiamas ant gaublio. */
+    private val pgdPickLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) openPgd(uri)
+    }
+    private fun openPgd(uri: Uri) {
+        Thread {
+            val err = try {
+                val name = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "planas"
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: throw Exception("nepavyko atidaryti")
+                PgdOverlay.load(this, bytes, name)
+            } catch (e: Exception) { e.message ?: "klaida" }
+            runOnUiThread {
+                Toast.makeText(this, if (err == null) "PGD planas „${PgdOverlay.name}“ įkeltas – priartinkite gaublį ties ta vieta (ilgai palaikius mygtuką – pašalinti)" else "PGD neįkeltas: $err", Toast.LENGTH_LONG).show()
+            }
+        }.start()
     }
 
     private val sp3PickLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -10622,6 +10715,8 @@ class MainActivity : AppCompatActivity() {
         panel.onColdStart = { askColdStart() }
         panel.onScreenTest = { runScreenTest() }
         panel.onPickSp3 = { launchSp3Picker() }
+        panel.onOpenPgd = { try { pgdPickLauncher.launch(arrayOf("*/*")) } catch (e: Exception) { Toast.makeText(this, "Failo pasirinkimas nepasiekiamas", Toast.LENGTH_SHORT).show() } }
+        panel.onClearPgd = { PgdOverlay.clear(this); Toast.makeText(this, "PGD planas pašalintas", Toast.LENGTH_SHORT).show() }
         panel.onUpdateSp3 = { updateSp3() }
         refreshSp3Status()
         panel.setRecording(NavRecordService.running || !recordEnded)

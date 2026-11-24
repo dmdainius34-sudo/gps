@@ -207,18 +207,20 @@ object LiveRtk {
     /**
      * GLONASS (FDMA) – kiekvienas palydovas siunčia savo dažniu, o imtuvo vėlinimas kiekvienam dažnio kanalui kitoks (lusto
      * dažnių poslinkis, iki keliolikos ar keliasdešimt m). Poslinkis įvertinamas pagal palydovo liekanas (lėtas vidurkis,
-     * τ ≈ 60 epochų, tik kai GLONASS palydovų ≥ 4) ir atimamas iš pseudoatstumo. Vidurkis per palydovus – 0 (jį sugeria GLONASS laikrodis).
+     * τ ≈ 120 epochų, tik liekanos < 30 m, kai tokių GLONASS palydovų ≥ 4, riba ±15 m) ir atimamas iš pseudoatstumo. Vidurkis per palydovus – 0 (jį sugeria GLONASS laikrodis).
      */
     object GloBias {
         private val b = HashMap<Int, Double>(); private val n = HashMap<Int, Int>()
         @Synchronized fun of(svid: Int) = if ((n[svid] ?: 0) >= 10) b[svid] ?: 0.0 else 0.0
         @Synchronized fun update(res: Map<Int, Double>) {
-            if (res.size < 4) return
-            val m = res.values.average()
-            for ((k, v) in res) {
+            // tik nedidelės liekanos (< 30 m): didesnės – atspindžiai, ne lusto kanalo poslinkis
+            val ok = res.filterValues { kotlin.math.abs(it) < 30.0 }
+            if (ok.size < 4) return
+            val m = ok.values.sorted()[ok.size / 2]
+            for ((k, v) in ok) {
                 val c = (n[k] ?: 0) + 1; n[k] = c
-                val a = 1.0 / minOf(c, 60)
-                b[k] = ((b[k] ?: 0.0) + a * (v - m)).coerceIn(-40.0, 40.0)
+                val a = 1.0 / minOf(c, 120)
+                b[k] = ((b[k] ?: 0.0) + a * (v - m)).coerceIn(-15.0, 15.0)
             }
         }
         @Synchronized fun text(): String {

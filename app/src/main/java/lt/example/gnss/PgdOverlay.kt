@@ -21,6 +21,8 @@ object PgdOverlay {
     @Volatile var version = 0; private set
     @Volatile var name = ""; private set
     @Volatile var visible = true
+    /** Plano kampai ekrane (x, y × 4: kairė viršus, dešinė viršus, dešinė apačia, kairė apačia), kai piešiama sluoksniu; null – ne. */
+    @Volatile var screenCorners: FloatArray? = null
 
     private const val FILE = "overlay.pgd"
 

@@ -5628,6 +5628,24 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private val pgdEyeData = FloatArray((TILE_N + 1) * (TILE_N + 1) * 5)
     private var pgdEyeBuf: FloatBuffer? = null
     @Volatile var pgdDiag = ""
+    private val pgdCornerEye = DoubleArray(12)
+    /**
+     * Arti (< ~2 km) planas piešiamas ne GPU, o Android sluoksniu virš gaublio (PlanOverlayView): kampų vietos ekrane
+     * apskaičiuojamos dvigubu tikslumu – GPU arti paviršiaus (float ties Žemės spinduliu) planą rodydavo tarsi iš ~600 m.
+     */
+    private fun pgdScreenCorners(): FloatArray? {
+        if (altNow() > 0.00008) return null
+        val p = camProj; val out = FloatArray(8)
+        for (k in 0..3) {
+            val x = pgdCornerEye[k * 3]; val y = pgdCornerEye[k * 3 + 1]; val z = pgdCornerEye[k * 3 + 2]
+            val cx = p[0] * x + p[4] * y + p[8] * z + p[12]
+            val cy = p[1] * x + p[5] * y + p[9] * z + p[13]
+            val cw = p[3] * x + p[7] * y + p[11] * z + p[15]
+            if (cw <= 1e-12) return null
+            out[k * 2] = ((cx / cw + 1) / 2 * lastW).toFloat(); out[k * 2 + 1] = ((1 - cy / cw) / 2 * lastH).toFloat()
+        }
+        return out
+    }
 
     /**
      * Viršūnės akies sistemoje dvigubu tikslumu (Žemės sukimas, kamera, vilkimas, atstumas – sudėti double, tik maži skirtumai
@@ -5651,6 +5669,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val e2 = u[6] * c0 + u[7] * c1 + u[8] * c2 - dist
             val o = (j * (n + 1) + i) * 5
             pgdEyeData[o] = e0.toFloat(); pgdEyeData[o + 1] = e1.toFloat(); pgdEyeData[o + 2] = e2.toFloat()
+            val ci = when { i == 0 && j == 0 -> 0; i == n && j == 0 -> 1; i == n && j == n -> 2; i == 0 && j == n -> 3; else -> -1 }
+            if (ci >= 0) { pgdCornerEye[ci * 3] = e0; pgdCornerEye[ci * 3 + 1] = e1; pgdCornerEye[ci * 3 + 2] = e2 }
             pgdEyeData[o + 3] = i.toFloat() / n; pgdEyeData[o + 4] = j.toFloat() / n
         }
         val b = pgdEyeBuf ?: floatBuf(pgdEyeData).also { pgdEyeBuf = it }
@@ -5658,7 +5678,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         return b
     }
     private fun drawPgd() {
-        if (tileProg == 0 || focus != 0 || flight != null) return
+        if (tileProg == 0 || focus != 0 || flight != null) { PgdOverlay.screenCorners = null; return }
         if (pgdVer != PgdOverlay.version) {
             pgdVer = PgdOverlay.version
             if (pgdTex != 0) { GLES20.glDeleteTextures(1, intArrayOf(pgdTex), 0); pgdTex = 0 }
@@ -5693,7 +5713,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 pgdVbo = floatBuf(data)
             }
         }
-        if (pgdVbo == null || !PgdOverlay.visible || pgdTex == 0) return
+        if (pgdVbo == null || !PgdOverlay.visible || pgdTex == 0) { PgdOverlay.screenCorners = null; return }
         val eyeVbo = pgdEyeVerts()
         // diagnostika: plano viršutinio krašto ilgis ekrane (px) – tikslus (double) ir paprastas (float) keliai
         try {
@@ -5708,6 +5728,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val lF = len(scr(earthMvp, m0[0], m0[1], m0[2]), scr(earthMvp, m1[0], m1[1], m1[2]))
             pgdDiag = "planas ekrane %.0f px (tiksl.) / %.0f px; aukštis %.1f m".format(java.util.Locale.US, lD, lF, altNow() / EARTH_R * 6_371_000.0)
         } catch (_: Exception) {}
+        val sc = if (eyeVbo != null) pgdScreenCorners() else null
+        PgdOverlay.screenCorners = sc
+        if (sc != null) return                       // arti – piešia PlanOverlayView
         val vbo = eyeVbo ?: pgdVbo ?: return
         val m = earthMat; val cw = camPos
         val cm = DoubleArray(3) { i -> m[i * 4] * cw[0].toDouble() + m[i * 4 + 1] * cw[1].toDouble() + m[i * 4 + 2] * cw[2].toDouble() }
@@ -10284,6 +10307,8 @@ class MainActivity : AppCompatActivity() {
         }
         skyHolder = FrameLayout(this).apply { visibility = View.GONE }
         skyHolder.addView(skyDome, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        // arti žemės PGD planas – Android sluoksniu virš gaublio (kampai iš kameros dvigubu tikslumu)
+        skyHolder.addView(PlanOverlayView(this), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         satCountView = TextView(this).apply {
             textSize = 13f
             setTextColor(0xFFFFFFFF.toInt())

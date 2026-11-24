@@ -10759,7 +10759,9 @@ class MainActivity : AppCompatActivity() {
                     // kameros aukštis virš žemės (pagal GEBCO) – kad matytųsi, kiek dar galima priartinti
                     val camAgl = ci[2] * 1000.0 - maxOf(0.0, sea)
                     val camTxt = if (camAgl < 10_000) "kamera %.0f m virš žemės".format(Locale.US, camAgl) else "kamera %.0f km".format(Locale.US, ci[2])
-                    info.text = "%.5f, %.5f · %s · %s".format(Locale.US, ci[0], ci[1], hTxt, camTxt) +
+                    // arti (< 2 km) – 7 skaitmenys po kablelio (~1 cm), kad taškas, parinktas ortofoto, būtų tikslus etalonas
+                    val dec = if (ci[2] < 2.0) 7 else 5
+                    info.text = "%.${dec}f, %.${dec}f · %s · %s".format(Locale.US, ci[0], ci[1], hTxt, camTxt) +
                         (if (PgdOverlay.corners != null) "\n" + skyDome.pgdDiag() else "")
                 }
                 info.postDelayed(this, 200L)

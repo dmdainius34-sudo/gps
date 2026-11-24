@@ -11298,7 +11298,12 @@ class MainActivity : AppCompatActivity() {
         // naudojame kaip fiksą (kalibravimui, pasiruošimui), o svetimas bandomąsias vietas ignoruojame
         if (loc.isFromMockProvider && loc.extras?.getString("source") == null) return
         @Suppress("DEPRECATION") val ownFix = loc.isFromMockProvider
-        if (!ownFix) AccRef.add("Lustas (Android fiksas)", loc.latitude, loc.longitude, if (loc.hasAltitude()) loc.altitude else Double.NaN)
+        if (!ownFix) {
+            // lustas duoda WGS84 (≈ ITRF) – palyginimui su žinoma vieta (ETRS89) perskaičiuojama taip pat kaip Vault
+            val e = if (Etrs.enabled) Etrs.llh(Etrs.yearOf(System.currentTimeMillis()), loc.latitude, loc.longitude, if (loc.hasAltitude()) loc.altitude else 0.0)
+                else doubleArrayOf(loc.latitude, loc.longitude, loc.altitude)
+            AccRef.add("Lustas (Android fiksas)", e[0], e[1], if (loc.hasAltitude()) e[2] else Double.NaN)
+        }
         if (loc.hasAccuracy()) Readiness.onFix(loc.accuracy.toDouble())
         obsLatNow = loc.latitude; obsLonNow = loc.longitude
         lastFixWallMs = System.currentTimeMillis(); lastFixAcc = if (loc.hasAccuracy()) loc.accuracy.toDouble() else Double.NaN

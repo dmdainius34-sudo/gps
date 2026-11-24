@@ -97,6 +97,11 @@ object AppDiag {
             "; BeiDou iš BRDC (SP3 jų neturi) paskutinėje epochoje: ${LiveRtk.bdsFromBrdc}")
         appendLine("Silpni palydovai (iki %.0f dB-Hz žemiau slenksčio, svoris ×%.1f) paskutinėje epochoje: %d. %s".format(Locale.US,
             LiveRtk.SOFT_DB, LiveRtk.WEAK_W, LiveRtk.weakUsed, LiveRtk.GloBias.text()))
+        LiveRtk.sppLast?.let { sp ->
+            val sh = Etrs.shiftNE(Etrs.yearOf(System.currentTimeMillis()), sp.lat, sp.lon)
+            appendLine(if (Etrs.enabled) "Koordinačių sistema: ETRS89 (LKS-94 pagrindas, kaip Lietuvos žemėlapiai ir LitPOS); Vault padėtis perskaičiuota iš ITRF (SP3 orbitos): poslinkis į šiaurę %+.2f m, į rytus %+.2f m. RTK – jau ETRS89 (bazės koordinatės)".format(Locale.US, sh[0], sh[1])
+                else "Koordinačių sistema: ITRF / WGS84 (neperskaičiuota į ETRS89; skirtumas %.2f m)".format(Locale.US, kotlin.math.hypot(sh[0], sh[1])))
+        }
         appendLine("Sąžiningas tikslumas: formalus įvertis keliamas iki stebimos sklaidos stovint (2 min.); dabar sklaida neišlygintos %.1f m, išlygintos (žymeklio) %.1f m".format(Locale.US, LiveRtk.lastRawScatter, LiveRtk.lastOutScatter))
         appendLine("Išmoktas kabinos / aplinkos žemėlapis programos padėtyje: " + (if (CabinMap.useInSpp) "naudojamas (atspindžių kryptys ×0,15, užstotos ×0,4); paskutinėje epochoje sumažinta palydovų: ${LiveRtk.mapWeighted}" else "nenaudojamas"))
         append(AccRef.text())

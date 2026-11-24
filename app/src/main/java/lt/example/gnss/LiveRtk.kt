@@ -432,26 +432,30 @@ object LiveRtk {
         sppHeightCon = hc != null && !hc.h0.isNaN()
         sppSource = if (r != null) "SP3" else "efemeridės iš palydovų"
         AppDiag.orbit(r != null)
-        val real = Readiness.realAcc().let { if (it.isNaN()) f.sol.hacc else maxOf(it, f.sol.hacc) }
+        // ITRF (SP3 / efemeridės) → ETRS89 (LKS-94 pagrindas: Lietuvos žemėlapiai, LitPOS, geodeziniai punktai), ~1 m Lietuvoje
+        val tY = Etrs.yearOf(now)
+        fun toE(x: PositionSolver.Solution) = if (!Etrs.enabled) x else Etrs.llh(tY, x.lat, x.lon, x.h).let { e -> PositionSolver.Solution(e[0], e[1], e[2], x.sats, x.hacc, x.ecef) }
+        val fs = toE(f.sol)
+        val real = Readiness.realAcc().let { if (it.isNaN()) fs.hacc else maxOf(it, fs.hacc) }
         // greitis iš Doplerio – pirmiau, kad išlyginta vieta judant nevėluotų (Google GSDC važiavimai: p50 5,5 → 2,7 m)
         try { DopplerVel.solve(f.sats, f.x)?.let { velLast = it; velMs = now } } catch (_: Exception) {}
         val vNE = velocity()?.let { v -> doubleArrayOf(v.speedH * kotlin.math.cos(Math.toRadians(v.courseDeg)), v.speedH * kotlin.math.sin(Math.toRadians(v.courseDeg))) }
         // judama: jutikliai (žingsniai, judesys) arba Doplerio greitis > 1,5 m/s (sklandžiai važiuojant automobiliu jutikliai gali nieko nerodyti)
         val mv = moving || velocity()?.let { it.speedH > 1.5 && it.sigma < 1.0 } == true
-        val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, mv, vNE)
+        val q = PosFilter.step(now, fs.lat, fs.lon, fs.h, real, mv, vNE)
         // sąžiningas tikslumas: formalus (iš kovariacijos) per optimistiškas – kabinoje / namie žada 0,5 m, o tikra sklaida ~7 m.
         // Stovint – ne mažesnis už stebimą sklaidą per paskutines 2 min. (neišlygintos ir išlygintos padėties RMS apie medianą)
-        scat(rawWin, now, f.sol.lat, f.sol.lon, mv); val sRaw = scatter(rawWin)
+        scat(rawWin, now, fs.lat, fs.lon, mv); val sRaw = scatter(rawWin)
         scat(outWin, now, q[0], q[1], mv); val sOut = scatter(outWin)
         val accOut = maxOf(q[3], sOut, 0.5 * sRaw)
         lastRawScatter = sRaw; lastOutScatter = sOut
-        val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, accOut, f.sol.ecef)
+        val sol = PositionSolver.Solution(q[0], q[1], q[2], fs.sats, accOut, fs.ecef)
         sppLast = sol; sppMs = now
         AccRef.add("Vault (žymeklis, išlyginta)", sol.lat, sol.lon, sol.h)
-        AccRef.add("Vault (neišlyginta)", f.sol.lat, f.sol.lon, f.sol.h)
-        free?.let { AccRef.add("Vault be apribojimų (aukščio, krano, vietos)", it.sol.lat, it.sol.lon, it.sol.h) }
-        vaultLog(now, f.sol, sol, f.sol.sats, f.sats.count { it.cn0 < CnoMask.min }, hc != null && !hc.h0.isNaN(), Crane.sppActive, CnoMask.min)
-        AppDiag.pos(obs.size, PositionSolver.Solution(f.sol.lat, f.sol.lon, f.sol.h, f.sol.sats, maxOf(f.sol.hacc, lastRawScatter), f.sol.ecef), hc != null && !hc.h0.isNaN(), sol,
+        AccRef.add("Vault (neišlyginta)", fs.lat, fs.lon, fs.h)
+        free?.let { toE(it.sol).let { e -> AccRef.add("Vault be apribojimų (aukščio, krano, vietos)", e.lat, e.lon, e.h) } }
+        vaultLog(now, fs, sol, fs.sats, f.sats.count { it.cn0 < CnoMask.min }, hc != null && !hc.h0.isNaN(), Crane.sppActive, CnoMask.min)
+        AppDiag.pos(obs.size, PositionSolver.Solution(fs.lat, fs.lon, fs.h, fs.sats, maxOf(fs.hacc, lastRawScatter), f.sol.ecef), hc != null && !hc.h0.isNaN(), sol,
             obs.map { sppSmooth.dopHatch.count(it.sys.code * 1000 + it.svid).toDouble() }.average(), sppSmooth.dopHatch.restarts)
         // naudoti – tik tie, kurių liekana yra (žemiau 10° palydovai lieka f.sats, bet sprendime nedalyvauja)
         val resK = HashMap<String, Double>()

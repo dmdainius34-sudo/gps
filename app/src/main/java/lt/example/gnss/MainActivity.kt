@@ -2364,7 +2364,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val k = EARTH_R / 6371.0
         val c = cos(extraRot); val sn = sin(extraRot)
         // surf – taškas ant Žemės paviršiaus: suplotai Žemei (×30) z suspaudžiamas kaip gaublys
-        val x = (c * km[0] - sn * km[1]) * k; val y = (sn * km[0] + c * km[1]) * k; val z = km[2] * k * (if (surf && earthFlat) FLAT_K.toDouble() else 1.0)
+        val x = (c * km[0] - sn * km[1]) * k; val y = (sn * km[0] + c * km[1]) * k; val z = km[2] * k * (if (surf && earthFlat) flatK.toDouble() else 1.0)
         val m = earthMatLast
         return floatArrayOf((m[0] * x + m[4] * y + m[8] * z).toFloat(), (m[1] * x + m[5] * y + m[9] * z).toFloat(), (m[2] * x + m[6] * y + m[10] * z).toFloat())
     }
@@ -5144,7 +5144,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val la = Math.toRadians(obsLat); val lo = Math.toRadians(obsLon) + fGc + (if (helioMode()) 0.0 else dg * (1.0 - far))
         val k = 0.25 * 1.35
         val m = earthMat
-        val fz = if (earthFlat) FLAT_K else 1f
+        val fz = if (earthFlat) flatK else 1f
         return floatArrayOf((k * cos(la) * cos(lo)).toFloat() + m[12], (k * cos(la) * sin(lo)).toFloat() + m[13], (k * sin(la)).toFloat() * fz + m[14])
     }
 
@@ -5717,7 +5717,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val cm = DoubleArray(3) { i -> m[i * 4] * cw[0].toDouble() + m[i * 4 + 1] * cw[1].toDouble() + m[i * 4 + 2] * cw[2].toDouble() }
         val cl = kotlin.math.sqrt(cm[0] * cm[0] + cm[1] * cm[1] + cm[2] * cm[2]); if (cl < 1e-6) return
         // suplota Žemė: tos krypties taškas paviršiuje – platuma atstatoma (z / k), paviršiaus spindulys toje kryptyje mažesnis
-        val fk = if (earthFlat) FLAT_K.toDouble() else 1.0
+        val fk = if (earthFlat) flatK.toDouble() else 1.0
         val hxy = kotlin.math.hypot(cm[0], cm[1])
         val lat0 = Math.toDegrees(kotlin.math.atan2(cm[2] / fk, hxy)); val lon0 = Math.toDegrees(kotlin.math.atan2(cm[1], cm[0]))
         val sc = cm[2] / cl; val cc = hxy / cl
@@ -6217,7 +6217,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         earthMatLast = earthMat.copyOf()                 // palydovams ir ECEF taškams – tikra (nesuplota) sistema
         // Žemės suplojimas ×30 (varnelė): ašigaliai suspausti, pusiaujas išpūstas – gaublys, smeigtukas, plytelės, tinklelis
-        if (earthFlat) for (i in 8..10) earthMat[i] *= FLAT_K
+        if (earthFlat) { val fk = flatK; for (i in 8..10) earthMat[i] *= fk }
         Matrix.multiplyMM(earthMvp, 0, mvpI, 0, earthMat, 0)
 
         if (earthTex == 0) {
@@ -6328,6 +6328,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Žemės suplojimas (WGS84 f = 1/298,257) padidintas ×30: ašigalio spindulys / pusiaujo = 0,8994. */
     private val FLAT_K = (1.0 - 30.0 / 298.257223563).toFloat()
     @Volatile var earthFlat = false
+    /**
+     * Suplojimas pagal atstumą: laisvame gaublyje artėjant prie paviršiaus (< ~1300 km) jis pamažu išnyksta (< ~250 km – nėra),
+     * kitaip kamera negalėtų priartėti prie suploto paviršiaus (×30 ploja ~400 km ties Lietuva) ir palydovinių plytelių nesimatytų.
+     */
+    private val flatK: Float get() {
+        if (!earthFlat) return 1f
+        val w = if (freeView && focus == 0 && flight == null) sstep(0.01f, 0.05f, zoom - EARTH_R) else 1f
+        return 1f - (1f - FLAT_K) * w
+    }
     private val SIM_MAX_MS = 182L * 86_400_000L
 
     /** Palydovo aukštis virš Žemės (km) pagal konstelaciją. */
@@ -6391,7 +6400,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val m = FloatArray(16)
         java.util.Arrays.fill(m, 0f)
         val k = 1.06f
-        m[0] = k; m[5] = k; m[10] = k * (if (earthFlat) FLAT_K else 1f); m[15] = 1f   // atmosfera suplojama kartu su Žeme
+        m[0] = k; m[5] = k; m[10] = k * (if (earthFlat) flatK else 1f); m[15] = 1f   // atmosfera suplojama kartu su Žeme
         val mvpA = FloatArray(16)
         Matrix.multiplyMM(mvpA, 0, mvpI, 0, m, 0)
         GLES20.glEnable(GLES20.GL_BLEND)

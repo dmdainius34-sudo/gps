@@ -6983,17 +6983,19 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             run {
                 // kūgis – žarijų debesis: į Žemę – raudonos (be užrašo), pro šalį – pilkos (su greičiu)
                 val rnd = java.util.Random(c.id.hashCode().toLong() xor 0x5EED)
+                // pataikiusio tikras plotis didesnis už katalogo kūgį (šoninis smūgis) – rodomas iki pataikymo ribos (+10°), kraštas retesnis
+                val haE = if (toEarth) Math.toRadians((c.halfAngle + Donki.GLANCE_DEG).coerceIn(5.0, 85.0)) else ha
                 val d00 = rs * kotlin.math.cos(ha)
                 val emb = arrayOf(ArrayList<Float>(), ArrayList<Float>(), ArrayList<Float>())
-                for (i in 0 until 1800) {
+                for (i in 0 until (if (toEarth) 2400 else 1500)) {
                     val u = kotlin.math.sqrt(rnd.nextDouble())                    // daugiau dalelių prie priekio
                     val dd = d00 + (cd - d00) * u
-                    val rr = dd * kotlin.math.tan(ha) * kotlin.math.sqrt(rnd.nextDouble())
+                    val rr = dd * kotlin.math.tan(haE) * Math.pow(rnd.nextDouble(), 0.6)
                     pt(rnd.nextDouble() * 2 * Math.PI, rr, dd).forEach { emb[i % 3].add(it) }
                 }
                 val tt = (System.nanoTime() / 1e9).toFloat()
                 val ecol = if (toEarth) arrayOf(floatArrayOf(1f, 0.18f, 0.05f), floatArrayOf(1f, 0.42f, 0.08f), floatArrayOf(1f, 0.75f, 0.25f))
-                    else arrayOf(floatArrayOf(0.55f, 0.55f, 0.58f), floatArrayOf(0.7f, 0.7f, 0.72f), floatArrayOf(0.85f, 0.85f, 0.88f))
+                    else arrayOf(floatArrayOf(0.25f, 0.45f, 1f), floatArrayOf(0.35f, 0.75f, 1f), floatArrayOf(0.7f, 0.9f, 1f))   // šaltos – pro šalį
                 GLES20.glUseProgram(dotProg)
                 GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(dotProg, "uMVP"), 1, false, mvpI, 0)
                 GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)

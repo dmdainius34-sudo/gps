@@ -194,6 +194,8 @@ object LiveRtk {
     fun phaseIds(): Set<String> = if (enabled && System.currentTimeMillis() - lastMs < 5_000L) engine.lastPhaseIds else emptySet()
     /** Paskutinė programos padėtis skaičiuota su žinomu aukščiu. */
     @Volatile var sppHeightCon = false
+    /** Kiek BeiDou palydovų paskutinėje epochoje pridėta iš BRDC (SP3 jų neturi). */
+    @Volatile var bdsFromBrdc = 0
         private set
     /** Kiek palydovų panaudojo programos padėtis (šviežia – iki 5 s); null – neskaičiuojama. */
     fun sppUsed(): Int? = sppLast?.takeIf { System.currentTimeMillis() - sppMs < 5_000L }?.sats
@@ -307,7 +309,16 @@ object LiveRtk {
         }
         SatStats.tgdN = tgdN; SatStats.tgdOf = obs.count { (it.sys == 'G' || it.sys == 'E') && !it.ifree }
         fun fit(hc: Sp3V5.HCon?) = try {
-            if (r != null) Sp3V5.solve(ep.week, ep.tow, obsSp3, r, isb = true, raim = true, hCon = hc)
+            if (r != null) {
+                // SP3 (CODE) turi tik GPS, GLONASS ir Galileo – BeiDou palydovai pridedami iš transliuojamų efemeridžių (BRDC),
+                // su savo laikrodžio poslinkiu (isb): daugiau palydovų ir geresnė geometrija
+                val sp = Sp3V5.prepare(ep.week * 604_800.0 + ep.tow, obsSp3, r)
+                val have = sp.map { it.sys to it.svid }.toSet()
+                val bds = prepareBroadcast(ep.t, obs.filter { it.sys == 'C' && (it.sys to it.svid) !in have })
+                bdsFromBrdc = bds.size
+                if (bds.isEmpty()) Sp3V5.solveSats(ep.tow, sp, isb = true, raim = true, hCon = hc)
+                else Sp3V5.solveSats(ep.tow, sp + bds, isb = true, raim = true, hCon = hc)
+            }
             else Sp3V5.solveSats(ep.tow, prepareBroadcast(ep.t, obs), isb = true, raim = true, hCon = hc)
         } catch (_: Exception) { null }
         // žinomas aukštis (įvestas ranka): kai palydovų pakanka – patikra, ar jis čia tinka (be barometro kitaip nežinoma)

@@ -93,7 +93,8 @@ object AppDiag {
                 fd.average(), fd.maxOf { abs(it) }, if (KnownHeight.conflict) "NENAUDOJAMAS (nesutampa)" else "tinka"))
         }
         if (orbSp3 + orbBr > 0) appendLine("Orbitos programos padėtyje: SP3 %s, transliuojamos efemeridės %s; persijungimų %d (kiekvienas – kitas palydovų rinkinys, padėtis gali šokti). %s".format(Locale.US,
-            pct(orbSp3, orbSp3 + orbBr), pct(orbBr, orbSp3 + orbBr), orbSw, Sp3Live.loadText()))
+            pct(orbSp3, orbSp3 + orbBr), pct(orbBr, orbSp3 + orbBr), orbSw, Sp3Live.loadText()) +
+            "; BeiDou iš BRDC (SP3 jų neturi) paskutinėje epochoje: ${LiveRtk.bdsFromBrdc}")
         val th = eps.map { it.thr }
         appendLine("Slenkstis: %s, vid. %.0f, min %.0f, max %.0f dB-Hz; automatinių pakeitimų %d".format(Locale.US,
             if (CnoMask.auto) "automatinis" else "rankinis", th.average(), th.minOrNull() ?: 0.0, th.maxOrNull() ?: 0.0, thrs.size))

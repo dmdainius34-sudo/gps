@@ -26,6 +26,8 @@ import kotlin.math.tan
  */
 object GlobeTiles {
     const val MAX_Z = 14
+    /** NLO varnelė: rodyti palydovinę nuotrauką (išjungus – tik gaublio tekstūra, ortofoto ir planai). */
+    @Volatile var enabled = true
     const val MIN_Z = 3
     const val ATTRIBUTION = "Sentinel-2 cloudless – s2maps.eu, EOX IT Services GmbH (modifikuoti Copernicus Sentinel 2016–2017 m. duomenys), CC BY 4.0"
     private val LAYERS = listOf("s2cloudless_3857")

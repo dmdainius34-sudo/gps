@@ -5557,7 +5557,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
      * ir tikslusis lygis pagal ekrano raišką aplink tašką, į kurį žiūrima. Plytelės kaupiamos atmintyje (GlobeTiles).
      */
     private fun drawTiles() {
-        if (tileProg == 0 || focus != 0 || flight != null || earthTex == 0) return
+        if (tileProg == 0 || focus != 0 || flight != null || earthTex == 0 || !GlobeTiles.enabled) { GlobeTiles.wanted = emptySet(); return }
         val m = earthMat; val r0 = EARTH_R.toDouble()
         val cw = camPos
         val cm = DoubleArray(3) { i -> m[i * 4] * cw[0].toDouble() + m[i * 4 + 1] * cw[1].toDouble() + m[i * 4 + 2] * cw[2].toDouble() }
@@ -6191,6 +6191,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GlobeTiles.init(appCtx.filesDir)
         PlanningTiles.dir = java.io.File(appCtx.filesDir, "vplanas")
         OrthoTiles.dir = java.io.File(appCtx.filesDir, "vplanas_orto")
+        GlobeTiles.enabled = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sat_img", true)
         OrthoTiles.enabled = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("ortho", false)
         PgdOverlay.dark = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("pgd_dark", false)
         PlanningTiles.enabled = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("planning", false)
@@ -8896,6 +8897,7 @@ class DraggablePanel(
     var onViewPgd: (() -> Unit)? = null
     /** Vilniaus teritorijų planavimas (gis.vplanas.lt) ant gaublio – įjungti / išjungti. */
     val pgdDarkCb = CheckBox(context).apply { text = "PGD planas tamsus (naktinis, kaip AlpineQuest)"; textSize = 13f }
+    val satImgCb = CheckBox(context).apply { text = "Palydovinė nuotrauka (Sentinel-2, 10 m) – priartinus gaublį"; textSize = 13f }
     val orthoCb = CheckBox(context).apply { text = "Vilniaus ortofoto (aerofoto ~5 cm, gis.vplanas.lt) – priartinus gaublį"; textSize = 13f }
     val planningCb = CheckBox(context).apply { text = "Teritorijų planavimas (Vilnius, gis.vplanas.lt) – priartinus gaublį"; textSize = 13f }
     private val pgdViewBtn = Button(context).apply { text = "Plano peržiūra (plokščiai)"; textSize = 12f; isAllCaps = false }
@@ -9000,6 +9002,7 @@ class DraggablePanel(
         bodyInner.addView(pgdBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(pgdViewBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(pgdDarkCb)
+        bodyInner.addView(satImgCb)
         bodyInner.addView(orthoCb)
         bodyInner.addView(planningCb)
 
@@ -10756,13 +10759,9 @@ class MainActivity : AppCompatActivity() {
                     val hTxt = elevVal?.takeIf { elevKey == key }?.let { e ->
                         if (e <= 0.5 && sea < -5) "%.0f m".format(Locale.US, sea) else "%.0f m".format(Locale.US, e) }
                         ?: "%.0f m".format(Locale.US, if (sea < -5) sea else maxOf(0.0, sea))     // be minuso – virš jūros, su minusu – gylis
-                    // kameros aukštis virš žemės (pagal GEBCO) – kad matytųsi, kiek dar galima priartinti
-                    val camAgl = ci[2] * 1000.0 - maxOf(0.0, sea)
-                    val camTxt = if (camAgl < 10_000) "kamera %.0f m virš žemės".format(Locale.US, camAgl) else "kamera %.0f km".format(Locale.US, ci[2])
                     // arti (< 2 km) – 7 skaitmenys po kablelio (~1 cm), kad taškas, parinktas ortofoto, būtų tikslus etalonas
                     val dec = if (ci[2] < 2.0) 7 else 5
-                    info.text = "%.${dec}f, %.${dec}f · %s · %s".format(Locale.US, ci[0], ci[1], hTxt, camTxt) +
-                        (if (PgdOverlay.corners != null) "\n" + skyDome.pgdDiag() else "")
+                    info.text = "%.${dec}f, %.${dec}f · %s".format(Locale.US, ci[0], ci[1], hTxt)
                 }
                 info.postDelayed(this, 200L)
             } }
@@ -11011,6 +11010,9 @@ class MainActivity : AppCompatActivity() {
         panel.pgdDarkCb.isChecked = PgdOverlay.dark
         panel.pgdDarkCb.setOnCheckedChangeListener { _, on -> PgdOverlay.dark = on
             getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("pgd_dark", on).apply() }
+        panel.satImgCb.isChecked = GlobeTiles.enabled
+        panel.satImgCb.setOnCheckedChangeListener { _, on -> GlobeTiles.enabled = on
+            getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sat_img", on).apply() }
         panel.orthoCb.isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("ortho", false)
         panel.orthoCb.setOnCheckedChangeListener { _, on ->
             OrthoTiles.enabled = on

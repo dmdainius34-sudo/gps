@@ -2583,7 +2583,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val t = (System.nanoTime() - t0) / 1e9f
 
         // Zoom: kameros atstumas kiekvieną kadrą; artima riba mažėja priartinus (kad Žemė nebūtų nukirpta)
-        val near = ((zoom - EARTH_R) * 0.3f).coerceIn(0.000002f, 0.1f)
+        val near = ((zoom - EARTH_R) * 0.3f).coerceIn(0.0000002f, 0.1f)
         Matrix.perspectiveM(proj, 0, 40f, aspectNow, near, if (zoom > EARTH_R + SOLAR_ZOOM) zoom + GALAXY_DEPTH else 60f)
         proj[9] = if (observerView() || (freeView && focus == 0)) 0f else 0.3f   // stebėtojo režime horizontas, laisvame gaublyje – taškas po kamera ekrano viduryje
         Matrix.setIdentityM(view, 0)
@@ -2675,7 +2675,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         // Gylio efektas (paralaksas): pakreipus planšetę kamera truputį pasislenka į šoną – artimi kūnai (Žemė, palydovai, Mėnulis)
         // pasislenka daugiau nei tolimos žvaigždės, todėl gaublys atrodo „iškilęs“ virš ekrano
         if (parallaxOn && flight == null && (parX != 0f || parY != 0f)) {
-            val ref = if (focus != 0) focusZoom else sqrt(camPos[0] * camPos[0] + camPos[1] * camPos[1] + camPos[2] * camPos[2]).coerceAtLeast(zoom - EARTH_R)
+            // laisvame gaublyje – pagal aukštį virš paviršiaus (kitaip priartinus vaizdas drebėdavo ir siūbuodavo nuo planšetės judesių)
+            val ref = if (focus != 0) focusZoom else if (freeView) (zoom - EARTH_R).coerceAtLeast(0f) * 0.3f
+                else sqrt(camPos[0] * camPos[0] + camPos[1] * camPos[1] + camPos[2] * camPos[2]).coerceAtLeast(zoom - EARTH_R)
             val k = 0.35f * ref
             val inv = FloatArray(16)
             if (Matrix.invertM(inv, 0, proj, 0)) {
@@ -4741,7 +4743,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val f = if (zoom > EARTH_R + SOLAR_ZOOM) Math.pow(factor.toDouble(), 2.5).toFloat() else factor
         // arčiausiai ~300 m virš žemės (laisvame gaublyje reljefas tada tikro aukščio); stebėtojo vaizde – kaip anksčiau (atstumas ≥ 10 km)
         val ground = if (centreLat.isNaN()) 0.0 else EARTH_R * maxOf(0.0, reliefH(centreLat, centreLon)) / 6_371_000.0
-        zoom = EARTH_R + ((zoom - EARTH_R) / f).coerceIn((ground + 0.000012).toFloat(), maxZoomOut())
+        // šalia įkelto PGD plano – iki ~30 m virš žemės (matyti plano pikseliai); kitaip ~300 m (palydovinė nuotrauka stambesnė nebūna)
+        val nearPlan = PgdOverlay.visible && !centreLat.isNaN() && PgdOverlay.centre()?.let { c -> PositionSolver.horizDist(centreLat, centreLon, c[0], c[1]) < 3000.0 } == true
+        val minAlt = if (nearPlan) 30.0 / 6_371_000.0 * EARTH_R else 0.000012
+        zoom = EARTH_R + ((zoom - EARTH_R) / f).coerceIn((ground + minAlt).toFloat(), maxZoomOut())
     }
 
     /** Mastelio režimo stadijos: Žemė (iki ~3), Saulės sistema (iki SOLAR_ZOOM), galaktika (iki GALAXY_ZOOM). */

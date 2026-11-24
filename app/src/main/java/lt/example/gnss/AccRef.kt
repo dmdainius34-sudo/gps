@@ -34,7 +34,8 @@ object AccRef {
         if (msl != null && !hEll.isNaN()) Geoid.undulation(lat, lon)?.let { n -> if (s.dh.size < MAX) s.dh.add(hEll - n - msl) }
         if (Crane.valid) {
             val d = PositionSolver.horizDist(lat, lon, Crane.lat, Crane.lon)
-            if (s.ring.size < MAX) s.ring.add(abs(d - Crane.radius))
+            // tik prie krano (≤ 300 m nuo ašies) – toliau (namie) nuokrypis nuo kabinos apskritimo beprasmis
+            if (d <= 300.0 && s.ring.size < MAX) s.ring.add(abs(d - Crane.radius))
         }
     }
 

@@ -36,8 +36,7 @@ object PgdOverlay {
     }
     /** Plano kampai ekrane (x, y × 4: kairė viršus, dešinė viršus, dešinė apačia, kairė apačia), kai piešiama sluoksniu; null – ne. */
     @Volatile var screenCorners: FloatArray? = null
-    /** Dabartinė padėtis (lat, lon, tikslumas m) – iš fiksų; ir jos vieta ekrane (x, y, tikslumo spindulys px) sluoksnyje arti žemės. */
-    @Volatile var me: DoubleArray? = null
+    /** Mano (Vault sprendinio) vieta ekrane: x, y, tikslumo spindulys px – sluoksnyje arti žemės. */
     @Volatile var meScreen: FloatArray? = null
 
     private const val FILE = "overlay.pgd"

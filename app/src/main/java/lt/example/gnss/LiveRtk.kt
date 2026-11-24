@@ -116,6 +116,13 @@ object LiveRtk {
     private const val RETURN_MS = 120_000L
     private const val COAST_MS = 30_000L
 
+    /** Vault paties padėtis (lat, lon, tikslumas m): RTK FIX, kitaip programos padėtis; šviežia ≤ 2,5 s; lusto fiksai nenaudojami. */
+    fun ownPos(now: Long = System.currentTimeMillis()): DoubleArray? {
+        fixOut?.takeIf { now - fixOutMs < 2_500L }?.let { return doubleArrayOf(it.lat, it.lon, it.hacc) }
+        sppLast?.takeIf { now - sppMs < 2_500L }?.let { return doubleArrayOf(it.lat, it.lon, it.hacc) }
+        return null
+    }
+
     private fun outTick(now: Long) {
         if (!MockLoc.armed) { oLat = Double.NaN; return }
         val dt = if (oMs == 0L) 1.0 else ((now - oMs) / 1000.0).coerceIn(0.0, 5.0)

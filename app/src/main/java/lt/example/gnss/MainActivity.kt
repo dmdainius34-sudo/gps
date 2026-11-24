@@ -5694,7 +5694,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Mano padėtis sluoksnyje arti žemės (GL smeigtukas būtų po planu): taškas ir tikslumo apskritimas ekrane. */
     private fun updateMe() {
-        val me = PgdOverlay.me
+        // tik Vault paties sprendinys (programos padėtis / RTK), ne lusto fiksas; išjungus 🛰 – žymeklio nėra
+        val me = LiveRtk.ownPos()
         if (me == null || !freeView || focus != 0 || flight != null || helioMode() || southUp || altNow() > 0.0004 ||
             (PgdOverlay.screenCorners == null && PlanningTiles.shown.isEmpty())) { PgdOverlay.meScreen = null; return }
         val e = DoubleArray(3); val o = FloatArray(4)
@@ -9989,7 +9990,7 @@ class MainActivity : AppCompatActivity() {
                 if (img == null) { Toast.makeText(this, "Plano vaizdo nepavyko paruošti", Toast.LENGTH_SHORT).show(); return@runOnUiThread }
                 val dp = resources.displayMetrics.density
                 val pv = PlanView(this, img) {
-                    if (obsLatNow == 0.0 && obsLonNow == 0.0) null else doubleArrayOf(obsLatNow, obsLonNow, lastFixAcc)
+                    LiveRtk.ownPos()
                 }
                 val dlg = android.app.Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
                 val root = android.widget.FrameLayout(this)
@@ -11295,7 +11296,6 @@ class MainActivity : AppCompatActivity() {
         @Suppress("DEPRECATION") val ownFix = loc.isFromMockProvider
         if (loc.hasAccuracy()) Readiness.onFix(loc.accuracy.toDouble())
         obsLatNow = loc.latitude; obsLonNow = loc.longitude
-        PgdOverlay.me = doubleArrayOf(loc.latitude, loc.longitude, if (loc.hasAccuracy()) loc.accuracy.toDouble() else Double.NaN)
         lastFixWallMs = System.currentTimeMillis(); lastFixAcc = if (loc.hasAccuracy()) loc.accuracy.toDouble() else Double.NaN
         if (loc.hasAltitude()) obsHNow = loc.altitude
         if (loc.hasSpeed() && loc.hasBearing() && loc.speed >= CourseHeading.MIN_SPEED &&

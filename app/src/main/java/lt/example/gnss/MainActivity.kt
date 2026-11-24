@@ -9743,6 +9743,17 @@ class MainActivity : AppCompatActivity() {
     private val pgdPickLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) openPgd(uri)
     }
+    /** „Atidaryti su Vault“ iš failų tvarkyklės (VIEW su .pgd failu). */
+    private fun handleViewIntent(i: Intent?) {
+        if (i?.action != Intent.ACTION_VIEW) return
+        val u = i.data ?: return
+        i.action = null   // pasukus ekraną neatidaryti dar kartą
+        openPgd(u)
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent); setIntent(intent); handleViewIntent(intent)
+    }
+
     private fun openPgd(uri: Uri) {
         Thread {
             val err = try {
@@ -9831,6 +9842,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleViewIntent(intent)   // atidaryta per „Atidaryti su Vault“ (.pgd)
         // paleidimo animacija (Android 12+) rodoma ~1,1 s: pirmas kadras atidedamas, kol ji pasibaigia
         if (Build.VERSION.SDK_INT >= 31 && savedInstanceState == null) {
             val t0 = android.os.SystemClock.uptimeMillis()

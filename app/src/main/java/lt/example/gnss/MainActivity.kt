@@ -4756,7 +4756,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val ground = if (centreLat.isNaN()) 0.0 else EARTH_R * maxOf(0.0, reliefH(centreLat, centreLon)) / 6_371_000.0
         // šalia įkelto PGD plano – iki ~30 m virš žemės (matyti plano pikseliai); kitaip ~300 m (palydovinė nuotrauka stambesnė nebūna)
         // įkeltas PGD planas – leidžiama iki ~1,5 m (anksčiau tik kai ekrano centras ≤ 3 km nuo plano – tikrinimas kartais nesuveikdavo)
-        val nearPlan = PgdOverlay.visible && PgdOverlay.corners != null
+        // arti (iki ~1,5 m) – kai įkeltas PGD planas arba įjungtas ortofoto / teritorijų planavimas (piešiami sluoksniu, dvigubu tikslumu)
+        val nearPlan = (PgdOverlay.visible && PgdOverlay.corners != null) || OrthoTiles.enabled || PlanningTiles.enabled
         val minAlt = if (nearPlan) 1.5 / 6_371_000.0 * EARTH_R else 0.000012
         // aukštis laikomas dvigubu tikslumu (float ties Žemės spinduliu – ~0,75 m žingsnis; arti plano mastelis „laiptuotųsi“)
         val a0 = if (kotlin.math.abs((EARTH_R + altD).toFloat() - zoom) < 1e-7f) altD else (zoom - EARTH_R).toDouble()

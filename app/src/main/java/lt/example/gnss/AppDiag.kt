@@ -97,6 +97,8 @@ object AppDiag {
             "; BeiDou iš BRDC (SP3 jų neturi) paskutinėje epochoje: ${LiveRtk.bdsFromBrdc}")
         appendLine("Silpni palydovai (iki %.0f dB-Hz žemiau slenksčio, svoris ×%.1f) paskutinėje epochoje: %d. %s".format(Locale.US,
             LiveRtk.SOFT_DB, LiveRtk.WEAK_W, LiveRtk.weakUsed, LiveRtk.GloBias.text()))
+        appendLine("Išmoktas kabinos / aplinkos žemėlapis programos padėtyje: " + (if (CabinMap.useInSpp) "naudojamas (atspindžių kryptys ×0,15, užstotos ×0,4); paskutinėje epochoje sumažinta palydovų: ${LiveRtk.mapWeighted}" else "nenaudojamas"))
+        append(AccRef.text())
         val th = eps.map { it.thr }
         appendLine("Slenkstis: %s, vid. %.0f, min %.0f, max %.0f dB-Hz; automatinių pakeitimų %d".format(Locale.US,
             if (CnoMask.auto) "automatinis" else "rankinis", th.average(), th.minOrNull() ?: 0.0, th.maxOrNull() ?: 0.0, thrs.size))

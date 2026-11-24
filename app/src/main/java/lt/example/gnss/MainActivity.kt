@@ -11298,6 +11298,7 @@ class MainActivity : AppCompatActivity() {
         // naudojame kaip fiksą (kalibravimui, pasiruošimui), o svetimas bandomąsias vietas ignoruojame
         if (loc.isFromMockProvider && loc.extras?.getString("source") == null) return
         @Suppress("DEPRECATION") val ownFix = loc.isFromMockProvider
+        if (!ownFix) AccRef.add("Lustas (Android fiksas)", loc.latitude, loc.longitude, if (loc.hasAltitude()) loc.altitude else Double.NaN)
         if (loc.hasAccuracy()) Readiness.onFix(loc.accuracy.toDouble())
         obsLatNow = loc.latitude; obsLonNow = loc.longitude
         lastFixWallMs = System.currentTimeMillis(); lastFixAcc = if (loc.hasAccuracy()) loc.accuracy.toDouble() else Double.NaN

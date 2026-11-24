@@ -165,7 +165,7 @@ object CabinMap {
         val d = ctx.applicationContext.filesDir; if (dir == d) return
         dir = d
         val p = ctx.getSharedPreferences("cabin", Context.MODE_PRIVATE)
-        learn = p.getBoolean("learn", true); useInFilters = p.getBoolean("use", true)
+        learn = p.getBoolean("learn", true); useInFilters = p.getBoolean("use", true); useInSpp = p.getBoolean("use_spp", true)
         cabin.load(d); world.load(d); Radar.load(d)
     }
 
@@ -209,6 +209,14 @@ object CabinMap {
         if (!useInFilters) return false
         if (world.cls(az, el) == REFLECT) return true
         return heading != null && cabin.cls(az - heading, el) == REFLECT
+    }
+
+    /** Ar išmoktas žemėlapis naudojamas programos padėtyje (svoriai). */
+    @Volatile var useInSpp = true
+    /** Svorio daugiklis palydovui (az, el – nuo šiaurės, °): kabinos žemėlapis (jei kryptis patikima), kitaip aplinkos. */
+    fun sppWeight(az: Double, el: Double, heading: Double?): Double {
+        val c = if (heading != null) cabin.cls(az - heading, el).let { if (it == UNKNOWN) world.cls(az, el) else it } else world.cls(az, el)
+        return when (c) { REFLECT -> 0.15; WEAK -> 0.4; else -> 1.0 }
     }
 
     fun text(): String {

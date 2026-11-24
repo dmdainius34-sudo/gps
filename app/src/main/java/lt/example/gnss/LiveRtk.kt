@@ -230,6 +230,8 @@ object LiveRtk {
     const val WEAK_W = 0.3
     fun softMin() = maxOf(CnoMask.min - SOFT_DB, 12.0)
     @Volatile var weakUsed = 0
+    /** Kiek palydovų paskutinėje epochoje sumažintas svoris pagal išmoktą kabinos / aplinkos žemėlapį. */
+    @Volatile var mapWeighted = 0
 
     /**
      * GLONASS (FDMA) – kiekvienas palydovas siunčia savo dažniu, o imtuvo vėlinimas kiekvienam dažnio kanalui kitoks (lusto
@@ -368,7 +370,22 @@ object LiveRtk {
             if (o.ifree) o else groupDelay(o.sys, o.svid)?.let { g -> tgdN++; Sp3V5.Ob(o.sys, o.svid, o.pr - C * g.first, o.cn0, o.prr) } ?: o
         }
         SatStats.tgdN = tgdN; SatStats.tgdOf = obs.count { (it.sys == 'G' || it.sys == 'E') && !it.ifree }
-        fun weak(l: List<Sp3V5.SatEp>) = l.onEach { it.wMul = if (it.cn0 < CnoMask.min) WEAK_W else 1.0 }
+        val rx = sppLast?.ecef
+        val hd = heading?.takeIf { HeadingTrust.trusted }
+        var mapW = 0
+        fun weak(l: List<Sp3V5.SatEp>) = l.onEach {
+            it.wMul = if (it.cn0 < CnoMask.min) WEAK_W else 1.0
+            // išmoktas kabinos / aplinkos žemėlapis: iš atspindžių krypčių – svoris ×0,15, iš užstotų – ×0,4
+            if (rx != null && CabinMap.useInSpp) {
+                val dx = it.pos[0] - rx[0]; val dy = it.pos[1] - rx[1]; val dz = it.pos[2] - rx[2]
+                val rho = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+                if (rho > 1e6) {
+                    val lk = Sp3Solver.look(rx, it.pos, rho)
+                    val k = CabinMap.sppWeight(Math.toDegrees(lk[3]).let { a -> (a + 360.0) % 360.0 }, Math.toDegrees(lk[4]), hd)
+                    if (k < 1.0) { it.wMul *= k; mapW++ }
+                }
+            }
+        }
         fun fit(hc: Sp3V5.HCon?) = try {
             if (r != null) {
                 // SP3 (CODE) turi tik GPS, GLONASS ir Galileo – BeiDou palydovai pridedami iš transliuojamų efemeridžių (BRDC),
@@ -409,6 +426,9 @@ object LiveRtk {
         val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, mv, vNE)
         val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
         sppLast = sol; sppMs = now
+        AccRef.add("Vault (žymeklis, išlyginta)", sol.lat, sol.lon, sol.h)
+        AccRef.add("Vault (neišlyginta)", f.sol.lat, f.sol.lon, f.sol.h)
+        free?.let { AccRef.add("Vault be apribojimų (aukščio, krano, vietos)", it.sol.lat, it.sol.lon, it.sol.h) }
         vaultLog(now, f.sol, sol, f.sol.sats, f.sats.count { it.cn0 < CnoMask.min }, hc != null && !hc.h0.isNaN(), Crane.sppActive, CnoMask.min)
         AppDiag.pos(obs.size, f.sol, hc != null && !hc.h0.isNaN(), sol,
             obs.map { sppSmooth.dopHatch.count(it.sys.code * 1000 + it.svid).toDouble() }.average(), sppSmooth.dopHatch.restarts)
@@ -419,6 +439,7 @@ object LiveRtk {
             val rv = f.res["%c%02d".format(Locale.US, s.sys, s.svid)]
             if (rv != null) { why[k] = SatStats.USED; resK[k] = rv } else why[k] = SatStats.LOW_EL
         }
+        mapWeighted = mapW
         weakUsed = f.sats.count { it.cn0 < CnoMask.min && "%c%02d".format(Locale.US, it.sys, it.svid) in f.res }
         if (f.dropped.none { it[0] == 'R' }) GloBias.update(f.sats.filter { it.sys == 'R' && !it.ifree }
             .mapNotNull { s -> f.res["R%02d".format(Locale.US, s.svid)]?.let { s.svid to it } }.toMap())
@@ -456,7 +477,7 @@ object LiveRtk {
             if (engine.lastFix && sol.hacc < 0.5) FixPoints.onFix(sol, nowMs)
             if (engine.lastFix && sol.hacc < 0.5 && KnownHeight.gMeasuring &&
                 KnownHeight.groundSample(nowMs, sol.lat, sol.lon, sol.h, true, Steps.walking())) groundDone = true
-            if (ok) { pushed = sol; held = 0; pushedN++; lastFixSol = sol; lastFixMs = nowMs; fixOut = sol; fixOutMs = nowMs }
+            if (ok) { AccRef.add(if (engine.lastFix) "RTK FIX" else "RTK FLOAT", sol.lat, sol.lon, sol.h); pushed = sol; held = 0; pushedN++; lastFixSol = sol; lastFixMs = nowMs; fixOut = sol; fixOutMs = nowMs }
             else { held++; heldN++ }
             // kitoms programoms perduodama tik per bendrą išvestį (outTick)
         }

@@ -6171,6 +6171,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         tileProg = program(TILE_VS, TILE_FS); tileGl.clear(); pgdTex = 0; pgdVer = -1
         GlobeTiles.init(appCtx.filesDir)
         PlanningTiles.dir = java.io.File(appCtx.filesDir, "vplanas")
+        PgdOverlay.dark = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("pgd_dark", false)
         PlanningTiles.enabled = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("planning", false)
         Thread { try { if (PgdOverlay.bitmap == null) PgdOverlay.restore(appCtx) } catch (_: Exception) {} }.start()
         val main = Handler(Looper.getMainLooper())
@@ -8873,6 +8874,7 @@ class DraggablePanel(
     var onClearPgd: (() -> Unit)? = null
     var onViewPgd: (() -> Unit)? = null
     /** Vilniaus teritorijų planavimas (gis.vplanas.lt) ant gaublio – įjungti / išjungti. */
+    val pgdDarkCb = CheckBox(context).apply { text = "PGD planas tamsus (naktinis, kaip AlpineQuest)"; textSize = 13f }
     val planningCb = CheckBox(context).apply { text = "Teritorijų planavimas (Vilnius, gis.vplanas.lt) – priartinus gaublį"; textSize = 13f }
     private val pgdViewBtn = Button(context).apply { text = "Plano peržiūra (plokščiai)"; textSize = 12f; isAllCaps = false }
     private val pgdBtn = Button(context).apply {
@@ -8975,6 +8977,7 @@ class DraggablePanel(
         bodyInner.addView(sp3Btn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(pgdBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(pgdViewBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
+        bodyInner.addView(pgdDarkCb)
         bodyInner.addView(planningCb)
 
         addView(panel)
@@ -10975,6 +10978,9 @@ class MainActivity : AppCompatActivity() {
         panel.onPickSp3 = { launchSp3Picker() }
         panel.onOpenPgd = { try { pgdPickLauncher.launch(arrayOf("*/*")) } catch (e: Exception) { Toast.makeText(this, "Failo pasirinkimas nepasiekiamas", Toast.LENGTH_SHORT).show() } }
         panel.onViewPgd = { openPlanView() }
+        panel.pgdDarkCb.isChecked = PgdOverlay.dark
+        panel.pgdDarkCb.setOnCheckedChangeListener { _, on -> PgdOverlay.dark = on
+            getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("pgd_dark", on).apply() }
         panel.planningCb.isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("planning", false)
         panel.planningCb.setOnCheckedChangeListener { _, on ->
             PlanningTiles.enabled = on

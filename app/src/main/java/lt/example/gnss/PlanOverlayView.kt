@@ -12,6 +12,8 @@ class PlanOverlayView(ctx: Context) : View(ctx) {
     private val m = Matrix()
     private val sharp = Paint().apply { isFilterBitmap = false }
     private val smooth = Paint().apply { isFilterBitmap = true }
+    private val darkSharp = Paint().apply { isFilterBitmap = false; colorFilter = PgdOverlay.darkFilter }
+    private val darkSmooth = Paint().apply { isFilterBitmap = true; colorFilter = PgdOverlay.darkFilter }
     @Volatile private var img: Bitmap? = null
     @Volatile private var loading = false
     private var ver = -1
@@ -46,6 +48,6 @@ class PlanOverlayView(ctx: Context) : View(ctx) {
         if (!m.setPolyToPoly(floatArrayOf(0f, 0f, w, 0f, w, h, 0f, h), 0, sc, 0, 4)) return
         // ekrane vienas plano taškas didesnis nei ~2 px – ryškūs kvadratėliai (kaip AlpineQuest)
         val scale = kotlin.math.hypot(sc[2] - sc[0], sc[3] - sc[1]) / w
-        c.drawBitmap(b, m, if (scale > 2f) sharp else smooth)
+        c.drawBitmap(b, m, if (PgdOverlay.dark) (if (scale > 2f) darkSharp else darkSmooth) else if (scale > 2f) sharp else smooth)
     }
 }

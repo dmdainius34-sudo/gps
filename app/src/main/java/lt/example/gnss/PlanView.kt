@@ -23,6 +23,8 @@ class PlanView(ctx: Context, private val bmp: Bitmap, private val posProvider: (
     private val dp = ctx.resources.displayMetrics.density
     private val pSharp = Paint().apply { isFilterBitmap = false }
     private val pSmooth = Paint().apply { isFilterBitmap = true }
+    private val pDarkSharp = Paint().apply { isFilterBitmap = false; colorFilter = PgdOverlay.darkFilter }
+    private val pDarkSmooth = Paint().apply { isFilterBitmap = true; colorFilter = PgdOverlay.darkFilter }
     private val pDot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.RED }
     private val pRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x55FF0000; style = Paint.Style.FILL }
     private val pRingE = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.RED; style = Paint.Style.STROKE; strokeWidth = 1.5f * dp }
@@ -81,7 +83,7 @@ class PlanView(ctx: Context, private val bmp: Bitmap, private val posProvider: (
         if (!fitted && width > 0) { fitted = true; fit() }
         c.drawColor(Color.BLACK)
         val s = scale()
-        c.drawBitmap(bmp, m, if (s >= 2f) pSharp else pSmooth)
+        c.drawBitmap(bmp, m, if (PgdOverlay.dark) (if (s >= 2f) pDarkSharp else pDarkSmooth) else if (s >= 2f) pSharp else pSmooth)
         // padėtis
         posProvider()?.let { pos ->
             PgdOverlay.uvOf(pos[0], pos[1])?.let { uv ->

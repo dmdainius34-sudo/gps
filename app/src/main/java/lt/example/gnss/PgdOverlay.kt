@@ -21,6 +21,19 @@ object PgdOverlay {
     @Volatile var version = 0; private set
     @Volatile var name = ""; private set
     @Volatile var visible = true
+    /** Tamsus (naktinis) režimas kaip AlpineQuest: šviesumas apverčiamas, spalvos (atspalviai) išlieka. */
+    @Volatile var dark = false
+    /** Apversto šviesumo filtras: inversija + atspalvio pasukimas 180° (raudona lieka raudona, balta tampa juoda). */
+    val darkFilter: android.graphics.ColorMatrixColorFilter by lazy {
+        val inv = android.graphics.ColorMatrix(floatArrayOf(-1f, 0f, 0f, 0f, 255f, 0f, -1f, 0f, 0f, 255f, 0f, 0f, -1f, 0f, 255f, 0f, 0f, 0f, 1f, 0f))
+        val hue = android.graphics.ColorMatrix(floatArrayOf(
+            -0.574f, 1.430f, 0.144f, 0f, 0f,
+            0.426f, 0.430f, 0.144f, 0f, 0f,
+            0.426f, 1.430f, -0.856f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f))
+        hue.preConcat(inv)
+        android.graphics.ColorMatrixColorFilter(hue)
+    }
     /** Plano kampai ekrane (x, y × 4: kairė viršus, dešinė viršus, dešinė apačia, kairė apačia), kai piešiama sluoksniu; null – ne. */
     @Volatile var screenCorners: FloatArray? = null
 

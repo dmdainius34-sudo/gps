@@ -84,8 +84,13 @@ object Sp3V4 {
      * arba |(P−Φ) − vid(P−Φ)| > riba. Riba – ne mažesnė kaip jump (10 m); kad kodo triukšmas (σ ~ 10 m) nepaleistų
      * glodinimo iš naujo, ji lygi max(jump, 4σ), kur σ – P−Φ sklaida (pirmose 10 epochų – 3·jump).
      */
-    class Hatch(val window: Int = 100, val jump: Double = 10.0, val maxGap: Double = 1.5) {
-        private class St(var n: Int, var sm: Double, var phase: Double, var cmpMean: Double, var t: Double, var k: Int = 1, var m2: Double = 0.0)
+    /**
+     * innov = true (Doplerio glodinimui): iš naujo pradedama tik nutrūkus sekimui (pertrauka > maxGap) arba kai kodas nuo glodintos
+     * prognozės nukrypsta > max(2·jump, 4σ) (σ – inovacijų sklaida). Anksčiau lyginta su viso laiko kodo–fazės vidurkiu, o integruotas
+     * Doppler lėtai dreifuoja – kabinoje glodinimas prasidėdavo iš naujo tūkstančius kartų (vid. trukmė ~15 s vietoj 20).
+     */
+    class Hatch(val window: Int = 100, val jump: Double = 10.0, val maxGap: Double = 1.5, val innov: Boolean = false) {
+        private class St(var n: Int, var sm: Double, var phase: Double, var cmpMean: Double, var t: Double, var k: Int = 1, var m2: Double = 0.0, var iv: Double = 0.0)
         private val st = HashMap<Int, St>()
         var restarts = 0
             private set
@@ -96,6 +101,21 @@ object Sp3V4 {
             val ok = phase != null && (adrState and ADR_VALID) != 0 && (adrState and (ADR_RESET or ADR_CYCLE_SLIP)) == 0
             if (!ok) { st.remove(key); return code }
             val s = st[key]
+            if (innov) {
+                val ph = phase!!
+                if (s == null || t - s.t > maxGap) { if (s != null) restarts++; st[key] = St(1, code, ph, 0.0, t); return code }
+                val pred = s.sm + (ph - s.phase)
+                val e = code - pred
+                val sdI = sqrt(s.iv)
+                val lim = if (s.k < 10) 6 * jump else maxOf(2 * jump, 4 * sdI)
+                if (abs(e) > lim) { restarts++; st[key] = St(1, code, ph, 0.0, t); return code }
+                s.k++
+                s.iv = if (s.k <= 10) s.iv + (e * e - s.iv) / s.k else s.iv + 0.05 * (e * e - s.iv)
+                val n = minOf(s.n + 1, window)
+                s.sm = code / n + (n - 1.0) / n * pred
+                s.n = n; s.phase = ph; s.t = t
+                return s.sm
+            }
             val cmp = code - phase!!
             val sd = if (s != null && s.k > 1) sqrt(s.m2 / (s.k - 1)) else 0.0
             val limit = if (s == null || s.k < 10) 3 * jump else maxOf(jump, 4 * sd)

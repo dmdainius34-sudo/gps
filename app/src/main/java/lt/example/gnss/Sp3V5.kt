@@ -141,7 +141,7 @@ object Sp3V5 {
 
     /** Glodinimas: ADR (fazė), kitaip integruotas Doppler; tas pats Hatch langas ir paleidimo iš naujo taisyklės. */
     class Smoother(val doppler: Boolean, val useAdr: Boolean = true, dopWindow: Int = 100) {
-        val adrHatch = Sp3V4.Hatch(); val dopHatch = Sp3V4.Hatch(window = dopWindow)
+        val adrHatch = Sp3V4.Hatch(); val dopHatch = Sp3V4.Hatch(window = dopWindow, innov = doppler && !useAdr)
         private val last = HashMap<Int, DoubleArray>()        // [kodas, Doppler, t] – ankstesnė epocha
 
         /**

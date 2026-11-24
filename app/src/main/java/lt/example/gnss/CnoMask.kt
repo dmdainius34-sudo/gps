@@ -9,7 +9,7 @@ import kotlin.math.sqrt
 object CnoMask {
     @Volatile var min = 20.0
     /** Automatinis slenkstis (NLO šliaužiklis juda pats); pajudinus ranka – išjungiamas. */
-    @Volatile var auto = true
+    @Volatile var auto = false
     const val LO = 15.0
     /** Automatinio slenksčio viršus: GSDC 2023 važiavimuose 15–30 dB-Hz – vienodai gerai, 35 – blogiau (p95 5,2 → 5,7 m), todėl ne aukščiau 30. */
     const val HI = 30.0

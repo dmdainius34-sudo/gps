@@ -62,7 +62,27 @@ object LiveRtk {
             if (epochs % 10 == 0) logW?.flush()
         } catch (_: Exception) {}
     }
-    @Synchronized fun flushLog() { try { logW?.flush() } catch (_: Exception) {} }
+    @Synchronized fun flushLog() { try { logW?.flush() } catch (_: Exception) {}; try { vaultW?.flush() } catch (_: Exception) {} }
+
+    /** Vault paties padėtis kas epochą (ZIP: gnss_vault.csv) – palyginimui su lustu ir krano ašimi. */
+    const val VAULT_LOG = "gnss_vault.csv"
+    private var vaultW: java.io.BufferedWriter? = null
+    private var vaultN = 0
+    @Synchronized private fun vaultLog(ms: Long, raw: PositionSolver.Solution, out: PositionSolver.Solution, used: Int, weak: Int, hCon: Boolean, crane: Boolean, thr: Double) {
+        val d = logDir ?: return
+        try {
+            if (vaultW == null) {
+                val f = java.io.File(d, VAULT_LOG)
+                if (f.exists() && f.length() > 30_000_000L) f.delete()
+                val fresh = !f.exists()
+                vaultW = java.io.BufferedWriter(java.io.FileWriter(f, true)).also { if (fresh) it.write(
+                    "laikas_ms,platuma,ilguma,aukstis_m,islyg_platuma,islyg_ilguma,islyg_aukstis_m,palydovu,silpnu,hacc_m,su_aukscio_riba,su_krano_riba,slenkstis_dbhz,orbitos,judama\n") }
+            }
+            vaultW?.write(String.format(Locale.US, "%d,%.8f,%.8f,%.2f,%.8f,%.8f,%.2f,%d,%d,%.2f,%d,%d,%.0f,%s,%d\n", ms, raw.lat, raw.lon, raw.h,
+                out.lat, out.lon, out.h, used, weak, raw.hacc, if (hCon) 1 else 0, if (crane) 1 else 0, thr, sppSource.replace(',', ' '), if (moving) 1 else 0))
+            if (++vaultN % 10 == 0) vaultW?.flush()
+        } catch (_: Exception) {}
+    }
 
     fun load(ctx: Context) {
         enabled = ctx.getSharedPreferences("ntrip", Context.MODE_PRIVATE).getBoolean("rtk_live", false)
@@ -196,7 +216,7 @@ object LiveRtk {
      * mažai triukšmo), o pats atstumas – vis lėčiau vidurkinamas kodas. Fazė (ADR) nenaudojama – planšetėje ji kabinoje trūkinėja.
      * Šuolis (kodas − integruotas Doppler nesutampa) ar > 1,5 s pertrauka – palydovo glodinimas pradedamas iš naujo.
      */
-    private val sppSmooth = Sp3V5.Smoother(doppler = true, useAdr = false, dopWindow = 20)
+    private val sppSmooth = Sp3V5.Smoother(doppler = true, useAdr = false, dopWindow = 60)
     /** Palydovai su faze RTK skaičiavime (šviežia – iki 5 s); tušti – RTK neveikia. */
     fun phaseIds(): Set<String> = if (enabled && System.currentTimeMillis() - lastMs < 5_000L) engine.lastPhaseIds else emptySet()
     /** Paskutinė programos padėtis skaičiuota su žinomu aukščiu. */
@@ -389,6 +409,7 @@ object LiveRtk {
         val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, mv, vNE)
         val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
         sppLast = sol; sppMs = now
+        vaultLog(now, f.sol, sol, f.sol.sats, f.sats.count { it.cn0 < CnoMask.min }, hc != null && !hc.h0.isNaN(), Crane.sppActive, CnoMask.min)
         AppDiag.pos(obs.size, f.sol, hc != null && !hc.h0.isNaN(), sol,
             obs.map { sppSmooth.dopHatch.count(it.sys.code * 1000 + it.svid).toDouble() }.average(), sppSmooth.dopHatch.restarts)
         // naudoti – tik tie, kurių liekana yra (žemiau 10° palydovai lieka f.sats, bet sprendime nedalyvauja)

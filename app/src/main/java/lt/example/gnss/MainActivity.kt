@@ -10225,8 +10225,11 @@ class MainActivity : AppCompatActivity() {
         left.addView(cbStableN, LinearLayout.LayoutParams(mw, ww))
         // mažiausias signalo stiprumas programos skaičiavime (lusto padėties neveikia)
         val cnoSp = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
+        // nuo 2026-11-24: slenkstis pastovus 20 dB-Hz (automatinis šokinėjo 28–29 ir kaitaliojo palydovų rinkinį – padėtis šokinėjo);
+        // silpnesni signalai nebeišmetami, o sveriami pagal C/N0 (Sp3V5.weight, LiveRtk silpnų juosta). Vieną kartą perrašoma.
+        if (!cnoSp.getBoolean("cno_v2", false)) cnoSp.edit().putFloat("cno_min", 20f).putBoolean("cno_auto", false).putBoolean("cno_v2", true).apply()
         CnoMask.min = cnoSp.getFloat("cno_min", 20f).toDouble()
-        CnoMask.auto = cnoSp.getBoolean("cno_auto", true)
+        CnoMask.auto = cnoSp.getBoolean("cno_auto", false)
         // signalo slenkstis reguliuojamas NLO meniu po C/N0 kriokliu (slankiklis ir juoda riba krioklyje)
         // šiaurės pataisa pagal signalų stiprumą – nuolat (kabinoje, kai patikima)
         SignalHeading.autoFix = true
@@ -10944,6 +10947,7 @@ class MainActivity : AppCompatActivity() {
                         val rk = sp3TestCsvUri(Rtk.OUT_FILE)
                         LiveRtk.flushLog()
                         val rl = sp3TestCsvUri(LiveRtk.LOG)
+                        val vl = sp3TestCsvUri(LiveRtk.VAULT_LOG)
                         HeadingLog.flush()
                         val hlog = sp3TestCsvUri(HeadingLog.FILE)
                         val orb = PositionSolver.lastSp3Copy?.let { sp3TestCsvUri(it) }
@@ -10956,7 +10960,7 @@ class MainActivity : AppCompatActivity() {
                             }
                         } catch (_: Exception) { null }
                         val d = solverDiagUri()
-                        listOf(u, s, s2, s3, s4, s5, s6, sd, rk, rl, hlog, orb, brd, d).forEach { it?.let { x -> extra.add(x) } }
+                        listOf(u, s, s2, s3, s4, s5, s6, sd, rk, rl, vl, hlog, orb, brd, d).forEach { it?.let { x -> extra.add(x) } }
                       } catch (e: Throwable) {
                         report += "SKAIČIUOKLĖS KLAIDA (matavimai eksportuoti be jos rezultatų): ${e.javaClass.simpleName}: ${e.message}\n"
                         logError("Eksporto skaičiuoklė: ${e.javaClass.simpleName}: ${e.message}")

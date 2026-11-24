@@ -6925,6 +6925,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         val newest = list.sortedByDescending { it.t215Ms }.take(3).toSet()
+        cmeAtEarth = false
         for (c in list) {
             // DONKI ilguma – nuo Saulės–Žemės linijos išmatavimo metu: kūgio kryptis erdvėje pastovi (Žemė per dieną nueina ~1°)
             fun earthDir(ms: Long) = Astro.sunEq(ms).let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); DoubleArray(3) { -v[it] / l } }
@@ -6983,6 +6984,20 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 pt(a0, rad, cd).forEach { ring.add(it) }; pt(a1, rad, cd).forEach { ring.add(it) } }
             val r0 = rs * kotlin.math.sin(ha); val d0 = rs * kotlin.math.cos(ha)
             for (i in 0 until 4) { val a = i * Math.PI / 2; pt(a, r0, d0).forEach { sides.add(it) }; pt(a, rad, cd).forEach { sides.add(it) } }
+            // permatoma švytinti „migla“ – kūgio tūris matomas iš bet kurios pusės
+            run {
+                val tri = ArrayList<Float>()
+                for (i in 0 until 36) { val a0 = i * Math.PI / 18; val a1 = (i + 1) * Math.PI / 18
+                    for (q in listOf(pt(a0, r0, d0), pt(a0, rad, cd), pt(a1, rad, cd), pt(a0, r0, d0), pt(a1, rad, cd), pt(a1, r0, d0))) q.forEach { tri.add(it) }
+                    // priekio „dangtelis“ (išgaubtas – kaip tikro išmetimo frontas)
+                    for (q in listOf(pt(0.0, 0.0, cd * 1.04), pt(a0, rad, cd), pt(a1, rad, cd))) q.forEach { tri.add(it) } }
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+                GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"),
+                    if (toEarth) 1f else col[0], if (toEarth) 0.45f else col[1], if (toEarth) 0.12f else col[2], (if (toEarth) 0.09f else 0.05f) * aMul)
+                bindPos(colorProg, floatBuf(tri.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, tri.size / 3)
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+            }
+            if (toEarth && q > 0.85) cmeAtEarth = true
             if (toEarth) {
                 // į Žemę nukreiptas – apvalus kraštas žaižaruoja kaip žarija: kiekvienas lanko gabalėlis rusena savu ritmu
                 val tt = (System.nanoTime() / 1e9).toFloat()
@@ -7032,6 +7047,36 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
         }
         GLES20.glLineWidth(1f); GLES20.glDepthMask(true)
+        if (cmeAtEarth) drawCmeAtEarth()
+    }
+
+    /** Į Žemę pataikęs CME pasiekė Žemę – aplink ją pulsuojantis oranžinis žiedas ir užrašas „CME čia“. */
+    private var cmeAtEarth = false
+    private fun drawCmeAtEarth() {
+        if (!camBasisOk) return
+        val m = earthMat; val c = floatArrayOf(m[12], m[13], m[14])
+        val tt = (System.nanoTime() / 1e9).toFloat()
+        val pulse = 0.6f + 0.4f * sin(tt * 2.5f)
+        val rr = EARTH_R * (1.9f + 0.15f * sin(tt * 2.5f))
+        val ring = ArrayList<Float>()
+        for (i in 0 until 48) { val a0 = 2 * Math.PI * i / 48; val a1 = 2 * Math.PI * (i + 1) / 48
+            for (a in listOf(a0, a1)) for (k in 0..2) ring.add(c[k] + (camRightW[k] * cos(a).toFloat() + camUpW[k] * sin(a).toFloat()) * rr) }
+        GLES20.glUseProgram(colorProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+        bindPos(colorProg, floatBuf(ring.toFloatArray()))
+        for ((w, a) in listOf(8f to 0.2f, 3f to 0.85f)) {
+            GLES20.glLineWidth(w * density)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, 0.55f, 0.12f, a * pulse)
+            GLES20.glDrawArrays(GLES20.GL_LINES, 0, ring.size / 3)
+        }
+        GLES20.glLineWidth(1f)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        val (tx, ta) = wideLabel("CME čia")
+        System.arraycopy(mvpI, 0, mvp, 0, 16)
+        val h = EARTH_R * 0.45f
+        billboard(FloatArray(3) { c[it] + camUpW[it] * rr * 1.25f }, eyeI, h * ta, h, tx, 1f, 0.7f, 0.3f, 0.95f * pulse)
     }
 
     private var glowProg = 0

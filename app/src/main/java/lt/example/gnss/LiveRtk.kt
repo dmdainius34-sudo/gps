@@ -233,6 +233,7 @@ object LiveRtk {
     /** Kiek palydovų paskutinėje epochoje sumažintas svoris pagal išmoktą kabinos / aplinkos žemėlapį. */
     @Volatile var mapWeighted = 0
     /** Stebima sklaida stovint (m): neišlygintos ir išlygintos padėties RMS apie medianą per 2 min. */
+    private var dopMoveN = 0
     @Volatile var lastRawScatter = 0.0
     @Volatile var lastOutScatter = 0.0
     private val rawWin = ArrayDeque<DoubleArray>(); private val outWin = ArrayDeque<DoubleArray>()
@@ -441,7 +442,10 @@ object LiveRtk {
         try { DopplerVel.solve(f.sats, f.x)?.let { velLast = it; velMs = now } } catch (_: Exception) {}
         val vNE = velocity()?.let { v -> doubleArrayOf(v.speedH * kotlin.math.cos(Math.toRadians(v.courseDeg)), v.speedH * kotlin.math.sin(Math.toRadians(v.courseDeg))) }
         // judama: jutikliai (žingsniai, judesys) arba Doplerio greitis > 1,5 m/s (sklandžiai važiuojant automobiliu jutikliai gali nieko nerodyti)
-        val mv = moving || velocity()?.let { it.speedH > 1.5 && it.sigma < 1.0 } == true
+        // Doplerio greitis patalpoje kartais pavieniui „rodo“ > 1,5 m/s – judėjimu laikoma tik ≥ 3 s iš eilės
+        // (kitaip stovint išjungdavo vidurkinimą ir sąžiningo tikslumo sklaidos langą)
+        dopMoveN = if (velocity()?.let { it.speedH > 1.5 && it.sigma < 1.0 } == true) dopMoveN + 1 else 0
+        val mv = moving || dopMoveN >= 3
         val q = PosFilter.step(now, fs.lat, fs.lon, fs.h, real, mv, vNE)
         // sąžiningas tikslumas: formalus (iš kovariacijos) per optimistiškas – kabinoje / namie žada 0,5 m, o tikra sklaida ~7 m.
         // Stovint – ne mažesnis už stebimą sklaidą per paskutines 2 min. (neišlygintos ir išlygintos padėties RMS apie medianą)

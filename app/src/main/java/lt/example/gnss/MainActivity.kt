@@ -10108,8 +10108,13 @@ class MainActivity : AppCompatActivity() {
         // 🛰 – palydovai: paspaudus įjungiama / išjungiama („Rodyti palydovus“ ir GNSS srautas); ilgai palaikius – efemeridžių (navigacinių žinučių) srautas
         val satBtn = small("\uD83D\uDEF0", 14f)
         val spSky = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
-        fun satMark() { satBtn.alpha = if (spSky.getBoolean("show_sats", false)) 1f else 0.4f
-            (satBtn.background as? android.graphics.drawable.GradientDrawable)?.setColor(if (spSky.getBoolean("nav_bits", false)) 0x8822C55E.toInt() else 0x44000000) }
+        // išjungtas – ne per tamsus: šviesus kontūras (šešėlis aplink ženkliuką ir rėmelis), įjungtas – ryškus žydras rėmelis
+        fun satMark() { val on = spSky.getBoolean("show_sats", false); val dp = resources.displayMetrics.density
+            satBtn.alpha = if (on) 1f else 0.8f
+            satBtn.setShadowLayer(3f * dp, 0f, 0f, if (on) 0xFF7FD8FF.toInt() else 0xEEFFFFFF.toInt())
+            (satBtn.background as? android.graphics.drawable.GradientDrawable)?.apply {
+                setColor(if (spSky.getBoolean("nav_bits", false)) 0x8822C55E.toInt() else 0x44000000)
+                setStroke((1.5f * dp).toInt().coerceAtLeast(1), if (on) 0xFF7FD8FF.toInt() else 0xB3FFFFFF.toInt()) } }
         satMark()
         satBtnMark = { satMark() }
         satBtn.setOnClickListener {
@@ -10142,9 +10147,9 @@ class MainActivity : AppCompatActivity() {
                 if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 60, 80, 60), -1)) else @Suppress("DEPRECATION") v.vibrate(150) } } catch (_: Exception) {}
             // patvirtinimas – kad netyčia (kalibruojant) neištrintų išmokto
             android.app.AlertDialog.Builder(this).setTitle("Ištrinti kabinos žemėlapį?")
-                .setMessage("Išmoktas kabinos žemėlapis bus ištrintas ir mokomasi iš naujo. Daryti tik perkėlus planšetę kitur kabinoje ar kitame krane.")
+                .setMessage("Išmoktas kabinos ir aplinkos (gaublio kliūčių skliauto) žemėlapis bus ištrintas ir mokomasi iš naujo. Daryti tik perkėlus planšetę kitur kabinoje ar kitame krane.")
                 .setPositiveButton("Ištrinti") { _, _ ->
-                    CabinMap.cabin.clear(); CabinMap.save(true); markCabinClean()
+                    CabinMap.clear(); markCabinClean()   // ir aplinkos (gaublio skliauto) žemėlapis
                     CabinMap.learn = true
                     getSharedPreferences("cabin", Context.MODE_PRIVATE).edit().putBoolean("learn", true).apply()
                     cabinView?.invalidate()

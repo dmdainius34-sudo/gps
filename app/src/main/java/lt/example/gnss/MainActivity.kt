@@ -6980,6 +6980,33 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
                 continue
             }
+            if (toEarth) {
+                // į Žemę nukreiptas – visas kūgis raudonomis žarijomis (dulkių debesis), be linijų ir užrašų
+                val rnd = java.util.Random(c.id.hashCode().toLong() xor 0x5EED)
+                val d00 = rs * kotlin.math.cos(ha)
+                val emb = arrayOf(ArrayList<Float>(), ArrayList<Float>(), ArrayList<Float>())
+                for (i in 0 until 1800) {
+                    val u = kotlin.math.sqrt(rnd.nextDouble())                    // daugiau dalelių prie priekio
+                    val dd = d00 + (cd - d00) * u
+                    val rr = dd * kotlin.math.tan(ha) * kotlin.math.sqrt(rnd.nextDouble())
+                    pt(rnd.nextDouble() * 2 * Math.PI, rr, dd).forEach { emb[i % 3].add(it) }
+                }
+                val tt = (System.nanoTime() / 1e9).toFloat()
+                val ecol = arrayOf(floatArrayOf(1f, 0.18f, 0.05f), floatArrayOf(1f, 0.42f, 0.08f), floatArrayOf(1f, 0.75f, 0.25f))
+                GLES20.glUseProgram(dotProg)
+                GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(dotProg, "uMVP"), 1, false, mvpI, 0)
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+                for (k in 0..2) {
+                    val fl = 0.65f + 0.35f * sin(tt * (1.1f + 0.7f * k) + k * 2.3f)      // rusena
+                    GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), (2.2f - 0.4f * k) * density)
+                    GLES20.glUniform4f(GLES20.glGetUniformLocation(dotProg, "uColor"), ecol[k][0], ecol[k][1], ecol[k][2], 0.85f * fl)
+                    bindPos(dotProg, floatBuf(emb[k].toFloatArray())); GLES20.glDrawArrays(GLES20.GL_POINTS, 0, emb[k].size / 3)
+                }
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+                GLES20.glUseProgram(colorProg)
+                GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
+                continue
+            }
             for (i in 0 until 36) { val a0 = i * Math.PI / 18; val a1 = (i + 1) * Math.PI / 18
                 pt(a0, rad, cd).forEach { ring.add(it) }; pt(a1, rad, cd).forEach { ring.add(it) } }
             val r0 = rs * kotlin.math.sin(ha); val d0 = rs * kotlin.math.cos(ha)
@@ -7049,7 +7076,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
         }
         GLES20.glLineWidth(1f); GLES20.glDepthMask(true)
-        if (cmeAtEarth) drawCmeAtEarth()
+        // „CME čia“ žiedas su užrašu nebenaudojamas – į Žemę nukreiptas CME rodomas žarijų debesiu
     }
 
     /** Į Žemę pataikęs CME pasiekė Žemę – aplink ją pulsuojantis oranžinis žiedas ir užrašas „CME čia“. */

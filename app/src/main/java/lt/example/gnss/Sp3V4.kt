@@ -90,7 +90,7 @@ object Sp3V4 {
      * Doppler lėtai dreifuoja – kabinoje glodinimas prasidėdavo iš naujo tūkstančius kartų (vid. trukmė ~15 s vietoj 20).
      */
     class Hatch(val window: Int = 100, val jump: Double = 10.0, val maxGap: Double = 1.5, val innov: Boolean = false) {
-        private class St(var n: Int, var sm: Double, var phase: Double, var cmpMean: Double, var t: Double, var k: Int = 1, var m2: Double = 0.0, var iv: Double = 0.0)
+        private class St(var n: Int, var sm: Double, var phase: Double, var cmpMean: Double, var t: Double, var k: Int = 1, var m2: Double = 0.0, var iv: Double = 0.0, var out: Int = 0)
         private val st = HashMap<Int, St>()
         var restarts = 0
             private set
@@ -107,8 +107,12 @@ object Sp3V4 {
                 val pred = s.sm + (ph - s.phase)
                 val e = code - pred
                 val sdI = sqrt(s.iv)
-                val lim = if (s.k < 10) 6 * jump else maxOf(2 * jump, 4 * sdI)
-                if (abs(e) > lim) { restarts++; st[key] = St(1, code, ph, 0.0, t); return code }
+                val lim = if (s.k < 10) 6 * jump else maxOf(3 * jump, 4 * sdI)
+                // didelis šuolis (> 1 km – laikrodžio šuolis, ms dviprasmybė) – iš naujo iš karto; vidutinis išsišokimas (atspindys) –
+                // matavimas praleidžiamas (grąžinama prognozė), tik 3 iš eilės – iš naujo (tikras pasikeitimas)
+                if (abs(e) > 1000.0 || (abs(e) > lim && s.out >= 2)) { restarts++; st[key] = St(1, code, ph, 0.0, t); return code }
+                if (abs(e) > lim) { s.out++; s.sm = pred; s.phase = ph; s.t = t; return pred }
+                s.out = 0
                 s.k++
                 s.iv = if (s.k <= 10) s.iv + (e * e - s.iv) / s.k else s.iv + 0.05 * (e * e - s.iv)
                 val n = minOf(s.n + 1, window)

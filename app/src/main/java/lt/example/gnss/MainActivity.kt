@@ -1593,6 +1593,13 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     private val gd = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
         override fun onDoubleTap(e: MotionEvent): Boolean { onDoubleTapCb?.invoke(); return true }
+        // ilgai palaikius Saulę – ji išsipučia (matomos dėmės), dar kartą – sumažėja iki tikro dydžio
+        override fun onLongPress(e: MotionEvent) {
+            if (renderer.focus == 1 || renderer.pick(e.x, e.y) != 1) return
+            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            val big = renderer.toggleSunBig()
+            android.widget.Toast.makeText(context, if (big) "Saulė išpūsta – matomos dėmės (ilgai palaikius – tikras dydis)" else "Saulė – tikro dydžio, kaip dienos nuotraukoje", android.widget.Toast.LENGTH_SHORT).show()
+        }
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
             // bakstelėjimas į palydovą – jo duomenų lentelė
             renderer.pickSat(e.x, e.y)?.let { showSatInfo(it); return true }
@@ -4944,6 +4951,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         2 -> moonDir().let { d -> val r = moonDistScene(); doubleArrayOf(fP[0] + d[0] * r, fP[1] + d[1] * r, fP[2] + d[2] * r) }
         else -> null
     }
+    /** Saulė išpūsta (ilgai palaikius) – kitaip tikro kampinio dydžio. */
+    @Volatile var sunBig = false
+    private var sunScale = 1f; private var sunAnimNs = 0L
+    /** Tikras Saulės kampinis spindulys 0,2665° atstumu SUN_DIST, dalinant iš didelės Saulės spindulio (1,0). */
+    private val SUN_REAL_K = (7.2 * kotlin.math.tan(Math.toRadians(0.2665))).toFloat()
+    fun toggleSunBig(): Boolean { sunBig = !sunBig; return sunBig }
+
     private fun bodyRadius(id: Int): Double = when (id) {
         1 -> 1.0                     // Saulė piešiama 4 × Žemės spindulio (anksčiau 0,24 – priartėjus kamera atsidurdavo Saulės viduje)
         2 -> 0.10
@@ -5098,7 +5112,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         for (id in listOf(1, 2, 0)) {
             val p = if (id == 0) doubleArrayOf(0.0, 0.0, 0.0) else bodyPos(id) ?: continue
             val s = scr(p) ?: continue
-            val rpx = (lastH / 2f) * bodyRadius(id).toFloat() / (s[2] * tanHalf)
+            val rad = if (id == 1 && focus != 1) bodyRadius(1).toFloat() * sunScale else bodyRadius(id).toFloat()
+            val rpx = (lastH / 2f) * rad / (s[2] * tanHalf)
             val d = kotlin.math.hypot(s[0] - x, s[1] - y)
             if (d < maxOf(60f * density, rpx * 1.6f) && d < bestD) { best = id; bestD = d }
         }
@@ -6831,8 +6846,14 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawSun3D(sp: FloatArray, t: Float) {
         if (earthPos == null) return
         if (sunProg == 0) sunProg = program(SUN_VS, SUN_FS)
-        // spindulys 4× Žemės (1,0 scenos vnt.) – kartu su dvigubai didesniu atstumu
-        val k = 4.0f
+        // spindulys: įprastai – tikras kampinis dydis (0,53°, kaip dienos nuotraukoje), ilgai palaikius Saulę – išsipučia iki 4× Žemės
+        // (1,0 scenos vnt.), kad matytųsi dėmės; prie Saulės (fokusas) – visada didelė. Mastelis vienodas – vaizdas neiškreipiamas.
+        val nowNs = System.nanoTime()
+        val dtS = if (sunAnimNs == 0L) 0f else ((nowNs - sunAnimNs) / 1e9f).coerceIn(0f, 0.1f); sunAnimNs = nowNs
+        val target = if (sunBig || focus == 1) 1f else SUN_REAL_K
+        sunScale += (target - sunScale) * (dtS * 5f).coerceAtMost(1f)
+        if (kotlin.math.abs(target - sunScale) < 1e-4f) sunScale = target
+        val k = 4.0f * sunScale
         // tikra Saulės orientacija: IAU ašis ir Carringtono sukimasis (tinklelio u = 0,5 – nulinis dienovidinis)
         val ax = SunFrame.axes(simNow())
         java.util.Arrays.fill(sunMat, 0f)

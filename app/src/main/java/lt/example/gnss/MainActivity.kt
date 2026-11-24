@@ -6925,7 +6925,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glEnable(GLES20.GL_DEPTH_TEST); GLES20.glDepthMask(false)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         val newest = list.sortedByDescending { it.t215Ms }.take(3).toSet()
-        cmeAtEarth = false
+        cmeAtEarth = false; cmeAtEarthCore = false
         for (c in list) {
             // DONKI ilguma – nuo Saulės–Žemės linijos išmatavimo metu: kūgio kryptis erdvėje pastovi (Žemė per dieną nueina ~1°)
             fun earthDir(ms: Long) = Astro.sunEq(ms).let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); DoubleArray(3) { -v[it] / l } }
@@ -6997,7 +6997,9 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 bindPos(colorProg, floatBuf(tri.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, tri.size / 3)
                 GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
             }
-            if (toEarth && q > 0.85) cmeAtEarth = true
+            if (toEarth && q > 0.85) { cmeAtEarth = true
+                val angE = Math.toDegrees(kotlin.math.acos((n[0] * eArr[0] + n[1] * eArr[1] + n[2] * eArr[2]).coerceIn(-1.0, 1.0)))
+                if (angE <= c.halfAngle) cmeAtEarthCore = true }
             if (toEarth) {
                 // į Žemę nukreiptas – apvalus kraštas žaižaruoja kaip žarija: kiekvienas lanko gabalėlis rusena savu ritmu
                 val tt = (System.nanoTime() / 1e9).toFloat()
@@ -7052,6 +7054,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Į Žemę pataikęs CME pasiekė Žemę – aplink ją pulsuojantis oranžinis žiedas ir užrašas „CME čia“. */
     private var cmeAtEarth = false
+    private var cmeAtEarthCore = false
     private fun drawCmeAtEarth() {
         if (!camBasisOk) return
         val m = earthMat; val c = floatArrayOf(m[12], m[13], m[14])
@@ -7073,7 +7076,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         GLES20.glLineWidth(1f)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-        val (tx, ta) = wideLabel("CME čia")
+        // Žemė kūgio viduje – „CME čia“; tik prie krašto (iki 10° už jo) – „CME kraštas šalia“ (šoninis smūgis)
+        val (tx, ta) = wideLabel(if (cmeAtEarthCore) "CME čia" else "CME kraštas šalia")
         System.arraycopy(mvpI, 0, mvp, 0, 16)
         val h = EARTH_R * 0.45f
         billboard(FloatArray(3) { c[it] + camUpW[it] * rr * 1.25f }, eyeI, h * ta, h, tx, 1f, 0.7f, 0.3f, 0.95f * pulse)

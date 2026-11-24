@@ -220,6 +220,9 @@ object KnownHeight {
         return h + n
     }
 
+    /** Pakeistas aukščių šaltinis (NLO) – DEM aukštis bus paimtas iš naujo. */
+    fun demChanged() { gLat = Double.NaN; gLon = Double.NaN }
+
     /** Žemės paviršiaus aukštis iš DEM (kai įvestas tik aukštis virš žemės); persiunčiama pasislinkus > 100 m. */
     private fun refreshDem(lat: Double, lon: Double) {
         if (agl == null || msl != null || busy || groundNear() != null) return
@@ -230,7 +233,7 @@ object KnownHeight {
                 val e = Elev.get(lat, lon)
                 if (e != null) {
                     ground = e; gLat = lat; gLon = lon
-                    demStatus = "žemės paviršius %.1f m virš jūros (Terrain Tiles: SRTM / EU-DEM)".format(Locale.US, e)
+                    demStatus = "žemės paviršius %.1f m virš jūros (%s)".format(Locale.US, e, Elev.lastSource)
                 } else demStatus = "žemės aukštis: nepavyko gauti"
             } catch (e: Exception) { demStatus = "žemės aukštis: ${e.javaClass.simpleName}" }
             finally { busy = false }

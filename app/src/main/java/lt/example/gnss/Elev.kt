@@ -29,8 +29,20 @@ object Elev {
         return r * 256.0 + g + b / 256.0 - 32768.0
     }
 
+    /** Žemės aukščio šaltinis (NLO): 0 – pasaulinis (Terrain Tiles: SRTM / EU-DEM), 1 – FABDEM (be pastatų ir miškų; Vilniaus bandomasis plotas). */
+    @Volatile var source = 0
+    /** Paskutinio gauto aukščio šaltinio pavadinimas (ataskaitai). */
+    @Volatile var lastSource = ""
+    fun sourceName(s: Int = source) = when (s) { 1 -> "FABDEM (be pastatų ir miškų, 30 m)"; else -> "Terrain Tiles: SRTM / EU-DEM" }
+
     /** Aukštis virš jūros (m; jūroje – neigiamas) arba null. Tinklo užklausa – kviesti ne pagrindinėje gijoje. */
     fun get(latDeg: Double, lonDeg: Double): Double? {
+        if (source == 1) LocalDem.fabdem?.let { g -> LocalDem.at(g, latDeg, lonDeg)?.let { lastSource = sourceName(1); return it } }
+        lastSource = sourceName(0) + (if (source == 1) " (už FABDEM ploto)" else "")
+        return getTiles(latDeg, lonDeg)
+    }
+
+    private fun getTiles(latDeg: Double, lonDeg: Double): Double? {
         val xy = tileXY(latDeg, lonDeg); val tx = floor(xy[0]).toInt(); val ty = floor(xy[1]).toInt()
         val key = "$Z/$tx/$ty"
         var px = if (key == cacheKey) cachePx else null

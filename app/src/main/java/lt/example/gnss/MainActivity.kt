@@ -6191,6 +6191,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GlobeTiles.init(appCtx.filesDir)
         PlanningTiles.dir = java.io.File(appCtx.filesDir, "vplanas")
         OrthoTiles.dir = java.io.File(appCtx.filesDir, "vplanas_orto")
+        LocalDem.init(appCtx)
+        Elev.source = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getInt("dem_src", 0)
         GlobeTiles.enabled = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sat_img", true)
         OrthoTiles.enabled = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("ortho", false)
         PgdOverlay.dark = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("pgd_dark", false)
@@ -8897,6 +8899,13 @@ class DraggablePanel(
     var onViewPgd: (() -> Unit)? = null
     /** Vilniaus teritorijų planavimas (gis.vplanas.lt) ant gaublio – įjungti / išjungti. */
     val pgdDarkCb = CheckBox(context).apply { text = "PGD planas tamsus (naktinis, kaip AlpineQuest)"; textSize = 13f }
+    /** Žemės aukščio šaltinis: pasaulinis / FABDEM. */
+    val demGroup = android.widget.RadioGroup(context).apply {
+        orientation = android.widget.RadioGroup.VERTICAL
+        addView(TextView(context).apply { text = "Žemės aukščio šaltinis (ekrano centras, „Aukštis virš žemės“, barometro inkaras):"; textSize = 12f; setTextColor(Color.DKGRAY) })
+        addView(android.widget.RadioButton(context).apply { id = 7701; text = "Pasaulinis (SRTM / EU-DEM, ±2–5 m, su pastatais)"; textSize = 13f })
+        addView(android.widget.RadioButton(context).apply { id = 7702; text = "FABDEM (be pastatų ir miškų, ±1,5–3 m; Vilniaus bandomasis plotas)"; textSize = 13f })
+    }
     val satImgCb = CheckBox(context).apply { text = "Palydovinė nuotrauka (Sentinel-2, 10 m) – priartinus gaublį"; textSize = 13f }
     val orthoCb = CheckBox(context).apply { text = "Vilniaus ortofoto (aerofoto ~5 cm, gis.vplanas.lt) – priartinus gaublį"; textSize = 13f }
     val planningCb = CheckBox(context).apply { text = "Teritorijų planavimas (Vilnius, gis.vplanas.lt) – priartinus gaublį"; textSize = 13f }
@@ -9002,6 +9011,7 @@ class DraggablePanel(
         bodyInner.addView(pgdBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(pgdViewBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(pgdDarkCb)
+        bodyInner.addView(demGroup)
         bodyInner.addView(satImgCb)
         bodyInner.addView(orthoCb)
         bodyInner.addView(planningCb)
@@ -11010,6 +11020,13 @@ class MainActivity : AppCompatActivity() {
         panel.pgdDarkCb.isChecked = PgdOverlay.dark
         panel.pgdDarkCb.setOnCheckedChangeListener { _, on -> PgdOverlay.dark = on
             getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("pgd_dark", on).apply() }
+        panel.demGroup.check(if (Elev.source == 1) 7702 else 7701)
+        panel.demGroup.setOnCheckedChangeListener { _, id ->
+            Elev.source = if (id == 7702) 1 else 0
+            getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putInt("dem_src", Elev.source).apply()
+            elevKey = ""                                   // ekrano centro aukštis – iš naujo
+            KnownHeight.demChanged()
+        }
         panel.satImgCb.isChecked = GlobeTiles.enabled
         panel.satImgCb.setOnCheckedChangeListener { _, on -> GlobeTiles.enabled = on
             getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sat_img", on).apply() }

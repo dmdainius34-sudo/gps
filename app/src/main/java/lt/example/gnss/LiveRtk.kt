@@ -232,6 +232,21 @@ object LiveRtk {
     @Volatile var weakUsed = 0
     /** Kiek palydovų paskutinėje epochoje sumažintas svoris pagal išmoktą kabinos / aplinkos žemėlapį. */
     @Volatile var mapWeighted = 0
+    /** Stebima sklaida stovint (m): neišlygintos ir išlygintos padėties RMS apie medianą per 2 min. */
+    @Volatile var lastRawScatter = 0.0
+    @Volatile var lastOutScatter = 0.0
+    private val rawWin = ArrayDeque<DoubleArray>(); private val outWin = ArrayDeque<DoubleArray>()
+    private fun scat(w: ArrayDeque<DoubleArray>, now: Long, lat: Double, lon: Double, moving: Boolean) {
+        if (moving) { w.clear(); return }
+        w.addLast(doubleArrayOf(now.toDouble(), lat, lon))
+        while (w.isNotEmpty() && now - w.first()[0] > 120_000.0) w.removeFirst()
+    }
+    private fun scatter(w: ArrayDeque<DoubleArray>): Double {
+        if (w.size < 20) return 0.0
+        val la = w.map { it[1] }.sorted()[w.size / 2]; val lo = w.map { it[2] }.sorted()[w.size / 2]
+        val k = 111_320.0 * kotlin.math.cos(Math.toRadians(la))
+        return kotlin.math.sqrt(w.sumOf { ((it[1] - la) * 111_320.0).let { x -> x * x } + ((it[2] - lo) * k).let { x -> x * x } } / w.size)
+    }
 
     /**
      * GLONASS (FDMA) – kiekvienas palydovas siunčia savo dažniu, o imtuvo vėlinimas kiekvienam dažnio kanalui kitoks (lusto
@@ -424,13 +439,19 @@ object LiveRtk {
         // judama: jutikliai (žingsniai, judesys) arba Doplerio greitis > 1,5 m/s (sklandžiai važiuojant automobiliu jutikliai gali nieko nerodyti)
         val mv = moving || velocity()?.let { it.speedH > 1.5 && it.sigma < 1.0 } == true
         val q = PosFilter.step(now, f.sol.lat, f.sol.lon, f.sol.h, real, mv, vNE)
-        val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, q[3], f.sol.ecef)
+        // sąžiningas tikslumas: formalus (iš kovariacijos) per optimistiškas – kabinoje / namie žada 0,5 m, o tikra sklaida ~7 m.
+        // Stovint – ne mažesnis už stebimą sklaidą per paskutines 2 min. (neišlygintos ir išlygintos padėties RMS apie medianą)
+        scat(rawWin, now, f.sol.lat, f.sol.lon, mv); val sRaw = scatter(rawWin)
+        scat(outWin, now, q[0], q[1], mv); val sOut = scatter(outWin)
+        val accOut = maxOf(q[3], sOut, 0.5 * sRaw)
+        lastRawScatter = sRaw; lastOutScatter = sOut
+        val sol = PositionSolver.Solution(q[0], q[1], q[2], f.sol.sats, accOut, f.sol.ecef)
         sppLast = sol; sppMs = now
         AccRef.add("Vault (žymeklis, išlyginta)", sol.lat, sol.lon, sol.h)
         AccRef.add("Vault (neišlyginta)", f.sol.lat, f.sol.lon, f.sol.h)
         free?.let { AccRef.add("Vault be apribojimų (aukščio, krano, vietos)", it.sol.lat, it.sol.lon, it.sol.h) }
         vaultLog(now, f.sol, sol, f.sol.sats, f.sats.count { it.cn0 < CnoMask.min }, hc != null && !hc.h0.isNaN(), Crane.sppActive, CnoMask.min)
-        AppDiag.pos(obs.size, f.sol, hc != null && !hc.h0.isNaN(), sol,
+        AppDiag.pos(obs.size, PositionSolver.Solution(f.sol.lat, f.sol.lon, f.sol.h, f.sol.sats, maxOf(f.sol.hacc, lastRawScatter), f.sol.ecef), hc != null && !hc.h0.isNaN(), sol,
             obs.map { sppSmooth.dopHatch.count(it.sys.code * 1000 + it.svid).toDouble() }.average(), sppSmooth.dopHatch.restarts)
         // naudoti – tik tie, kurių liekana yra (žemiau 10° palydovai lieka f.sats, bet sprendime nedalyvauja)
         val resK = HashMap<String, Double>()

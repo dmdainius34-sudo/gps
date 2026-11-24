@@ -255,7 +255,7 @@ object KnownHeight {
     private var t0 = 0L
 
     /** Kiekvienam Android fiksui. Vidurkis atstatomas, kai judama (> 0,5 m/s) arba nutolstama > 30 m nuo vidurkio. */
-    @Synchronized fun onFix(ctx: Context, lat: Double, lon: Double, hEll: Double?, speed: Double, acc: Double, ms: Long) {
+    @Synchronized fun onFix(ctx: Context, lat: Double, lon: Double, hEll: Double?, speed: Double, acc: Double, ms: Long, chip: Boolean = true) {
         load(ctx); refreshDem(lat, lon); lastLat = lat; lastLon = lon
         if (speed > 0.5) { reset(); return }
         if (n > 0) {
@@ -267,7 +267,7 @@ object KnownHeight {
         val w = 1.0 / (acc.coerceAtLeast(0.5) * acc.coerceAtLeast(0.5))
         n++; sw += w; sLat += w * lat; sLon += w * lon; sLat2 += w * lat * lat; sLon2 += w * lon * lon
         val h0 = h0(lat, lon)
-        if (hEll != null && h0 != null) { dhSum += hEll - h0; dhN++ }
+        if (chip && hEll != null && h0 != null) { dhSum += hEll - h0; dhN++ }
         if (msl == null && dhN >= 300) demSuspect = abs(dhSum / dhN) > 10.0
     }
 

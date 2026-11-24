@@ -95,6 +95,8 @@ object AppDiag {
         if (orbSp3 + orbBr > 0) appendLine("Orbitos programos padėtyje: SP3 %s, transliuojamos efemeridės %s; persijungimų %d (kiekvienas – kitas palydovų rinkinys, padėtis gali šokti). %s".format(Locale.US,
             pct(orbSp3, orbSp3 + orbBr), pct(orbBr, orbSp3 + orbBr), orbSw, Sp3Live.loadText()) +
             "; BeiDou iš BRDC (SP3 jų neturi) paskutinėje epochoje: ${LiveRtk.bdsFromBrdc}")
+        appendLine("Silpni palydovai (iki %.0f dB-Hz žemiau slenksčio, svoris ×%.1f) paskutinėje epochoje: %d. %s".format(Locale.US,
+            LiveRtk.SOFT_DB, LiveRtk.WEAK_W, LiveRtk.weakUsed, LiveRtk.GloBias.text()))
         val th = eps.map { it.thr }
         appendLine("Slenkstis: %s, vid. %.0f, min %.0f, max %.0f dB-Hz; automatinių pakeitimų %d".format(Locale.US,
             if (CnoMask.auto) "automatinis" else "rankinis", th.average(), th.minOrNull() ?: 0.0, th.maxOrNull() ?: 0.0, thrs.size))

@@ -196,6 +196,36 @@ object LiveRtk {
     @Volatile var sppHeightCon = false
     /** Kiek BeiDou palydovų paskutinėje epochoje pridėta iš BRDC (SP3 jų neturi). */
     @Volatile var bdsFromBrdc = 0
+
+    /** Silpni palydovai (slenkstis − SOFT_DB … slenkstis) neišmetami, o naudojami su mažu svoriu (patalpoje kitaip lieka per mažai). */
+    const val SOFT_DB = 6.0
+    const val WEAK_W = 0.3
+    fun softMin() = maxOf(CnoMask.min - SOFT_DB, 12.0)
+    @Volatile var weakUsed = 0
+
+    /**
+     * GLONASS (FDMA) – kiekvienas palydovas siunčia savo dažniu, o imtuvo vėlinimas kiekvienam dažnio kanalui kitoks (lusto
+     * dažnių poslinkis, iki keliolikos ar keliasdešimt m). Poslinkis įvertinamas pagal palydovo liekanas (lėtas vidurkis,
+     * τ ≈ 60 epochų, tik kai GLONASS palydovų ≥ 4) ir atimamas iš pseudoatstumo. Vidurkis per palydovus – 0 (jį sugeria GLONASS laikrodis).
+     */
+    object GloBias {
+        private val b = HashMap<Int, Double>(); private val n = HashMap<Int, Int>()
+        @Synchronized fun of(svid: Int) = if ((n[svid] ?: 0) >= 10) b[svid] ?: 0.0 else 0.0
+        @Synchronized fun update(res: Map<Int, Double>) {
+            if (res.size < 4) return
+            val m = res.values.average()
+            for ((k, v) in res) {
+                val c = (n[k] ?: 0) + 1; n[k] = c
+                val a = 1.0 / minOf(c, 60)
+                b[k] = ((b[k] ?: 0.0) + a * (v - m)).coerceIn(-40.0, 40.0)
+            }
+        }
+        @Synchronized fun text(): String {
+            val l = b.keys.sorted().filter { (n[it] ?: 0) >= 10 }
+            if (l.isEmpty()) return "GLONASS kanalų poslinkiai: dar neįvertinti"
+            return "GLONASS kanalų poslinkiai (atimami, m): " + l.joinToString(", ") { "R%02d %+.1f".format(Locale.US, it, b[it]) }
+        }
+    }
         private set
     /** Kiek palydovų panaudojo programos padėtis (šviežia – iki 5 s); null – neskaičiuojama. */
     fun sppUsed(): Int? = sppLast?.takeIf { System.currentTimeMillis() - sppMs < 5_000L }?.sats
@@ -283,7 +313,7 @@ object LiveRtk {
                 (if (m.sys == 'R') (m.state and Sp3V5.STATE_GLO_TOD_DECODED) else (m.state and Sp3V5.STATE_TOW_DECODED)) == 0 -> SatStats.NO_TIME
                 SatHealth.bad(m.sys, m.svid) -> SatStats.UNHEALTHY
                 ManualMute.has(k) -> SatStats.MANUAL
-                !(m.cn0 >= CnoMask.min || (m.cn0 >= CnoMask.min - 3.0 && (m.sys.toString() + m.svid) in sppIn)) -> SatStats.WEAK
+                m.cn0 < softMin() -> SatStats.WEAK
                 else -> SatStats.NO_ORBIT   // patikslinama po sprendimo
             }
         }
@@ -293,9 +323,10 @@ object LiveRtk {
         }
         val obs = ep.meas.filter { (if (it.sys == 'R') (it.state and Sp3V5.STATE_GLO_TOD_DECODED) else (it.state and Sp3V5.STATE_TOW_DECODED)) != 0 && !SatHealth.bad(it.sys, it.svid) &&
                 !ManualMute.has(constOf(it.sys) + it.svid) &&
-                (it.cn0 >= CnoMask.min || (it.cn0 >= CnoMask.min - 3.0 && (it.sys.toString() + it.svid) in sppIn)) }
+                it.cn0 >= softMin() }
             .also { l -> sppIn = l.map { it.sys.toString() + it.svid }.toSet() }
-            .map { m -> (if (DualFreq.enabled) DualFreq.iono(m, ep.t) else null)?.let { i -> Sp3V5.Ob(m.sys, m.svid, pr(m) - i, m.cn0, m.prr, ifree = true) } ?: Sp3V5.Ob(m.sys, m.svid, pr(m), m.cn0, m.prr) }
+            .map { m -> (if (DualFreq.enabled) DualFreq.iono(m, ep.t) else null)?.let { i -> Sp3V5.Ob(m.sys, m.svid, pr(m) - i, m.cn0, m.prr, ifree = true) }
+                ?: Sp3V5.Ob(m.sys, m.svid, pr(m) - (if (m.sys == 'R') GloBias.of(m.svid) else 0.0), m.cn0, m.prr) }
             .let { l ->
                 // L1+L5 palydovams reikia savo laikrodžio – verta tik kai sistemoje jų ≥ 3, kitaip lieka įprastas L1 su Klobuchar
                 val few = l.filter { it.ifree }.groupingBy { it.sys }.eachCount().filterValues { it < 3 }.keys
@@ -308,6 +339,7 @@ object LiveRtk {
             if (o.ifree) o else groupDelay(o.sys, o.svid)?.let { g -> tgdN++; Sp3V5.Ob(o.sys, o.svid, o.pr - C * g.first, o.cn0, o.prr) } ?: o
         }
         SatStats.tgdN = tgdN; SatStats.tgdOf = obs.count { (it.sys == 'G' || it.sys == 'E') && !it.ifree }
+        fun weak(l: List<Sp3V5.SatEp>) = l.onEach { it.wMul = if (it.cn0 < CnoMask.min) WEAK_W else 1.0 }
         fun fit(hc: Sp3V5.HCon?) = try {
             if (r != null) {
                 // SP3 (CODE) turi tik GPS, GLONASS ir Galileo – BeiDou palydovai pridedami iš transliuojamų efemeridžių (BRDC),
@@ -316,10 +348,9 @@ object LiveRtk {
                 val have = sp.map { it.sys to it.svid }.toSet()
                 val bds = prepareBroadcast(ep.t, obs.filter { it.sys == 'C' && (it.sys to it.svid) !in have })
                 bdsFromBrdc = bds.size
-                if (bds.isEmpty()) Sp3V5.solveSats(ep.tow, sp, isb = true, raim = true, hCon = hc)
-                else Sp3V5.solveSats(ep.tow, sp + bds, isb = true, raim = true, hCon = hc)
+                Sp3V5.solveSats(ep.tow, weak(sp + bds), isb = true, raim = true, hCon = hc)
             }
-            else Sp3V5.solveSats(ep.tow, prepareBroadcast(ep.t, obs), isb = true, raim = true, hCon = hc)
+            else Sp3V5.solveSats(ep.tow, weak(prepareBroadcast(ep.t, obs)), isb = true, raim = true, hCon = hc)
         } catch (_: Exception) { null }
         // žinomas aukštis (įvestas ranka): kai palydovų pakanka – patikra, ar jis čia tinka (be barometro kitaip nežinoma)
         val free = if (obs.size >= 6 && (KnownHeight.deviceMsl() != null || (Crane.sppOn && Crane.geoValid) || (KnownPos.use && KnownPos.valid))) fit(null)?.also {
@@ -358,6 +389,9 @@ object LiveRtk {
             val rv = f.res["%c%02d".format(Locale.US, s.sys, s.svid)]
             if (rv != null) { why[k] = SatStats.USED; resK[k] = rv } else why[k] = SatStats.LOW_EL
         }
+        weakUsed = f.sats.count { it.cn0 < CnoMask.min && "%c%02d".format(Locale.US, it.sys, it.svid) in f.res }
+        if (f.dropped.none { it[0] == 'R' }) GloBias.update(f.sats.filter { it.sys == 'R' && !it.ifree }
+            .mapNotNull { s -> f.res["R%02d".format(Locale.US, s.svid)]?.let { s.svid to it } }.toMap())
         for (d in f.dropped) why[constOf(d[0]) + d.substring(1).toInt()] = SatStats.RAIM
         for (k in why.keys.toList()) if (why[k] == SatStats.NO_ORBIT && k.take(3) !in setOf("GPS", "GAL", "BDS", "GLO")) why[k] = SatStats.NOT_SYS
         SatStats.epoch(now, CnoMask.min, why.map { Triple(it.key, it.value, resK[it.key] ?: Double.NaN) }, cn0s)

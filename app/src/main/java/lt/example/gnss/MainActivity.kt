@@ -10901,6 +10901,7 @@ class MainActivity : AppCompatActivity() {
         // kai perduodame vietą kitoms programoms, GPS teikėjas yra mūsų – lusto fiksų nebegauname; savo sprendinį (žymė „source“)
         // naudojame kaip fiksą (kalibravimui, pasiruošimui), o svetimas bandomąsias vietas ignoruojame
         if (loc.isFromMockProvider && loc.extras?.getString("source") == null) return
+        @Suppress("DEPRECATION") val ownFix = loc.isFromMockProvider
         if (loc.hasAccuracy()) Readiness.onFix(loc.accuracy.toDouble())
         obsLatNow = loc.latitude; obsLonNow = loc.longitude
         lastFixWallMs = System.currentTimeMillis(); lastFixAcc = if (loc.hasAccuracy()) loc.accuracy.toDouble() else Double.NaN
@@ -10931,7 +10932,7 @@ class MainActivity : AppCompatActivity() {
                 appendLine("Geoidas: ${Geoid.mode.label}")
                 val n = Geoid.undulation(loc.latitude, loc.longitude)
                 try { KnownHeight.onFix(this@MainActivity, loc.latitude, loc.longitude, loc.altitude, if (loc.hasSpeed()) loc.speed.toDouble() else 0.0,
-                    if (loc.hasAccuracy()) loc.accuracy.toDouble() else 5.0, loc.time) } catch (_: Exception) {}
+                    if (loc.hasAccuracy()) loc.accuracy.toDouble() else 5.0, loc.time, chip = !ownFix) } catch (_: Exception) {}
                 when {
                     n != null -> {
                         appendLine("Geoido unduliacija (N): ${fx(n, 2)} m")
@@ -10946,7 +10947,7 @@ class MainActivity : AppCompatActivity() {
             append("Laikas: ${java.text.DateFormat.getTimeInstance().format(Date(loc.time))}")
         }
         baro.updateMslp(loc.latitude, loc.longitude)
-        appendFix(loc)
+        appendFix(loc, ownFix)
         fetchKp()
         SpaceLive.refresh(loc.latitude, loc.longitude)
         SpaceLive.alerts(loc.latitude, loc.longitude).forEach { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
@@ -11487,7 +11488,7 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------- FIKSAI KAS SEKUNDĘ (CSV) ----------------
 
-    private fun appendFix(loc: Location) {
+    private fun appendFix(loc: Location, ownFix: Boolean = false) {
         val fixLog = StringBuilder(256)
         val n = Geoid.undulation(loc.latitude, loc.longitude)
         val used = lastSats.filter { it.used }
@@ -11523,11 +11524,13 @@ class MainActivity : AppCompatActivity() {
             .append(eE?.let { fx(it, 2) } ?: "").append(',')
             .append(eN?.let { fx(it, 2) } ?: "").append('\n')
         if (NavRecordService.running) SessionFiles.writeFix(this, fixLog.toString())
-        refStats(hNow, kMsl, eE, eN)
+        // savo perduota padėtis (bandomoji vieta) – ne lusto fiksas: į paklaidų nuo etalono suvestinę nededama
+        if (ownFix) ownFixN++ else refStats(hNow, kMsl, eE, eN)
     }
 
     // Suvestinė ataskaitai: vidutinės paklaidos nuo etalono
     private var refN = 0; private var refHSum = 0.0; private var refHAbs = 0.0
+    private var ownFixN = 0
     private var refPN = 0; private var refDSum = 0.0; private var refDMax = 0.0
     private fun refStats(h: Double?, kMsl: Double?, eE: Double?, eN: Double?) {
         if (h != null && kMsl != null) { refN++; refHSum += h - kMsl; refHAbs += kotlin.math.abs(h - kMsl) }
@@ -11536,7 +11539,7 @@ class MainActivity : AppCompatActivity() {
             refPN++; refDSum += d; if (d > refDMax) refDMax = d
         }
     }
-    private fun resetRefStats() { refN = 0; refHSum = 0.0; refHAbs = 0.0; refPN = 0; refDSum = 0.0; refDMax = 0.0 }
+    private fun resetRefStats() { ownFixN = 0; refN = 0; refHSum = 0.0; refHAbs = 0.0; refPN = 0; refDSum = 0.0; refDMax = 0.0 }
 
     private fun fixCsvUri(): Uri? = try {
         val file = SessionFiles.file(this, SessionFiles.FIX)
@@ -12179,6 +12182,7 @@ class MainActivity : AppCompatActivity() {
                 kLL?.let { appendLine("Žinomos koordinatės: ${fx(it.first, 8)}, ${fx(it.second, 8)}") }
                 if (refN > 0) appendLine("GNSS aukščio paklaida: vidutinė ${fx(refHSum / refN, 2)} m, vid. absoliuti ${fx(refHAbs / refN, 2)} m (${refN} fiksų)")
                 if (refPN > 0) appendLine("Horizontali paklaida: vidutinė ${fx(refDSum / refPN, 2)} m, didžiausia ${fx(refDMax, 2)} m (${refPN} fiksų)")
+                if (ownFixN > 0) appendLine("Programos pačios perduotų padėčių (ne lusto) į paklaidas neįskaityta: $ownFixN" + (if (refN + refPN == 0) " – lusto fiksų nebuvo (perduodama vieta kitoms programoms)" else ""))
                 if (kAgl != null && kMsl != null) appendLine("Žemės aukštis virš jūros (iš etalonų): ${fx(kMsl - kAgl, 2)} m")
                 appendLine(KnownHeight.text())
                 appendLine(KnownPos.text())

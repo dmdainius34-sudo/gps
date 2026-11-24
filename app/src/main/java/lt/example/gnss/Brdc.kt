@@ -257,7 +257,9 @@ object Brdc {
         if (set == null) try { loadLocal(ctx) } catch (_: Exception) {}
         val s = set ?: return "BRDC (BeiDou): nėra"
         val f = s.first; val l = s.last
-        return "BRDC (BeiDou): " + (if (f != null && l != null) "nuo ${Sp3Reader.utc(f)} iki ${Sp3Reader.utc(l)} UTC" else source)
+        // l – naujausios efemeridės atskaitos laikas; ja naudojamasi dar 4 val. (failas pildomas kas valandą)
+        return "BRDC (BeiDou): naujausia efemeridė ${Sp3Reader.utc(l ?: return "BRDC (BeiDou): $source")} UTC, tinka iki ${Sp3Reader.utc(l + 4 * 3600.0)} UTC" +
+            (if (f != null) " (nuo ${Sp3Reader.utc(f)})" else "")
     }
 
     fun ecefKm(id: String, t: Double): DoubleArray? = set?.ecef(id, t)?.let { doubleArrayOf(it[0] / 1000, it[1] / 1000, it[2] / 1000) }

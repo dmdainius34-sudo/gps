@@ -196,6 +196,7 @@ object LiveRtk {
     @Volatile var sppHeightCon = false
     /** Kiek BeiDou palydovų paskutinėje epochoje pridėta iš BRDC (SP3 jų neturi). */
     @Volatile var bdsFromBrdc = 0
+        private set
 
     /** Silpni palydovai (slenkstis − SOFT_DB … slenkstis) neišmetami, o naudojami su mažu svoriu (patalpoje kitaip lieka per mažai). */
     const val SOFT_DB = 6.0
@@ -226,7 +227,6 @@ object LiveRtk {
             return "GLONASS kanalų poslinkiai (atimami, m): " + l.joinToString(", ") { "R%02d %+.1f".format(Locale.US, it, b[it]) }
         }
     }
-        private set
     /** Kiek palydovų panaudojo programos padėtis (šviežia – iki 5 s); null – neskaičiuojama. */
     fun sppUsed(): Int? = sppLast?.takeIf { System.currentTimeMillis() - sppMs < 5_000L }?.sats
     /** Programos padėtyje panaudoti palydovai („GPS12“, „GAL7“…), paskutinio sprendinio. */

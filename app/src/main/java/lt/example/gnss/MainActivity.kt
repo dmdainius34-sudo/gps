@@ -6978,10 +6978,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
                 GLES20.glUseProgram(colorProg)
                 GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
-                continue
             }
-            if (toEarth) {
-                // į Žemę nukreiptas – visas kūgis raudonomis žarijomis (dulkių debesis), be linijų ir užrašų
+            if (toEarth) continue
+            run {
+                // kūgis – žarijų debesis: į Žemę – raudonos (be užrašo), pro šalį – pilkos (su greičiu)
                 val rnd = java.util.Random(c.id.hashCode().toLong() xor 0x5EED)
                 val d00 = rs * kotlin.math.cos(ha)
                 val emb = arrayOf(ArrayList<Float>(), ArrayList<Float>(), ArrayList<Float>())
@@ -6992,14 +6992,15 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     pt(rnd.nextDouble() * 2 * Math.PI, rr, dd).forEach { emb[i % 3].add(it) }
                 }
                 val tt = (System.nanoTime() / 1e9).toFloat()
-                val ecol = arrayOf(floatArrayOf(1f, 0.18f, 0.05f), floatArrayOf(1f, 0.42f, 0.08f), floatArrayOf(1f, 0.75f, 0.25f))
+                val ecol = if (toEarth) arrayOf(floatArrayOf(1f, 0.18f, 0.05f), floatArrayOf(1f, 0.42f, 0.08f), floatArrayOf(1f, 0.75f, 0.25f))
+                    else arrayOf(floatArrayOf(0.55f, 0.55f, 0.58f), floatArrayOf(0.7f, 0.7f, 0.72f), floatArrayOf(0.85f, 0.85f, 0.88f))
                 GLES20.glUseProgram(dotProg)
                 GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(dotProg, "uMVP"), 1, false, mvpI, 0)
                 GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
                 for (k in 0..2) {
                     val fl = 0.65f + 0.35f * sin(tt * (1.1f + 0.7f * k) + k * 2.3f)      // rusena
                     GLES20.glUniform1f(GLES20.glGetUniformLocation(dotProg, "uPoint"), (2.2f - 0.4f * k) * density)
-                    GLES20.glUniform4f(GLES20.glGetUniformLocation(dotProg, "uColor"), ecol[k][0], ecol[k][1], ecol[k][2], 0.85f * fl)
+                    GLES20.glUniform4f(GLES20.glGetUniformLocation(dotProg, "uColor"), ecol[k][0], ecol[k][1], ecol[k][2], (if (toEarth) 0.85f else 0.45f * aMul / 0.55f) * fl)
                     bindPos(dotProg, floatBuf(emb[k].toFloatArray())); GLES20.glDrawArrays(GLES20.GL_POINTS, 0, emb[k].size / 3)
                 }
                 GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
@@ -7007,49 +7008,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(colorProg, "uMVP"), 1, false, mvpI, 0)
                 continue
             }
-            for (i in 0 until 36) { val a0 = i * Math.PI / 18; val a1 = (i + 1) * Math.PI / 18
-                pt(a0, rad, cd).forEach { ring.add(it) }; pt(a1, rad, cd).forEach { ring.add(it) } }
-            val r0 = rs * kotlin.math.sin(ha); val d0 = rs * kotlin.math.cos(ha)
-            for (i in 0 until 4) { val a = i * Math.PI / 2; pt(a, r0, d0).forEach { sides.add(it) }; pt(a, rad, cd).forEach { sides.add(it) } }
-            // permatoma švytinti „migla“ – kūgio tūris matomas iš bet kurios pusės
-            run {
-                val tri = ArrayList<Float>()
-                for (i in 0 until 36) { val a0 = i * Math.PI / 18; val a1 = (i + 1) * Math.PI / 18
-                    for (q in listOf(pt(a0, r0, d0), pt(a0, rad, cd), pt(a1, rad, cd), pt(a0, r0, d0), pt(a1, rad, cd), pt(a1, r0, d0))) q.forEach { tri.add(it) }
-                    // priekio „dangtelis“ (išgaubtas – kaip tikro išmetimo frontas)
-                    for (q in listOf(pt(0.0, 0.0, cd * 1.04), pt(a0, rad, cd), pt(a1, rad, cd))) q.forEach { tri.add(it) } }
-                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
-                GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"),
-                    if (toEarth) 1f else col[0], if (toEarth) 0.45f else col[1], if (toEarth) 0.12f else col[2], (if (toEarth) 0.09f else 0.05f) * aMul)
-                bindPos(colorProg, floatBuf(tri.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, tri.size / 3)
-                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-            }
-            if (toEarth && q > 0.85) { cmeAtEarth = true
-                val angE = Math.toDegrees(kotlin.math.acos((n[0] * eArr[0] + n[1] * eArr[1] + n[2] * eArr[2]).coerceIn(-1.0, 1.0)))
-                if (angE <= c.halfAngle) cmeAtEarthCore = true }
-            if (toEarth) {
-                // į Žemę nukreiptas – apvalus kraštas žaižaruoja kaip žarija: kiekvienas lanko gabalėlis rusena savu ritmu
-                val tt = (System.nanoTime() / 1e9).toFloat()
-                val rb = floatBuf(ring.toFloatArray())
-                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
-                for (i in 0 until 36) {
-                    val f = 0.5f + 0.25f * sin(tt * 3.1f + i * 1.7f) + 0.25f * sin(tt * 7.3f + i * 4.1f)   // 0..1
-                    bindPos(colorProg, rb)
-                    for ((w, a, g) in listOf(Triple(9f, 0.18f, 0.25f), Triple(5f, 0.35f, 0.4f), Triple(2.5f, 0.9f, 0.55f + 0.4f * f))) {
-                        GLES20.glLineWidth(w * density)
-                        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), 1f, g * (0.45f + 0.5f * f), 0.08f * f, a * (0.35f + 0.65f * f))
-                        GLES20.glDrawArrays(GLES20.GL_LINES, i * 2, 2)
-                    }
-                }
-                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-            } else {
-                GLES20.glLineWidth(1.5f * density)
-                GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.9f * aMul)
-                bindPos(colorProg, floatBuf(ring.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, ring.size / 3)
-            }
-            GLES20.glLineWidth(1f * density)
-            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.4f * aMul)
-            bindPos(colorProg, floatBuf(sides.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, sides.size / 3)
             if (!toEarth && c !in newest) continue
             val lp = FloatArray(3) { (sp[it] + n[it] * cd * 1.05).toFloat() }
             // užrašas – tik kai kamera atsukta į išmetimą (jo priekis ekrano vidurinėje dalyje)
@@ -7062,7 +7020,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 c.speed < 2000 -> "stiprus, galima stipri audra (G3–G4): GNSS ir radijo trikdžiai"
                 else -> "labai stiprus, galima ekstremali audra (G4–G5)"
             }
-            val lab = "CME %.0f km/s".format(java.util.Locale.US, c.speed) + (if (!toEarth) "" else " · $power" + run {
+            val lab = "%.0f km/s".format(java.util.Locale.US, c.speed) + (if (!toEarth) "" else " · $power" + run {
                 // kryptis į Žemę: kada pasieks (atvykimas = 21,5 R☉ momentas + likęs kelias / greitis)
                 val arr = c.t215Ms + ((Donki.AU_RSUN - 21.5) * 696_000.0 / c.speed * 1000.0).toLong()
                 val dh = (arr - now) / 3_600_000.0

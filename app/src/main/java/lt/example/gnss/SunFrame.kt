@@ -490,10 +490,17 @@ object Donki {
         return Triple(n, a, SunFrame.cross(n, a))
     }
 
+    /** Pataikymo riba: kūgio pusplotis + 10° (Žemę kliudo ir išmetimo kraštas – „šoninis smūgis“). Tas pats kriterijus lentelei ir kūgiui. */
+    const val GLANCE_DEG = 10.0
+    /** Ar pataikys pagal DONKI platumą / ilgumą (nuo Saulės–Žemės linijos išmatavimo metu). */
+    fun hitsEarthLatLon(c: Cme): Boolean {
+        val ang = Math.toDegrees(kotlin.math.acos((cos(Math.toRadians(c.lat)) * cos(Math.toRadians(c.lon))).coerceIn(-1.0, 1.0)))
+        return ang <= c.halfAngle + GLANCE_DEG
+    }
     fun hitsEarth(c: Cme, e: DoubleArray, z: DoubleArray): Boolean {
         val n = frame(c, e, z).first
         val ang = Math.toDegrees(kotlin.math.acos((n[0] * e[0] + n[1] * e[1] + n[2] * e[2]).coerceIn(-1.0, 1.0)))
-        return ang <= c.halfAngle
+        return ang <= c.halfAngle + GLANCE_DEG
     }
 
     /** Atskridimas prie Žemės (1 AU) pastoviu greičiu, ms. */

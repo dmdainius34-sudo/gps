@@ -12,7 +12,7 @@ object SpaceWeather {
     @Volatile var kpTime = ""
 
     /** CME, kurio kryptis ±45° nuo Saulės–Žemės linijos: atvykimas = 21,5 R☉ momentas + (215 − 21,5) R☉ / greitis. */
-    fun earthArrivals(list: List<Donki.Cme>): List<Pair<Donki.Cme, Long>> = list.filter { kotlin.math.abs(it.lon) <= 45.0 && kotlin.math.abs(it.lat) <= 45.0 && it.speed > 100 }
+    fun earthArrivals(list: List<Donki.Cme>): List<Pair<Donki.Cme, Long>> = list.filter { Donki.hitsEarthLatLon(it) && it.speed > 100 }
         .map { it to (it.t215Ms + ((Donki.AU_RSUN - 21.5) * 696_000.0 / it.speed * 1000.0).toLong()) }
 
     /** CME, pasiekęs Žemę per paskutines 24 h (arba pasieksiantis per 6 h); null – nėra. */

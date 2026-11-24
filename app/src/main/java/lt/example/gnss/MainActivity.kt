@@ -6932,7 +6932,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val (n, ex, ey) = Donki.frame(c, e0, ez)
             // ar pataikys – tikrinama su Žeme ten, kur ji BUS, kai išmetimas atskris (ne kur ji dabar)
             val eArr = earthDir(Donki.arrivalMs(c))
-            val toEarth = Math.toDegrees(kotlin.math.acos((n[0] * eArr[0] + n[1] * eArr[1] + n[2] * eArr[2]).coerceIn(-1.0, 1.0))) <= c.halfAngle
+            // tas pats kriterijus kaip pranešime: pusplotis + 10° (šoninis smūgis), Žemė – ten, kur bus atskridus
+            val toEarth = Math.toDegrees(kotlin.math.acos((n[0] * eArr[0] + n[1] * eArr[1] + n[2] * eArr[2]).coerceIn(-1.0, 1.0))) <= c.halfAngle + Donki.GLANCE_DEG
             val aMul = if (toEarth) 1f else if (c in newest) 0.55f else 0.3f
             val fr = Donki.frontRsun(c, now)                                    // Saulės spinduliais
             val dist = (fr / Donki.AU_RSUN * au).coerceAtLeast(rs * 1.05f.toDouble())
@@ -6951,7 +6952,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             }
             // perėjęs Žemės orbitą – virsta saulės dulkėmis ir iki 1,3 AU išblėsta
             val q = fr / Donki.AU_RSUN
-            if (q > 1.0) {
+            if (q > (if (toEarth) 1.12 else 1.0)) {          // į Žemę pataikęs – kūgis (žarija) dar matomas kiek už Žemės, tada dulkės
                 val fade = (1.0 - (q - 1.0) / 0.3).coerceIn(0.0, 1.0).toFloat()
                 val rnd = java.util.Random(c.id.hashCode().toLong())
                 // elektrinės mėlynos ir žydros smulkios dulkės (trys atspalviai, mirga)
@@ -11574,7 +11575,7 @@ class MainActivity : AppCompatActivity() {
         val b = SpaceWeather.banner()
         PosFilter.storm = b != null
         if (!::skyHolder.isInitialized) return
-        if (b == null) { stormView?.let { skyHolder.removeView(it) }; stormView = null; return }
+        if (b == null || System.currentTimeMillis() < stormHiddenUntil) { stormView?.let { skyHolder.removeView(it) }; stormView = null; return }
         val dp = resources.displayMetrics.density
         val v = stormView ?: LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -11582,7 +11583,15 @@ class MainActivity : AppCompatActivity() {
             background = android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
                 intArrayOf(0xE6B45309.toInt(), 0xE6DC2626.toInt(), 0xE67C2D12.toInt())).apply { cornerRadius = 14 * dp; setStroke((1.5f * dp).toInt(), 0xFFFDE68A.toInt()) }
             elevation = 6 * dp
-            addView(TextView(this@MainActivity).apply { textSize = 16f; setTextColor(0xFFFFFBEB.toInt()); setTypeface(typeface, android.graphics.Typeface.BOLD); tag = "t" })
+            // antraštė ir ✕ – uždaryti perskaičius (6 val. nerodoma)
+            addView(LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(this@MainActivity).apply { textSize = 16f; setTextColor(0xFFFFFBEB.toInt()); setTypeface(typeface, android.graphics.Typeface.BOLD); tag = "t" },
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(TextView(this@MainActivity).apply { text = "\u2715"; textSize = 18f; setTextColor(0xFFFFFBEB.toInt())
+                    setPadding((12 * dp).toInt(), 0, (4 * dp).toInt(), 0)
+                    setOnClickListener { stormHiddenUntil = System.currentTimeMillis() + 6 * 3_600_000L
+                        stormView?.let { sv -> skyHolder.removeView(sv) }; stormView = null } })
+            })
             addView(TextView(this@MainActivity).apply { textSize = 12f; setTextColor(0xFFFEF3C7.toInt()); tag = "s"; maxWidth = (420 * dp).toInt() })
             setOnClickListener { alpha = if (alpha > 0.5f) 0.35f else 1f }                 // bakstelėjus – permatoma
             skyHolder.addView(this, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
@@ -11592,6 +11601,7 @@ class MainActivity : AppCompatActivity() {
         (v.findViewWithTag<TextView>("t")).text = b.first
         (v.findViewWithTag<TextView>("s")).text = b.second
     }
+    private var stormHiddenUntil = 0L
     @Volatile private var kpText = "nežinoma"
     @Volatile private var kpFetched = 0L
 

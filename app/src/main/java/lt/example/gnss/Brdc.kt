@@ -243,6 +243,23 @@ object Brdc {
         return "nepavyko rasti BRDC failo (${BASE})"
     }
 
+    /** Mygtukui „Atnaujinti SP3 + BRDC“: atsisiunčia dabar (kviesti fone), grąžina rezultatą. */
+    fun refreshNow(ctx: Context): String {
+        if (busy) return "jau atsisiunčiama"
+        busy = true
+        return try { if (set == null) loadLocal(ctx); download(ctx).also { status = it } }
+        catch (e: Exception) { "klaida: ${e.message}".also { status = it } }
+        finally { loadedAt = System.currentTimeMillis(); busy = false }
+    }
+
+    /** Trumpa būsenos eilutė NLO: BRDC efemeridžių laikai arba „BRDC: nėra“. */
+    fun shortStatus(ctx: Context): String {
+        if (set == null) try { loadLocal(ctx) } catch (_: Exception) {}
+        val s = set ?: return "BRDC (BeiDou): nėra"
+        val f = s.first; val l = s.last
+        return "BRDC (BeiDou): " + (if (f != null && l != null) "nuo ${Sp3Reader.utc(f)} iki ${Sp3Reader.utc(l)} UTC" else source)
+    }
+
     fun ecefKm(id: String, t: Double): DoubleArray? = set?.ecef(id, t)?.let { doubleArrayOf(it[0] / 1000, it[1] / 1000, it[2] / 1000) }
 
     fun text(): String {

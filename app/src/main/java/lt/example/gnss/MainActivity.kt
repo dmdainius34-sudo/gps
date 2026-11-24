@@ -8598,7 +8598,7 @@ class DraggablePanel(
     /** „Atnaujinti SP3“ – atsisiųsti naujausią CODE ultra-greitų orbitų failą iš AIUB. */
     var onUpdateSp3: (() -> Unit)? = null
     private val sp3UpdateBtn = Button(context).apply {
-        text = "Atnaujinti SP3"
+        text = "Atnaujinti SP3 + BRDC"
         textSize = 12f
         isAllCaps = false
         minWidth = 0; minimumWidth = 0
@@ -8610,7 +8610,7 @@ class DraggablePanel(
         setTextColor(Color.DKGRAY)
     }
     fun setSp3Status(line: String) { sp3Status.text = line }
-    fun setSp3Busy(busy: Boolean) { sp3UpdateBtn.isEnabled = !busy; if (busy) sp3Status.text = "SP3: atsisiunčiama…" }
+    fun setSp3Busy(busy: Boolean) { sp3UpdateBtn.isEnabled = !busy; if (busy) sp3Status.text = "SP3 ir BRDC: atsisiunčiama…" }
 
     var onPickSp3: (() -> Unit)? = null
     private val sp3Btn = Button(context).apply {
@@ -9688,7 +9688,8 @@ class MainActivity : AppCompatActivity() {
     /** Būsenos eilutė po „Atnaujinti SP3“: atsisiųsto failo intervalas (UTC) arba „SP3: nėra“. */
     private fun refreshSp3Status() {
         Thread {
-            val line = try { Sp3Aiub.status(this) } catch (e: Exception) { "SP3: nėra" }
+            val line = (try { Sp3Aiub.status(this) } catch (e: Exception) { "SP3: nėra" }) + "\n" +
+                (try { Brdc.shortStatus(this) } catch (e: Exception) { "BRDC (BeiDou): nėra" })
             runOnUiThread { sharePanel?.setSp3Status(line) }
         }.start()
     }
@@ -9698,14 +9699,16 @@ class MainActivity : AppCompatActivity() {
         sharePanel?.setSp3Busy(true)
         Thread {
             val r = try { Sp3Aiub.download(Sp3Aiub.dir(this)) } catch (e: Exception) { Sp3Aiub.Result.Fail("klaida: ${e.message}") }
-            val status = try { Sp3Aiub.status(this) } catch (e: Exception) { "SP3: nėra" }
+            val br = try { Brdc.refreshNow(this) } catch (e: Exception) { "klaida: ${e.message}" }
+            val status = (try { Sp3Aiub.status(this) } catch (e: Exception) { "SP3: nėra" }) + "\n" +
+                (try { Brdc.shortStatus(this) } catch (e: Exception) { "BRDC (BeiDou): nėra" })
             runOnUiThread {
                 sharePanel?.setSp3Busy(false)
                 sharePanel?.setSp3Status(status)
                 val msg = when (r) {
                     is Sp3Aiub.Result.Ok -> { Sp3Live.refresh(this, force = true); "SP3 atnaujintas: ${r.name}" }
                     is Sp3Aiub.Result.Fail -> "SP3 neatnaujintas: ${r.message}"
-                }
+                } + "\nBRDC: $br"
                 if (r is Sp3Aiub.Result.Fail) logError(msg)
                 Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
             }

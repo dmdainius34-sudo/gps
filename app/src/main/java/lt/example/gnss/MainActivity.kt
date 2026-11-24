@@ -2583,7 +2583,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val t = (System.nanoTime() - t0) / 1e9f
 
         // Zoom: kameros atstumas kiekvieną kadrą; artima riba mažėja priartinus (kad Žemė nebūtų nukirpta)
-        val near = ((zoom - EARTH_R) * 0.3f).coerceIn(0.0000002f, 0.1f)
+        val near = (altNow() * 0.3).toFloat().coerceIn(0.00000002f, 0.1f)
         Matrix.perspectiveM(proj, 0, 40f, aspectNow, near, if (zoom > EARTH_R + SOLAR_ZOOM) zoom + GALAXY_DEPTH else 60f)
         proj[9] = if (observerView() || (freeView && focus == 0)) 0f else 0.3f   // stebėtojo režime horizontas, laisvame gaublyje – taškas po kamera ekrano viduryje
         Matrix.setIdentityM(view, 0)
@@ -2614,6 +2614,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val mvU = FloatArray(16)
         Matrix.multiplyMM(mvU, 0, u4, 0, mv, 0)
         Matrix.multiplyMM(mvpI, 0, pv, 0, mvU, 0)          // Žemė, palydovai (sideralinė erdvė)
+        System.arraycopy(aM, 0, camAM, 0, 9); System.arraycopy(proj, 0, camProj, 0, 16); camParX = 0.0; camParY = 0.0
         if (focus != 0) {
             // skrydis iki kūno (1 s) ir sukimas aplink jo centrą; dviem pirštais – poslinkis
             val tgt = bodyPos(focus) ?: doubleArrayOf(0.0, 0.0, 0.0)
@@ -2682,6 +2683,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val inv = FloatArray(16)
             if (Matrix.invertM(inv, 0, proj, 0)) {
                 val t = FloatArray(16); Matrix.setIdentityM(t, 0); Matrix.translateM(t, 0, -parX * k, -parY * k, 0f)
+                camParX = (-parX * k).toDouble(); camParY = (-parY * k).toDouble()
                 val a = FloatArray(16); Matrix.multiplyMM(a, 0, inv, 0, mvpI, 0)
                 val b = FloatArray(16); Matrix.multiplyMM(b, 0, t, 0, a, 0)
                 Matrix.multiplyMM(mvpI, 0, proj, 0, b, 0)
@@ -4735,6 +4737,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
 
     @Volatile var zoom = 3f
+    /** Kameros aukštis virš sferos (dvigubas tikslumas) – laisvame gaublyje prie plano; sinchronizuotas su zoom. */
+    @Volatile private var altD = 3.0 - 0.25
+    private fun altNow(): Double = if (kotlin.math.abs((EARTH_R + altD).toFloat() - zoom) < 1e-7f) altD else (zoom - EARTH_R).toDouble()
+    /** Laisvo gaublio kameros dalys (dvigubu tikslumu plano piešimui): kamera→I (aM), projekcija, paralakso poslinkis. */
+    private val camAM = DoubleArray(9); private val camProj = FloatArray(16)
+    private var camParX = 0.0; private var camParY = 0.0
     /** Priartinimas pagal aukštį virš paviršiaus: arčiausiai ~300 m virš žemės – arti rodomos palydovinės plytelės (GlobeTiles). */
     fun zoomBy(factor: Float) {
         if (flight != null) return                                       // skrydžio metu atstumą valdo tvarkaraštis
@@ -4745,8 +4753,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val ground = if (centreLat.isNaN()) 0.0 else EARTH_R * maxOf(0.0, reliefH(centreLat, centreLon)) / 6_371_000.0
         // šalia įkelto PGD plano – iki ~30 m virš žemės (matyti plano pikseliai); kitaip ~300 m (palydovinė nuotrauka stambesnė nebūna)
         val nearPlan = PgdOverlay.visible && !centreLat.isNaN() && PgdOverlay.centre()?.let { c -> PositionSolver.horizDist(centreLat, centreLon, c[0], c[1]) < 3000.0 } == true
-        val minAlt = if (nearPlan) 30.0 / 6_371_000.0 * EARTH_R else 0.000012
-        zoom = EARTH_R + ((zoom - EARTH_R) / f).coerceIn((ground + minAlt).toFloat(), maxZoomOut())
+        val minAlt = if (nearPlan) 1.5 / 6_371_000.0 * EARTH_R else 0.000012
+        // aukštis laikomas dvigubu tikslumu (float ties Žemės spinduliu – ~0,75 m žingsnis; arti plano mastelis „laiptuotųsi“)
+        val a0 = if (kotlin.math.abs((EARTH_R + altD).toFloat() - zoom) < 1e-7f) altD else (zoom - EARTH_R).toDouble()
+        altD = (a0 / f).coerceIn(ground + minAlt, maxZoomOut().toDouble())
+        zoom = (EARTH_R + altD).toFloat()
     }
 
     /** Mastelio režimo stadijos: Žemė (iki ~3), Saulės sistema (iki SOLAR_ZOOM), galaktika (iki GALAXY_ZOOM). */
@@ -4773,7 +4784,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** „Mano padėtis“: laisvas gaublys virš stebėtojo; jei toli (> 100 km) – priartinama iki ~30 km. */
     /** Arti paviršiaus (~1,5 km) – kad matytųsi statybvietės dydžio planas. */
-    fun zoomNear() { zoom = EARTH_R + 0.00006f }
+    fun zoomNear() { altD = 0.00006; zoom = (EARTH_R + altD).toFloat() }
 
     fun centreOnMe() {
         resetUser()
@@ -5610,6 +5621,39 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     // ---------------- PGD PLANAS (AlpineQuest kalibruotas vaizdas) ant gaublio ----------------
     private var pgdTex = 0; private var pgdVer = -1; private var pgdVbo: FloatBuffer? = null; private var pgdDir = DoubleArray(3)
+    /** Plano tinklelio viršūnės: kryptis (3) ir reljefo aukštis (m) – tiksliam (dvigubu tikslumu) piešimui. */
+    private val pgdLL = DoubleArray((TILE_N + 1) * (TILE_N + 1) * 4)
+    private val pgdEyeData = FloatArray((TILE_N + 1) * (TILE_N + 1) * 5)
+    private var pgdEyeBuf: FloatBuffer? = null
+
+    /**
+     * Viršūnės akies sistemoje dvigubu tikslumu (Žemės sukimas, kamera, vilkimas, atstumas – sudėti double, tik maži skirtumai
+     * perduodami GPU): taip arti plano (kelių metrų aukštyje) vaizdas nedreba ir nesilaiptuoja. Tik laisvame gaublyje.
+     */
+    private fun pgdEyeVerts(): FloatBuffer? {
+        if (!freeView || focus != 0 || flight != null || helioMode() || southUp) return null
+        val n = TILE_N; val r0 = EARTH_R.toDouble()
+        val g = fG; val cg = cos(g); val sg = sin(g)
+        val fk = if (earthFlat) flatK.toDouble() else 1.0
+        val a = camAM; val u = userR
+        val dist = r0 + altNow()
+        for (j in 0..n) for (i in 0..n) {
+            val q = (j * (n + 1) + i) * 4
+            val rr = r0 * (1.0 + EARTH_RELIEF_X * pgdLL[q + 3] / 6_371_000.0 * reliefK)
+            val x = pgdLL[q] * rr; val y = pgdLL[q + 1] * rr; val z = pgdLL[q + 2] * rr * fk
+            val wx = cg * x - sg * y; val wy = sg * x + cg * y; val wz = z
+            val c0 = a[0] * wx + a[3] * wy + a[6] * wz; val c1 = a[1] * wx + a[4] * wy + a[7] * wz; val c2 = a[2] * wx + a[5] * wy + a[8] * wz
+            val e0 = u[0] * c0 + u[1] * c1 + u[2] * c2 + camParX
+            val e1 = u[3] * c0 + u[4] * c1 + u[5] * c2 + camParY
+            val e2 = u[6] * c0 + u[7] * c1 + u[8] * c2 - dist
+            val o = (j * (n + 1) + i) * 5
+            pgdEyeData[o] = e0.toFloat(); pgdEyeData[o + 1] = e1.toFloat(); pgdEyeData[o + 2] = e2.toFloat()
+            pgdEyeData[o + 3] = i.toFloat() / n; pgdEyeData[o + 4] = j.toFloat() / n
+        }
+        val b = pgdEyeBuf ?: floatBuf(pgdEyeData).also { pgdEyeBuf = it }
+        b.position(0); b.put(pgdEyeData); b.position(0)
+        return b
+    }
     private fun drawPgd() {
         if (tileProg == 0 || focus != 0 || flight != null) return
         if (pgdVer != PgdOverlay.version) {
@@ -5621,7 +5665,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 val ids = IntArray(1); GLES20.glGenTextures(1, ids, 0); pgdTex = ids[0]
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, pgdTex)
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR)
-                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                // priartinus – ryškūs plano taškai (kaip AlpineQuest), ne išlieti
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST)
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
                 GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
@@ -5639,23 +5684,28 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     data[o] = (r * d[0]).toFloat(); data[o + 1] = (r * d[1]).toFloat(); data[o + 2] = (r * d[2]).toFloat()
                     data[o + 3] = u.toFloat(); data[o + 4] = v.toFloat()
                     if (i == n / 2 && j == n / 2) pgdDir = d
+                    val q = (j * (n + 1) + i) * 4
+                    pgdLL[q] = d[0]; pgdLL[q + 1] = d[1]; pgdLL[q + 2] = d[2]; pgdLL[q + 3] = maxOf(0.0, reliefH(lat, lon))
                 }
                 pgdVbo = floatBuf(data)
             }
         }
-        val vbo = pgdVbo ?: return
-        if (!PgdOverlay.visible || pgdTex == 0) return
+        if (pgdVbo == null || !PgdOverlay.visible || pgdTex == 0) return
+        val eyeVbo = pgdEyeVerts()
+        val vbo = eyeVbo ?: pgdVbo ?: return
         val m = earthMat; val cw = camPos
         val cm = DoubleArray(3) { i -> m[i * 4] * cw[0].toDouble() + m[i * 4 + 1] * cw[1].toDouble() + m[i * 4 + 2] * cw[2].toDouble() }
         if (pgdDir[0] * cm[0] + pgdDir[1] * cm[1] + pgdDir[2] * cm[2] < EARTH_R * 0.999) return   // už horizonto
         val prog = tileProg
         GLES20.glUseProgram(prog)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uMVP"), 1, false, earthMvp, 0)
-        // apšvietimas – visada šviesus (šviesa iš plano centro krypties), kad planas matytųsi ir naktį
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uMVP"), 1, false, if (eyeVbo != null) camProj else earthMvp, 0)
+        // apšvietimas – visada šviesus (šviesa iš plano centro krypties / akies žvilgsnio), kad planas matytųsi ir naktį
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uModel"), 1, false, FloatArray(16).also { android.opengl.Matrix.setIdentityM(it, 0) }, 0)
-        GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), pgdDir[0].toFloat(), pgdDir[1].toFloat(), pgdDir[2].toFloat())
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uAlpha"), 0.9f)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uRk"), reliefK)
+        if (eyeVbo != null) GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), 0f, 0f, -1f)
+        else GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), pgdDir[0].toFloat(), pgdDir[1].toFloat(), pgdDir[2].toFloat())
+        // arti – nepermatomas (po juo palydovinė nuotrauka išplaukusi)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uAlpha"), if (altNow() < 0.00002) 1f else 0.9f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uRk"), if (eyeVbo != null) 1f else reliefK)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(prog, "uTex"), 0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         resetAttribs()

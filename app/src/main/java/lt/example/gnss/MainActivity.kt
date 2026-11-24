@@ -1463,6 +1463,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     val virtualPos get() = renderer.virtualPos
     fun setSunTrue(on: Boolean) { renderer.sunTrue = on }
     fun setLascoDisk(on: Boolean) { renderer.showLascoDisk = on }
+    fun pgdDiag(): String = renderer.pgdDiag
     fun centreInfo(): DoubleArray = doubleArrayOf(renderer.centreLat, renderer.centreLon, renderer.centreAltKm, renderer.gridStepDeg)
     /** Reljefo aukštis (m; jūroje – gylis su minusu) iš GEBCO tinklelio (0,25°) taške. */
     fun reliefAt(lat: Double, lon: Double): Double = renderer.reliefAtPublic(lat, lon)
@@ -5626,6 +5627,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private val pgdLL = DoubleArray((TILE_N + 1) * (TILE_N + 1) * 4)
     private val pgdEyeData = FloatArray((TILE_N + 1) * (TILE_N + 1) * 5)
     private var pgdEyeBuf: FloatBuffer? = null
+    @Volatile var pgdDiag = ""
 
     /**
      * Viršūnės akies sistemoje dvigubu tikslumu (Žemės sukimas, kamera, vilkimas, atstumas – sudėti double, tik maži skirtumai
@@ -5693,6 +5695,19 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         if (pgdVbo == null || !PgdOverlay.visible || pgdTex == 0) return
         val eyeVbo = pgdEyeVerts()
+        // diagnostika: plano viršutinio krašto ilgis ekrane (px) – tikslus (double) ir paprastas (float) keliai
+        try {
+            val n = TILE_N
+            fun scr(m: FloatArray, x: Float, y: Float, z: Float): FloatArray? { val v = FloatArray(4); Matrix.multiplyMV(v, 0, m, 0, floatArrayOf(x, y, z, 1f), 0)
+                return if (v[3] <= 0f) null else floatArrayOf(v[0] / v[3] * lastW / 2, v[1] / v[3] * lastH / 2) }
+            fun len(a: FloatArray?, b: FloatArray?) = if (a == null || b == null) Float.NaN else kotlin.math.hypot(a[0] - b[0], a[1] - b[1])
+            val d = pgdEyeData; val e = n * 5
+            val lD = if (eyeVbo != null) len(scr(camProj, d[0], d[1], d[2]), scr(camProj, d[e], d[e + 1], d[e + 2])) else Float.NaN
+            val vb = pgdVbo!!; val m0 = FloatArray(3); val m1 = FloatArray(3)
+            for (k in 0..2) { m0[k] = vb.get(k); m1[k] = vb.get(e + k) }
+            val lF = len(scr(earthMvp, m0[0], m0[1], m0[2]), scr(earthMvp, m1[0], m1[1], m1[2]))
+            pgdDiag = "planas ekrane %.0f px (tiksl.) / %.0f px; aukštis %.1f m".format(java.util.Locale.US, lD, lF, altNow() / EARTH_R * 6_371_000.0)
+        } catch (_: Exception) {}
         val vbo = eyeVbo ?: pgdVbo ?: return
         val m = earthMat; val cw = camPos
         val cm = DoubleArray(3) { i -> m[i * 4] * cw[0].toDouble() + m[i * 4 + 1] * cw[1].toDouble() + m[i * 4 + 2] * cw[2].toDouble() }
@@ -10627,7 +10642,8 @@ class MainActivity : AppCompatActivity() {
                     // kameros aukštis virš žemės (pagal GEBCO) – kad matytųsi, kiek dar galima priartinti
                     val camAgl = ci[2] * 1000.0 - maxOf(0.0, sea)
                     val camTxt = if (camAgl < 10_000) "kamera %.0f m virš žemės".format(Locale.US, camAgl) else "kamera %.0f km".format(Locale.US, ci[2])
-                    info.text = "%.5f, %.5f · %s · %s".format(Locale.US, ci[0], ci[1], hTxt, camTxt)
+                    info.text = "%.5f, %.5f · %s · %s".format(Locale.US, ci[0], ci[1], hTxt, camTxt) +
+                        (if (PgdOverlay.corners != null) "\n" + skyDome.pgdDiag() else "")
                 }
                 info.postDelayed(this, 200L)
             } }

@@ -250,6 +250,7 @@ class KnownHeightSppTest {
 
     /** Žinoma vieta ±: 2 palydovai + aukštis + vieta (σ 5 m) – padėtis randama prie tikrosios. */
     @Test fun twoSatsWithHeightAndKnownPos() {
+        Etrs.enabled = false            // sintetinis testas – žinoma vieta toje pačioje sistemoje kaip palydovai (be ETRS89 perskaičiavimo)
         val latD = 54.70; val lonD = 25.30; val h = 200.0
         val lat = Math.toRadians(latD); val lon = Math.toRadians(lonD)
         val xT = PositionSolver.llhToEcef(lat, lon, h)

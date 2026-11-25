@@ -22,6 +22,9 @@ object LiveRtk {
     @Volatile var heading: Double? = null
     /** Planšetės pasisukimas tik iš giroskopo (be šiaurės pataisų), ° – santykiniams posūkiams (kranas). */
     @Volatile var yawGyro: Double? = null
+    private var yawRef = Double.NaN; private var yawRefMs = 0L; private var turnUntil = 0L
+    /** Kranas dabar sukasi (pagal planšetės giroskopą). */
+    @Volatile var craneTurning = false; private set
     private var movedMs = 0L
     private var engine = Rtk.Engine(1e-3, Rtk.Run("gyvas"))
     private var basePos: DoubleArray? = null
@@ -463,7 +466,17 @@ object LiveRtk {
         // Doplerio greitis patalpoje kartais pavieniui „rodo“ > 1,5 m/s – judėjimu laikoma tik ≥ 3 s iš eilės
         // (kitaip stovint išjungdavo vidurkinimą ir sąžiningo tikslumo sklaidos langą)
         dopMoveN = if (velocity()?.let { it.speedH > 1.5 && it.sigma < 1.0 } == true) dopMoveN + 1 else 0
-        val mv = moving || dopMoveN >= 3
+        // kranas sukasi (planšetė kabinoje pasisuko > 2° per 5 s): kabina juda ratu – vidurkinimas stovint žymeklį laikytų senoje vietoje
+        LiveRtk.yawGyro?.let { y ->
+            if (yawRef.isNaN()) { yawRef = y; yawRefMs = now }
+            else if (now - yawRefMs >= 5_000L) {
+                val d = ((y - yawRef + 540.0) % 360.0 + 360.0) % 360.0 - 180.0
+                if (kotlin.math.abs(d) > 2.0) turnUntil = now + 10_000L
+                yawRef = y; yawRefMs = now
+            }
+        }
+        craneTurning = Crane.geoValid && now < turnUntil
+        val mv = moving || dopMoveN >= 3 || craneTurning
         val q = PosFilter.step(now, fs.lat, fs.lon, fs.h, real, mv, vNE)
         // sąžiningas tikslumas: formalus (iš kovariacijos) per optimistiškas – kabinoje / namie žada 0,5 m, o tikra sklaida ~7 m.
         // Stovint – ne mažesnis už stebimą sklaidą per paskutines 2 min. (neišlygintos ir išlygintos padėties RMS apie medianą)

@@ -9470,7 +9470,13 @@ class MainActivity : AppCompatActivity() {
         val sig = LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc
         val st = Readiness.state(live, sig)
         val k = Readiness.knowledge()
-        v.text = (if (ChipMode.on) "◆ TIK LUSTAS · " else "● ") + (if (k != null) "Lustas %d %% · ".format(java.util.Locale.US, k.total) else "") + (Readiness.shortAcc() ?: st.text)
+        // apribojimų būsena (tik įvesti): 🏗 krano apskritimas, ⛰ žinomas aukštis, 📍 žinoma vieta; ✓ veikia, ✗ išjungtas (nesutampa / einate)
+        val cons = buildString {
+            if (Crane.sppOn && Crane.geoValid) append(" 🏗" + if (Crane.sppActive) "✓" else "✗")
+            if (KnownHeight.msl != null || KnownHeight.agl != null) append(" ⛰" + if (KnownHeight.active) "✓" else "✗")
+            if (KnownPos.use && KnownPos.valid) append(" 📍" + if (KnownPos.active) "✓" else "✗")
+        }
+        v.text = (if (ChipMode.on) "◆ TIK LUSTAS · " else "●$cons ") + (if (k != null) "Lustas %d %% · ".format(java.util.Locale.US, k.total) else "") + (Readiness.shortAcc() ?: st.text)
         val lvl = ((k?.total ?: 0) * 100).coerceIn(0, 10000)
         if (readyLast == st.ready) (v.background as? android.graphics.drawable.LayerDrawable)?.getDrawable(1)?.level = if (st.ready) 10000 else lvl
         if (readyLast != st.ready) {

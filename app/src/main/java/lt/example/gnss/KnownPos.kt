@@ -35,6 +35,7 @@ object KnownPos {
     private var walkFrom = 0L; private var stillFrom = 0L
 
     const val WALK_S = 15.0; const val STILL_S = 30.0
+    private var farS = 0
 
     /** „54.7399, 25.2546“ (tarpas, kabliataškis arba kablelis su tarpu tarp skaičių). */
     fun parse(text: String): Pair<Double, Double>? {
@@ -94,9 +95,10 @@ object KnownPos {
         cnt++
         freeD = sqrt(aE * aE + aN * aN)
         val lim = limit()
+        if (freeD > lim) farS++ else if (freeD < lim * 0.7) farS = 0
         when {
             walkS >= WALK_S -> { conflict = true; why = "einate" }
-            cnt >= 20 && freeD > lim -> { conflict = true; why = "padėtis per toli" }
+            cnt >= 20 && farS >= 180 -> { conflict = true; why = "padėtis per toli ≥ 3 min." }
             conflict && stillS >= STILL_S && freeD < lim * 0.7 -> { conflict = false; why = "" }
         }
     }

@@ -24,7 +24,7 @@ object Crane {
         private set
     @Volatile var freeDr = Double.NaN
         private set
-    private var badN = 0; private var goodN = 0
+    private var badN = 0; private var goodN = 0; private var walkN = 0
     const val SIGMA_R = 0.3; const val SIGMA_H = 0.5
 
     fun load(ctx: Context) {
@@ -56,7 +56,11 @@ object Crane {
         val v = en(latDeg, lonDeg); val d = sqrt(v[0] * v[0] + v[1] * v[1])
         freeDr = d - radius
         val bad = kotlin.math.abs(freeDr) > maxOf(25.0, 3 * hacc)
-        if (bad) { badN++; goodN = 0; if (badN >= 5) conflict = true } else { goodN++; badN = 0; if (goodN >= 10) conflict = false }
+        // griežčiau: kabinoje laisva padėtis šokinėja dešimtimis metrų – išjungiama tik kai nesutampa ≥ 3 min. iš eilės
+        // (pavieniai geri mėginiai skaitiklio nenuneša) arba einama ≥ 15 s (žingsniai)
+        if (Steps.walking()) walkN++ else walkN = 0
+        if (bad) { badN++; goodN = 0 } else { goodN++; if (goodN >= 5) badN = 0 }
+        if (badN >= 180 || walkN >= 15) conflict = true else if (conflict && goodN >= 10 && walkN == 0) conflict = false
     }
 
     /** Programos padėties apribojimas: prie esamo (žinomo aukščio) pridedamas apskritimas; null – nenaudojamas. */

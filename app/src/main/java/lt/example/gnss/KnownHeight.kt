@@ -173,8 +173,11 @@ object KnownHeight {
         // laisvas GNSS aukštis lėtai taiso barometro nuslinkimą (telefone)
         Geoid.undulation(lat, lon)?.let { n -> BaroFuse.gnss(System.currentTimeMillis(), h - n, 5.0 * v) }
         val lim = limit()
-        if (dhCnt >= 20 && abs(dhAvg) > lim) conflict = true
-        else if (abs(dhAvg) < lim * 0.7) conflict = false
+        // griežčiau: išjungiama tik kai nesutampa ≥ 3 min. iš eilės arba einama ≥ 15 s (nulipote ir pan.)
+        if (Steps.walking()) hWalkN++ else hWalkN = 0
+        if (abs(dhAvg) > lim) hBadN++ else if (abs(dhAvg) < lim * 0.7) hBadN = 0
+        if (dhCnt >= 20 && (hBadN >= 180 || hWalkN >= 15)) conflict = true
+        else if (conflict && hBadN == 0 && hWalkN == 0) conflict = false
     }
 
     /** Aukščio apribojimas programos padėčiai (vieta lat, lon – paskutinė žinoma) arba null. */
@@ -191,6 +194,7 @@ object KnownHeight {
      * Jei ilgas vidurkis stovint (≥ 300 fiksų) rodo, kad GNSS aukštis nuo DEM etalono skiriasi > 10 m, DEM etalonas nenaudojamas.
      */
     @Volatile var demSuspect = false
+    private var hBadN = 0; private var hWalkN = 0
         private set
     val active get() = (msl != null || (agl != null && groundMsl() != null)) && !conflict
 

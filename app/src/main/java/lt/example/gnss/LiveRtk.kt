@@ -443,7 +443,11 @@ object LiveRtk {
             Crane.checkFree(fe[0], fe[1], it.sol.hacc)
             KnownPos.checkFree(fe[0], fe[1], now, Steps.walking(), Steps.count > 0)
         } else null
-        val ref = sppLast?.takeIf { now - sppMs < 60_000L }?.let { it.lat to it.lon } ?: KnownHeight.lastLatLon()
+        // pradinis taškas apribojimams: paskutinė padėtis, laisva padėtis, RTK, žinomo aukščio vieta arba (tik krano apribojimas) šalia ašies –
+        // kitaip po ilgesnės pertraukos be žinomos vietos kabinoje (< 5 palydovų) padėtis nebeatsirasdavo
+        val ref = sppLast?.takeIf { now - sppMs < 60_000L }?.let { it.lat to it.lon } ?: free?.let { it.sol.lat to it.sol.lon }
+            ?: last?.takeIf { now - lastMs < 60_000L }?.let { it.lat to it.lon } ?: KnownHeight.lastLatLon()
+            ?: (if (Crane.sppOn && Crane.geoValid) (Crane.lat + 1e-5) to Crane.lon else null)
         // žinomas aukštis ir (jei nustatytas) krano apskritimas aplink bokšto ašį
         val hc = KnownPos.sppConstraint(Crane.sppConstraint(ref?.let { KnownHeight.constraint(it.first, it.second) }, ref?.first, ref?.second),
             sppLast?.h ?: KnownHeight.deviceMsl() ?: 0.0)

@@ -221,11 +221,12 @@ object KnownHeight {
     }
 
     /** Pakeistas aukščių šaltinis (NLO) – DEM aukštis bus paimtas iš naujo. */
-    fun demChanged() { gLat = Double.NaN; gLon = Double.NaN }
+    fun demChanged() { gLat = Double.NaN; gLon = Double.NaN; if (!lastLat.isNaN()) refreshDem(lastLat, lastLon) }
 
     /** Žemės paviršiaus aukštis iš DEM (kai įvestas tik aukštis virš žemės); persiunčiama pasislinkus > 100 m. */
     private fun refreshDem(lat: Double, lon: Double) {
-        if (agl == null || msl != null || busy || groundNear() != null) return
+        // žemės aukštis iš DEM atnaujinamas visada (rodomas prie ⏚ ir ataskaitoje); naudojamas tik kai įvestas vien aukštis virš žemės
+        if (busy) return
         if (!gLat.isNaN() && abs(lat - gLat) * 111_320 < 100 && abs(lon - gLon) * 111_320 * cos(Math.toRadians(lat)) < 100) return
         busy = true
         Thread {

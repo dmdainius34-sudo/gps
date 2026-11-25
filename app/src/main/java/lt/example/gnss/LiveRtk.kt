@@ -20,6 +20,8 @@ object LiveRtk {
     @Volatile var moving = false
     /** Prietaiso kryptis (°) kabinos žemėlapiui. */
     @Volatile var heading: Double? = null
+    /** Planšetės pasisukimas tik iš giroskopo (be šiaurės pataisų), ° – santykiniams posūkiams (kranas). */
+    @Volatile var yawGyro: Double? = null
     private var movedMs = 0L
     private var engine = Rtk.Engine(1e-3, Rtk.Run("gyvas"))
     private var basePos: DoubleArray? = null

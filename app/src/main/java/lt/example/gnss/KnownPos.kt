@@ -53,17 +53,25 @@ object KnownPos {
     @Volatile private var appCtx: Context? = null
     @Volatile private var rotOff = Double.NaN; @Volatile private var rotR = Double.NaN; @Volatile private var rotKey = ""
     @Volatile var rotAz = Double.NaN; private set
+    @Volatile var rotWhy = ""; private set
+    @Volatile private var sessN = Double.NaN
     private fun key() = "%.7f,%.7f|%.7f,%.7f".format(Locale.US, lat, lon, Crane.lat, Crane.lon)
     private fun az(la1: Double, lo1: Double, la2: Double, lo2: Double) =
         Math.toDegrees(kotlin.math.atan2((lo2 - lo1) * 111_320.0 * cos(Math.toRadians(la1)), (la2 - la1) * 111_320.0))
     /**
-     * Dabartinė žinoma vieta: jei įvesta krano ašis ir planšetės kryptis patikima – įvesta vieta pasukama aplink ašį tiek,
+     * Dabartinė žinoma vieta: jei įvesta krano ašis – įvesta vieta pasukama aplink ašį tiek,
      * kiek nuo įvedimo pasisuko planšetė (kranas); kitaip – tokia, kokia įvesta.
      */
     fun pos(): DoubleArray {
         if (!valid) return doubleArrayOf(lat, lon)
-        val hd = LiveRtk.heading?.takeIf { HeadingTrust.trusted }
-        if (!Crane.geoValid || hd == null) { rotAz = Double.NaN; return doubleArrayOf(lat, lon) }
+        // tik santykinis posūkis nuo įvedimo – šiaurės kalibravimas ir jo patikimumas nesvarbūs
+        val yaw = LiveRtk.yawGyro; val h0 = LiveRtk.heading
+        // šios sesijos šiaurės poslinkis užfiksuojamas vieną kartą: vėlesnės šiaurės pataisos kabinos kampo nebekeičia
+        if (sessN.isNaN() && yaw != null && h0 != null) sessN = h0 - yaw
+        val hd = if (yaw == null || sessN.isNaN()) null else yaw + sessN
+        if (!Crane.geoValid) { rotAz = Double.NaN; rotWhy = "neįvesta krano ašis"; return doubleArrayOf(lat, lon) }
+        if (hd == null) { rotAz = Double.NaN; rotWhy = "nėra giroskopo krypties"; return doubleArrayOf(lat, lon) }
+        rotWhy = ""
         val k = key()
         if (rotKey != k || rotOff.isNaN()) {
             // pirmą kartą po įvedimo: poslinkis tarp kabinos kampo aplink bokštą ir planšetės krypties įsimenamas
@@ -71,7 +79,7 @@ object KnownPos {
             rotOff = az(Crane.lat, Crane.lon, lat, lon) - hd; rotKey = k
             appCtx?.getSharedPreferences("known_ref", Context.MODE_PRIVATE)?.edit()?.putFloat("rot_off", rotOff.toFloat())?.putFloat("rot_r", rotR.toFloat())?.putString("rot_key", k)?.apply()
         }
-        if (rotR < 0.3) { rotAz = Double.NaN; return doubleArrayOf(lat, lon) }
+        if (rotR < 0.3) { rotAz = Double.NaN; rotWhy = "žinoma vieta ant ašies"; return doubleArrayOf(lat, lon) }
         val a = Math.toRadians(hd + rotOff); rotAz = ((Math.toDegrees(a) % 360) + 360) % 360
         val dN = rotR * cos(a); val dE = rotR * sin(a)
         return doubleArrayOf(Crane.lat + dN / 111_320.0, Crane.lon + dE / (111_320.0 * cos(Math.toRadians(Crane.lat))))
@@ -157,7 +165,7 @@ object KnownPos {
             else -> "naudojama programos padėtyje"
         }
         return "Žinoma vieta: ±%.0f m; %s%s%s".format(Locale.US, sigma, st,
-            if (rotAz.isNaN()) "" else "; sukama kartu su kranu (planšetės giroskopas): kabinos kampas aplink bokštą %.0f°, %.1f m nuo ašies".format(Locale.US, rotAz, rotR),
+            if (rotAz.isNaN()) (if (rotWhy.isEmpty()) "" else "; NESUKAMA su kranu: $rotWhy") else "; sukama kartu su kranu (planšetės giroskopas): kabinos kampas aplink bokštą %.0f°, %.1f m nuo ašies".format(Locale.US, rotAz, rotR),
             if (freeD.isNaN()) "" else "; padėtis be apribojimo %.0f m nuo jos (riba %.0f m; išjungiama ir einant ≥ %.0f s)".format(Locale.US, freeD, limit(), WALK_S))
     }
 }

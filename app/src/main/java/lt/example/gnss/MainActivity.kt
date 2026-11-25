@@ -9788,6 +9788,7 @@ class MainActivity : AppCompatActivity() {
             CabinMap.load(this@MainActivity)
             val hd = if (::skyDome.isInitialized) skyDome.headingDeg() else null
             LiveRtk.heading = hd
+            LiveRtk.yawGyro = hd?.let { it - skyDome.northOffsetDeg() }
             // kryptis iš magnetometro + Saulės kalibravimų žurnalo (nuokrypio stebėjimas ir taisymas)
             try { northFromLogTick() } catch (_: Exception) {}
             // kryptis iš signalų stiprumo (prieš mokymąsi – kad dabartinis mėginys netaptų savo paties įrodymu)

@@ -5821,7 +5821,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (eyeVbo != null) GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), 0f, 0f, -1f)
         else GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uLight"), pgdDir[0].toFloat(), pgdDir[1].toFloat(), pgdDir[2].toFloat())
         // arti – nepermatomas (po juo palydovinė nuotrauka išplaukusi)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uAlpha"), if (altNow() < 0.00002) 1f else 0.9f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uAlpha"), (if (altNow() < 0.00002) 1f else 0.9f) * PgdOverlay.alpha.coerceIn(0.1f, 1f))
         GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uRk"), if (eyeVbo != null) 1f else reliefK)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(prog, "uTex"), 0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -6197,6 +6197,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GlobeTiles.enabled = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sat_img", true)
         OrthoTiles.enabled = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("ortho", false)
         PgdOverlay.dark = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("pgd_dark", false)
+        PgdOverlay.alpha = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getFloat("pgd_alpha", 1f)
         PlanningTiles.enabled = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("planning", false)
         Thread { try { if (PgdOverlay.bitmap == null) PgdOverlay.restore(appCtx) } catch (_: Exception) {} }.start()
         val main = Handler(Looper.getMainLooper())
@@ -8899,6 +8900,9 @@ class DraggablePanel(
     var onClearPgd: (() -> Unit)? = null
     var onViewPgd: (() -> Unit)? = null
     /** Vilniaus teritorijų planavimas (gis.vplanas.lt) ant gaublio – įjungti / išjungti. */
+    /** PGD plano nepermatomumas (10–100 %). */
+    val pgdAlphaLbl = TextView(context).apply { textSize = 12f; setTextColor(Color.DKGRAY) }
+    val pgdAlphaSeek = SeekBar(context).apply { max = 90 }
     val pgdDarkCb = CheckBox(context).apply { text = "PGD planas tamsus (naktinis, kaip AlpineQuest)"; textSize = 13f }
     /** Žemės aukščio šaltinis: pasaulinis / FABDEM. */
     val demGroup = android.widget.RadioGroup(context).apply {
@@ -9011,6 +9015,8 @@ class DraggablePanel(
         bodyInner.addView(sp3Btn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(pgdBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
         bodyInner.addView(pgdViewBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (48 * density).toInt()))
+        bodyInner.addView(pgdAlphaLbl)
+        bodyInner.addView(pgdAlphaSeek)
         bodyInner.addView(pgdDarkCb)
         bodyInner.addView(demGroup)
         bodyInner.addView(satImgCb)
@@ -11018,6 +11024,17 @@ class MainActivity : AppCompatActivity() {
         panel.onPickSp3 = { launchSp3Picker() }
         panel.onOpenPgd = { try { pgdPickLauncher.launch(arrayOf("*/*")) } catch (e: Exception) { Toast.makeText(this, "Failo pasirinkimas nepasiekiamas", Toast.LENGTH_SHORT).show() } }
         panel.onViewPgd = { openPlanView() }
+        fun pgdAlphaText() { panel.pgdAlphaLbl.text = "PGD plano nepermatomumas: %d %% (mažiau – matosi ortofoto po planu, poslinkiui įvertinti)".format(Locale.US, (PgdOverlay.alpha * 100).toInt()) }
+        panel.pgdAlphaSeek.progress = ((PgdOverlay.alpha - 0.1f) * 100).toInt().coerceIn(0, 90); pgdAlphaText()
+        panel.pgdAlphaSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                PgdOverlay.alpha = 0.1f + p / 100f; pgdAlphaText()
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putFloat("pgd_alpha", PgdOverlay.alpha).apply()
+            }
+            override fun onStartTrackingTouch(sb: SeekBar) {}
+            override fun onStopTrackingTouch(sb: SeekBar) {}
+        })
         panel.pgdDarkCb.isChecked = PgdOverlay.dark
         panel.pgdDarkCb.setOnCheckedChangeListener { _, on -> PgdOverlay.dark = on
             getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("pgd_dark", on).apply() }

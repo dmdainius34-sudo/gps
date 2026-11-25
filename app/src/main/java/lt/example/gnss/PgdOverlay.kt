@@ -23,6 +23,8 @@ object PgdOverlay {
     @Volatile var visible = true
     /** Tamsus (naktinis) režimas kaip AlpineQuest: šviesumas apverčiamas, spalvos (atspalviai) išlieka. */
     @Volatile var dark = false
+    /** Plano nepermatomumas 0,1..1 (NLO šliaužiklis) – kad po planu matytųsi ortofoto ir būtų galima įvertinti plano poslinkį. */
+    @Volatile var alpha = 1f
     /** Apversto šviesumo filtras: inversija + atspalvio pasukimas 180° (raudona lieka raudona, balta tampa juoda). */
     val darkFilter: android.graphics.ColorMatrixColorFilter by lazy {
         val inv = android.graphics.ColorMatrix(floatArrayOf(-1f, 0f, 0f, 0f, 255f, 0f, -1f, 0f, 0f, 255f, 0f, 0f, -1f, 0f, 255f, 0f, 0f, 0f, 1f, 0f))

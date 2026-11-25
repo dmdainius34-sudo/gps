@@ -71,6 +71,10 @@ class PlanOverlayView(ctx: Context) : View(ctx) {
         if (!m.setPolyToPoly(floatArrayOf(0f, 0f, w, 0f, w, h, 0f, h), 0, sc, 0, 4)) return
         // ekrane vienas plano taškas didesnis nei ~2 px – ryškūs kvadratėliai (kaip AlpineQuest)
         val scale = kotlin.math.hypot(sc[2] - sc[0], sc[3] - sc[1]) / w
-        c.drawBitmap(b, m, if (PgdOverlay.dark) (if (scale > 2f) darkSharp else darkSmooth) else if (scale > 2f) sharp else smooth)
+        val pnt = if (PgdOverlay.dark) (if (scale > 2f) darkSharp else darkSmooth) else if (scale > 2f) sharp else smooth
+        val al = (PgdOverlay.alpha * 255).toInt().coerceIn(25, 255)
+        pnt.alpha = al
+        c.drawBitmap(b, m, pnt)
+        pnt.alpha = 255
     }
 }

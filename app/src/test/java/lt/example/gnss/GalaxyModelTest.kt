@@ -286,8 +286,10 @@ class KnownPosTest {
         // sustojus 30 s šalia – vėl įjungiama
         repeat(31) { t += 1000; KnownPos.checkFree(54.70 + 5 * m, 25.30, t, false, true) }
         org.junit.Assert.assertTrue(KnownPos.active)
-        // labai toli (be žingsnių) – išjungiama
+        // labai toli (be žingsnių) – išjungiama, bet tik po ≥ 3 min. iš eilės (trumpi atspindžių šuoliai neišjungia)
         repeat(100) { t += 1000; KnownPos.checkFree(54.70 + 100 * m, 25.30, t, false, true) }
+        org.junit.Assert.assertTrue(KnownPos.active)
+        repeat(120) { t += 1000; KnownPos.checkFree(54.70 + 100 * m, 25.30, t, false, true) }
         org.junit.Assert.assertFalse(KnownPos.active)
         KnownPos.set(false, null, 10.0)
     }

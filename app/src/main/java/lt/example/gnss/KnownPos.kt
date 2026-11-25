@@ -56,7 +56,7 @@ object KnownPos {
 
     @Synchronized fun set(on: Boolean, ll: Pair<Double, Double>?, sig: Double) {
         val la = ll?.first ?: Double.NaN; val lo = ll?.second ?: Double.NaN
-        if (la != lat || lo != lon || sig != sigma || on != use) { conflict = false; aE = Double.NaN; aN = Double.NaN; cnt = 0; freeD = Double.NaN; why = ""; walkFrom = 0L; stillFrom = 0L }
+        if (la != lat || lo != lon || sig != sigma || on != use) { conflict = false; aE = Double.NaN; aN = Double.NaN; cnt = 0; freeD = Double.NaN; why = ""; walkFrom = 0L; stillFrom = 0L; farS = 0 }
         use = on; lat = la; lon = lo; sigma = sig
     }
 

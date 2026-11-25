@@ -51,4 +51,12 @@ object Etrs {
         val r = llh(t, latDeg, lonDeg, 0.0)
         return doubleArrayOf((r[0] - latDeg) * 111_320.0, (r[1] - lonDeg) * 111_320.0 * cos(Math.toRadians(latDeg)))
     }
+
+    /** ETRS89 (žemėlapiai, ortofoto, krano ašis, žinoma vieta) → ITRF (programos padėties skaičiavimas SP3 orbitomis), apytiksliai (~1 mm). */
+    fun toItrf(latDeg: Double, lonDeg: Double): DoubleArray {
+        if (!enabled) return doubleArrayOf(latDeg, lonDeg)
+        val t = yearOf(System.currentTimeMillis())
+        val sh = shiftNE(t, latDeg, lonDeg)
+        return doubleArrayOf(latDeg - sh[0] / 111_320.0, lonDeg - sh[1] / (111_320.0 * cos(Math.toRadians(latDeg))))
+    }
 }

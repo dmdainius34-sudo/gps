@@ -104,7 +104,9 @@ object KnownPos {
     /** Programos padėties apribojimas: prie esamo (aukščio, krano) pridedama vieta; aukštis pradžiai – h. */
     fun sppConstraint(base: Sp3V5.HCon?, h: Double): Sp3V5.HCon? {
         if (!active) return base
-        val la = Math.toRadians(lat); val lo = Math.toRadians(lon)
+        // žinoma vieta – ETRS89 (ortofoto, geodeziniai punktai); programos padėtis skaičiuojama ITRF
+        val ll = Etrs.toItrf(lat, lon)
+        val la = Math.toRadians(ll[0]); val lo = Math.toRadians(ll[1])
         val p = PositionSolver.llhToEcef(la, lo, if (h.isNaN()) 0.0 else h)
         val c = base ?: Sp3V5.HCon(Double.NaN, 0.0, p)
         c.pos = p

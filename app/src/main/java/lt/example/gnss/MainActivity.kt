@@ -12451,9 +12451,11 @@ class MainActivity : AppCompatActivity() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad / 2, pad, 0) }
         val num = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
         fun field(hint: String, v: String) = EditText(this).apply { this.hint = hint; setText(v); inputType = num; isSingleLine = true; box.addView(this) }
-        box.addView(TextView(this).apply { text = "Bokšto ašies (sukimosi centro) koordinatės iš brėžinio, WGS84 laipsniais"; textSize = 13f })
-        val la = field("Ašies platuma (pvz. 54.7398000)", if (Crane.lat != 0.0) Crane.lat.toString() else "")
-        val lo = field("Ašies ilguma (pvz. 25.2545000)", if (Crane.lon != 0.0) Crane.lon.toString() else "")
+        box.addView(TextView(this).apply { text = "Bokšto ašies (sukimosi centro) koordinatės – platuma, ilguma vienoje eilutėje (ETRS89, kaip ortofoto ir Vault; galima įklijuoti iš ekrano centro)"; textSize = 13f })
+        val ll = EditText(this).apply { hint = "pvz. 54.6860000, 25.2870000"; isSingleLine = true
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setText(if (Crane.lat != 0.0 || Crane.lon != 0.0) "%.7f, %.7f".format(java.util.Locale.US, Crane.lat, Crane.lon) else ""); box.addView(this) }
+        fun llParse(): DoubleArray? = parseLatLon(ll.text.toString())
         val r = field("Spindulys: atstumas nuo ašies iki planšetės, m", if (Crane.radius > 0) Crane.radius.toString() else "")
         val h = field("Planšetės elipsoidinis aukštis, m (nebūtina)", if (Crane.height.isNaN()) "" else Crane.height.toString())
         val on = CheckBox(this).apply { text = "Naudoti RTK skaičiavime (planšetė juda tik ratu aplink bokštą)"; isChecked = Crane.on; box.addView(this) }
@@ -12469,7 +12471,7 @@ class MainActivity : AppCompatActivity() {
                 axRun = false
                 val ml = axLat.sorted()[axLat.size / 2]; val mo = axLon.sorted()[axLon.size / 2]
                 val sp = axLat.indices.map { PositionSolver.horizDist(axLat[it], axLon[it], ml, mo) }.sorted()
-                la.setText("%.7f".format(java.util.Locale.US, ml)); lo.setText("%.7f".format(java.util.Locale.US, mo))
+                ll.setText("%.7f, %.7f".format(java.util.Locale.US, ml, mo))
                 st.text = "Ašis išmatuota: %d mėg., sklaida (pusė taškų) %.1f m. Dabar įveskite spindulį (kabinoje – „Spindulys = dabartinis atstumas“) ir išsaugokite.".format(java.util.Locale.US, axLat.size, sp[sp.size / 2])
                 return
             }
@@ -12483,7 +12485,7 @@ class MainActivity : AppCompatActivity() {
         box.addView(Button(this).apply {
             text = "Spindulys = dabartinis atstumas iki ašies"
             setOnClickListener {
-                val a = Crane.parseDeg(la.text.toString(), 90.0); val b = Crane.parseDeg(lo.text.toString(), 180.0)
+                val p = llParse(); val a = p?.get(0); val b = p?.get(1)
                 if (a == null || b == null) { Toast.makeText(this@MainActivity, "Pirma įveskite ašies koordinates", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
                 val src = LiveRtk.last?.takeIf { it.hacc < 0.5 }
                 val d = PositionSolver.horizDist(a, b, src?.lat ?: obsLatNow, src?.lon ?: obsLonNow)
@@ -12495,7 +12497,7 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Krano apribojimas")
             .setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("Išsaugoti") { _, _ ->
-                val pla = Crane.parseDeg(la.text.toString(), 90.0); val plo = Crane.parseDeg(lo.text.toString(), 180.0)
+                val pp = llParse(); val pla = pp?.get(0); val plo = pp?.get(1)
                 val pr = Crane.parseNum(r.text.toString()); val ph = Crane.parseNum(h.text.toString())
                 Crane.lat = pla ?: 0.0; Crane.lon = plo ?: 0.0; Crane.radius = pr ?: 0.0; Crane.height = ph ?: Double.NaN
                 Crane.on = on.isChecked

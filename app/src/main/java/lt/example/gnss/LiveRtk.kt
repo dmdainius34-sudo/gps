@@ -417,8 +417,10 @@ object LiveRtk {
         // žinomas aukštis (įvestas ranka): kai palydovų pakanka – patikra, ar jis čia tinka (be barometro kitaip nežinoma)
         val free = if (obs.size >= 6 && (KnownHeight.deviceMsl() != null || (Crane.sppOn && Crane.geoValid) || (KnownPos.use && KnownPos.valid))) fit(null)?.also {
             if (KnownHeight.deviceMsl() != null) KnownHeight.checkFree(it.sol.lat, it.sol.lon, it.sol.h, vdopOf(it))
-            Crane.checkFree(it.sol.lat, it.sol.lon, it.sol.hacc)
-            KnownPos.checkFree(it.sol.lat, it.sol.lon, now, Steps.walking(), Steps.count > 0)
+            // ašis ir žinoma vieta – ETRS89, laisva padėtis – ITRF: lyginama perskaičiavus
+            val fe = if (Etrs.enabled) Etrs.llh(Etrs.yearOf(now), it.sol.lat, it.sol.lon, it.sol.h) else doubleArrayOf(it.sol.lat, it.sol.lon, it.sol.h)
+            Crane.checkFree(fe[0], fe[1], it.sol.hacc)
+            KnownPos.checkFree(fe[0], fe[1], now, Steps.walking(), Steps.count > 0)
         } else null
         val ref = sppLast?.takeIf { now - sppMs < 60_000L }?.let { it.lat to it.lon } ?: KnownHeight.lastLatLon()
         // žinomas aukštis ir (jei nustatytas) krano apskritimas aplink bokšto ašį

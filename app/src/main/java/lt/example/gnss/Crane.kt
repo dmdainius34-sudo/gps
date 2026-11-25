@@ -68,7 +68,7 @@ object Crane {
             PositionSolver.llhToEcef(Math.toRadians(pl), Math.toRadians(po), if (height.isNaN()) 0.0 else height)
         }
         val c = base ?: Sp3V5.HCon(Double.NaN, 0.0, x0)
-        val (a, u) = axis()
+        val (a, u) = axis(itrf = true)
         c.axis = a; c.up = u; c.r = radius; c.rSigma = 1.0
         return c
     }
@@ -95,8 +95,10 @@ object Crane {
     fun parseNum(text: String): Double? = text.trim().replace(',', '.').replace(" ", "").toDoubleOrNull()
 
     /** Ašies taškas (ECEF, m; aukštis h0 arba 0) ir vietinis zenitas. */
-    fun axis(): Pair<DoubleArray, DoubleArray> {
-        val la = Math.toRadians(lat); val lo = Math.toRadians(lon)
+    /** itrf = true – programos padėčiai (SP3 / ITRF); ašis įvesta ETRS89 (ortofoto, Vault žemėlapiai), RTK – ETRS89. */
+    fun axis(itrf: Boolean = false): Pair<DoubleArray, DoubleArray> {
+        val ll = if (itrf) Etrs.toItrf(lat, lon) else doubleArrayOf(lat, lon)
+        val la = Math.toRadians(ll[0]); val lo = Math.toRadians(ll[1])
         val a = PositionSolver.llhToEcef(la, lo, if (height.isNaN()) 0.0 else height)
         return a to doubleArrayOf(cos(la) * cos(lo), cos(la) * sin(lo), sin(la))
     }

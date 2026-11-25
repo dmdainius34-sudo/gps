@@ -122,7 +122,7 @@ object KnownPos {
      * ir kabinoje – ta pati horizontali vieta. Vėl įjungiama: ≥ 30 s stovint ir padėtis < 0,7 ribos.
      */
     @Synchronized fun checkFree(latDeg: Double, lonDeg: Double, now: Long = System.currentTimeMillis(), walking: Boolean = false, hasSteps: Boolean = false) {
-        if (!use || !valid) return
+        if (!valid) return   // tikrinama ir nenaudojant apribojimo – kabinos sekimui su kranu
         if (walking) { if (walkFrom == 0L) walkFrom = now; stillFrom = 0L } else { walkFrom = 0L; if (stillFrom == 0L) stillFrom = now }
         val walkS = if (walkFrom == 0L) 0.0 else (now - walkFrom) / 1000.0
         val stillS = if (stillFrom == 0L) 0.0 else (now - stillFrom) / 1000.0
@@ -165,7 +165,7 @@ object KnownPos {
             else -> "naudojama programos padėtyje"
         }
         return "Žinoma vieta: ±%.0f m; %s%s%s".format(Locale.US, sigma, st,
-            if (rotAz.isNaN()) (if (rotWhy.isEmpty()) "" else "; NESUKAMA su kranu: $rotWhy") else "; sukama kartu su kranu (planšetės giroskopas)" + (if (LiveRtk.cabinFollow) ", žymeklis rodo kabiną pagal ją" else "") + ": kabinos kampas aplink bokštą %.0f°, %.1f m nuo ašies".format(Locale.US, rotAz, rotR),
+            if (rotAz.isNaN()) (if (rotWhy.isEmpty()) "" else "; NESUKAMA su kranu: $rotWhy") else "; sukama kartu su kranu (planšetės giroskopas)" + (if (LiveRtk.cabinFollow) ", žymeklis rodo kabiną pagal ją" else if (conflict) ", žymeklis nesuka: $why" else if (!use && !Crane.sppActive) ", žymeklis nesuka: įjunkite krano apribojimą programos padėtyje arba „naudoti“" else "") + ": kabinos kampas aplink bokštą %.0f°, %.1f m nuo ašies".format(Locale.US, rotAz, rotR),
             if (freeD.isNaN()) "" else "; padėtis be apribojimo %.0f m nuo jos (riba %.0f m; išjungiama ir einant ≥ %.0f s)".format(Locale.US, freeD, limit(), WALK_S))
     }
 }

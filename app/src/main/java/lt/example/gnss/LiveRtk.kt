@@ -436,7 +436,7 @@ object LiveRtk {
             else Sp3V5.solveSats(ep.tow, weak(prepareBroadcast(ep.t, obs)), isb = true, raim = true, hCon = hc)
         } catch (_: Exception) { null }
         // žinomas aukštis (įvestas ranka): kai palydovų pakanka – patikra, ar jis čia tinka (be barometro kitaip nežinoma)
-        val free = if (obs.size >= 6 && (KnownHeight.deviceMsl() != null || (Crane.sppOn && Crane.geoValid) || (KnownPos.use && KnownPos.valid))) fit(null)?.also {
+        val free = if (obs.size >= 6 && (KnownHeight.deviceMsl() != null || (Crane.sppOn && Crane.geoValid) || KnownPos.valid)) fit(null)?.also {
             if (KnownHeight.deviceMsl() != null) KnownHeight.checkFree(it.sol.lat, it.sol.lon, it.sol.h, vdopOf(it))
             // ašis ir žinoma vieta – ETRS89, laisva padėtis – ITRF: lyginama perskaičiavus
             val fe = if (Etrs.enabled) Etrs.llh(Etrs.yearOf(now), it.sol.lat, it.sol.lon, it.sol.h) else doubleArrayOf(it.sol.lat, it.sol.lon, it.sol.h)
@@ -488,7 +488,8 @@ object LiveRtk {
         lastRawScatter = sRaw; lastOutScatter = sOut
         // kabinos sekimas: žinoma vieta naudojama ir sukama kartu su kranu (giroskopas) – žymeklis rodo kabiną tiesiogiai,
         // nes palydovų padėtis kabinoje (atspindžiai) krano posūkio nejaučia
-        val cab = if (KnownPos.active) KnownPos.pos().takeIf { !KnownPos.rotAz.isNaN() } else null
+        val cab = if (KnownPos.valid && !KnownPos.conflict && (KnownPos.use || Crane.sppActive)) KnownPos.pos().takeIf { !KnownPos.rotAz.isNaN() } else null
+        if (cab == null && KnownPos.valid) KnownPos.pos()   // krypties būsena ataskaitai
         cabinFollow = cab != null
         val sol = if (cab != null) PositionSolver.Solution(cab[0], cab[1], q[2], fs.sats, maxOf(1.0, minOf(KnownPos.sigma, accOut)), fs.ecef)
             else PositionSolver.Solution(q[0], q[1], q[2], fs.sats, accOut, fs.ecef)

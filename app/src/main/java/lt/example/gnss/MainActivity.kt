@@ -5697,7 +5697,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Mano padėtis sluoksnyje arti žemės (GL smeigtukas būtų po planu): taškas ir tikslumo apskritimas ekrane. */
     private fun updateMe() {
         // tik Vault paties sprendinys (programos padėtis / RTK), ne lusto fiksas; išjungus 🛰 – žymeklio nėra
-        val me = LiveRtk.ownPos()
+        val me = if (ChipMode.on) ChipMode.pos() else LiveRtk.ownPos()
         if (me == null || !freeView || focus != 0 || flight != null || helioMode() || southUp || altNow() > 0.0004 ||
             (PgdOverlay.screenCorners == null && PlanningTiles.shown.isEmpty() && OrthoTiles.shown.isEmpty())) { PgdOverlay.meScreen = null; return }
         val e = DoubleArray(3); val o = FloatArray(4)
@@ -6191,6 +6191,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         tileProg = program(TILE_VS, TILE_FS); tileGl.clear(); pgdTex = 0; pgdVer = -1
         GlobeTiles.init(appCtx.filesDir)
         PlanningTiles.dir = java.io.File(appCtx.filesDir, "vplanas")
+        ChipMode.on = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("chip_mode", false)
         OrthoTiles.dir = java.io.File(appCtx.filesDir, "vplanas_orto")
         LocalDem.init(appCtx)
         Elev.source = appCtx.getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getInt("dem_src", 0)
@@ -9469,7 +9470,7 @@ class MainActivity : AppCompatActivity() {
         val sig = LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc
         val st = Readiness.state(live, sig)
         val k = Readiness.knowledge()
-        v.text = "● " + (if (k != null) "Lustas %d %% · ".format(java.util.Locale.US, k.total) else "") + (Readiness.shortAcc() ?: st.text)
+        v.text = (if (ChipMode.on) "◆ TIK LUSTAS · " else "● ") + (if (k != null) "Lustas %d %% · ".format(java.util.Locale.US, k.total) else "") + (Readiness.shortAcc() ?: st.text)
         val lvl = ((k?.total ?: 0) * 100).coerceIn(0, 10000)
         if (readyLast == st.ready) (v.background as? android.graphics.drawable.LayerDrawable)?.getDrawable(1)?.level = if (st.ready) 10000 else lvl
         if (readyLast != st.ready) {
@@ -10015,7 +10016,7 @@ class MainActivity : AppCompatActivity() {
                 if (img == null) { Toast.makeText(this, "Plano vaizdo nepavyko paruošti", Toast.LENGTH_SHORT).show(); return@runOnUiThread }
                 val dp = resources.displayMetrics.density
                 val pv = PlanView(this, img) {
-                    LiveRtk.ownPos()
+                    if (ChipMode.on) ChipMode.pos() else LiveRtk.ownPos()
                 }
                 val dlg = android.app.Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
                 val root = android.widget.FrameLayout(this)
@@ -10437,6 +10438,17 @@ class MainActivity : AppCompatActivity() {
         readyView = TextView(this).apply {
             textSize = 13f; text = "● Šyla"
             setOnClickListener { toggleChipCard() }
+            // ilgai palaikius – lusto režimas: tik lusto vieta (kaip AlpineQuest), visi Vault pataisymai atjungiami
+            setOnLongClickListener {
+                ChipMode.on = !ChipMode.on
+                getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("chip_mode", ChipMode.on).apply()
+                try { (getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.let { v ->
+                    if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createWaveform(if (ChipMode.on) longArrayOf(0, 80, 60, 80) else longArrayOf(0, 150), -1))
+                    else @Suppress("DEPRECATION") v.vibrate(150) } } catch (_: Exception) {}
+                Toast.makeText(this@MainActivity, if (ChipMode.on) "LUSTO REŽIMAS: rodoma tik lusto vieta (kaip AlpineQuest), Vault pataisymai ir perdavimas išjungti. Ilgai palaikius – grįžti"
+                    else "Vault režimas: rodoma Vault apskaičiuota vieta", Toast.LENGTH_LONG).show()
+                readyLast = null; updateReady(); true
+            }
             val pd = (10 * resources.displayMetrics.density).toInt(); setPadding(pd, pd / 2, pd, pd / 2)
         }
         skyHolder.addView(readyView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
@@ -11349,6 +11361,7 @@ class MainActivity : AppCompatActivity() {
         // naudojame kaip fiksą (kalibravimui, pasiruošimui), o svetimas bandomąsias vietas ignoruojame
         if (loc.isFromMockProvider && loc.extras?.getString("source") == null) return
         @Suppress("DEPRECATION") val ownFix = loc.isFromMockProvider
+        if (!ownFix) ChipMode.update(loc.latitude, loc.longitude, if (loc.hasAccuracy()) loc.accuracy.toDouble() else Double.NaN)
         if (!ownFix) {
             // lustas duoda WGS84 (≈ ITRF) – palyginimui su žinoma vieta (ETRS89) perskaičiuojama taip pat kaip Vault
             val e = if (Etrs.enabled) Etrs.llh(Etrs.yearOf(System.currentTimeMillis()), loc.latitude, loc.longitude, if (loc.hasAltitude()) loc.altitude else 0.0)

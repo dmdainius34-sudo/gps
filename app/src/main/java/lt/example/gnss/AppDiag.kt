@@ -102,6 +102,7 @@ object AppDiag {
             appendLine(if (Etrs.enabled) "Koordinačių sistema: ETRS89 (LKS-94 pagrindas, kaip Lietuvos žemėlapiai ir LitPOS); Vault padėtis perskaičiuota iš ITRF (SP3 orbitos): poslinkis į šiaurę %+.2f m, į rytus %+.2f m. RTK – jau ETRS89 (bazės koordinatės)".format(Locale.US, sh[0], sh[1])
                 else "Koordinačių sistema: ITRF / WGS84 (neperskaičiuota į ETRS89; skirtumas %.2f m)".format(Locale.US, kotlin.math.hypot(sh[0], sh[1])))
         }
+        appendLine("Režimas: " + (if (ChipMode.on) "TIK LUSTAS (žymeklis – lusto vieta, Vault pataisymai ir bandomoji vieta išjungti)" else "Vault (žymeklis – Vault apskaičiuota vieta)"))
         appendLine("L5 pirmumas (L5 / E5a / B2a vietoj L1 – atsparesnis atspindžiams): " + (if (LiveRtk.L5Pref.enabled) "įjungtas; paskutinėje epochoje L5 – ${LiveRtk.L5Pref.lastUsed} iš ${LiveRtk.L5Pref.lastOf} palydovų" + (if (LiveRtk.L5Pref.lastUsed == 0) " (prietaisas L5 neteikia arba per silpnas)" else "") else "išjungtas"))
         appendLine("Sąžiningas tikslumas: formalus įvertis keliamas iki stebimos sklaidos stovint (2 min.); dabar sklaida neišlygintos %.1f m, išlygintos (žymeklio) %.1f m".format(Locale.US, LiveRtk.lastRawScatter, LiveRtk.lastOutScatter))
         appendLine("Išmoktas kabinos / aplinkos žemėlapis programos padėtyje: " + (if (CabinMap.useInSpp) "naudojamas (atspindžių kryptys ×0,15, užstotos ×0,4); paskutinėje epochoje sumažinta palydovų: ${LiveRtk.mapWeighted}" else "nenaudojamas"))

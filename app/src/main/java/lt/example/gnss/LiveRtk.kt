@@ -657,6 +657,8 @@ object MockLoc {
 
     fun push(s: PositionSolver.Solution, src: String = "RTK") {
         if (!armed) return
+        // lusto režimas – kitoms programoms paliekamas tikras lusto GPS
+        if (ChipMode.on) { if (active) detach("lusto režimas: perduodamas tikras lusto GPS"); return }
         if (!active && !attach()) return
         val m = lm ?: return
         try {

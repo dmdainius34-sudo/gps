@@ -165,7 +165,7 @@ object KnownPos {
             else -> "naudojama programos padėtyje"
         }
         return "Žinoma vieta: ±%.0f m; %s%s%s".format(Locale.US, sigma, st,
-            if (rotAz.isNaN()) (if (rotWhy.isEmpty()) "" else "; NESUKAMA su kranu: $rotWhy") else "; sukama kartu su kranu (planšetės giroskopas): kabinos kampas aplink bokštą %.0f°, %.1f m nuo ašies".format(Locale.US, rotAz, rotR),
+            if (rotAz.isNaN()) (if (rotWhy.isEmpty()) "" else "; NESUKAMA su kranu: $rotWhy") else "; sukama kartu su kranu (planšetės giroskopas)" + (if (LiveRtk.cabinFollow) ", žymeklis rodo kabiną pagal ją" else "") + ": kabinos kampas aplink bokštą %.0f°, %.1f m nuo ašies".format(Locale.US, rotAz, rotR),
             if (freeD.isNaN()) "" else "; padėtis be apribojimo %.0f m nuo jos (riba %.0f m; išjungiama ir einant ≥ %.0f s)".format(Locale.US, freeD, limit(), WALK_S))
     }
 }

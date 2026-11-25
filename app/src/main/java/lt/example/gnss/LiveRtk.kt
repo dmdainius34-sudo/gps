@@ -25,6 +25,8 @@ object LiveRtk {
     private var yawRef = Double.NaN; private var yawRefMs = 0L; private var turnUntil = 0L
     /** Kranas dabar sukasi (pagal planšetės giroskopą). */
     @Volatile var craneTurning = false; private set
+    /** Žymeklis = žinoma vieta, sukama kartu su kranu. */
+    @Volatile var cabinFollow = false; private set
     private var movedMs = 0L
     private var engine = Rtk.Engine(1e-3, Rtk.Run("gyvas"))
     private var basePos: DoubleArray? = null
@@ -484,9 +486,14 @@ object LiveRtk {
         scat(outWin, now, q[0], q[1], mv); val sOut = scatter(outWin)
         val accOut = maxOf(q[3], sOut, 0.5 * sRaw)
         lastRawScatter = sRaw; lastOutScatter = sOut
-        val sol = PositionSolver.Solution(q[0], q[1], q[2], fs.sats, accOut, fs.ecef)
+        // kabinos sekimas: žinoma vieta naudojama ir sukama kartu su kranu (giroskopas) – žymeklis rodo kabiną tiesiogiai,
+        // nes palydovų padėtis kabinoje (atspindžiai) krano posūkio nejaučia
+        val cab = if (KnownPos.active) KnownPos.pos().takeIf { !KnownPos.rotAz.isNaN() } else null
+        cabinFollow = cab != null
+        val sol = if (cab != null) PositionSolver.Solution(cab[0], cab[1], q[2], fs.sats, maxOf(1.0, minOf(KnownPos.sigma, accOut)), fs.ecef)
+            else PositionSolver.Solution(q[0], q[1], q[2], fs.sats, accOut, fs.ecef)
         sppLast = sol; sppMs = now
-        AccRef.add("Vault (žymeklis, išlyginta)", sol.lat, sol.lon, sol.h)
+        if (cab == null) AccRef.add("Vault (žymeklis, išlyginta)", sol.lat, sol.lon, sol.h)
         AccRef.add("Vault (neišlyginta)", fs.lat, fs.lon, fs.h)
         free?.let { toE(it.sol).let { e -> AccRef.add("Vault be apribojimų (aukščio, krano, vietos)", e.lat, e.lon, e.h) } }
         vaultLog(now, fs, sol, fs.sats, f.sats.count { it.cn0 < CnoMask.min }, hc != null && !hc.h0.isNaN(), Crane.sppActive, CnoMask.min)

@@ -221,7 +221,7 @@ object KnownHeight {
     }
 
     /** Pakeistas aukščių šaltinis (NLO) – DEM aukštis bus paimtas iš naujo. */
-    fun demChanged() { gLat = Double.NaN; gLon = Double.NaN; if (!lastLat.isNaN()) refreshDem(lastLat, lastLon) }
+    fun demChanged() { gLat = Double.NaN; gLon = Double.NaN; demSuspect = false; if (!lastLat.isNaN()) refreshDem(lastLat, lastLon) }
 
     /** Žemės paviršiaus aukštis iš DEM (kai įvestas tik aukštis virš žemės); persiunčiama pasislinkus > 100 m. */
     private fun refreshDem(lat: Double, lon: Double) {
@@ -272,7 +272,8 @@ object KnownHeight {
         n++; sw += w; sLat += w * lat; sLon += w * lon; sLat2 += w * lat * lat; sLon2 += w * lon * lon
         val h0 = h0(lat, lon)
         if (chip && hEll != null && h0 != null) { dhSum += hEll - h0; dhN++ }
-        if (msl == null && dhN >= 300) demSuspect = abs(dhSum / dhN) > 10.0
+        // DEM „įtartinumas“ pagal lusto aukštį nebetikrinamas: kabinoje lusto aukštis klysta 30+ m (atspindžiai, static hold),
+        // todėl teisingas žemės aukštis būdavo paslepiamas ir nenaudojamas. Aukščio patikrą atlieka Vault laisva padėtis (freeDh, conflict).
     }
 
     @Synchronized fun reset() { n = 0; sw = 0.0; sLat = 0.0; sLon = 0.0; sLat2 = 0.0; sLon2 = 0.0; dhSum = 0.0; dhN = 0 }

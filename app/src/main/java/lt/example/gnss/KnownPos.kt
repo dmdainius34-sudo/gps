@@ -49,8 +49,38 @@ object KnownPos {
     fun parseSigma(text: String?): Double =
         text?.trim()?.removePrefix("±")?.replace(',', '.')?.toDoubleOrNull()?.takeIf { it in 0.5..500.0 } ?: DEFAULT_SIGMA
 
+    // ---- sukimasis kartu su kranu: planšetė kabinoje pritvirtinta, todėl kabinos kampas aplink bokštą = planšetės kryptis + pastovus poslinkis ----
+    @Volatile private var appCtx: Context? = null
+    @Volatile private var rotOff = Double.NaN; @Volatile private var rotR = Double.NaN; @Volatile private var rotKey = ""
+    @Volatile var rotAz = Double.NaN; private set
+    private fun key() = "%.7f,%.7f|%.7f,%.7f".format(Locale.US, lat, lon, Crane.lat, Crane.lon)
+    private fun az(la1: Double, lo1: Double, la2: Double, lo2: Double) =
+        Math.toDegrees(kotlin.math.atan2((lo2 - lo1) * 111_320.0 * cos(Math.toRadians(la1)), (la2 - la1) * 111_320.0))
+    /**
+     * Dabartinė žinoma vieta: jei įvesta krano ašis ir planšetės kryptis patikima – įvesta vieta pasukama aplink ašį tiek,
+     * kiek nuo įvedimo pasisuko planšetė (kranas); kitaip – tokia, kokia įvesta.
+     */
+    fun pos(): DoubleArray {
+        if (!valid) return doubleArrayOf(lat, lon)
+        val hd = LiveRtk.heading?.takeIf { HeadingTrust.trusted }
+        if (!Crane.geoValid || hd == null) { rotAz = Double.NaN; return doubleArrayOf(lat, lon) }
+        val k = key()
+        if (rotKey != k || rotOff.isNaN()) {
+            // pirmą kartą po įvedimo: poslinkis tarp kabinos kampo aplink bokštą ir planšetės krypties įsimenamas
+            rotR = PositionSolver.horizDist(Crane.lat, Crane.lon, lat, lon)
+            rotOff = az(Crane.lat, Crane.lon, lat, lon) - hd; rotKey = k
+            appCtx?.getSharedPreferences("known_ref", Context.MODE_PRIVATE)?.edit()?.putFloat("rot_off", rotOff.toFloat())?.putFloat("rot_r", rotR.toFloat())?.putString("rot_key", k)?.apply()
+        }
+        if (rotR < 0.3) { rotAz = Double.NaN; return doubleArrayOf(lat, lon) }
+        val a = Math.toRadians(hd + rotOff); rotAz = ((Math.toDegrees(a) % 360) + 360) % 360
+        val dN = rotR * cos(a); val dE = rotR * sin(a)
+        return doubleArrayOf(Crane.lat + dN / 111_320.0, Crane.lon + dE / (111_320.0 * cos(Math.toRadians(Crane.lat))))
+    }
+
     fun load(ctx: Context) {
+        appCtx = ctx.applicationContext
         val p = ctx.getSharedPreferences("known_ref", Context.MODE_PRIVATE)
+        rotKey = p.getString("rot_key", "") ?: ""; rotOff = p.getFloat("rot_off", Float.NaN).toDouble(); rotR = p.getFloat("rot_r", Float.NaN).toDouble()
         set(p.getBoolean("coord_use", false), parse(p.getString("coord", "") ?: ""), parseSigma(p.getString("coord_sig", "")))
     }
 
@@ -71,9 +101,10 @@ object KnownPos {
 
     /** (rytai, šiaurė) m nuo žinomos vietos. */
     fun en(latDeg: Double, lonDeg: Double): DoubleArray {
-        val a = 6_378_137.0; val f = 1 / 298.257223563; val e2 = f * (2 - f); val sl = sin(Math.toRadians(lat))
+        val c = pos(); val la0 = c[0]; val lo0 = c[1]
+        val a = 6_378_137.0; val f = 1 / 298.257223563; val e2 = f * (2 - f); val sl = sin(Math.toRadians(la0))
         val w = sqrt(1 - e2 * sl * sl); val nn = a / w; val mm = a * (1 - e2) / (w * w * w)
-        return doubleArrayOf((lonDeg - lon) * Math.toRadians(1.0) * nn * cos(Math.toRadians(lat)), (latDeg - lat) * Math.toRadians(1.0) * mm)
+        return doubleArrayOf((lonDeg - lo0) * Math.toRadians(1.0) * nn * cos(Math.toRadians(la0)), (latDeg - la0) * Math.toRadians(1.0) * mm)
     }
 
     /**
@@ -107,7 +138,7 @@ object KnownPos {
     fun sppConstraint(base: Sp3V5.HCon?, h: Double): Sp3V5.HCon? {
         if (!active) return base
         // žinoma vieta – ETRS89 (ortofoto, geodeziniai punktai); programos padėtis skaičiuojama ITRF
-        val ll = Etrs.toItrf(lat, lon)
+        val c0 = pos(); val ll = Etrs.toItrf(c0[0], c0[1])
         val la = Math.toRadians(ll[0]); val lo = Math.toRadians(ll[1])
         val p = PositionSolver.llhToEcef(la, lo, if (h.isNaN()) 0.0 else h)
         val c = base ?: Sp3V5.HCon(Double.NaN, 0.0, p)
@@ -125,7 +156,8 @@ object KnownPos {
             conflict -> "NENAUDOJAMA: $why (vėl įsijungs pastovėjus ${STILL_S.toInt()} s arčiau)"
             else -> "naudojama programos padėtyje"
         }
-        return "Žinoma vieta: ±%.0f m; %s%s".format(Locale.US, sigma, st,
+        return "Žinoma vieta: ±%.0f m; %s%s%s".format(Locale.US, sigma, st,
+            if (rotAz.isNaN()) "" else "; sukama kartu su kranu (planšetės giroskopas): kabinos kampas aplink bokštą %.0f°, %.1f m nuo ašies".format(Locale.US, rotAz, rotR),
             if (freeD.isNaN()) "" else "; padėtis be apribojimo %.0f m nuo jos (riba %.0f m; išjungiama ir einant ≥ %.0f s)".format(Locale.US, freeD, limit(), WALK_S))
     }
 }

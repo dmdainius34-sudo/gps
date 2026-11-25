@@ -27,7 +27,8 @@ object AccRef {
         if (key != refKey) { refKey = key; m.clear() }
         val s = m.getOrPut(name) { S() }
         if (KnownPos.valid) {
-            val dN = (lat - KnownPos.lat) * M; val dE = (lon - KnownPos.lon) * M * cos(Math.toRadians(KnownPos.lat))
+            val kp = KnownPos.pos()   // jei sukama su kranu – dabartinė kabinos vieta
+            val dN = (lat - kp[0]) * M; val dE = (lon - kp[1]) * M * cos(Math.toRadians(kp[0]))
             if (s.e.size < MAX) { s.e.add(sqrt(dE * dE + dN * dN)); s.sE += dE; s.sN += dN }
         }
         val msl = KnownHeight.deviceMsl()

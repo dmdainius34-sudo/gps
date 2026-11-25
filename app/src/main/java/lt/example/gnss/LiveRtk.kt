@@ -217,6 +217,13 @@ object LiveRtk {
      * Šuolis (kodas − integruotas Doppler nesutampa) ar > 1,5 s pertrauka – palydovo glodinimas pradedamas iš naujo.
      */
     private val sppSmooth = Sp3V5.Smoother(doppler = true, useAdr = false, dopWindow = 60)
+    /** L5 / E5a / B2a kodo glodinimas (atskiras – kitas dažnis, kitas imtuvo poslinkis). */
+    private val sppSmooth5 = Sp3V5.Smoother(doppler = true, useAdr = false, dopWindow = 60)
+    /**
+     * L5 pirmumas: palydovams su L5 / E5a / B2a signalu programos padėtis naudoja jį vietoj L1 – jo kodas 10× ilgesnis,
+     * atspindžiai (kabina, pastatai) jį iškreipia daug mažiau. Planšetė (MT6686) L5 neteikia – jai nieko nekeičia.
+     */
+    object L5Pref { @Volatile var enabled = true; @Volatile var lastUsed = 0; @Volatile var lastOf = 0 }
     /** Palydovai su faze RTK skaičiavime (šviežia – iki 5 s); tušti – RTK neveikia. */
     fun phaseIds(): Set<String> = if (enabled && System.currentTimeMillis() - lastMs < 5_000L) engine.lastPhaseIds else emptySet()
     /** Paskutinė programos padėtis skaičiuota su žinomu aukščiu. */
@@ -349,6 +356,10 @@ object LiveRtk {
         val sm = HashMap<Int, Double>()
         sm.putAll(sppSmooth.applyEpoch(ep.meas.filter { (if (it.sys == 'R') (it.state and Sp3V5.STATE_GLO_TOD_DECODED) else (it.state and Sp3V5.STATE_TOW_DECODED)) != 0 }, ep.t))
         fun pr(m: Sp3V5.M) = sm[m.key] ?: m.pr
+        val tsOk = { m: Sp3V5.M -> (if (m.sys == 'R') (m.state and Sp3V5.STATE_GLO_TOD_DECODED) else (m.state and Sp3V5.STATE_TOW_DECODED)) != 0 }
+        val sm5: Map<Int, Double> = if (!L5Pref.enabled) emptyMap() else sppSmooth5.applyEpoch(
+            ep.meas.filter { tsOk(it) && it.pr5 != null && it.cn05 >= softMin() }
+                .map { m -> Sp3V5.M(m.sys, m.svid, m.pr5!!, m.cn05, m.state, m.mp, null, 0, m.prr) }, ep.t)
         // GLONASS įtrauktas (GSDC 2023: Pixel 7 Pro p50 2,9 → 2,6 m, p95 8,8 → 5,9 m; S22 Ultra 5,2 → 5,0 m), svoris /4 (Sp3V5.GLO_W)
         // kodėl palydovas nenaudojamas (kortelei ir ataskaitai): pirmas atmetimo žingsnis
         val why = HashMap<String, Int>()
@@ -373,17 +384,20 @@ object LiveRtk {
                 it.cn0 >= softMin() }
             .also { l -> sppIn = l.map { it.sys.toString() + it.svid }.toSet() }
             .map { m -> (if (DualFreq.enabled) DualFreq.iono(m, ep.t) else null)?.let { i -> Sp3V5.Ob(m.sys, m.svid, pr(m) - i, m.cn0, m.prr, ifree = true) }
+                ?: sm5[m.key]?.let { p5 -> Sp3V5.Ob(m.sys, m.svid, p5, m.cn05, m.prr, l5 = true) }
                 ?: Sp3V5.Ob(m.sys, m.svid, pr(m) - (if (m.sys == 'R') GloBias.of(m.svid) else 0.0), m.cn0, m.prr) }
             .let { l ->
                 // L1+L5 palydovams reikia savo laikrodžio – verta tik kai sistemoje jų ≥ 3, kitaip lieka įprastas L1 su Klobuchar
-                val few = l.filter { it.ifree }.groupingBy { it.sys }.eachCount().filterValues { it < 3 }.keys
-                l.map { o -> if (o.ifree && o.sys in few) ep.meas.first { it.sys == o.sys && it.svid == o.svid }.let { m -> Sp3V5.Ob(m.sys, m.svid, pr(m), m.cn0, m.prr) } else o }
+                val few = l.filter { it.ifree || it.l5 }.groupingBy { it.sys }.eachCount().filterValues { it < 3 }.keys
+                l.map { o -> if ((o.ifree || o.l5) && o.sys in few) ep.meas.first { it.sys == o.sys && it.svid == o.svid }.let { m ->
+                    Sp3V5.Ob(m.sys, m.svid, pr(m) - (if (m.sys == 'R') GloBias.of(m.svid) else 0.0), m.cn0, m.prr) } else o }
             }
         DualFreq.lastUsed = obs.count { it.ifree }; DualFreq.lastTotal = obs.size
+        L5Pref.lastUsed = obs.count { it.l5 }; L5Pref.lastOf = obs.size
         // SP3 keliu – aparatūros vėlinimo pataisa (transliuojamų efemeridžių kelias ją jau turi laikrodyje)
         var tgdN = 0
         val obsSp3 = if (r == null) obs else obs.map { o ->
-            if (o.ifree) o else groupDelay(o.sys, o.svid)?.let { g -> tgdN++; Sp3V5.Ob(o.sys, o.svid, o.pr - C * g.first, o.cn0, o.prr) } ?: o
+            if (o.ifree || o.l5) o else groupDelay(o.sys, o.svid)?.let { g -> tgdN++; Sp3V5.Ob(o.sys, o.svid, o.pr - C * g.first, o.cn0, o.prr) } ?: o
         }
         SatStats.tgdN = tgdN; SatStats.tgdOf = obs.count { (it.sys == 'G' || it.sys == 'E') && !it.ifree }
         val rx = sppLast?.ecef
@@ -534,7 +548,7 @@ object LiveRtk {
             val a = state(o.sys, o.svid, tTx - 0.5); val b = state(o.sys, o.svid, tTx + 0.5)
             val vel = if (a != null && b != null) DoubleArray(3) { b.first[it] - a.first[it] } else DoubleArray(3)
             val drift = if (a != null && b != null) (b.second - a.second) * C else 0.0
-            out.add(Sp3V5.SatEp(o.sys, o.svid, st.first, vel, o.pr + C * st.second, t - tTx, o.cn0, drift, o.prr).also { it.ifree = o.ifree })
+            out.add(Sp3V5.SatEp(o.sys, o.svid, st.first, vel, o.pr + C * st.second, t - tTx, o.cn0, drift, o.prr).also { it.ifree = o.ifree; it.l5 = o.l5 })
         }
         return out
     }

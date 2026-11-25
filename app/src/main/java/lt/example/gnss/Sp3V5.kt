@@ -25,6 +25,8 @@ object Sp3V5 {
             val adr: Double?, val adrState: Int, val prr: Double?) {
         /** Antro dažnio (L5 / E5a / B2a) pseudoatstumas tą pačią epochą, jei lustas jį pateikė. */
         var pr5: Double? = null
+        /** L5 / E5a / B2a signalo stiprumas (dB-Hz), jei yra. */
+        var cn05 = 0.0
         val key get() = sys.code * 1000 + svid
         val id get() = "%c%02d".format(Locale.US, sys, svid)
     }
@@ -96,9 +98,10 @@ object Sp3V5 {
             var curTn = Long.MIN_VALUE; var curMs = 0L; var curWeek = 0; var curTow = 0.0
             val list = ArrayList<M>()
             val l5 = HashMap<Int, Double>()                                     // raktas sys*1000+svid -> L5 pseudoatstumas
+            val l5cn = HashMap<Int, Double>()
             fun flush() {
-                if (list.isNotEmpty()) { list.forEach { m -> m.pr5 = l5[m.key] }; consumer(Ep(curMs, curWeek, curTow, ArrayList(list))) }
-                list.clear(); l5.clear()
+                if (list.isNotEmpty()) { list.forEach { m -> m.pr5 = l5[m.key]; m.cn05 = l5cn[m.key] ?: 0.0 }; consumer(Ep(curMs, curWeek, curTow, ArrayList(list))) }
+                list.clear(); l5.clear(); l5cn.clear()
             }
             br.forEachLine { line ->
                 val p = line.split(',')
@@ -110,7 +113,7 @@ object Sp3V5 {
                     val r = pseudorange(tn, p[iFb].toLongOrNull() ?: return@forEachLine, p[iB].toDoubleOrNull() ?: 0.0,
                         if (iOff >= 0) p.getOrNull(iOff)?.toDoubleOrNull() ?: 0.0 else 0.0,
                         p[iSt].toIntOrNull() ?: return@forEachLine, p[iSvt].toLongOrNull() ?: return@forEachLine, s5.second) ?: return@forEachLine
-                    l5[s5.first.code * 1000 + sv] = r.first
+                    l5[s5.first.code * 1000 + sv] = r.first; l5cn[s5.first.code * 1000 + sv] = p[iCn].toDoubleOrNull() ?: 0.0
                     return@forEachLine
                 }
                 val sys = sysOf(p[iC], p[iSig], glo) ?: return@forEachLine
@@ -194,6 +197,8 @@ object Sp3V5 {
                 val cn0: Double, val clkDrift: Double, val prr: Double?) {
         /** Jonosfera jau pašalinta pagal L1+L5 – Klobuchar netaikomas, savas imtuvo laikrodis (kitas dažnių poslinkis). */
         var ifree = false
+        /** Matavimas L5 / E5a / B2a dažniu (jonosfera ×γ = (f1/f5)², savas laikrodis). */
+        var l5 = false
         /** Papildomas svorio daugiklis (1 – įprastai): bandymams – lusto paklaidos įvertis, palydovo liekanų istorija. */
         var wMul = 1.0
         val rp = DoubleArray(3)
@@ -206,7 +211,8 @@ object Sp3V5 {
         }
     }
 
-    class Ob(val sys: Char, val svid: Int, val pr: Double, val cn0: Double, val prr: Double? = null, val ifree: Boolean = false)
+    /** l5 – pseudoatstumas iš L5 / E5a / B2a (ne L1): savas laikrodis, jonosfera ×γ. */
+    class Ob(val sys: Char, val svid: Int, val pr: Double, val cn0: Double, val prr: Double? = null, val ifree: Boolean = false, val l5: Boolean = false)
 
     fun prepare(t: Double, obs: List<Ob>, sp3: Sp3Reader): List<SatEp> {
         val out = ArrayList<SatEp>()
@@ -220,7 +226,7 @@ object Sp3V5 {
             val a = sp3.positionXyz(id, w, sow - 0.5) ?: continue; val b = sp3.positionXyz(id, w, sow + 0.5) ?: continue
             val ca = sp3.clock(id, w, sow - 0.5); val cb = sp3.clock(id, w, sow + 0.5)
             val drift = if (ca != null && cb != null && !ca.isNaN() && !cb.isNaN()) (cb - ca) * 1e-6 * C else 0.0
-            out.add(SatEp(o.sys, o.svid, st.pos, DoubleArray(3) { (b[it] - a[it]) * 1000.0 }, o.pr + C * st.dts, t - tTx, o.cn0, drift, o.prr).also { it.ifree = o.ifree })
+            out.add(SatEp(o.sys, o.svid, st.pos, DoubleArray(3) { (b[it] - a[it]) * 1000.0 }, o.pr + C * st.dts, t - tTx, o.cn0, drift, o.prr).also { it.ifree = o.ifree; it.l5 = o.l5 })
         }
         return out
     }
@@ -274,7 +280,7 @@ object Sp3V5 {
         val nc = hCon?.n ?: 0
         if (sats.size + nc < 4) return null
         // L1+L5 pataisyti palydovai – atskiras laikrodis (mažoji raidė): imtuvo L1/L5 poslinkis kitoks nei vien L1
-        fun ck(s: SatEp) = if (s.ifree) s.sys.lowercaseChar() else s.sys
+        fun ck(s: SatEp) = if (s.ifree || s.l5) s.sys.lowercaseChar() else s.sys
         val systems = if (isb) sats.map { ck(it) }.distinct().sorted() else listOf('*')
         val np = 3 + systems.size
         val x = DoubleArray(np); x[2] = 6_378_137.0
@@ -327,7 +333,7 @@ object Sp3V5 {
                 if (near) {
                     val l = Sp3Solver.look(x, s.rp, rho)
                     if (l[4] < MASK) continue
-                    corr = Sp3Solver.saastamoinen(l[0], l[2], l[4]) + (if (s.ifree) 0.0 else Sp3Solver.klobuchar(l[0], l[1], l[3], l[4], tow))
+                    corr = Sp3Solver.saastamoinen(l[0], l[2], l[4]) + (if (s.ifree) 0.0 else Sp3Solver.klobuchar(l[0], l[1], l[3], l[4], tow) * (if (s.l5) DualFreq.GAMMA else 1.0))
                     if (weighted) w = weight(l[4], s.cn0) * (if (s.sys == 'R') GLO_W else 1.0) * s.wMul
                 }
                 val h = DoubleArray(np); h[0] = dx / rho; h[1] = dy / rho; h[2] = dz / rho

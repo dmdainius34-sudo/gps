@@ -43,10 +43,35 @@ class PlanView(ctx: Context, private val bmp: Bitmap, private val posProvider: (
         }
     })
     private var lx = 0f; private var ly = 0f; private var pid = -1
+    private var lastAng = Float.NaN
+    /** Ekrano centro koordinatės (ETRS89, kaip plano kampai) – ilgai palaikius nukopijuojamos. */
+    @Volatile var centreText = ""
+    private val gd = android.view.GestureDetector(ctx, object : android.view.GestureDetector.SimpleOnGestureListener() {
+        override fun onLongPress(e: MotionEvent) {
+            if (centreText.isEmpty()) return
+            (context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                .setPrimaryClip(android.content.ClipData.newPlainText("koordinatės", centreText))
+            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            android.widget.Toast.makeText(context, "Nukopijuota: $centreText", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    })
+    private val pCross = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; strokeWidth = 2f * dp; setShadowLayer(3f * dp, 0f, 0f, Color.BLACK) }
+    private val pNorth = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFF5A4E.toInt(); textSize = 16f * dp; isFakeBoldText = true; setShadowLayer(3f * dp, 0f, 0f, Color.BLACK) }
+    private fun ang(e: MotionEvent) = Math.toDegrees(kotlin.math.atan2((e.getY(1) - e.getY(0)).toDouble(), (e.getX(1) - e.getX(0)).toDouble())).toFloat()
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
-        sg.onTouchEvent(e)
+        sg.onTouchEvent(e); gd.onTouchEvent(e)
+        // sukimas dviem pirštais
+        if (e.pointerCount >= 2 && e.actionMasked == MotionEvent.ACTION_MOVE) {
+            val a = ang(e)
+            if (!lastAng.isNaN()) {
+                var d = a - lastAng; if (d > 180) d -= 360f; if (d < -180) d += 360f
+                m.postRotate(d, (e.getX(0) + e.getX(1)) / 2, (e.getY(0) + e.getY(1)) / 2)
+            }
+            lastAng = a
+        } else if (e.pointerCount < 2) lastAng = Float.NaN
+        if (e.actionMasked == MotionEvent.ACTION_POINTER_DOWN) lastAng = Float.NaN
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> { pid = e.getPointerId(0); lx = e.x; ly = e.y }
             MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> {
@@ -106,6 +131,30 @@ class PlanView(ctx: Context, private val bmp: Bitmap, private val posProvider: (
             c.drawLine(x0, y0, x0 + len, y0, pBar)
             val lbl = if (v >= 1.0) "%.0f m".format(java.util.Locale.US, v) else if (v >= 0.01) "%.0f cm".format(java.util.Locale.US, v * 100) else "%.0f mm".format(java.util.Locale.US, v * 1000)
             c.drawText(lbl + "   (plano taškas %.1f cm)".format(java.util.Locale.US, mPerPx * 100), x0, y0 - 8 * dp, pTxt)
+        }
+        // ekrano centro kryželis ir koordinatės (kaip gaublyje)
+        val cx = width / 2f; val cy = height / 2f
+        if (m.invert(inv)) {
+            val pt = floatArrayOf(cx, cy); inv.mapPoints(pt)
+            val ll = PgdOverlay.latLonOf(pt[0].toDouble() / bmp.width, pt[1].toDouble() / bmp.height)
+            if (ll != null) {
+                centreText = "%.7f, %.7f".format(java.util.Locale.US, ll[0], ll[1])
+                val r = 14f * dp
+                c.drawLine(cx - r, cy, cx - 4 * dp, cy, pCross); c.drawLine(cx + 4 * dp, cy, cx + r, cy, pCross)
+                c.drawLine(cx, cy - r, cx, cy - 4 * dp, pCross); c.drawLine(cx, cy + 4 * dp, cx, cy + r, pCross)
+                val tw = pTxt.measureText(centreText)
+                c.drawText(centreText, cx - tw / 2, cy + r + 18 * dp, pTxt)
+                // šiaurės kryptis ekrane (planą pasukus)
+                PgdOverlay.uvOf(ll[0] + 0.0005, ll[1])?.let { uv ->
+                    val q = floatArrayOf((uv[0] * bmp.width).toFloat(), (uv[1] * bmp.height).toFloat()); m.mapPoints(q)
+                    val dx = q[0] - cx; val dy = q[1] - cy; val dl = kotlin.math.hypot(dx, dy)
+                    if (dl > 1e-3f) {
+                        val nx = 40f * dp; val ny = 90f * dp; val len = 22f * dp
+                        c.drawLine(nx, ny, nx + dx / dl * len, ny + dy / dl * len, pNorth.apply { strokeWidth = 3f * dp })
+                        c.drawText("Š", nx + dx / dl * (len + 12 * dp) - 6 * dp, ny + dy / dl * (len + 12 * dp) + 6 * dp, pNorth)
+                    }
+                }
+            }
         }
         postInvalidateDelayed(1000)   // padėtis atnaujinama kas sekundę
     }

@@ -160,6 +160,13 @@ object PgdOverlay {
         return doubleArrayOf(u, v)
     }
 
+    /** Plano taškas (u, v; 0..1 nuo kairio viršutinio kampo) → (lat, lon), dvitiesiškai pagal 4 kampus. */
+    fun latLonOf(u: Double, v: Double): DoubleArray? {
+        val c = corners ?: return null
+        fun mix(k: Int) = (1 - v) * ((1 - u) * c[0][k] + u * c[1][k]) + v * ((1 - u) * c[3][k] + u * c[2][k])
+        return doubleArrayOf(mix(0), mix(1))
+    }
+
     /** Plano plotis ir aukštis metrais (pagal kampus). */
     fun sizeM(): DoubleArray? {
         val c = corners ?: return null

@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "lt.example.gnss"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "lt.example.gnss"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35
         // kiekvienas build – didesnis versijos numeris (GitHub Actions paleidimo numeris)
         val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionCode = run

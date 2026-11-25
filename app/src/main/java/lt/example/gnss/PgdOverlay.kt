@@ -144,11 +144,20 @@ object PgdOverlay {
      */
     fun uvOf(lat: Double, lon: Double): DoubleArray? {
         val c = corners ?: return null
+        // visi 4 kampai (dvitiesinis atvaizdis, kaip gaublyje): ne tik 3 – AlpineQuest kalibruotas planas gali būti ne lygiagretainis
         val k = 111_320.0 * kotlin.math.cos(Math.toRadians(c[0][0]))
         fun xy(p: DoubleArray) = doubleArrayOf((p[1] - c[0][1]) * k, (p[0] - c[0][0]) * 111_320.0)
-        val a = xy(c[1]); val b = xy(c[3]); val q = xy(doubleArrayOf(lat, lon))
-        val det = a[0] * b[1] - a[1] * b[0]; if (kotlin.math.abs(det) < 1e-9) return null
-        return doubleArrayOf((q[0] * b[1] - q[1] * b[0]) / det, (a[0] * q[1] - a[1] * q[0]) / det)
+        val p0 = xy(c[0]); val p1 = xy(c[1]); val p2 = xy(c[2]); val p3 = xy(c[3]); val q = xy(doubleArrayOf(lat, lon))
+        var u = 0.5; var v = 0.5
+        repeat(12) {
+            val fx = (1 - v) * ((1 - u) * p0[0] + u * p1[0]) + v * ((1 - u) * p3[0] + u * p2[0]) - q[0]
+            val fy = (1 - v) * ((1 - u) * p0[1] + u * p1[1]) + v * ((1 - u) * p3[1] + u * p2[1]) - q[1]
+            val dxu = (1 - v) * (p1[0] - p0[0]) + v * (p2[0] - p3[0]); val dyu = (1 - v) * (p1[1] - p0[1]) + v * (p2[1] - p3[1])
+            val dxv = (1 - u) * (p3[0] - p0[0]) + u * (p2[0] - p1[0]); val dyv = (1 - u) * (p3[1] - p0[1]) + u * (p2[1] - p1[1])
+            val det = dxu * dyv - dxv * dyu; if (kotlin.math.abs(det) < 1e-9) return null
+            u -= (fx * dyv - fy * dxv) / det; v -= (dxu * fy - dyu * fx) / det
+        }
+        return doubleArrayOf(u, v)
     }
 
     /** Plano plotis ir aukštis metrais (pagal kampus). */

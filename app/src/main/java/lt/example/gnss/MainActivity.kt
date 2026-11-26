@@ -6873,6 +6873,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private fun drawEquatorRing(t: Float) {
         // priartinus (laisvas gaublys < 300 km) – rodomi tik tikro greičio 500 m brūkšneliai ant pusiaujo; šis žiedas kabo ~1 270 km aukščiau
         if (freeView && focus == 0 && !centreAltKm.isNaN() && centreAltKm < 300.0) return
+        // laiko eiga (▶): Žemės sukimasis matosi pats – žiedo nereikia
+        if (simRun || simOffsetMs != 0L) return
         val n = 240
         val r = 0.30
         // kaip sekundinė rodyklė su tolygia eiga: lygiai vienas ratas per minutę, sinchronizuota su laikrodžiu

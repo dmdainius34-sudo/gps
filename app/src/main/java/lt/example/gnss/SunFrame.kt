@@ -81,7 +81,7 @@ object SunImage {
         private set
     @Volatile var status = "tikras Saulės vaizdas: neatsisiųstas"
         private set
-    @Volatile var enabled = true
+    @Volatile var enabled = false
     @Volatile var lastDisk = ""
     @Volatile var imageMs = 0L
         private set
@@ -121,6 +121,7 @@ object SunImage {
     }
 
     fun refresh(ctx: Context) {
+        if (!enabled) return
         loadStored(ctx)
         val now = System.currentTimeMillis()
         if (!enabled || busy || now - at < (if (imageMs == 0L) 2 * 60_000L else 30 * 60_000L)) return

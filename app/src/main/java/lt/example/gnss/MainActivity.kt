@@ -1694,10 +1694,13 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         setEGLConfigChooser(MsaaConfigChooser())
         setEGLWindowSurfaceFactory(HdrSurfaceFactory({ calPrefs.edit().putBoolean("hdr", false).apply() }, { calPrefs.edit().putBoolean("ten_bit", false).apply() }))
         renderer.sunTrue = calPrefs.getBoolean("sun_true", false)
-        renderer.sunHa = calPrefs.getBoolean("sun_ha", false)
-        SunChromo.enabled = renderer.sunHa
-        renderer.sunCor = calPrefs.getBoolean("sun_cor", false) && !renderer.sunHa
+        renderer.sunHa = false; SunChromo.enabled = false; SunImage.enabled = false
+        renderer.sunCor = calPrefs.getBoolean("sun_cor", true)
         SunCorona.enabled = renderer.sunCor
+        // seni fotosferos (HMI) ir H-alfa (304) žemėlapiai ištrinami
+        Thread { try { val d = context.filesDir
+            for (n in listOf("sun_synoptic3.png", "sun_synoptic2.png", "sun_synoptic2_cov.txt", "sun_chromo.png", "sun_chromo_cov.txt", "sun_chromo_ring.png")) java.io.File(d, n).delete()
+        } catch (_: Exception) {} }.start()
         renderer.showLascoDisk = calPrefs.getBoolean("lasco_disk", true)
         preserveEGLContextOnPause = true
         renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
@@ -10433,7 +10436,7 @@ class MainActivity : AppCompatActivity() {
         getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit()
             .putBoolean("stable_north", true).putBoolean("level_horizon", false)    // paleidus – horizonto fiksavimas įjungtas (mygtukas šviečia)
             .putBoolean("sun_log_fix", false).putBoolean("markers", true).putBoolean("orient", true)
-            .putBoolean("earth_grid", true).putBoolean("grid", false).putBoolean("sun_grid", true).putBoolean("sun_sdo", true)
+            .putBoolean("earth_grid", true).putBoolean("grid", false).putBoolean("sun_grid", true)
             .putBoolean("sun_lasco", true).putBoolean("uv_layer", false).putBoolean("space_live", true).putBoolean("nav_bits", false).putBoolean("show_sats", false)
             .putBoolean("free_view", false).putBoolean("follow_device", false).apply()
         // kabinos žemėlapio mokymasis paliekamas toks, kokį paliko naudotojas (ilgai palaikius 🧭 – išvaloma ir įjungiama);
@@ -10619,31 +10622,15 @@ class MainActivity : AppCompatActivity() {
             setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_true", on).apply()
                 if (::skyDome.isInitialized) skyDome.setSunTrue(on) }
         }, LinearLayout.LayoutParams(mw, ww))
-        // H-alfa (304) ir vainikas (171) – vienas iš dviejų (įjungus vieną, kitas išsijungia)
-        run {
-            val spS = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
-            val cbHa = CheckBox(this); val cbCor = CheckBox(this)
-            cbHa.text = "Saulė H-alfa: chromosfera su gijomis ir protuberancais (NASA SDO 304 Å, kas 20 min.)"
-            cbHa.isChecked = spS.getBoolean("sun_ha", false)
-            cbCor.text = "Saulės vainikas: auksinės magnetinės kilpos (NASA SDO 171 Å, kas 20 min.)"
-            cbCor.isChecked = spS.getBoolean("sun_cor", false) && !cbHa.isChecked
-            cbHa.setOnCheckedChangeListener { _, on -> spS.edit().putBoolean("sun_ha", on).apply()
-                SunChromo.enabled = on
-                if (::skyDome.isInitialized) skyDome.setSunHa(on)
-                if (on) { cbCor.isChecked = false; Thread { try { SunChromo.refresh(this@MainActivity) } catch (_: Exception) {} }.start() } }
-            cbCor.setOnCheckedChangeListener { _, on -> spS.edit().putBoolean("sun_cor", on).apply()
+        // tikras Saulės vaizdas – tik vainikas (SDO 171); fotosferos (HMI) ir H-alfa (304) vaizdų nebėra
+        SunImage.enabled = false; SunChromo.enabled = false
+        left.addView(CheckBox(this).apply {
+            text = "Tikras Saulės vaizdas: vainikas su auksinėmis magnetinėmis kilpomis (NASA SDO 171 Å, kas 20 min.)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_cor", true)
+            setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_cor", on).apply()
                 SunCorona.enabled = on
                 if (::skyDome.isInitialized) skyDome.setSunCor(on)
-                if (on) { cbHa.isChecked = false; Thread { try { SunCorona.refresh(this@MainActivity) } catch (_: Exception) {} }.start() } }
-            left.addView(cbHa, LinearLayout.LayoutParams(mw, ww))
-            left.addView(cbCor, LinearLayout.LayoutParams(mw, ww))
-        }
-        SunImage.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_sdo", true)
-        left.addView(CheckBox(this).apply {
-            text = "Tikras Saulės vaizdas (NASA SDO, kas 30 min.)"
-            isChecked = SunImage.enabled
-            setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_sdo", on).apply(); SunImage.enabled = on
-                if (on) SunImage.refresh(this@MainActivity) }
+                if (on) Thread { try { SunCorona.refresh(this@MainActivity) } catch (_: Exception) {} }.start() }
         }, LinearLayout.LayoutParams(mw, ww))
         Lasco.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_lasco", true)
         if (::skyDome.isInitialized) skyDome.setLasco(Lasco.enabled)

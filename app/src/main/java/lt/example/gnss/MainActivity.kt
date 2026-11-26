@@ -9469,6 +9469,10 @@ class MainActivity : AppCompatActivity() {
     /** Mėlyna – šyla, salotinė neoninė – paruošta matavimui. */
     private fun updateReady() {
         val v = readyView ?: return
+        // išjungus palydovus (🛰) – indikatoriaus nėra
+        val satsOn = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("show_sats", false)
+        v.visibility = if (satsOn) View.VISIBLE else View.GONE
+        if (!satsOn) return
         val live = LiveRtk.enabled
         val sig = LiveRtk.last?.takeIf { System.currentTimeMillis() - LiveRtk.lastMs < 5000 }?.hacc
         val st = Readiness.state(live, sig)
@@ -9550,7 +9554,7 @@ class MainActivity : AppCompatActivity() {
         immersive = !immersive
         androidx.core.view.WindowInsetsControllerCompat(window, window.decorView).apply {
             systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            if (immersive) hide(androidx.core.view.WindowInsetsCompat.Type.systemBars()) else show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            if (immersive) hide(androidx.core.view.WindowInsetsCompat.Type.systemBars()) else { show(androidx.core.view.WindowInsetsCompat.Type.statusBars()); hide(androidx.core.view.WindowInsetsCompat.Type.navigationBars()) }
         }
         fsBtn.text = if (immersive) "\u2715" else "\u26F6"
     }
@@ -10130,6 +10134,19 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    /** Apatinis naršymo brūkšnys paslepiamas (perbraukus aukštyn – laikinai pasirodo, gestai veikia). */
+    private fun hideNavBar() {
+        try { androidx.core.view.WindowInsetsControllerCompat(window, window.decorView).apply {
+            systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
+        } } catch (_: Exception) {}
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideNavBar()
+    }
+
     override fun onResume() {
         super.onResume()
         // grįžus iš sistemos leidimo lango – kitas specialus leidimas
@@ -10545,7 +10562,7 @@ class MainActivity : AppCompatActivity() {
                 if (on) recordEnded = false
                 unregisterGnss(); if (activityStarted) startGnss()
             }
-            satMark()
+            satMark(); readyLast = null; updateReady()
             Toast.makeText(this, if (on) "Palydovai įjungti" else "Palydovai išjungti (tik vieta)", Toast.LENGTH_SHORT).show()
         }
         satBtn.setOnLongClickListener {

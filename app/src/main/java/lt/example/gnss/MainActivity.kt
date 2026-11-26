@@ -7270,8 +7270,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val mixF = if (fi >= nF - 1) 0f else ((ph - fi * 0.6) / 0.6).toFloat().coerceIn(0f, 1f)
         val texA = lascoTexs[fi]; val texB = lascoTexs[(fi + 1).coerceAtMost(nF - 1)]
         if (lascoProg == 0) lascoProg = program(GLOW_VS, LASCO_VOL_FS)
-        // suspausta 1,0–1,8 R (tikras koronografo laukas 2,3–5,8 R netilptų tarp Saulės ir Žemės)
-        val inR = 1.0; val outR = LASCO_OUT
+        // tikras koronografo laukas iki 5,8 R; jei Saulė išpūsta ir jis netilptų tarp Saulės ir Žemės – proporcingai suspaustas
+        val inR = 1.0; val outR = minOf(5.8, 0.55 * dl / rs).coerceAtLeast(LASCO_OUT)
         val ro = (outR * rs).toFloat()
         val gm = FloatArray(16); val sc = ro / EARTH_R
         gm[0] = sc; gm[5] = sc; gm[10] = sc; gm[12] = sp[0]; gm[13] = sp[1]; gm[14] = sp[2]; gm[15] = 1f
@@ -7288,6 +7288,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uOut"), outR.toFloat())
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uTrue"), if (sunTrue) 1f else 0f)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(lascoProg, "uIn"), inR.toFloat())
+        GLES20.glUniform4fv(GLES20.glGetUniformLocation(lascoProg, "uCone"), 3, coneUniform(z), 0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texB)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(lascoProg, "uTex2"), 1)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texA)
@@ -7306,6 +7307,20 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glDisable(GLES20.GL_CULL_FACE)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    /** Iki 3 naujausių išmetimų, dar esančių koronografo lauke (< 60 R): kryptis ir cos(pusplotis) LASCO tūriui. */
+    private fun coneUniform(pole: DoubleArray): FloatArray {
+        val out = FloatArray(12) { if (it % 4 == 3) 2f else 0f }
+        val now = simNow()
+        val near = Donki.active(now).filter { Donki.frontRsun(it, now) < 60.0 }.sortedByDescending { it.t215Ms }.take(3)
+        for ((i, c) in near.withIndex()) {
+            val v = Astro.sunEq(c.t215Ms); val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+            val (n, _, _) = Donki.frame(c, DoubleArray(3) { -v[it] / l }, pole)
+            out[i * 4] = n[0].toFloat(); out[i * 4 + 1] = n[1].toFloat(); out[i * 4 + 2] = n[2].toFloat()
+            out[i * 4 + 3] = kotlin.math.cos(Math.toRadians(c.halfAngle.coerceIn(5.0, 80.0))).toFloat()
+        }
+        return out
     }
 
     /** DONKI išmetimų kūgiai: viršūnė Saulės centre, priekis – nuskriestas atstumas (21,5 R + greitis × laikas), mastelis iki Žemės orbitos. */
@@ -7336,24 +7351,24 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val rad = dist * kotlin.math.tan(ha); val cd = dist
             val ring = ArrayList<Float>(); val sides = ArrayList<Float>()
             fun pt(a: Double, rr: Double, dd: Double) = FloatArray(3) { (sp[it] + n[it] * dd + (ex[it] * kotlin.math.cos(a) + ey[it] * kotlin.math.sin(a)) * rr).toFloat() }
-            // trajektorija: brūkšninė ašis nuo Saulės iki 1,3 AU (kur išmetimas išsisklaido)
+            // trajektorija: brūkšninė ašis nuo Saulės iki ~4 AU (toliau išmetimas susilieja su saulės vėju)
             run {
-                val tr = ArrayList<Float>(); val L = 1.3 * au; val nd = 60
+                val tr = ArrayList<Float>(); val L = 4.0 * au; val nd = 120
                 for (i in 0 until nd step 2) { pt(0.0, 0.0, rs + (L - rs) * i / nd).forEach { tr.add(it) }; pt(0.0, 0.0, rs + (L - rs) * (i + 1) / nd).forEach { tr.add(it) } }
                 GLES20.glLineWidth(1f * density)
                 GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"), col[0], col[1], col[2], 0.35f * aMul)
                 bindPos(colorProg, floatBuf(tr.toFloatArray())); GLES20.glDrawArrays(GLES20.GL_LINES, 0, tr.size / 3)
             }
-            // perėjęs Žemės orbitą – virsta saulės dulkėmis ir iki 1,3 AU išblėsta
+            // perėjęs Žemės orbitą – lėtėja ir plečiasi, pamažu susilieja su saulės vėju (išblėsta iki ~4 AU)
             val q = fr / Donki.AU_RSUN
             if (q > (if (toEarth) 1.12 else 1.0)) {          // į Žemę pataikęs – kūgis (žarija) dar matomas kiek už Žemės, tada dulkės
-                val fade = (1.0 - (q - 1.0) / 0.3).coerceIn(0.0, 1.0).toFloat()
+                val fade = (1.0 - (q - 1.0) / 3.0).coerceIn(0.0, 1.0).toFloat()
                 val rnd = java.util.Random(c.id.hashCode().toLong())
                 // elektrinės mėlynos ir žydros smulkios dulkės (trys atspalviai, mirga)
                 val dust = arrayOf(ArrayList<Float>(), ArrayList<Float>(), ArrayList<Float>())
                 for (i in 0 until 900) {
                     val a = rnd.nextDouble() * 2 * Math.PI
-                    val rr = rad * kotlin.math.sqrt(rnd.nextDouble()) * (1.0 + 0.4 * (q - 1.0) / 0.3)
+                    val rr = rad * kotlin.math.sqrt(rnd.nextDouble()) * (1.0 + 0.5 * (q - 1.0))
                     val dd = cd * (1.0 + 0.06 * (rnd.nextDouble() - 0.5))
                     pt(a, rr, dd).forEach { dust[i % 3].add(it) }
                 }
@@ -8119,6 +8134,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             uniform float uTrue;
             uniform float uOut;
             uniform float uIn;
+            uniform vec4 uCone[3];     // DONKI išmetimų kryptys (xyz) ir cos(pusplotis) (w; 2 – nėra)
             varying vec3 vW;
             void main() {
                 vec3 rd = normalize(vW - uCam);
@@ -8135,7 +8151,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 float hs = b * b - (dot(oc, oc) - uRs * uRs);
                 if (hs > 0.0) { float ts = -b - sqrt(hs); if (ts > t0) tEnd = min(tEnd, ts); }
                 if (tEnd <= t0) discard;
-                const int N = 14;                                     // 14 žingsnių (buvo 28) – sklandus kadrų dažnis prie Saulės
+                const int N = 20;
                 float dt = (tEnd - t0) / float(N);
                 vec3 acc = vec3(0.0);
                 vec3 w3 = vec3(0.3333, 0.3333, 0.3334);               // filtruotas pilkas vaizdas
@@ -8147,8 +8163,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     vec2 q = vec2(dot(p, uR), dot(p, uU));
                     float ql = length(q);
                     if (ql < 1e-4) continue;
-                    // atstumas nuo Saulės → koronografo laukas 2,3–5,8 R (suspausta į 1,0–uOut R)
-                    float src = 2.3 + (rho - uIn) / (uOut - uIn) * 3.5;
+                    // atstumas nuo Saulės: tikras mastelis (uOut = 5,8 R), arti Žemės – proporcingai suspaustas;
+                    // tarp krašto ir koronografo diskelio (2,3 R) – švelnus perėjimas: išmetimas ten yra, tik nenufotografuotas
+                    float src = 1.0 + (rho - uIn) * 4.8 / (uOut - uIn);
+                    float gap = 1.0;
+                    if (src < 2.3) { gap = smoothstep(1.0, 2.3, src); gap *= gap; src = 2.3; }
                     vec2 uv = 0.5 + vec2(q.x, -q.y) / ql * src / (2.0 * uHalf);
                     // skaistis normalizuotas pagal kadro foną ir šviesiausius taškus (0 – fonas, 1 – ryškiausi srautai)
                     float la = clamp((dot(texture2D(uTex, uv).rgb, w3) - uLvA.x) * uLvA.y, 0.0, 1.0);
@@ -8158,6 +8177,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     float sb = clamp(dot(p, uD) / rho, -1.0, 1.0);
                     float beta = sb * (1.0 + 0.1667 * sb * sb);         // ≈ asin (kampas nuo dangaus plokštumos), pigiau
                     float w = exp(-(beta * beta) / 0.5);
+                    // išmetimas telkiamas jo tikroje 3D kryptyje (DONKI kūgis), kad sutaptų su kūgiais
+                    vec3 pn = p / rho;
+                    for (int k = 0; k < 3; k++) {
+                        float cc = uCone[k].w;
+                        if (cc < 1.5) w += 3.0 * smoothstep(cc - 0.12, cc, dot(pn, uCone[k].xyz));
+                    }
+                    w *= gap;
                     float m = smoothstep(uIn, uIn + fw, rho) * (1.0 - smoothstep(uOut - 1.6 * fw, uOut, rho));
                     acc += vec3(t * w * m);
                 }

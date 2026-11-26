@@ -719,8 +719,8 @@ object Donki {
     /** Priekio atstumas Saulės spinduliais (pastovus greitis nuo 21,5 R). */
     fun frontRsun(c: Cme, ms: Long): Double = 21.5 + c.speed * (ms - c.t215Ms) / 1000.0 / RSUN_KM
 
-    /** Rodomi išmetimai: jau pasirodę ir dar nenuskridę toliau nei 1,3 AU. */
-    fun active(ms: Long): List<Cme> = list.filter { ms >= c0(it) && frontRsun(it, ms) < 1.3 * AU_RSUN }
+    /** Rodomi išmetimai: jau pasirodę ir dar nenuskridę toliau nei ~4 AU (už Žemės orbitos susilieja su saulės vėju). */
+    fun active(ms: Long): List<Cme> = list.filter { ms >= c0(it) && frontRsun(it, ms) < 4.0 * AU_RSUN }
     private fun c0(c: Cme) = c.t215Ms - ((21.5 - 1.0) * RSUN_KM / c.speed.coerceAtLeast(50.0) * 1000).toLong()
 
     /** Kryptis n ir dvi statmenos ašys; e – Saulė→Žemė, z – Saulės šiaurės ašis (scenos koordinatėmis). */

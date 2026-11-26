@@ -29,6 +29,7 @@ object Sp3Live {
         if (Uvi.enabled) try { Uvi.refresh(ctx.applicationContext) } catch (_: Exception) {}
         try { SunImage.refresh(ctx.applicationContext) } catch (_: Exception) {}
         try { SunChromo.refresh(ctx.applicationContext) } catch (_: Exception) {}
+        try { SunCorona.refresh(ctx.applicationContext) } catch (_: Exception) {}
         try { Lasco.refresh(ctx.applicationContext) } catch (_: Exception) {}
         try { Donki.refresh(ctx.applicationContext) } catch (_: Exception) {}
         try { BroadcastEph.load(ctx.applicationContext.filesDir) } catch (e: Exception) { android.util.Log.w("GnssApp", "BroadcastEph.load: ${e.message}") }

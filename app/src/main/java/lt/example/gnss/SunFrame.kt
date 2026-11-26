@@ -54,7 +54,7 @@ object SunFrame {
     fun text(ms: Long = System.currentTimeMillis()): String {
         val (p, b, l) = pbl(ms).let { Triple(it[0], it[1], it[2]) }
         return "Saulės koordinatės: P = %+.2f°, B₀ = %+.2f°, L₀ = %.2f° (į Žemę atsuktas dienovidinis), Carringtono apsisukimas %.2f; ".format(
-            Locale.US, p, b, l, carrington(ms)) + SunImage.status + (if (SunChromo.enabled) "; " + SunChromo.status else "") + "; " + Lasco.status + "; " + Donki.text() + (if (GlCaps.err.isNotEmpty()) "; " + GlCaps.err else "")
+            Locale.US, p, b, l, carrington(ms)) + SunImage.status + (if (SunChromo.enabled) "; " + SunChromo.status else "") + (if (SunCorona.enabled) "; " + SunCorona.status else "") + "; " + Lasco.status + "; " + Donki.text() + (if (GlCaps.err.isNotEmpty()) "; " + GlCaps.err else "")
     }
 }
 
@@ -223,29 +223,30 @@ object SunImage {
 }
 
 /**
- * Chromosfera („H-alfa“ režimui): NASA SDO AIA 304 Å (jonizuotas helis) naujausias vaizdas – tamsios gijos, šviesūs aktyvūs
- * laukai ir protuberancai virš krašto, kaip H-alfa nuotraukose. Diskas perskaičiuojamas į heliografinį žemėlapį ir kaupiamas
- * (kaip SunImage), o krašto žiedas su protuberancais saugomas atskirai – jis rodomas žiūrint į Saulę iš Žemės pusės.
+ * Chromosfera ir vainikas iš NASA SDO AIA naujausių vaizdų: 304 Å (jonizuotas helis – „H-alfa“ režimas: tamsios gijos, šviesūs
+ * aktyvūs laukai, protuberancai) ir 171 Å (geležis, ~1 mln. laipsnių – auksinis vainikas su magnetinėmis kilpomis). Diskas
+ * perskaičiuojamas į heliografinį žemėlapį ir kaupiamas (kaip SunImage), o krašto žiedas (protuberancai, kilpos virš krašto)
+ * saugomas atskirai – jis rodomas žiūrint į Saulę iš Žemės pusės.
  */
-object SunChromo {
-    private const val SRC = "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_2048_0304.jpg"
-    const val MAP_FILE = "sun_chromo.png"
-    private const val COV_FILE = "sun_chromo_cov.txt"
-    private const val RING_FILE = "sun_chromo_ring.png"
-    const val MW = 2048
-    const val MH = 1024
+class SdoChannel(val id: String, private val wl: String, private val title: String) {
+    private val src = "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_2048_$wl.jpg"
+    private val mapFile = "sun_$id.png"
+    private val covFile = "sun_${id}_cov.txt"
+    private val ringFile = "sun_${id}_ring.png"
+    val MW = 2048
+    val MH = 1024
     /** Krašto paveikslėlis: Saulė centre, kvadratas ±RING_EXT spindulių (šiaurė viršuje, vakarai dešinėje). */
-    const val RING_N = 768
-    const val RING_EXT = 1.7
+    val RING_N = 768
+    val RING_EXT = 1.7
     /** Ryškumo mastelis: disko mediana → LEVEL (žemėlapyje ir krašto paveikslėlyje). */
-    const val LEVEL = 0.35
+    val LEVEL = 0.35
     @Volatile var map: Bitmap? = null
         private set
     @Volatile var ring: Bitmap? = null
         private set
     @Volatile var version = 0
         private set
-    @Volatile var status = "chromosfera (SDO 304): neatsisiųsta"
+    @Volatile var status = "$title: neatsisiųsta"
         private set
     @Volatile var enabled = false
     @Volatile var imageMs = 0L
@@ -259,9 +260,9 @@ object SunChromo {
         if (loaded) return; loaded = true
         try {
             val d = ctx.applicationContext.filesDir
-            File(d, COV_FILE).takeIf { it.exists() }?.readLines()?.forEachIndexed { i, l -> if (i < 360) cov[i] = l.trim().toLongOrNull() ?: 0L }
-            File(d, MAP_FILE).takeIf { it.exists() }?.let { f -> BitmapFactory.decodeFile(f.path)?.let { map = it.copy(Bitmap.Config.ARGB_8888, true) } }
-            File(d, RING_FILE).takeIf { it.exists() }?.let { f -> BitmapFactory.decodeFile(f.path)?.let { ring = it } }
+            File(d, covFile).takeIf { it.exists() }?.readLines()?.forEachIndexed { i, l -> if (i < 360) cov[i] = l.trim().toLongOrNull() ?: 0L }
+            File(d, mapFile).takeIf { it.exists() }?.let { f -> BitmapFactory.decodeFile(f.path)?.let { map = it.copy(Bitmap.Config.ARGB_8888, true) } }
+            File(d, ringFile).takeIf { it.exists() }?.let { f -> BitmapFactory.decodeFile(f.path)?.let { ring = it } }
             if (map != null) version++
         } catch (_: Exception) {}
     }
@@ -274,29 +275,29 @@ object SunChromo {
         busy = true; at = now
         Thread {
             try {
-                status = "chromosfera (SDO 304): siunčiama…"
-                val c = (URL(SRC).openConnection() as HttpURLConnection).apply {
+                status = "$title: siunčiama…"
+                val c = (URL(src).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 15_000; readTimeout = 90_000; instanceFollowRedirects = true
                     setRequestProperty("User-Agent", "Mozilla/5.0 (Android) GnssApp")
                 }
-                if (c.responseCode != 200) { status = "chromosfera (SDO 304): HTTP ${c.responseCode}"; return@Thread }
+                if (c.responseCode != 200) { status = "$title: HTTP ${c.responseCode}"; return@Thread }
                 val mod = c.lastModified.takeIf { it > 0 } ?: now
                 val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
-                val disk = c.inputStream.use { BitmapFactory.decodeStream(it, null, opts) } ?: run { status = "chromosfera (SDO 304): neperskaitoma"; return@Thread }
+                val disk = c.inputStream.use { BitmapFactory.decodeStream(it, null, opts) } ?: run { status = "$title: neperskaitoma"; return@Thread }
                 val r = build(disk, map, mod)
                 disk.recycle()
-                if (r == null) { status = "chromosfera (SDO 304): disko nerasta"; return@Thread }
+                if (r == null) { status = "$title: disko nerasta"; return@Thread }
                 map = r.first; ring = r.second; version++; imageMs = mod
                 try {
                     val d = ctx.applicationContext.filesDir
-                    File(d, MAP_FILE).outputStream().use { r.first.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                    File(d, RING_FILE).outputStream().use { r.second.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                    File(d, COV_FILE).writeText(cov.joinToString("\n"))
+                    File(d, mapFile).outputStream().use { r.first.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    File(d, ringFile).outputStream().use { r.second.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    File(d, covFile).writeText(cov.joinToString("\n"))
                 } catch (_: Exception) {}
-                status = "chromosfera: NASA SDO AIA 304 Å, %s UTC; padengta %d %% paviršiaus".format(Locale.US,
+                status = "$title: NASA SDO AIA ${wl.trimStart('0')} Å, %s UTC; padengta %d %% paviršiaus".format(Locale.US,
                     java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date(mod)),
                     cov.count { it > 0 } * 100 / 360) + "; $lastDisk"
-            } catch (e: Exception) { status = "chromosfera (SDO 304): ${e.javaClass.simpleName} ${e.message ?: ""}".trim() }
+            } catch (e: Exception) { status = "$title: ${e.javaClass.simpleName} ${e.message ?: ""}".trim() }
             finally { busy = false }
         }.start()
     }
@@ -409,6 +410,11 @@ object SunChromo {
         return Bitmap.createBitmap(out, MW, MH, Bitmap.Config.ARGB_8888) to Bitmap.createBitmap(rp, RING_N, RING_N, Bitmap.Config.ARGB_8888)
     }
 }
+
+/** Chromosfera („H-alfa“ režimas): SDO AIA 304 Å. */
+val SunChromo = SdoChannel("chromo", "0304", "chromosfera (SDO 304)")
+/** Vainikas: SDO AIA 171 Å – auksinės magnetinės kilpos. */
+val SunCorona = SdoChannel("corona", "0171", "vainikas (SDO 171)")
 
 /**
  * Mėnulio selenografinės koordinatės (IAU 2009 modelis, vidutinės Žemės / poliaus ašių sistema – ta pati kaip LRO žemėlapio):

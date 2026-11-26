@@ -3706,7 +3706,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Saulės ekliptinė ilguma (rad) – ta pati formulė kaip sunDir(). */
     private val monthTex = HashMap<Int, Int>()
-    private val MONTHS_LT = arrayOf("Sau", "Vas", "Kov", "Bal", "Geg", "Bir", "Lie", "Rgp", "Rgs", "Spa", "Lap", "Gru")
+    private val MONTHS_LT = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
     private fun sunEclLon(): Double = sunEclLonAt(jdDays())
 

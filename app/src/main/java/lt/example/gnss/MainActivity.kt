@@ -1693,7 +1693,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         Hdr.tenWanted = calPrefs.getBoolean("ten_bit", true)
         setEGLConfigChooser(MsaaConfigChooser())
         setEGLWindowSurfaceFactory(HdrSurfaceFactory({ calPrefs.edit().putBoolean("hdr", false).apply() }, { calPrefs.edit().putBoolean("ten_bit", false).apply() }))
-        renderer.sunTrue = calPrefs.getBoolean("sun_true", false)
+        renderer.sunTrue = calPrefs.getBoolean("sun_true2", true)
         renderer.sunHa = false; SunChromo.enabled = false; SunImage.enabled = false
         renderer.sunCor = calPrefs.getBoolean("sun_cor", true)
         SunCorona.enabled = renderer.sunCor
@@ -7073,7 +7073,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         java.util.Arrays.fill(sunMat, 0f)
         for (i in 0..2) { sunMat[i] = (ax[0][i] * k).toFloat(); sunMat[4 + i] = (ax[1][i] * k).toFloat(); sunMat[8 + i] = (ax[2][i] * k).toFloat() }
         // tikras NASA SDO žemėlapis (fotosfera – HMI, H-alfa – chromosfera AIA 304, vainikas – AIA 171), perkeliamas į GL tekstūrą
-        val chan = sunChan()
+        val chan = sunChan()?.takeIf { it.map != null }   // kol NASA vaizdo nėra – paprasta Saulė, ne sugalvota
         val chMap = chan?.map
         val src = chMap ?: SunImage.map
         val key = if (chan != null && chMap != null) "${chan.id}:${chan.version}" else if (src != null) "hmi:${SunImage.version}" else ""
@@ -7103,7 +7103,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         GLES20.glUniform3f(GLES20.glGetUniformLocation(sunProg, "uCam"), camPos[0], camPos[1], camPos[2])
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uTime"), t)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uHasTex"), if (mapOk) 2f else 0f)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uGain"), if (Hdr.on) 2.4f else 1f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uGain"), if (Hdr.on) 1f + 1.4f * (1f - fBig) else 1f)   // HDR ryškumas – tik mažai Saulei danguje; padidinta – kaip pro filtrą
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uTrue"), if (sunTrue) 1f else 0f)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uMode"), if (chan == null) 0f else if (chan === SunChromo) 1f else 2f)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uPx"), pxW)
@@ -7166,7 +7166,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val up = if (ul > 1e-4) DoubleArray(3) { u0[it] / ul } else DoubleArray(3) { camUpW[it].toDouble() }
         val rt = SunFrame.cross(d, up)
         // krašto vaizdas iš SDO: protuberancai (304) arba vainiko kilpos (171)
-        val chan = sunChan()
+        val chan = sunChan()?.takeIf { it.map != null }   // kol NASA vaizdo nėra – paprasta Saulė, ne sugalvota
         val ring = chan?.ring
         if (chan != null && ring != null && promKey != "${chan.id}:r:${chan.version}") {
             promKey = "${chan.id}:r:${chan.version}"
@@ -10634,8 +10634,8 @@ class MainActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(mw, ww))
         left.addView(CheckBox(this).apply {
             text = "Saulė tikra spalva (balta, ~5800 K) vietoj SDO ultravioletinės (auksinės)"
-            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_true", false)
-            setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_true", on).apply()
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_true2", true)
+            setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_true2", on).apply()
                 if (::skyDome.isInitialized) skyDome.setSunTrue(on) }
         }, LinearLayout.LayoutParams(mw, ww))
         // tikras Saulės vaizdas – tik vainikas (SDO 171); fotosferos (HMI) ir H-alfa (304) vaizdų nebėra

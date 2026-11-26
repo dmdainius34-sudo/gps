@@ -1462,6 +1462,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         set(v) { renderer.simRun = v }
     val virtualPos get() = renderer.virtualPos
     fun setSunTrue(on: Boolean) { renderer.sunTrue = on }
+    fun setSunHa(on: Boolean) { renderer.sunHa = on }
     fun setLascoDisk(on: Boolean) { renderer.showLascoDisk = on }
     fun pgdDiag(): String = renderer.pgdDiag
     fun centreInfo(): DoubleArray = doubleArrayOf(renderer.centreLat, renderer.centreLon, renderer.centreAltKm, renderer.gridStepDeg)
@@ -1692,6 +1693,8 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         setEGLConfigChooser(MsaaConfigChooser())
         setEGLWindowSurfaceFactory(HdrSurfaceFactory({ calPrefs.edit().putBoolean("hdr", false).apply() }, { calPrefs.edit().putBoolean("ten_bit", false).apply() }))
         renderer.sunTrue = calPrefs.getBoolean("sun_true", false)
+        renderer.sunHa = calPrefs.getBoolean("sun_ha", false)
+        SunChromo.enabled = renderer.sunHa
         renderer.showLascoDisk = calPrefs.getBoolean("lasco_disk", true)
         preserveEGLContextOnPause = true
         renderer.cmbOn = true                                     // žvaigždžių fonas visada (CMB pašalintas)
@@ -2508,21 +2511,13 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         galVbo = 0; dustTex = 0
         atmoProg = 0   // senas kontekstas – programą reikia sukurti iš naujo
         sunProg = 0
-        glowProg = 0
-        lascoProg = 0; lascoTex = 0; lascoTexs = IntArray(0); lascoVer = -1; sunImgVer = -1
+        sunQProg = 0; promTex = 0; promKey = ""
+        lascoProg = 0; lascoTex = 0; lascoTexs = IntArray(0); lascoVer = -1; sunImgKey = ""
         buildEarth()
         loadCmb()
         starTex = makeStarTexture()
         sunTex = makeSunTexture()
-        sunImgTex = 0
-        try {
-            appCtx.assets.open("sun.jpg").use { ins ->
-                val bmp = android.graphics.BitmapFactory.decodeStream(ins)
-                if (bmp != null) sunImgTex = uploadTexture(bmp)
-            }
-        } catch (e: Exception) {
-            android.util.Log.w("GnssApp", "sun.jpg nerastas: rodoma programiškai nupiešta Saulė")
-        }
+        sunImgTex = 0          // sena piešta tekstūra (sun.jpg) nebenaudojama – be NASA žemėlapio piešiama rami fotosfera su granuliacija
         for (d in 0 until 360 step 30) labelTex[labelOf(d)] = makeTexture(labelOf(d), 0xFFFFFFFF.toInt(), if (d % 90 == 0) 170 else 96)
     }
 
@@ -4717,6 +4712,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             // ne GL gijoje: pirmas kartas skaito didelius failus (Saulės žemėlapis 4096×2048) – vaizdas „užstrigdavo“
             Thread {
                 try { SunImage.refresh(appCtx) } catch (_: Exception) {}
+                try { SunChromo.refresh(appCtx) } catch (_: Exception) {}
                 try { Lasco.refresh(appCtx) } catch (_: Exception) {}
                 try { Donki.refresh(appCtx) } catch (_: Exception) {}
             }.apply { priority = Thread.MIN_PRIORITY }.start()
@@ -7010,9 +7006,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** 3D Saulės rutulys: animuota granuliacija, dėmės, kraštų patamsėjimas; lėtai sukasi. */
     @Volatile var showSunGrid = true
-    private var sunImgVer = 0
-    /** Saulės tekstūra – tikras SDO žemėlapis (ne sena programos tekstūra). */
-    private var sunReal = false
 
     /** Heliografinis tinklelis (kas 15°), pusiaujas ir nulinis dienovidinis ryškesni, ašis per polius, į Žemę atsuktas taškas. */
     private fun drawSunGrid() {
@@ -7056,26 +7049,43 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val ax = SunFrame.axes(simNow())
         java.util.Arrays.fill(sunMat, 0f)
         for (i in 0..2) { sunMat[i] = (ax[0][i] * k).toFloat(); sunMat[4 + i] = (ax[1][i] * k).toFloat(); sunMat[8 + i] = (ax[2][i] * k).toFloat() }
-        // tikras NASA SDO vaizdas, jei atsisiųstas (perkeliamas į GL tekstūrą)
-        SunImage.map?.let { m -> if (SunImage.version != sunImgVer) { sunImgVer = SunImage.version
+        // tikras NASA SDO žemėlapis (fotosfera – HMI, H-alfa režime – chromosfera AIA 304), perkeliamas į GL tekstūrą
+        val haMap = if (sunHa) SunChromo.map else null
+        val src = haMap ?: SunImage.map
+        val key = if (haMap != null) "ha:${SunChromo.version}" else if (src != null) "hmi:${SunImage.version}" else ""
+        if (src != null && key != sunImgKey) {
+            sunImgKey = key
             if (sunImgTex != 0) GLES20.glDeleteTextures(1, intArrayOf(sunImgTex), 0)
-            sunImgTex = uploadTexture(m.copy(m.config ?: Bitmap.Config.ARGB_8888, false))
+            sunMapW = src.width; sunMapH = src.height
+            sunImgTex = uploadTexture(src.copy(src.config ?: Bitmap.Config.ARGB_8888, false))
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sunImgTex)
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR)
             GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
-            sunReal = true } }
+        }
+        // žemėlapis tinka tik savo režimui (H-alfa be 304 žemėlapio – be žemėlapio, ne su fotosferos dėmėmis)
+        val mapOk = sunImgTex != 0 && (if (sunHa) sunImgKey.startsWith("ha:") else sunImgKey.startsWith("hmi:"))
+        // ekspozicija: maža Saulė danguje – perdegusi kaip plika akimi ar fotoaparatu; padidinta – kaip pro Saulės filtrą
+        val pxW = (2.0 * kotlin.math.tan(Math.toRadians(20.0)) / lastH).toFloat()
+        val rw = k * EARTH_R
+        val dSun = kotlin.math.sqrt(((sp[0] - camPos[0]) * (sp[0] - camPos[0]) + (sp[1] - camPos[1]) * (sp[1] - camPos[1]) + (sp[2] - camPos[2]) * (sp[2] - camPos[2])).toDouble()).toFloat().coerceAtLeast(1e-6f)
+        val rPx = rw / (dSun * pxW)
+        val fBig = maxOf(((sunScale - SUN_REAL_K) / (1f - SUN_REAL_K)).coerceIn(0f, 1f), ((rPx - 40f) / 160f).coerceIn(0f, 1f))
         sunMat[12] = sp[0]; sunMat[13] = sp[1]; sunMat[14] = sp[2]; sunMat[15] = 1f
         Matrix.multiplyMM(sunMvp, 0, mvpI, 0, sunMat, 0)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
         GLES20.glUseProgram(sunProg)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(sunProg, "uMVP"), 1, false, sunMvp, 0)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(sunProg, "uModel"), 1, false, sunMat, 0)
-        GLES20.glUniform3f(GLES20.glGetUniformLocation(sunProg, "uEye"), eyeI[0], eyeI[1], eyeI[2])
         GLES20.glUniform3f(GLES20.glGetUniformLocation(sunProg, "uCam"), camPos[0], camPos[1], camPos[2])
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uTime"), t)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uHasTex"), if (sunImgTex == 0) 0f else if (sunReal) 2f else 1f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uHasTex"), if (mapOk) 2f else 0f)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uGain"), if (Hdr.on) 2.4f else 1f)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uTrue"), if (sunTrue) 1f else 0f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uMode"), if (sunHa) 1f else 0f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uPx"), pxW)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uRw"), rw)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunProg, "uExpo"), 2.4f + (0.95f - 2.4f) * fBig)
+        GLES20.glUniform2f(GLES20.glGetUniformLocation(sunProg, "uTexel"), 1f / sunMapW, 1f / sunMapH)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sunImgTex)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(sunProg, "uTex"), 0)
@@ -7092,40 +7102,88 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         }
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
         if (showSunGrid) drawSunGrid()
-        // 3D korona: didesnis rutulys aplink Saulę, švyti tik prie krašto (pridėtinis maišymas)
-        if (glowProg == 0) glowProg = program(GLOW_VS, SUNGLOW_FS)
-        val gk = k * 2.0f
-        val gm = FloatArray(16)
-        gm[0] = gk; gm[5] = gk; gm[10] = gk
-        gm[12] = sp[0]; gm[13] = sp[1]; gm[14] = sp[2]; gm[15] = 1f
-        val gmvp = FloatArray(16)
-        Matrix.multiplyMM(gmvp, 0, mvpI, 0, gm, 0)
+        drawSunQuad(sp, rw, dSun, pxW, fBig, t)
         GLES20.glDepthMask(false)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
-        GLES20.glUseProgram(glowProg)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(glowProg, "uMVP"), 1, false, gmvp, 0)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(glowProg, "uModel"), 1, false, gm, 0)
-        GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uCam"), camPos[0], camPos[1], camPos[2])
-        GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uCenter"), sp[0], sp[1], sp[2])
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(glowProg, "uTime"), t)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(glowProg, "uGain"), if (showLasco && showLascoDisk && Lasco.image != null) 0.3f else 1f)
-        // tikra spalva: švytėjimas baltas, vos šiltas; SDO – oranžinis
-        if (sunTrue) GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uTint"), 1f, 0.95f, 0.88f)
-        else GLES20.glUniform3f(GLES20.glGetUniformLocation(glowProg, "uTint"), 1f, 0.62f, 0.22f)
-        resetAttribs()
-        val gl = GLES20.glGetAttribLocation(glowProg, "aPos")
-        GLES20.glEnableVertexAttribArray(gl)
-        earthPos!!.position(0)
-        GLES20.glVertexAttribPointer(gl, 3, GLES20.GL_FLOAT, false, 0, earthPos)
-        GLES20.glEnable(GLES20.GL_CULL_FACE)
-        GLES20.glCullFace(GLES20.GL_BACK)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, earthCount)
-        GLES20.glDisable(GLES20.GL_CULL_FACE)
         drawLasco(sp, k * EARTH_R)
         if (SpaceLive.enabled) drawSunLive(sp, k * EARTH_R)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glDepthMask(true)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+    }
+
+    /** H-alfa režimas: chromosfera (NASA SDO AIA 304) su spikulių kraštu ir protuberancais. */
+    @Volatile var sunHa = false
+    private var sunImgKey = ""
+    private var sunMapW = 4096
+    private var sunMapH = 2048
+    private var sunQProg = 0
+    private var promTex = 0
+    private var promKey = ""
+    private var sunQuadBuf: FloatBuffer? = null
+
+    /**
+     * Švytėjimas aplink Saulę (kaip fotoaparate ar akyje, be pulsavimo): stiprus, kai Saulė maža ir perdegusi, silpnas padidinus
+     * (kaip pro filtrą). H-alfa režime – ir chromosferos kraštas su spikulėmis bei protuberancai iš SDO 304 vaizdo (žiūrint iš Žemės pusės).
+     */
+    private fun drawSunQuad(sp: FloatArray, rw: Float, dSun: Float, pxW: Float, fBig: Float, t: Float) {
+        if (sunQProg == 0) sunQProg = program(SUNQ_VS, SUNQ_FS)
+        val qb = sunQuadBuf ?: floatBuf(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)).also { sunQuadBuf = it }
+        // kvadratas statmenas krypčiai kamera → Saulė; „viršus“ – Saulės šiaurės ašis (kaip SDO vaizduose), dešinė – vakarai
+        val d = DoubleArray(3) { ((sp[it] - camPos[it]) / dSun).toDouble() }
+        val z = SunFrame.axes(simNow())[2]
+        val zd = z[0] * d[0] + z[1] * d[1] + z[2] * d[2]
+        val u0 = DoubleArray(3) { z[it] - zd * d[it] }
+        val ul = sqrt(u0[0] * u0[0] + u0[1] * u0[1] + u0[2] * u0[2])
+        val up = if (ul > 1e-4) DoubleArray(3) { u0[it] / ul } else DoubleArray(3) { camUpW[it].toDouble() }
+        val rt = SunFrame.cross(d, up)
+        // protuberancų vaizdas (SDO 304 krašto žiedas)
+        val ring = if (sunHa) SunChromo.ring else null
+        if (ring != null && promKey != "r:${SunChromo.version}") {
+            promKey = "r:${SunChromo.version}"
+            if (promTex != 0) GLES20.glDeleteTextures(1, intArrayOf(promTex), 0)
+            promTex = uploadTexture(ring.copy(Bitmap.Config.ARGB_8888, false))
+        }
+        // protuberancai teisingi tik žiūrint iš Žemės pusės (iš ten nufotografuoti) ir ne laiko eigoje
+        val vx = sp[0] - skyO[0]; val vy = sp[1] - skyO[1]; val vz = sp[2] - skyO[2]
+        val vl = sqrt(vx * vx + vy * vy + vz * vz).coerceAtLeast(1e-9)
+        val cosV = (d[0] * vx + d[1] * vy + d[2] * vz) / vl
+        val c0 = kotlin.math.cos(Math.toRadians(25.0)); val c1 = kotlin.math.cos(Math.toRadians(8.0))
+        val prom = if (ring != null && promTex != 0 && kotlin.math.abs(simOffsetMs) < 6 * 3_600_000L)
+            ((cosV - c0) / (c1 - c0)).coerceIn(0.0, 1.0).let { it * it * (3 - 2 * it) }.toFloat() else 0f
+        val ext = (14f + (3f - 14f) * fBig).let { if (sunHa) maxOf(it, 1.8f) else it }
+        val glare = (0.9f + (0.07f - 0.9f) * fBig) * (if (showLasco && showLascoDisk && Lasco.image != null) 0.5f else 1f)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        GLES20.glDepthMask(false)
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE)
+        GLES20.glUseProgram(sunQProg)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(sunQProg, "uMVP"), 1, false, mvpI, 0)
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(sunQProg, "uC"), sp[0], sp[1], sp[2])
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(sunQProg, "uRt"), rt[0].toFloat(), rt[1].toFloat(), rt[2].toFloat())
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(sunQProg, "uUp"), up[0].toFloat(), up[1].toFloat(), up[2].toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunQProg, "uS"), ext * rw)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunQProg, "uExt"), ext)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunQProg, "uGlare"), glare)
+        when {
+            sunHa -> GLES20.glUniform3f(GLES20.glGetUniformLocation(sunQProg, "uTint"), 1f, 0.45f, 0.25f)
+            sunTrue -> GLES20.glUniform3f(GLES20.glGetUniformLocation(sunQProg, "uTint"), 1f, 0.93f, 0.82f)
+            else -> GLES20.glUniform3f(GLES20.glGetUniformLocation(sunQProg, "uTint"), 1f, 0.72f, 0.38f)
+        }
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunQProg, "uHa"), if (sunHa) 1f else 0f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunQProg, "uProm"), prom)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunQProg, "uPR"), (1.0 / (2.0 * SunChromo.RING_EXT)).toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunQProg, "uPxR"), pxW * dSun / rw)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(sunQProg, "uTime"), t)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, promTex)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(sunQProg, "uPT"), 0)
+        resetAttribs()
+        val la = GLES20.glGetAttribLocation(sunQProg, "aQ")
+        GLES20.glEnableVertexAttribArray(la)
+        qb.position(0)
+        GLES20.glVertexAttribPointer(la, 2, GLES20.GL_FLOAT, false, 0, qb)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glDisableVertexAttribArray(la)
     }
 
     private var lascoProg = 0
@@ -7359,7 +7417,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         billboard(FloatArray(3) { c[it] + camUpW[it] * rr * 1.25f }, eyeI, h * ta, h, tx, 1f, 0.7f, 0.3f, 0.95f * pulse)
     }
 
-    private var glowProg = 0
 
     private fun makeStarTexture(): Int {
         val size = 128
@@ -7829,58 +7886,162 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             varying vec3 vN;
             varying vec2 vUV;
             varying vec3 vW;
-            uniform vec3 uEye;
             uniform vec3 uCam;
             uniform float uTime;
             uniform sampler2D uTex;
-            uniform float uHasTex;
+            uniform float uHasTex;   // 2 – heliografinis žemėlapis (santykinis ryškumas), kitaip – be jo
             uniform float uGain;     // HDR: centras ryškesnis už baltą (1 – be HDR)
-            uniform float uTrue;     // 1 – tikra spalva (balta ~5800 K), 0 – SDO ultravioletinė
-            float hash(vec3 p) {
-                return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+            uniform float uTrue;     // 1 – tikra spalva (balta ~5800 K), 0 – SDO oranžinė
+            uniform float uMode;     // 0 – fotosfera, 1 – chromosfera (H-alfa, SDO 304)
+            uniform float uPx;       // ekrano taško dydis 1 vnt. atstumu
+            uniform float uRw;       // Saulės spindulys (scenos vnt.)
+            uniform float uExpo;     // ekspozicija: ~2,4 plika akimi (perdegęs), ~0,86 pro filtrą
+            uniform vec2 uTexel;     // 1 / žemėlapio dydis
+            vec3 hash33(vec3 p) {
+                p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+                p += dot(p, p.yxz + 33.33);
+                return fract((p.xxy + p.yxx) * p.zyx);
             }
-            float noise(vec3 x) {
+            float hash13(vec3 p) {
+                p = fract(p * 0.1031);
+                p += dot(p, p.zyx + 31.32);
+                return fract((p.x + p.y) * p.z);
+            }
+            float vnoise(vec3 x) {
                 vec3 i = floor(x);
                 vec3 f = fract(x);
                 f = f * f * (3.0 - 2.0 * f);
-                return mix(mix(mix(hash(i), hash(i + vec3(1.0, 0.0, 0.0)), f.x),
-                               mix(hash(i + vec3(0.0, 1.0, 0.0)), hash(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
-                           mix(mix(hash(i + vec3(0.0, 0.0, 1.0)), hash(i + vec3(1.0, 0.0, 1.0)), f.x),
-                               mix(hash(i + vec3(0.0, 1.0, 1.0)), hash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+                return mix(mix(mix(hash13(i), hash13(i + vec3(1.0, 0.0, 0.0)), f.x),
+                               mix(hash13(i + vec3(0.0, 1.0, 0.0)), hash13(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+                           mix(mix(hash13(i + vec3(0.0, 0.0, 1.0)), hash13(i + vec3(1.0, 0.0, 1.0)), f.x),
+                               mix(hash13(i + vec3(0.0, 1.0, 1.0)), hash13(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+            }
+            // Ląstelių triukšmas: (atstumas iki artimiausio taško, iki antro, artimiausio žymė); taškai lėtai klajoja –
+            // granulės gimsta, dalijasi ir nyksta (tikros gyvuoja 5–10 min.)
+            vec3 worley(vec3 x, float t) {
+                vec3 i = floor(x);
+                vec3 f = fract(x);
+                float d1 = 9.0;
+                float d2 = 9.0;
+                float id = 0.0;
+                for (int a = -1; a <= 1; a++) {
+                    for (int b = -1; b <= 1; b++) {
+                        for (int c = -1; c <= 1; c++) {
+                            vec3 g = vec3(float(a), float(b), float(c));
+                            vec3 h = hash33(i + g);
+                            vec3 r = g + 0.5 + 0.4 * sin(t * (0.5 + h.zxy) + 6.2831 * h) - f;
+                            float d = dot(r, r);
+                            if (d < d1) { d2 = d1; d1 = d; id = h.x; } else if (d < d2) { d2 = d; }
+                        }
+                    }
+                }
+                return vec3(sqrt(d1), sqrt(d2), id);
+            }
+            vec3 shoulder(vec3 c) {
+                vec3 k = max(c - 0.85, 0.0);
+                return min(c, vec3(0.85)) + 0.15 * (1.0 - exp(-k / 0.15));
             }
             void main() {
                 vec3 p = normalize(vO);
-                float t = uTime * 0.06;
-                float n = 0.6 * noise(p * 4.0 + vec3(t, 0.0, 0.0))
-                        + 0.4 * noise(p * 8.0 - vec3(0.0, t * 1.4, 0.0));
-                n = smoothstep(0.15, 0.85, n);
-                float spots = smoothstep(0.78, 0.86, noise(p * 2.5 + vec3(7.0)));
-                vec3 hot = vec3(1.0, 0.96, 0.72);
-                vec3 warm = vec3(1.0, 0.52, 0.08);
-                vec3 col = mix(warm, hot, n);
-                col *= 1.0 - 0.35 * spots;
+                vec3 vd = uCam - vW;
+                float dist = length(vd);
+                float mu = clamp(dot(normalize(vN), vd / dist), 0.0, 1.0);
+                // ekrano taško dydis paviršiuje (Saulės spinduliais): smulkmenos rodomos tik kai jos didesnės už tašką
+                float fp = uPx * dist / uRw / sqrt(max(mu, 0.04));
+                float tg = uTime * 0.012;
+                // žemėlapis: santykinis ryškumas (1 – rami fotosfera / chromosferos mediana), aplinkos vidurkis, kryptis
+                float rel = 1.0;
+                float relB = 1.0;
+                vec2 grad = vec2(0.0);
                 if (uHasTex > 1.5) {
-                    // tikras SDO žemėlapis (ryškus, be triukšmo); nepadengtos vietos (alfa 0) – fotosferos spalva su granuliacija
+                    float sc = uMode > 0.5 ? 1.0 / 0.35 : 1.5;
                     vec4 tx = texture2D(uTex, vUV);
-                    col = mix(vec3(0.78, 0.54, 0.09) * (0.94 + 0.12 * n), tx.rgb * 1.15, tx.a);   // ta pati fotosferos spalva kaip žemėlapyje – be siūlės
-                } else if (uHasTex > 0.5) {
-                    // NASA SDO žemėlapis + lengvas mirgėjimas, kad paviršius „gyventų“
-                    col = texture2D(uTex, vUV).rgb * 1.25 * (0.92 + 0.16 * n);
+                    rel = mix(1.0, tx.r / max(tx.a, 0.004) * sc, tx.a);
+                    vec4 tb = texture2D(uTex, vUV, 4.0);
+                    relB = mix(1.0, tb.r / max(tb.a, 0.004) * sc, tb.a);
+                    // kryptis į tamsesnę pusę (dėmės šešėlį): 8 taškai ratu 4 žemėlapio taškų atstumu – pusšešėlio gijoms
+                    float cl = max(length(p.xy), 0.2);
+                    for (int k = 0; k < 8; k++) {
+                        vec2 d = vec2(cos(float(k) * 0.7854), sin(float(k) * 0.7854));
+                        grad += (1.0 - texture2D(uTex, vUV + vec2(d.x / cl, -d.y) * uTexel * 4.0).r * sc) * d;
+                    }
                 }
-                float mu = max(dot(normalize(vN), normalize(uCam - vW)), 0.0);
-                if (uTrue > 0.5) {
-                    // tikra spalva: balta, šiek tiek šilta (~5800 K); tekstūra – tik ryškumo detalėms (dėmės, fakelai)
-                    float lum = dot(col, vec3(0.299, 0.587, 0.114));
-                    col = vec3(1.0, 0.965, 0.915) * (0.88 + 0.24 * (lum - 0.5));
-                    // kraštų patamsėjimas (fotosferos dėsnis I(μ) = 1 − u(1 − μ), u ≈ 0,6) ir kraštas šiltesnis
-                    col *= 1.0 - 0.6 * (1.0 - mu);
-                    col *= mix(vec3(1.0, 0.78, 0.55), vec3(1.0), mu);
+                vec3 col;
+                if (uMode < 0.5) {
+                    // ---- fotosfera ----
+                    float umb = 1.0 - smoothstep(0.42, 0.58, rel);
+                    float pen = smoothstep(0.42, 0.6, rel) * (1.0 - smoothstep(0.86, 0.95, rel));
+                    float quiet = smoothstep(0.86, 0.97, rel);
+                    float I = rel;
+                    float FG = 540.0;                                    // granulės ~1,3 tūkst. km
+                    float gA = 1.0 - smoothstep(0.3, 0.9, fp * FG);
+                    if (gA > 0.003) {
+                        vec3 x = p * FG;
+                        // lengvas iškraipymas – granulės apvalios, ne daugiakampės
+                        vec3 xw = x * 0.7;
+                        x += 0.35 * (vec3(vnoise(xw), vnoise(xw + 17.0), vnoise(xw + 31.0)) - 0.5);
+                        vec3 w = worley(x, tg);
+                        float lane = pow(smoothstep(0.0, 0.5, w.y - w.x), 0.6);   // tamsūs tarpeliai tarp granulių
+                        float core = 1.0 - smoothstep(0.05, 1.0, w.x);             // šviesus karštas centras
+                        float hot = 0.55 + 0.45 * fract(w.z * 7.31) * (0.75 + 0.25 * sin(tg * 3.0 + w.z * 40.0));   // granulės skiriasi ryškumu
+                        float G = lane * (0.55 + 0.45 * hot) + core * 0.45 * hot - 0.78;
+                        float sA = 1.0 - smoothstep(0.06, 0.25, fp * FG);
+                        if (sA > 0.003) G += sA * 0.25 * (vnoise(p * FG * 3.1 + vec3(tg)) - 0.5) * lane;
+                        I += rel * gA * 0.26 * G * quiet;
+                        I += rel * gA * umb * 0.45 * step(0.6, w.z) * (1.0 - smoothstep(0.0, 0.2, w.x));     // šešėlio taškeliai
+                        if (pen > 0.01) {
+                            // pusšešėlio gijos – spinduliais nuo šešėlio (kryptis – į tamsesnę pusę)
+                            float ang = atan(grad.y, grad.x);
+                            vec2 cs = vec2(cos(ang), sin(ang)) * 18.0;
+                            float fil = smoothstep(0.25, 0.75, vnoise(vec3(cs, rel * 6.0 + tg * 0.4)) * 0.65 + vnoise(vec3(cs * 2.3, rel * 11.0 + 5.0)) * 0.35);
+                            I += rel * pen * gA * smoothstep(0.1, 0.4, length(grad)) * 0.7 * (fil - 0.5);
+                        }
+                    }
+                    // fakelai: šviesus magnetinis tinklas, ryškėja link krašto, stipresnis aktyviose srityse (prie dėmių)
+                    float limbF = pow(1.0 - mu, 2.2);
+                    if (limbF > 0.01) {
+                        float act = clamp((0.995 - relB) * 20.0, 0.0, 1.0) + smoothstep(1.01, 1.06, relB);
+                        float nA = 1.0 - smoothstep(0.5, 1.5, fp * 160.0);
+                        float net = 0.35;                                  // neišskiriant tinklo – vidutinis šviesėjimas
+                        if (nA > 0.003) {
+                            vec3 ws = worley(p * 26.0, uTime * 0.0004);
+                            net = mix(0.35, 1.0 - smoothstep(0.0, 0.16, ws.y - ws.x), nA);
+                        }
+                        float fn = mix(0.5, vnoise(p * 140.0), 1.0 - smoothstep(0.5, 1.5, fp * 140.0));
+                        I += rel * limbF * (0.06 + 0.4 * act) * net * (0.6 + 0.8 * fn) * quiet;
+                    }
+                    // kraštų patamsėjimas (kvadratinis dėsnis atskirai R, G, B): kraštas tamsesnis ir rausvesnis
+                    float om = 1.0 - mu;
+                    vec3 ld = vec3(1.0) - vec3(0.62, 0.88, 1.05) * om + vec3(0.15, 0.23, 0.28) * (1.0 - mu * mu);
+                    I = max(I, 0.0);
+                    if (uTrue > 0.5) {
+                        col = vec3(1.0, 0.96, 0.92) * ld * I;
+                        col *= mix(vec3(1.0), vec3(1.0, 0.8, 0.64), clamp(umb * 0.8 + pen * 0.3, 0.0, 1.0));   // šešėlis vėsesnis
+                    } else {
+                        float x = dot(ld, vec3(0.3, 0.55, 0.15)) * I;
+                        col = vec3(pow(x, 0.6), 0.78 * pow(x, 1.15), 0.36 * pow(x, 2.6)) * 1.04;           // SDO spalvota skalė
+                    }
                 } else {
-                    col *= 0.42 + 0.58 * pow(mu, 0.5);      // kraštų patamsėjimas (limb darkening)
-                    col += vec3(1.0, 0.6, 0.2) * pow(1.0 - mu, 4.0) * 0.6;   // ryškus kraštas
+                    // ---- chromosfera (H-alfa): žemėlapis – SDO 304 Å; smulkūs tamsūs dėmėtumai prie tinklo ----
+                    float xh = rel;
+                    // kiekviena smulkmenų skalė rodoma tik kai ji didesnė už ekrano tašką (be „grūdėtumo“)
+                    float c0 = 1.0 - smoothstep(0.3, 0.8, fp * 110.0);
+                    if (c0 > 0.003) {
+                        vec3 ws = worley(p * 26.0, uTime * 0.0006);
+                        float bnd = smoothstep(0.35, 0.8, ws.x);                          // prie tinklo (ląstelės krašto)
+                        float c1 = 1.0 - smoothstep(0.3, 0.8, fp * 260.0);
+                        float c2 = 1.0 - smoothstep(0.3, 0.8, fp * 700.0);
+                        float m1 = mix(0.5, vnoise(p * 260.0 + vec3(uTime * 0.01)), c1);
+                        float m2 = mix(0.5, vnoise(p * 700.0 - vec3(uTime * 0.015)), c2);
+                        float mott = mix(0.3, smoothstep(0.45, 0.85, m1 * 0.6 + m2 * 0.4), c1);   // tamsūs dėmėtumai (spikulės diske)
+                        xh *= 1.0 - c0 * (0.35 * bnd * mott + 0.1 * (0.5 - m1));
+                    }
+                    xh = max(xh * (0.82 + 0.18 * sqrt(mu)), 0.0);
+                    col = vec3(1.0, 0.36, 0.12) * pow(xh, 0.85) + vec3(0.0, 0.32, 0.16) * max(xh - 1.1, 0.0);
                 }
-                // HDR: centras šviečia ryškiau už baltą, kraštai – ne
-                col *= mix(1.0, uGain, pow(mu, 1.5));
+                col *= uExpo;
+                if (uGain > 1.01) col *= mix(1.0, uGain, pow(mu, 1.5));
+                else col = shoulder(col);
                 gl_FragColor = vec4(col, 1.0);
             }
         """
@@ -7965,30 +8126,69 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 gl_Position = uMVP * vec4(aPos, 1.0);
             }
         """
-        private const val SUNGLOW_FS = """
+        private const val SUNQ_VS = """
+            attribute vec2 aQ;
+            uniform mat4 uMVP;
+            uniform vec3 uC;
+            uniform vec3 uRt;
+            uniform vec3 uUp;
+            uniform float uS;
+            varying vec2 vQ;
+            void main() {
+                vQ = aQ;
+                gl_Position = uMVP * vec4(uC + (uRt * aQ.x + uUp * aQ.y) * uS, 1.0);
+            }
+        """
+        private const val SUNQ_FS = """
             #ifdef GL_FRAGMENT_PRECISION_HIGH
             precision highp float;
             #else
             precision mediump float;
             #endif
-            uniform vec3 uCam;
-            uniform vec3 uCenter;
-            uniform float uTime;
-            uniform float uGain;
+            varying vec2 vQ;
+            uniform float uExt;      // pusė kvadrato (Saulės spinduliais)
+            uniform float uGlare;    // švytėjimo stiprumas
             uniform vec3 uTint;
-            varying vec3 vW;
+            uniform float uHa;       // chromosferos kraštas (spikulės)
+            uniform float uProm;     // protuberancai iš SDO 304 vaizdo (0…1)
+            uniform sampler2D uPT;
+            uniform float uPR;       // vaizdo spindulys (u, v vienetais)
+            uniform float uPxR;      // ekrano taškas Saulės spinduliais
+            uniform float uTime;
+            float h21(vec2 p) {
+                vec3 q = fract(vec3(p.xyx) * 0.1031);
+                q += dot(q, q.yzx + 33.33);
+                return fract((q.x + q.y) * q.z);
+            }
+            float n2(vec2 x) {
+                vec2 i = floor(x);
+                vec2 f = fract(x);
+                f = f * f * (3.0 - 2.0 * f);
+                return mix(mix(h21(i), h21(i + vec2(1.0, 0.0)), f.x), mix(h21(i + vec2(0.0, 1.0)), h21(i + vec2(1.0, 1.0)), f.x), f.y);
+            }
             void main() {
-                // Spindulio nuo kameros atstumas iki Saulės centro – korona visada koncentriška su Saule
-                vec3 d = normalize(vW - uCam);
-                vec3 oc = uCenter - uCam;
-                float tc = dot(oc, d);
-                float dist = length(oc - d * tc);
-                float shellR = length(vW - uCenter);
-                float r = dist / shellR;                      // 0 centre, 1 korona kraštas
-                float r0 = 1.0 / 2.0;                         // Saulės kraštas
-                float g = r < r0 ? 0.35 : pow(clamp((1.0 - r) / (1.0 - r0), 0.0, 1.0), 1.8);
-                g *= (0.85 + 0.15 * sin(uTime * 1.5)) * uGain;
-                gl_FragColor = vec4(uTint * g, g);
+                vec2 q = vQ * uExt;
+                float r = length(q);
+                float x = max(r - 1.0, 0.0);
+                // švytėjimas kaip fotoaparate ar akyje: šviesos sklaida aplink ryškų diską (be pulsavimo)
+                float g = pow(1.0 + 1.2 * x, -1.3) + 0.08 / (1.0 + 0.08 * x * x);
+                vec3 col = uTint * g * uGlare * (1.0 - smoothstep(0.55 * uExt, uExt, r));
+                if (uHa > 0.001) {
+                    // chromosferos kraštas: spikulių „miškas“ 0,5–2 % spindulio virš krašto
+                    vec2 cs = q / max(r, 1e-4);
+                    float sp = n2(cs * 300.0 + vec2(uTime * 0.03, 0.0)) * 0.6 + n2(cs * 750.0 - vec2(0.0, uTime * 0.05)) * 0.4;
+                    float hgt = 0.005 + 0.014 * sp;
+                    float aa = max(uPxR, 0.0005);
+                    float rim = smoothstep(-aa, aa, r - 1.0) * (1.0 - smoothstep(hgt - aa, hgt + aa, r - 1.0));
+                    col += vec3(1.0, 0.34, 0.16) * rim * 0.9 * uHa;
+                    if (uProm > 0.001) {
+                        vec2 uv = vec2(0.5) + vec2(q.x, -q.y) * uPR;
+                        float pv = texture2D(uPT, uv).r / 0.35;
+                        float off = smoothstep(1.0 + hgt * 0.5, 1.03, r) * (1.0 - smoothstep(1.45, 1.65, r));
+                        col += vec3(1.0, 0.36, 0.15) * pv * off * uProm * 0.9;
+                    }
+                }
+                gl_FragColor = vec4(col, 1.0);
             }
         """
         private const val ATMO_VS = """
@@ -10390,6 +10590,14 @@ class MainActivity : AppCompatActivity() {
             isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_true", false)
             setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_true", on).apply()
                 if (::skyDome.isInitialized) skyDome.setSunTrue(on) }
+        }, LinearLayout.LayoutParams(mw, ww))
+        left.addView(CheckBox(this).apply {
+            text = "Saulė H-alfa: chromosfera su gijomis ir protuberancais (NASA SDO 304 Å, kas 20 min.)"
+            isChecked = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_ha", false)
+            setOnCheckedChangeListener { _, on -> getSharedPreferences("sky_cal", Context.MODE_PRIVATE).edit().putBoolean("sun_ha", on).apply()
+                SunChromo.enabled = on
+                if (::skyDome.isInitialized) skyDome.setSunHa(on)
+                if (on) Thread { try { SunChromo.refresh(this@MainActivity) } catch (_: Exception) {} }.start() }
         }, LinearLayout.LayoutParams(mw, ww))
         SunImage.enabled = getSharedPreferences("sky_cal", Context.MODE_PRIVATE).getBoolean("sun_sdo", true)
         left.addView(CheckBox(this).apply {

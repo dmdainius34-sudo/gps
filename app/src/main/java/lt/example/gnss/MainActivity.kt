@@ -3686,8 +3686,10 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         val w = (p.measureText(text) + h * 0.4f).toInt().coerceAtLeast(h)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         Canvas(bmp).drawText(text, w / 2f, h * 0.75f, p)
-        uploadTexture(bmp) to (w.toFloat() / h)
+        uploadTexture(bmp).also { textTex.add(it) } to (w.toFloat() / h)
     }
+    /** Užrašų tekstūros: galaktikoje (skrydis ar atitolinus) jos nepiešiamos. */
+    private val textTex = HashSet<Int>()
 
     /** Žiedo pavadinimas – ties labiausiai į kamerą atsuktu matomu žiedo tašku. */
     private fun ringLabel(pts: List<FloatArray>, text: String, r: Float, g: Float, b: Float) {
@@ -6912,6 +6914,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Plokštuma, kuri visada atsisuka į kamerą (centras c, pusplotis w, pusaukštis h). */
     private fun billboard(c: FloatArray, eye: FloatArray, w: Float, h: Float, tex: Int, cr: Float, cg: Float, cb: Float, ca: Float) {
         if (tex == 0) return   // tekstūra dar nesukurta – nepiešiame (be juodų kvadratų)
+        if ((flight != null || galFade() > 0.05f) && tex in textTex) return   // galaktikoje – be užrašų
         if (camBasisOk) { billboardQuad(c, camRightW, camUpW, w, h, tex, cr, cg, cb, ca); return }
         var nx = eye[0] - c[0]; var ny = eye[1] - c[1]; var nz = eye[2] - c[2]
         val nl = sqrt(nx * nx + ny * ny + nz * nz).coerceAtLeast(1e-6f)
@@ -7452,7 +7455,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             textAlign = Paint.Align.CENTER
         }
         c.drawText(text, w / 2f, h * 0.75f, p)
-        return uploadTexture(bmp)
+        return uploadTexture(bmp).also { textTex.add(it) }
     }
 
     private fun uploadTexture(bmp: Bitmap): Int {

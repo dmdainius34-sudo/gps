@@ -2652,10 +2652,14 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     focusElSm = if (focusElSm.isNaN()) elT else focusElSm + 0.1 * (elT - focusElSm)
                     val elA = (focusElSm + (if (levelHorizon) focusPitchOff else 0.0)).coerceIn(-1.45, 1.45)
                     val d = DoubleArray(3) { cos(elA) * dh[it] + sin(elA) * fU[it] }
-                    val mid = DoubleArray(3) { (e[it] + tgt[it]) / 2 }
-                    val dist = (L / 2 + bodyRadius(focus)) / kotlin.math.tan(Math.toRadians(20.0)) * 1.2 * (focusZoom / (bodyRadius(focus) * 5.0)).coerceIn(0.05, 3.0)
+                    // priartinus (< 5 spindulių) žiūrima jau ne į vidurį tarp Žemės ir kūno, o į patį kūną – galima nusileisti iki paviršiaus
+                    val rB = bodyRadius(focus); val ratio = focusZoom / (rB * 5.0)
+                    val wB = ((1.0 - ratio) / 0.6).coerceIn(0.0, 1.0).let { it * it * (3 - 2 * it) }
+                    val mid = DoubleArray(3) { (e[it] + tgt[it]) / 2 * (1 - wB) + tgt[it] * wB }
+                    val distA = (L / 2 + rB) / kotlin.math.tan(Math.toRadians(20.0)) * 1.2 * ratio.coerceIn(0.05, 3.0)
+                    val dist = distA * (1 - wB) + focusZoom * wB
                     val eye = DoubleArray(3) { mid[it] - d[it] * dist }
-                    Matrix.perspectiveM(proj, 0, 40f, aspectNow, (dist * 0.01).toFloat(), (dist + L * 2 + 60).toFloat())
+                    Matrix.perspectiveM(proj, 0, 40f, aspectNow, minOf(dist * 0.01, (dist - rB * wB).coerceAtLeast(0.0) * 0.3).coerceAtLeast(0.0002).toFloat(), (dist + L * 2 + 60).toFloat())
                     val lv = FloatArray(16)
                     val ud = u[0] * d[0] + u[1] * d[1] + u[2] * d[2]
                     val upV = DoubleArray(3) { u[it] - ud * d[it] }.let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).coerceAtLeast(1e-9); DoubleArray(3) { v[it] / l } }

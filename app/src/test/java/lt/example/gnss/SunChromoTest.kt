@@ -41,6 +41,24 @@ class SunChromoTest {
     }
 
     @Test
+    fun findsCoronaDiskByProfile() {
+        // 171 Å: diskas su ryškiomis dėmėmis, virš krašto – šviesus vainikas, lėtai blėstantis; daug kilpų
+        val w = 1024; val c = w / 2.0; val r = 400.0
+        val rnd = Random(5)
+        val px = IntArray(w * w)
+        for (y in 0 until w) for (x in 0 until w) {
+            val d = hypot(x - c, y - c) / r; val a = atan2(y - c, x - c)
+            var v = if (d < 1.0) 90.0 + 60.0 * d * d * d + 40.0 * rnd.nextGaussian() else 120.0 * exp(-(d - 1.0) / 0.06)
+            v += 80.0 * exp(-((d - 1.05) / 0.08) * ((d - 1.05) / 0.08)) * (0.5 + 0.5 * kotlin.math.sin(a * 9.0))
+            px[y * w + x] = v.toInt().coerceIn(0, 255)
+        }
+        val d = SunChromo.findDiskProfile({ x, y -> px[y * w + x] }, w, w)
+        assertNotNull(d)
+        println("profilis: spindulys %.1f (tikras %.1f)".format(java.util.Locale.US, d!![2], r))
+        assertEquals(r, d[2], 8.0)
+    }
+
+    @Test
     fun noDiskInEmptyImage() {
         val w = 512
         assertNull(SunChromo.findDisk({ _, _ -> 5 }, w, w))

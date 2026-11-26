@@ -309,7 +309,36 @@ class SdoChannel(val id: String, private val wl: String, private val title: Stri
      * Disko kraštas 304 Å vaizde: virš krašto švyti protuberancai, todėl slenkstis netinka – kiekvienu iš 180 spindulių ieškoma
      * stipriausio ryškumo kritimo, imama mediana, atmetami nukrypę (protuberancai, gijos) ir pritaikomas apskritimas (mažiausi kvadratai).
      */
-    fun findDisk(lum: (Int, Int) -> Int, w: Int, h: Int): DoubleArray? {
+    fun findDisk(lum: (Int, Int) -> Int, w: Int, h: Int): DoubleArray? = findDiskRays(lum, w, h) ?: findDiskProfile(lum, w, h)
+
+    /**
+     * Atsarginis būdas (171 Å – vainikas virš krašto šviečia, kilpos išbarsto pavienius spindulius): SDO vaizduose Saulė centre,
+     * todėl imamas ryškumo vidurkis pagal atstumą nuo centro per visus 360° ir ieškoma stipriausio kritimo – krašto.
+     */
+    fun findDiskProfile(lum: (Int, Int) -> Int, w: Int, h: Int): DoubleArray? {
+        val cx = w / 2.0; val cy = h / 2.0
+        val rMin = (0.30 * minOf(w, h)).toInt(); val rMax = (0.49 * minOf(w, h)).toInt()
+        if (rMax - rMin < 20) return null
+        val prof = DoubleArray(rMax - rMin)
+        for (i in prof.indices) {
+            val rr = (rMin + i).toDouble(); var sum = 0.0; var n = 0
+            for (k in 0 until 360) {
+                val a = Math.toRadians(k.toDouble())
+                val x = (cx + rr * cos(a)).toInt(); val y = (cy + rr * sin(a)).toInt()
+                if (x in 0 until w && y in 0 until h) { sum += lum(x, y); n++ }
+            }
+            prof[i] = if (n > 0) sum / n else 0.0
+        }
+        var best = 0.0; var bi = -1
+        for (i in 3 until prof.size - 3) {
+            val drop = (prof[i - 3] + prof[i - 2] + prof[i - 1]) - (prof[i + 1] + prof[i + 2] + prof[i + 3])
+            if (drop > best) { best = drop; bi = i }
+        }
+        if (bi < 0 || best < 15.0) return null
+        return doubleArrayOf(cx, cy, (rMin + bi).toDouble())
+    }
+
+    private fun findDiskRays(lum: (Int, Int) -> Int, w: Int, h: Int): DoubleArray? {
         val cx0 = w / 2.0; val cy0 = h / 2.0
         val rMin = 0.30 * minOf(w, h); val rMax = 0.49 * minOf(w, h)
         val m = (rMax - rMin).toInt(); if (m < 20) return null

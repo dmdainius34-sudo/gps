@@ -2130,7 +2130,7 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
                     if (da > Math.PI) da -= 2 * Math.PI
                     if (da < -Math.PI) da += 2 * Math.PI
                     // pasukimas dviem pirštais – tik aiškiai sukant (> 10°), kad priartinant vaizdas nesvyruotų
-                    if (renderer.globeGrab() && !rollOn) { rollAcc += da; if (kotlin.math.abs(rollAcc) > Math.toRadians(10.0)) rollOn = true; da = 0.0 }
+                    if ((renderer.globeGrab() || renderer.focus != 0) && !rollOn) { rollAcc += da; if (kotlin.math.abs(rollAcc) > Math.toRadians(10.0)) rollOn = true; da = 0.0 }
                     renderer.rollBy(-da)      // ekrano y žemyn: pirštai pagal laikrodžio rodyklę – ir vaizdas pagal laikrodžio rodyklę
                     pinchAngle = ang
                     // dviem pirštais – vaizdo poslinkis (kai kamera prie Saulės ar Mėnulio)
@@ -2662,7 +2662,11 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     Matrix.perspectiveM(proj, 0, 40f, aspectNow, minOf(dist * 0.01, (dist - rB * wB).coerceAtLeast(0.0) * 0.3).coerceAtLeast(0.0002).toFloat(), (dist + L * 2 + 60).toFloat())
                     val lv = FloatArray(16)
                     val ud = u[0] * d[0] + u[1] * d[1] + u[2] * d[2]
-                    val upV = DoubleArray(3) { u[it] - ud * d[it] }.let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).coerceAtLeast(1e-9); DoubleArray(3) { v[it] / l } }
+                    val up0 = DoubleArray(3) { u[it] - ud * d[it] }.let { v -> val l = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).coerceAtLeast(1e-9); DoubleArray(3) { v[it] / l } }
+                    // sukimas dviem pirštais (kaip Žemės): vaizdas pasukamas aplink žiūrėjimo kryptį
+                    val rg0 = doubleArrayOf(d[1] * up0[2] - d[2] * up0[1], d[2] * up0[0] - d[0] * up0[2], d[0] * up0[1] - d[1] * up0[0])
+                    val cR = cos(focusRoll); val sR = sin(focusRoll)
+                    val upV = DoubleArray(3) { up0[it] * cR + rg0[it] * sR }
                     // dviem pirštais – poslinkis: kartu slenka kamera (ne pasaulis), todėl tolimos žvaigždės ir Grįžulo Ratai lieka vietoje
                     val rgt = doubleArrayOf(d[1] * upV[2] - d[2] * upV[1], d[2] * upV[0] - d[0] * upV[2], d[0] * upV[1] - d[1] * upV[0])
                     val pk = dist * 0.5 / focusZoom
@@ -4833,6 +4837,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     private var focusHeadSm = Double.NaN
     private var focusElSm = Double.NaN
     private var focusYawOff = 0.0
+    private var focusRoll = 0.0
     private var focusPitchOff = 0.0
 
     private fun observerView() = flight != null || (!followDevice && !freeView && focus == 0)
@@ -5003,7 +5008,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         focusFrom = if (focus != 0) focusPt.copyOf() else doubleArrayOf(0.0, 0.0, 0.0)
         focus = id; focusT0 = System.currentTimeMillis(); panX = 0f; panY = 0f
         if (id != 0) focusZoom = (bodyRadius(id) * 5).toFloat()
-        focusYawOff = 0.0; focusPitchOff = 0.0
+        focusYawOff = 0.0; focusPitchOff = 0.0; focusRoll = 0.0
     }
 
     fun panBy(dx: Float, dy: Float) { if (focus != 0) { panX += dx * focusZoom * 0.8f; panY -= dy * focusZoom * 0.8f } }
@@ -5356,7 +5361,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         if (focus != 0) {
             // prie kūno – kaip Žemė: braukiant kūnas sukasi kartu su pirštu (kamera apskrieja), arti paviršiaus – lėčiau
             val rB = bodyRadius(focus)
-            val k = 1.5 * ((focusZoom - rB) / (4 * rB)).coerceIn(0.003, 1.0)
+            val k = 2.6 * ((focusZoom - rB) / (4 * rB)).coerceIn(0.003, 1.0)
             focusYawOff += (p1[0] - p0[0]) * k
             focusPitchOff = (focusPitchOff + (p1[1] - p0[1]) * k).coerceIn(-1.4, 1.4)
             return
@@ -5414,7 +5419,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
 
     /** Ritinimas aplink ekrano (žiūros) ašį – dviejų pirštų pasukimas. */
     fun rollBy(angle: Double) {
-        if (kotlin.math.abs(angle) < 1e-6 || (focus != 0 && !levelHorizon)) return
+        if (kotlin.math.abs(angle) < 1e-6) return
+        if (focus != 0) { focusRoll += angle; return }
         userR = mul3d(axisAngleMat(doubleArrayOf(0.0, 0.0, 1.0), angle), userR)
     }
 

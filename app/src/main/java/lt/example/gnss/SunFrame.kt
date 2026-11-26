@@ -433,7 +433,7 @@ class SdoChannel(val id: String, private val wl: String, private val title: Stri
             for (sj in 0..1) for (si in 0..1) {
                 val qx = ((i + 0.25 + 0.5 * si) / RING_N * 2 - 1) * RING_EXT; val qy = ((j + 0.25 + 0.5 * sj) / RING_N * 2 - 1) * RING_EXT
                 val x = (cx + qx * rad).toInt(); val y = (cy + qy * rad).toInt()
-                if (x in 0 until w && y in 0 until h) { sum += lum(x, y); cnt++ }
+                if (x in 0 until w && y in 0 until (h * 0.93).toInt()) { sum += lum(x, y); cnt++ }     // apačioje – SDO užrašas (data, laikas)
             }
             rp[j * RING_N + i] = enc(if (cnt == 0) 0.0 else sum / cnt / level * LEVEL)
         }

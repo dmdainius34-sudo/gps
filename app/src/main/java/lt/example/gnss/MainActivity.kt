@@ -2623,7 +2623,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val a = ((System.currentTimeMillis() - focusT0) / 1000.0).coerceIn(0.0, 1.0); val sm = a * a * (3 - 2 * a)
             focusPt = DoubleArray(3) { focusFrom[it] + (tgt[it] - focusFrom[it]) * sm }
             val far = maxOf(60f, focusZoom * 4f + (sunDistScene() * 2.2).toFloat())
-            Matrix.perspectiveM(proj, 0, 40f, aspectNow, (focusZoom * 0.02f).coerceAtLeast(0.001f), far)
+            Matrix.perspectiveM(proj, 0, 40f, aspectNow, minOf(focusZoom * 0.02f, (focusZoom - bodyRadius(focus).toFloat()) * 0.3f).coerceAtLeast(0.0002f), far)
             Matrix.setIdentityM(view, 0); Matrix.translateM(view, 0, panX, panY, -focusZoom)
             Matrix.multiplyMM(pv, 0, proj, 0, view, 0)
             val tr = FloatArray(16); Matrix.setIdentityM(tr, 0); Matrix.translateM(tr, 0, -focusPt[0].toFloat(), -focusPt[1].toFloat(), -focusPt[2].toFloat())
@@ -4754,7 +4754,8 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     /** Priartinimas pagal aukštį virš paviršiaus: arčiausiai ~300 m virš žemės – arti rodomos palydovinės plytelės (GlobeTiles). */
     fun zoomBy(factor: Float) {
         if (flight != null) return                                       // skrydžio metu atstumą valdo tvarkaraštis
-        if (focus != 0) { val r = bodyRadius(focus).toFloat(); focusZoom = (focusZoom / factor).coerceIn(r * 1.3f, r * 2000f); return }
+        // artinama aukščiu virš paviršiaus – galima nusileisti iki ~0,2 % spindulio (Saulėje ~1 400 km: matosi granulės)
+        if (focus != 0) { val r = bodyRadius(focus).toFloat(); focusZoom = r + ((focusZoom - r) / factor).coerceIn(r * 0.002f, r * 2000f); return }
         // galaktikos stadijoje – žingsnis spartesnis
         val f = if (zoom > EARTH_R + SOLAR_ZOOM) Math.pow(factor.toDouble(), 2.5).toFloat() else factor
         // arčiausiai ~300 m virš žemės (laisvame gaublyje reljefas tada tikro aukščio); stebėtojo vaizde – kaip anksčiau (atstumas ≥ 10 km)

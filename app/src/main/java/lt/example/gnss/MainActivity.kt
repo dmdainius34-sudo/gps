@@ -9543,7 +9543,7 @@ class MainActivity : AppCompatActivity() {
             val lp = v?.layoutParams as? FrameLayout.LayoutParams ?: return
             lp.setMargins(lft, top, rgt, bot); v.layoutParams = lp
         }
-        if (::satCountView.isInitialized) margins(satCountView, l, t, 0, 0)
+        if (::satCountView.isInitialized) margins(satCountView.parent as? View, l, t, 0, 0)
         readyView?.let { margins(it, 0, 0, 0, m + b) }
         margins(toolCol, m, m + t, m + r, m)
     }
@@ -10457,7 +10457,24 @@ class MainActivity : AppCompatActivity() {
             setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())
             val pd = (8 * resources.displayMetrics.density).toInt(); setPadding(pd, pd, pd, pd)
         }
-        skyHolder.addView(satCountView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START))
+        // užrašai viršuje kairėje (palydovų skaičius ir kt.) paslėpti po mygtuku: v – parodyti, ^ – paslėpti
+        run {
+            val d = resources.displayMetrics.density
+            val spI = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
+            val tg = TextView(this).apply {
+                textSize = 15f; gravity = Gravity.CENTER; setTextColor(0xFFFFFFFF.toInt()); alpha = 0.8f
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0x44000000) }
+            }
+            fun show(on: Boolean) { satCountView.visibility = if (on) View.VISIBLE else View.GONE; tg.text = if (on) "^" else "v"
+                spI.edit().putBoolean("info_open", on).apply() }
+            tg.setOnClickListener { keyHaptic(tg); show(satCountView.visibility != View.VISIBLE) }
+            val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL
+                val s = (32 * d).toInt(); val m = (10 * d).toInt()
+                addView(tg, LinearLayout.LayoutParams(s, s).apply { setMargins(m, m, 0, 0) })
+                addView(satCountView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)) }
+            skyHolder.addView(box, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START))
+            show(spI.getBoolean("info_open", false))
+        }
         // patarimas, kaip pasukti ar kur patraukti planšetę, kai NLO pamėlynuoja (TurnHint)
         turnView = TurnHintView(this).also { tv ->
             tv.visibility = View.GONE

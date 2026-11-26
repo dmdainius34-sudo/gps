@@ -9514,8 +9514,9 @@ class MainActivity : AppCompatActivity() {
         val sb = android.text.SpannableStringBuilder()
         fun icon(green: Boolean) { val a = sb.length; sb.append("\uFFFC")
             sb.setSpan(android.text.style.ImageSpan(this, chipIcon(green, v.textSize), android.text.style.ImageSpan.ALIGN_BOTTOM), a, a + 1, 0) }
-        if (ChipMode.on) { icon(true); sb.append(" · ") } else sb.append("●$cons ")
-        if (k != null) { icon(false); sb.append(" %d %% · ".format(java.util.Locale.US, k.total)) }
+        if (!ChipMode.on) sb.append("●$cons ")
+        // vienas lustas: lusto režime – žaliame apskritime
+        if (k != null || ChipMode.on) { icon(ChipMode.on); sb.append(if (k != null) " %d %% · ".format(java.util.Locale.US, k.total) else " · ") }
         sb.append(Readiness.shortAcc() ?: st.text)
         v.text = sb
         val lvl = ((k?.total ?: 0) * 100).coerceIn(0, 10000)

@@ -1601,18 +1601,18 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
         override fun onLongPress(e: MotionEvent) {
             if (renderer.focus == 1 || renderer.pick(e.x, e.y) != 1) return
             performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-            val big = renderer.toggleSunBig()
-            android.widget.Toast.makeText(context, if (big) "Saulė išpūsta – matomos dėmės (ilgai palaikius – tikras dydis)" else "Saulė – tikro dydžio, kaip dienos nuotraukoje", android.widget.Toast.LENGTH_SHORT).show()
+            renderer.toggleSunBig()
         }
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+            // tiesiai į Saulę ar Mėnulį – nuskrendama, net jei šalia palydovas
+            renderer.pickBodyStrong(e.x, e.y).let { if (it > 0 && renderer.focus != it) { renderer.focusOn(it); return true } }
             // bakstelėjimas į palydovą – jo duomenų lentelė
             renderer.pickSat(e.x, e.y)?.let { showSatInfo(it); return true }
             // TKS, Parker, Solar Orbiter – kortelė su paaiškinimu
             renderer.pickLive(e.x, e.y)?.let { showLiveInfo(it); return true }
             // bakstelėjimas į Saulę ar Mėnulį – kamera nuskrenda prie jo; į Žemę – grįžta
             when (val id = renderer.pick(e.x, e.y)) {
-                1, 2 -> { renderer.focusOn(id); android.widget.Toast.makeText(context, (if (id == 1) "Saulė" else "Mėnulis") +
-                    ": sukite pirštu aplink centrą, dviem pirštais – stumdyti ir artinti; bakstelėkite Žemę – grįžti", android.widget.Toast.LENGTH_SHORT).show() }
+                1, 2 -> renderer.focusOn(id)
                 0 -> if (renderer.focus != 0) { renderer.focusOn(0); renderer.resetUser() }
             }
             return true
@@ -5130,6 +5130,22 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     /** Bakstelėjimas: ar pataikyta į Saulę / Mėnulį (1/2), Žemę (0), ar į nieką (-1). */
+    /** Bakstelėta tiesiai į Saulę ar Mėnulį (disko viduje arba iki 28 dp nuo krašto) – pirmenybė prieš palydovus. */
+    fun pickBodyStrong(x: Float, y: Float): Int {
+        val m = lastMvpI
+        val tanHalf = kotlin.math.tan(Math.toRadians(20.0)).toFloat()
+        for (id in listOf(1, 2)) {
+            val p = bodyPos(id) ?: continue
+            val v = FloatArray(4); Matrix.multiplyMV(v, 0, m, 0, floatArrayOf(p[0].toFloat(), p[1].toFloat(), p[2].toFloat(), 1f), 0)
+            if (v[3] <= 1e-6f) continue
+            val sx = (v[0] / v[3] + 1f) / 2f * lastW; val sy = (1f - v[1] / v[3]) / 2f * lastH
+            val rad = if (id == 1 && focus != 1) bodyRadius(1).toFloat() * sunScale else bodyRadius(id).toFloat()
+            val rpx = (lastH / 2f) * rad / (v[3] * tanHalf)
+            if (kotlin.math.hypot(sx - x, sy - y) < rpx + 28f * density) return id
+        }
+        return -1
+    }
+
     fun pick(x: Float, y: Float): Int {
         val m = lastMvpI
         fun scr(p: DoubleArray): FloatArray? {
@@ -5145,7 +5161,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             val rad = if (id == 1 && focus != 1) bodyRadius(1).toFloat() * sunScale else bodyRadius(id).toFloat()
             val rpx = (lastH / 2f) * rad / (s[2] * tanHalf)
             val d = kotlin.math.hypot(s[0] - x, s[1] - y)
-            if (d < maxOf(60f * density, rpx * 1.6f) && d < bestD) { best = id; bestD = d }
+            if (d < maxOf(80f * density, rpx * 1.6f) && d < bestD) { best = id; bestD = d }
         }
         return best
     }

@@ -422,6 +422,8 @@ object LiveRtk {
                     if (k < 1.0) { it.wMul *= k; mapW++ }
                 }
             }
+            // savaime besimokantis atspindžių klasifikatorius (kai išmokęs)
+            it.wMul *= CabinLearn.weight(it.sys, it.svid)
         }
         fun fit(hc: Sp3V5.HCon?) = try {
             if (r != null) {
@@ -453,6 +455,21 @@ object LiveRtk {
             sppLast?.h ?: KnownHeight.deviceMsl() ?: 0.0)
         if (obs.size < (if (hc != null) 3 else 5)) { AppDiag.noPos(obs.size); flush(SatStats.NO_FIX); sppUsedKeys = emptySet(); return }
         val f = (if (hc != null) fit(hc) else free ?: fit(null)) ?: run { AppDiag.noPos(obs.size); flush(SatStats.NO_FIX); sppUsedKeys = emptySet(); return }
+        // kabinos mokymasis be RTK: laukiamas signalas, kodo–fazės (Doplerio) paklaida, klasifikatoriaus pavyzdžiai iš žinomos vietos
+        try {
+            val rx0 = f.sol.ecef
+            val byKey = ep.meas.associateBy { it.key }
+            val ls = f.sats.mapNotNull { s0 ->
+                val m = byKey[s0.sys.code * 1000 + s0.svid] ?: return@mapNotNull null
+                val dx = s0.pos[0] - rx0[0]; val dy = s0.pos[1] - rx0[1]; val dz = s0.pos[2] - rx0[2]
+                val rho = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz); if (rho < 1e6) return@mapNotNull null
+                val lk = Sp3Solver.look(rx0, s0.pos, rho)
+                val adrOk = m.adr != null && (m.adrState and Sp3V4.ADR_VALID) != 0 && (m.adrState and (Sp3V4.ADR_RESET or Sp3V4.ADR_CYCLE_SLIP)) == 0
+                CabinLearn.Sat(m.sys, m.svid, (Math.toDegrees(lk[3]) + 360.0) % 360.0, Math.toDegrees(lk[4]), m.cn0, m.pr, if (adrOk) m.adr else null, m.prr,
+                    f.res["%c%02d".format(java.util.Locale.US, m.sys, m.svid)])
+            }
+            CabinLearn.epoch(ep.t, ls, hc != null && (cabinFollow || KnownPos.active), hd)
+        } catch (_: Exception) {}
         // „Čia žemė“: matuojama programos padėtimi be aukščio apribojimo
         if (KnownHeight.gMeasuring) (if (hc == null) f else free ?: fit(null))?.let {
             if (KnownHeight.groundSample(now, it.sol.lat, it.sol.lon, it.sol.h, false, Steps.walking())) groundDone = true

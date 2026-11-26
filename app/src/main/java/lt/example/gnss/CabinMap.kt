@@ -18,8 +18,18 @@ import kotlin.math.sin
  * Vaizdui – clsSmooth: langelis be pakankamų duomenų klasifikuojamas pagal 3×3 kaimynų sumą (tarpai užsipildo, sienos ištisinės).
  */
 class SkyMap(val file: String) {
-    private class Cell { var n = 0; var cn0 = 0.0; var nRes = 0; var nlos = 0; var absRes = 0.0; var slips = 0; var nPh = 0 }
-    private val cells = Array(CabinMap.AZ * CabinMap.EL) { Cell() }
+    private class Cell {
+        var n = 0; var cn0 = 0.0; var nRes = 0; var nlos = 0; var absRes = 0.0; var slips = 0; var nPh = 0
+        /** Signalo trūkumas iki laukiamo (dB): suma ir kiekis. */
+        var sDef = 0.0; var nDef = 0
+        /** Kodo–fazės (Doplerio) paklaida: |suma|, kiekis, kiek didelių (> 8 m). */
+        var sMp = 0.0; var nMp = 0; var nMpBig = 0
+        /** Senų duomenų užmiršimas: daug sukaupus, visos sumos perpus – nauji duomenys sveria daugiau. */
+        fun halve() { n /= 2; cn0 /= 2; nRes /= 2; nlos /= 2; absRes /= 2; slips /= 2; nPh /= 2; sDef /= 2; nDef /= 2; sMp /= 2; nMp /= 2; nMpBig /= 2 }
+    }
+    private var cells = Array(CabinMap.AZ * CabinMap.EL) { Cell() }
+    /** Daugiausia mėginių langelyje – toliau senesni perpus nusveriami (žemėlapis prisitaiko prie pokyčių). */
+    private val MAXN = 3000
     var samples = 0L
         private set
 
@@ -62,6 +72,7 @@ class SkyMap(val file: String) {
                     c.n += (v[1].toInt() + k - 1) / k; c.cn0 += v[2].toDouble() / k
                     if (v2) { c.nRes += (v[3].toInt() + k - 1) / k; c.nlos += (v[4].toInt() + k - 1) / k; c.absRes += v[5].toDouble() / k }
                     c.slips += v[6].toInt() / k; c.nPh += v[7].toInt() / k
+                    if (v.size >= 13) { c.sDef += v[8].toDouble() / k; c.nDef += v[9].toInt() / k; c.sMp += v[10].toDouble() / k; c.nMp += v[11].toInt() / k; c.nMpBig += v[12].toInt() / k }
                     samples += c.n
                 }
             }
@@ -71,14 +82,15 @@ class SkyMap(val file: String) {
     @Synchronized fun save(d: File) {
         try {
             File(d, file).bufferedWriter().use { w ->
-                w.write("langelis,n,cn0_suma,n_liekanu,n_atspindziu,abs_liekanu_suma,fazes_truikiai,n_fazes,v2,g5\n")
-                for ((i, c) in cells.withIndex()) if (c.n > 0 || c.nRes > 0)
-                    w.write(String.format(Locale.US, "%d,%d,%.1f,%d,%d,%.1f,%d,%d\n", i, c.n, c.cn0, c.nRes, c.nlos, c.absRes, c.slips, c.nPh))
+                w.write("langelis,n,cn0_suma,n_liekanu,n_atspindziu,abs_liekanu_suma,fazes_truikiai,n_fazes,trukumo_suma,n_trukumo,mp_suma,n_mp,n_mp_dideliu,v2,g5\n")
+                for ((i, c) in cells.withIndex()) if (c.n > 0 || c.nRes > 0 || c.nDef > 0 || c.nMp > 0)
+                    w.write(String.format(Locale.US, "%d,%d,%.1f,%d,%d,%.1f,%d,%d,%.1f,%d,%.1f,%d,%d\n", i, c.n, c.cn0, c.nRes, c.nlos, c.absRes, c.slips, c.nPh,
+                        c.sDef, c.nDef, c.sMp, c.nMp, c.nMpBig))
             }
         } catch (_: Exception) {}
     }
 
-    @Synchronized fun clear() { cells.forEach { it.n = 0; it.cn0 = 0.0; it.nRes = 0; it.nlos = 0; it.absRes = 0.0; it.slips = 0; it.nPh = 0 }; samples = 0 }
+    @Synchronized fun clear() { for (i in cells.indices) cells[i] = Cell(); samples = 0 }
 
     /** Vidutinis C/N0 langelyje (jei mažai mėginių – 3×3 kaimynų vidurkis) arba null. */
     @Synchronized fun meanCn0(az: Double, el: Double, minN: Int = 8): Double? {
@@ -92,26 +104,47 @@ class SkyMap(val file: String) {
         return if (n >= minN) sum / n else null
     }
 
-    @Synchronized fun addCn0(az: Double, el: Double, cn0: Double) { val i = idx(az, el) ?: return; cells[i].n++; cells[i].cn0 += cn0; samples++ }
+    @Synchronized fun addCn0(az: Double, el: Double, cn0: Double) { val i = idx(az, el) ?: return; if (cells[i].n >= MAXN) cells[i].halve(); cells[i].n++; cells[i].cn0 += cn0; samples++ }
+
+    /** Signalo trūkumas iki laukiamo (dB) ir kodo–fazės paklaida (m, NaN – nėra). */
+    @Synchronized fun addQuality(az: Double, el: Double, def: Double, mp: Double) {
+        val i = idx(az, el) ?: return; val c = cells[i]
+        if (c.nDef >= MAXN || c.nMp >= MAXN) c.halve()
+        c.sDef += def; c.nDef++
+        if (!mp.isNaN()) { c.sMp += abs(mp); c.nMp++; if (abs(mp) > 8.0) c.nMpBig++ }
+    }
+
+    /** Kiek langelio išvada patikima (0…1): kuo daugiau įrodymų, tuo arčiau 1. */
+    @Synchronized fun confidence(az: Double, el: Double): Double {
+        val c = cells[idx(az, el) ?: return 0.0]
+        val ev = c.nRes * 2.0 + c.nMp + c.nDef * 0.5 + c.n * 0.25
+        return 1.0 - kotlin.math.exp(-ev / 40.0)
+    }
 
     @Synchronized fun addRtk(az: Double, el: Double, res: Double, slip: Boolean) {
         val i = idx(az, el) ?: return
+        if (cells[i].nRes >= MAXN || cells[i].nPh >= MAXN) cells[i].halve()
         if (!res.isNaN()) { cells[i].nRes++; cells[i].absRes += abs(res); if (abs(res) > 10.0) cells[i].nlos++ }
         cells[i].nPh++; if (slip) cells[i].slips++
     }
 
-    private fun classify(n: Int, cn0: Double, nRes: Int, nlos: Int, absRes: Double): Int {
+    private fun classify(n: Int, cn0: Double, nRes: Int, nlos: Int, absRes: Double, sDef: Double = 0.0, nDef: Int = 0,
+                         sMp: Double = 0.0, nMp: Int = 0, nMpBig: Int = 0): Int {
         // atspindžiai: dauguma liekanų > 10 m ir vidutinė > 8 m (kabinoje vien kodo triukšmas siekia ~5–10 m)
         if (nRes >= 12 && nlos.toDouble() / nRes > 0.5 && absRes / nRes > 8.0) return CabinMap.REFLECT
-        if (n >= 20 && cn0 / n < 24.0) return CabinMap.WEAK
-        if (n >= 20 || nRes >= 12) return CabinMap.CLEAN
+        // be RTK: kodo–fazės paklaida dažnai didelė – atspindžiai
+        if (nMp >= 30 && sMp / nMp > 6.0 && nMpBig.toDouble() / nMp > 0.3) return CabinMap.REFLECT
+        // užstota: signalas gerokai silpnesnis už laukiamą tam aukščiui (be modelio – grubus slenkstis)
+        if (nDef >= 20) { if (sDef / nDef > 7.0) return CabinMap.WEAK }
+        else if (n >= 20 && cn0 / n < 24.0) return CabinMap.WEAK
+        if (n >= 20 || nRes >= 12 || nMp >= 30 || nDef >= 20) return CabinMap.CLEAN
         return CabinMap.UNKNOWN
     }
 
     /** Langelio klasė tik iš jo paties duomenų (filtrams). */
     @Synchronized fun cls(az: Double, el: Double): Int {
         val c = cells[idx(az, el) ?: return CabinMap.UNKNOWN]
-        return classify(c.n, c.cn0, c.nRes, c.nlos, c.absRes)
+        return classify(c.n, c.cn0, c.nRes, c.nlos, c.absRes, c.sDef, c.nDef, c.sMp, c.nMp, c.nMpBig)
     }
 
     /** Vaizdui: savas langelis, o jei duomenų mažai – 3×3 kaimynų suma. */
@@ -119,13 +152,13 @@ class SkyMap(val file: String) {
         if (el < 0 || el > 90) return CabinMap.UNKNOWN
         val own = cls(az, el); if (own != CabinMap.UNKNOWN) return own
         val a0 = ia(az); val e0 = ie(el)
-        var n = 0; var cn = 0.0; var nr = 0; var nl = 0; var ar = 0.0
+        var n = 0; var cn = 0.0; var nr = 0; var nl = 0; var ar = 0.0; var sd = 0.0; var nd = 0; var sm = 0.0; var nm = 0; var nb = 0
         for (de in -1..1) for (da in -1..1) {
             val e = e0 + de; if (e < 0 || e >= CabinMap.EL) continue
             val c = cells[e * CabinMap.AZ + (a0 + da + CabinMap.AZ) % CabinMap.AZ]
-            n += c.n; cn += c.cn0; nr += c.nRes; nl += c.nlos; ar += c.absRes
+            n += c.n; cn += c.cn0; nr += c.nRes; nl += c.nlos; ar += c.absRes; sd += c.sDef; nd += c.nDef; sm += c.sMp; nm += c.nMp; nb += c.nMpBig
         }
-        return classify(n, cn, nr, nl, ar)
+        return classify(n, cn, nr, nl, ar, sd, nd, sm, nm, nb)
     }
 
     fun counts(): IntArray {
@@ -166,17 +199,17 @@ object CabinMap {
         dir = d
         val p = ctx.getSharedPreferences("cabin", Context.MODE_PRIVATE)
         learn = p.getBoolean("learn", true); useInFilters = p.getBoolean("use", true); useInSpp = p.getBoolean("use_spp", true)
-        cabin.load(d); world.load(d); Radar.load(d)
+        cabin.load(d); world.load(d); Radar.load(d); NlosModel.load(d)
     }
 
     @Synchronized fun save(force: Boolean = false) {
         val d = dir ?: return
         val now = System.currentTimeMillis(); if (!force && now - savedAt < 60_000) return
         savedAt = now
-        cabin.save(d); world.save(d); Radar.save(d)
+        cabin.save(d); world.save(d); Radar.save(d); NlosModel.save(d)
     }
 
-    @Synchronized fun clear() { cabin.clear(); world.clear(); Radar.clear(); save(true) }
+    @Synchronized fun clear() { cabin.clear(); world.clear(); Radar.clear(); NlosModel.reset(); CnoModel.reset(); MpTrack.reset(); save(true) }
 
     /** Signalo stiprumas (kas sekundę). Aplinkos žemėlapiui kryptis nereikalinga; kabinos – reikia prietaiso krypties. */
     fun learnStatus(heading: Double?, sats: List<Sat>) {
@@ -201,6 +234,13 @@ object CabinMap {
         }
     }
 
+    /** Signalo trūkumas iki laukiamo ir kodo–fazės paklaida (kas sekundę, be RTK): į aplinkos ir (jei kryptis patikima) kabinos žemėlapį. */
+    fun learnQuality(heading: Double?, az: Double, el: Double, def: Double, mp: Double) {
+        if (!learn || el < 5.0) return
+        world.addQuality(az, el, def, mp)
+        if (heading != null) cabin.addQuality(az - heading, el, def, mp)
+    }
+
     /** Kabinos žemėlapio klasė (santykinis azimutas). */
     fun cls(relAz: Double, el: Double): Int = cabin.cls(relAz, el)
 
@@ -215,8 +255,12 @@ object CabinMap {
     @Volatile var useInSpp = true
     /** Svorio daugiklis palydovui (az, el – nuo šiaurės, °): kabinos žemėlapis (jei kryptis patikima), kitaip aplinkos. */
     fun sppWeight(az: Double, el: Double, heading: Double?): Double {
-        val c = if (heading != null) cabin.cls(az - heading, el).let { if (it == UNKNOWN) world.cls(az, el) else it } else world.cls(az, el)
-        return when (c) { REFLECT -> 0.15; WEAK -> 0.4; else -> 1.0 }
+        val useCab = heading != null && cabin.cls(az - heading, el) != UNKNOWN
+        val c = if (useCab) cabin.cls(az - heading!!, el) else world.cls(az, el)
+        val k = when (c) { REFLECT -> 0.15; WEAK -> 0.4; else -> 1.0 }
+        // kuo mažiau įrodymų langelyje, tuo švelniau sumažinamas svoris
+        val conf = if (useCab) cabin.confidence(az - heading!!, el) else world.confidence(az, el)
+        return 1.0 - (1.0 - k) * conf
     }
 
     fun text(): String {
@@ -225,7 +269,9 @@ object CabinMap {
             "  Sektoriai (Š – švaru, A – atspindžiai, U – užstota, ? – nežinoma): ${cabin.sectors()}\n" +
             "Aplinkos žemėlapis (0° – šiaurė): mėginių ${world.samples}; švarių ${w[CLEAN]}, atspindžių ${w[REFLECT]}, užstotų ${w[WEAK]}, nežinomų ${w[UNKNOWN]}\n" +
             "  Sektoriai: ${world.sectors()}\n" +
-            "Mokymasis ${if (learn) "įjungtas" else "išjungtas"}, filtruose ${if (useInFilters) "naudojama" else "nenaudojama"}\n" + Radar.text()
+            "Mokymasis ${if (learn) "įjungtas" else "išjungtas"}, filtruose ${if (useInFilters) "naudojama" else "nenaudojama"}\n" +
+            "Mokymasis be RTK: kodo–fazės (Doplerio) paklaida ir signalo trūkumas iki laukiamo; klasifikatoriaus pavyzdžių iš žinomos vietos ${CabinLearn.labeled}\n" +
+            NlosModel.text() + "\n" + Radar.text()
     }
 }
 

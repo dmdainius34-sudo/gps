@@ -10853,8 +10853,7 @@ class MainActivity : AppCompatActivity() {
             val rates = doubleArrayOf(2_880.0, 28_800.0, 288_000.0); val names = arrayOf("\u00D71", "\u00D710", "\u00D7100")
             var ri = 0; skyDome.simRate = rates[0]
             val speedB = small(names[0], 12f).apply { alpha = 0.8f
-                setOnClickListener { keyHaptic(this); ri = (ri + 1) % rates.size; skyDome.simRate = rates[ri]; text = names[ri]
-                    Toast.makeText(this@MainActivity, when (ri) { 0 -> "1 para per 30 s"; 1 -> "1 para per 3 s"; else -> "1 para per 0,3 s" }, Toast.LENGTH_SHORT).show() } }
+                setOnClickListener { keyHaptic(this); ri = (ri + 1) % rates.size; skyDome.simRate = rates[ri]; text = names[ri] } }
             val box = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 addView(playB, LinearLayout.LayoutParams(bSize, bSize)); addView(speedB, LinearLayout.LayoutParams(bSize, bSize)); addView(lbl) }
             lbl.setPadding((6 * dp).toInt(), 0, 0, 0)
@@ -10862,7 +10861,7 @@ class MainActivity : AppCompatActivity() {
                 val off = skyDome.simOffsetMs
                 if (off != 0L) {
                     val d = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(java.util.Date(System.currentTimeMillis() + off))
-                    lbl.text = "$d · +" + "%.0f".format(Locale.US, off / 86_400_000.0) + " d. · palydovai nerodomi"; lbl.visibility = View.VISIBLE
+                    lbl.text = "$d"; lbl.visibility = View.GONE   // laiko eigos užrašų nerodoma
                 } else lbl.visibility = View.GONE
                 playB.text = if (skyDome.simRun) "\u23F8" else "\u25B6"
                 box.postDelayed(this, 200L)
@@ -10873,8 +10872,7 @@ class MainActivity : AppCompatActivity() {
                 else { if (skyDome.simOffsetMs >= 182L * 86_400_000L) skyDome.simOffsetMs = 0L; skyDome.simRun = true }
             }
             // ilgai palaikius – režimas: su orbita (pradinis) ↔ be orbitos; į dabartį grąžina ⌂
-            playB.setOnLongClickListener { keyHaptic(playB); skyDome.simHideOrbit = !skyDome.simHideOrbit
-                Toast.makeText(this, if (skyDome.simHideOrbit) "Režimas: be orbitos" else "Režimas: su orbita", Toast.LENGTH_SHORT).show(); true }
+            playB.setOnLongClickListener { keyHaptic(playB); skyDome.simHideOrbit = !skyDome.simHideOrbit; true }
             box.post(tick)
             // ▶ laiko eiga – kairėje po 🚀 (ne apačioje – ten lusto duomenys)
             leftColRef?.addView(box, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, bSize).apply { topMargin = (6 * dp).toInt() })

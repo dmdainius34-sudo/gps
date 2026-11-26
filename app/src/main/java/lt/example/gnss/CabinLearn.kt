@@ -70,7 +70,8 @@ object MpTrack {
             if (s != null && dt in 0.2..2.0) inc[m.key] = (m.pr - s.lastPr) - (c - s.lastCar)
         }
         // 2) bendra dalis (imtuvo laikrodžio dreifas) – mediana
-        val med = if (inc.size >= 4) inc.values.sorted()[inc.size / 2] else 0.0
+        // (kodas ir nešlis turi tą patį imtuvo laikrodį – atimama tik aiškus laikrodžio šuolis, kitaip mediana triukšmą kauptų)
+        val med = (if (inc.size >= 4) inc.values.sorted()[inc.size / 2] else 0.0).let { if (abs(it) > 5.0) it else 0.0 }
         val out = HashMap<Int, Double>()
         for (m in ins) {
             val c = car[m.key] ?: continue

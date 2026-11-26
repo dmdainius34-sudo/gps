@@ -9048,11 +9048,14 @@ class DraggablePanel(
 
 
     var onPin: (() -> Unit)? = null
+    /** Ilgai palaikius burbulą – NLO paslepiamas į mygtuką po 🚀. */
+    var onHide: (() -> Unit)? = null
     private val bubbleAction: () -> Unit = { expandBubble() }
     private val bubbleGd = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean { keyHaptic(bubble); return true }
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean { bubbleAction?.invoke(); return true }
         override fun onDoubleTap(e: MotionEvent): Boolean { onPin?.invoke(); return true }
+        override fun onLongPress(e: MotionEvent) { onHide?.invoke() }
     })
 
     /** Atidaryti NLO pranešimų langą (pvz. bakstelėjus prisegtą burbulą). */
@@ -10741,22 +10744,8 @@ class MainActivity : AppCompatActivity() {
                 col.addView(btn, LinearLayout.LayoutParams(bs, bs).apply { setMargins(0, gp, 0, gp) })
             }
         }
-        // Skrydžio paaiškinimai: permatoma kortelė ekrano apačioje, rodoma 10 s
-        run {
-            val tv = TextView(this).apply {
-                textSize = 14f; setTextColor(0xFFFFFFFF.toInt()); gravity = Gravity.CENTER; visibility = View.GONE
-                val pd = (10 * dp).toInt(); setPadding(pd + pd / 2, pd, pd + pd / 2, pd)
-                background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 14 * dp; setColor(0x44000000) }
-                setShadowLayer(3f, 0f, 0f, 0xFF000000.toInt())
-            }
-            val hide = Runnable { tv.animate().alpha(0f).setDuration(600).withEndAction { tv.visibility = View.GONE }.start() }
-            skyDome.onFlightText = { m ->
-                tv.text = m; tv.visibility = View.VISIBLE; tv.alpha = 0f; tv.animate().alpha(1f).setDuration(300).start()
-                tv.removeCallbacks(hide); tv.postDelayed(hide, 10_000L)
-            }
-            skyHolder.addView(tv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = (70 * dp).toInt(); val m = (24 * dp).toInt(); leftMargin = m; rightMargin = m })
-        }
+        // skrydžio paaiškinimų nerodoma (be žodžių)
+        skyDome.onFlightText = { _ -> }
         // Kairėje: 🚀 skrydis
         run {
             val lc = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL
@@ -11037,6 +11026,24 @@ class MainActivity : AppCompatActivity() {
         params.gravity = Gravity.TOP or Gravity.START 
         
         container.addView(panel, params)
+        // ilgai palaikius NLO – jis sumažėja į mygtuką kairėje po 🚀; bakstelėjus mygtuką – vėl NLO
+        run {
+            val d = resources.displayMetrics.density; val bs = (32 * d).toInt()
+            val nloBtn = TextView(this).apply {
+                text = "\uD83D\uDEF8"; textSize = 14f; gravity = Gravity.CENTER; setTextColor(0xFFFFFFFF.toInt()); alpha = 0.85f
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0x44000000) }
+            }
+            val pr = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
+            fun hideNlo(h: Boolean) {
+                panel.visibility = if (h) View.GONE else View.VISIBLE
+                nloBtn.visibility = if (h) View.VISIBLE else View.GONE
+                pr.edit().putBoolean("nlo_hidden", h).apply()
+            }
+            leftColRef?.let { lc -> lc.addView(nloBtn, minOf(1, lc.childCount), LinearLayout.LayoutParams(bs, bs).apply { topMargin = (6 * d).toInt() }) }
+            panel.onHide = { keyHaptic(panel); hideNlo(true) }
+            nloBtn.setOnClickListener { keyHaptic(nloBtn); hideNlo(false) }
+            hideNlo(pr.getBoolean("nlo_hidden", false))
+        }
         panel.onPin = { pinBubble() }
         panel.onSendPk = { q, _, _ -> openPkChat(q) }
         panel.onEndRecord = { toggleRecording() }

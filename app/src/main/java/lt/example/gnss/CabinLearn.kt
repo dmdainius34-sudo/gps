@@ -136,7 +136,11 @@ object NlosModel {
     @Synchronized fun load(d: File) {
         try {
             val f = File(d, FILE); if (!f.exists()) return
-            for (l in f.readLines()) {
+            val ls = f.readLines()
+            // jau išmokta daugiau nei faile (įkelta pavėluotai) – failas neperrašo
+            val fileN = ls.firstOrNull { it.startsWith("n,") }?.split(',')?.getOrNull(1)?.toIntOrNull() ?: 0
+            if (samples >= fileN && samples > 0) return
+            for (l in ls) {
                 val v = l.split(',')
                 if (v[0] == "w" && v.size == NF + 1) for (i in 0 until NF) w[i] = v[i + 1].toDouble()
                 if (v[0] == "n" && v.size >= 3) { samples = v[1].toInt(); pos = v[2].toInt() }

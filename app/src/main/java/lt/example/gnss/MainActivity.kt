@@ -2645,12 +2645,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                     val tgtH = kotlin.math.atan2(he, hn)
                     focusHeadSm = if (focusHeadSm.isNaN()) tgtH else { var dh = tgtH - focusHeadSm
                         while (dh > Math.PI) dh -= 2 * Math.PI; while (dh < -Math.PI) dh += 2 * Math.PI; focusHeadSm + 0.1 * dh }
-                    val hY = focusHeadSm + (if (levelHorizon) focusYawOff else 0.0)
+                    val hY = focusHeadSm + focusYawOff
                     val dh = DoubleArray(3) { sin(hY) * fE[it] + cos(hY) * fN[it] }
                     // atkabintas horizontas (mygtukas nešviečia): ieškoti ir aukštyn–žemyn, pakreipiant planšetės nugarėlę
                     val elT = if (levelHorizon) Math.toRadians(Math.toDegrees(kotlin.math.asin((-r[8]).toDouble().coerceIn(-1.0, 1.0))).coerceIn(-80.0, 80.0)) else 0.0
                     focusElSm = if (focusElSm.isNaN()) elT else focusElSm + 0.1 * (elT - focusElSm)
-                    val elA = (focusElSm + (if (levelHorizon) focusPitchOff else 0.0)).coerceIn(-1.45, 1.45)
+                    val elA = (focusElSm + focusPitchOff).coerceIn(-1.45, 1.45)
                     val d = DoubleArray(3) { cos(elA) * dh[it] + sin(elA) * fU[it] }
                     // priartinus (< 5 spindulių) žiūrima jau ne į vidurį tarp Žemės ir kūno, o į patį kūną – galima nusileisti iki paviršiaus
                     val rB = bodyRadius(focus); val ratio = focusZoom / (rB * 5.0)
@@ -5353,11 +5353,12 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
     }
 
     fun arcRotate(p0: DoubleArray, p1: DoubleArray) {
-        if (focus != 0 && !levelHorizon) return              // prie kūno su užrakintu horizontu kampo vienu pirštu keisti negalima (tik planšete)
         if (focus != 0) {
-            // atkabintas horizontas prie kūno: pirštu – žvilgsnis į šonus ir aukštyn/žemyn, horizontas lieka gulsčias
-            focusYawOff -= (p1[0] - p0[0]) * 1.5
-            focusPitchOff = (focusPitchOff + (p1[1] - p0[1]) * 1.5).coerceIn(-1.4, 1.4)
+            // prie kūno – kaip Žemė: braukiant kūnas sukasi kartu su pirštu (kamera apskrieja), arti paviršiaus – lėčiau
+            val rB = bodyRadius(focus)
+            val k = 1.5 * ((focusZoom - rB) / (4 * rB)).coerceIn(0.003, 1.0)
+            focusYawOff += (p1[0] - p0[0]) * k
+            focusPitchOff = (focusPitchOff + (p1[1] - p0[1]) * k).coerceIn(-1.4, 1.4)
             return
         }
         val ax = p0[1] * p1[2] - p0[2] * p1[1]

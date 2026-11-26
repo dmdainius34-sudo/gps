@@ -230,14 +230,16 @@ object SunImage {
  * saugomas atskirai – jis rodomas žiūrint į Saulę iš Žemės pusės.
  */
 class SdoChannel(val id: String, private val wl: String, private val title: String) {
-    private val src = "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_2048_$wl.jpg"
+    /** Didžiausia raiška pagal įrenginio grafiką: 4096 px nuotrauka ir 4096×2048 žemėlapis, jei leidžia tekstūros dydis. */
+    private val big get() = GlCaps.maxTex >= 8192
+    private val src get() = "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_${if (big) 4096 else 2048}_$wl.jpg"
     private val mapFile = "sun_$id.png"
     private val covFile = "sun_${id}_cov.txt"
     private val ringFile = "sun_${id}_ring.png"
-    val MW = 2048
-    val MH = 1024
+    val MW get() = if (big) 4096 else 2048
+    val MH get() = MW / 2
     /** Krašto paveikslėlis: Saulė centre, kvadratas ±RING_EXT spindulių (šiaurė viršuje, vakarai dešinėje). */
-    val RING_N = 768
+    val RING_N get() = if (big) 1536 else 768
     val RING_EXT = 1.7
     /** Ryškumo mastelis: disko mediana → LEVEL (žemėlapyje ir krašto paveikslėlyje). */
     val LEVEL = 0.35
@@ -276,6 +278,7 @@ class SdoChannel(val id: String, private val wl: String, private val title: Stri
         busy = true; at = now
         Thread {
             try {
+                if (GlCaps.maxTex == 0) { status = "$title: laukiama grafikos"; at = 0L; return@Thread }
                 status = "$title: siunčiama…"
                 val c = (URL(src).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 15_000; readTimeout = 90_000; instanceFollowRedirects = true
@@ -401,8 +404,10 @@ class SdoChannel(val id: String, private val wl: String, private val title: Stri
         val zs = az[0] * s[0] + az[1] * s[1] + az[2] * s[2]
         val up = DoubleArray(3) { az[it] - zs * s[it] }.let { u -> val l = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]); DoubleArray(3) { u[it] / l } }
         val right = SunFrame.cross(v, up)
+        val MW = this.MW; val MH = this.MH; val RING_N = this.RING_N
         val out = IntArray(MW * MH)
         if (prev != null && prev.width == MW && prev.height == MH) prev.getPixels(out, 0, MW, 0, 0, MW, MH)
+        else if (prev != null) Bitmap.createScaledBitmap(prev, MW, MH, true).getPixels(out, 0, MW, 0, 0, MW, MH)
         for (r in 0 until MH) {
             val lat = Math.toRadians(90.0 - 180.0 * (r + 0.5) / MH); val cl = cos(lat); val sl = sin(lat)
             for (cc in 0 until MW) {

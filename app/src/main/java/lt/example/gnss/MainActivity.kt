@@ -6214,8 +6214,6 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
                 }
                 if (bmp != null) {
                     earthTex = uploadTexture(bmp)
-                    val info = "Žemės tekstūra įkelta: ${bmp.width}x${bmp.height}"
-                    main.post { Toast.makeText(appCtx, info, Toast.LENGTH_LONG).show() }
                 } else {
                     main.post { Toast.makeText(appCtx, "earth.jpg neskaitomas (ne JPG/PNG?)", Toast.LENGTH_LONG).show() }
                 }

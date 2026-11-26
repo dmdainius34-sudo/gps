@@ -9469,6 +9469,28 @@ class MainActivity : AppCompatActivity() {
     private var cabinView: CabinMapView? = null
     private var readyLast: Boolean? = null
 
+    private val chipIcons = HashMap<String, android.graphics.Bitmap>()
+    /** Lusto paveiksliukas (kvadratas su kojelėmis); green – žaliame apskritime (tik lusto režimas). */
+    private fun chipIcon(green: Boolean, textPx: Float): android.graphics.Bitmap = chipIcons.getOrPut("$green${textPx.toInt()}") {
+        val n = (textPx * (if (green) 1.35f else 1.1f)).toInt().coerceAtLeast(12)
+        val b = android.graphics.Bitmap.createBitmap(n, n, android.graphics.Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(b); val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        val f = n.toFloat()
+        if (green) { p.color = 0xFF16A34A.toInt(); c.drawCircle(f / 2, f / 2, f / 2, p) }
+        val body = if (green) f * 0.42f else f * 0.56f; val x0 = (f - body) / 2; val y0 = (f - body) / 2
+        val pin = body * 0.16f; val pinL = body * (if (green) 0.22f else 0.24f)
+        p.color = 0xFFFFFFFF.toInt()
+        for (i in 0 until 3) {
+            val o = x0 + body * (0.2f + 0.3f * i) - pin / 2
+            c.drawRect(o, y0 - pinL, o + pin, y0, p); c.drawRect(o, y0 + body, o + pin, y0 + body + pinL, p)
+            c.drawRect(x0 - pinL, o, x0, o + pin, p); c.drawRect(x0 + body, o, x0 + body + pinL, o + pin, p)
+        }
+        p.color = 0xFF1F2937.toInt(); c.drawRoundRect(x0, y0, x0 + body, y0 + body, body * 0.15f, body * 0.15f, p)
+        p.color = 0xFFFFFFFF.toInt(); p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = f * 0.05f
+        c.drawRoundRect(x0, y0, x0 + body, y0 + body, body * 0.15f, body * 0.15f, p)
+        b
+    }
+
     /** Mėlyna – šyla, salotinė neoninė – paruošta matavimui. */
     private fun updateReady() {
         val v = readyView ?: return
@@ -9488,7 +9510,14 @@ class MainActivity : AppCompatActivity() {
             // kabinos sekimas su kranu: ↻ žymeklis sukasi kartu su kranu, ⊘ – nesisuka (priežastis ataskaitoje)
             if (KnownPos.valid && Crane.geoValid) append(if (LiveRtk.cabinFollow) " ↻" else " ⊘")
         }
-        v.text = (if (ChipMode.on) "◆ TIK LUSTAS · " else "●$cons ") + (if (k != null) "Lustas %d %% · ".format(java.util.Locale.US, k.total) else "") + (Readiness.shortAcc() ?: st.text)
+        // lustas – paveiksliukas; tik lusto režime – lustas žaliame apskritime
+        val sb = android.text.SpannableStringBuilder()
+        fun icon(green: Boolean) { val a = sb.length; sb.append("\uFFFC")
+            sb.setSpan(android.text.style.ImageSpan(this, chipIcon(green, v.textSize), android.text.style.ImageSpan.ALIGN_BOTTOM), a, a + 1, 0) }
+        if (ChipMode.on) { icon(true); sb.append(" · ") } else sb.append("●$cons ")
+        if (k != null) { icon(false); sb.append(" %d %% · ".format(java.util.Locale.US, k.total)) }
+        sb.append(Readiness.shortAcc() ?: st.text)
+        v.text = sb
         val lvl = ((k?.total ?: 0) * 100).coerceIn(0, 10000)
         if (readyLast == st.ready) (v.background as? android.graphics.drawable.LayerDrawable)?.getDrawable(1)?.level = if (st.ready) 10000 else lvl
         if (readyLast != st.ready) {
@@ -10494,8 +10523,6 @@ class MainActivity : AppCompatActivity() {
                 try { (getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.let { v ->
                     if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createWaveform(if (ChipMode.on) longArrayOf(0, 80, 60, 80) else longArrayOf(0, 150), -1))
                     else @Suppress("DEPRECATION") v.vibrate(150) } } catch (_: Exception) {}
-                Toast.makeText(this@MainActivity, if (ChipMode.on) "LUSTO REŽIMAS: rodoma tik lusto vieta (kaip AlpineQuest), Vault pataisymai ir perdavimas išjungti. Ilgai palaikius – grįžti"
-                    else "Vault režimas: rodoma Vault apskaičiuota vieta", Toast.LENGTH_LONG).show()
                 readyLast = null; updateReady(); true
             }
             val pd = (10 * resources.displayMetrics.density).toInt(); setPadding(pd, pd / 2, pd, pd / 2)

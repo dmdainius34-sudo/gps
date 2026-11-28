@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - shot
+          - globe
           - video
 
 jobs:

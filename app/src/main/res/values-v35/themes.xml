@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.GnssApp" parent="Theme.AppCompat.Light.DarkActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <!-- Android 15+: nuo kraštų iki kraštų (edge-to-edge) neįjungiamas – mygtukų stulpeliai lieka nepalindę po būsenos ir naršymo juostomis -->
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+        <item name="android:windowSplashScreenBackground">@android:color/black</item>
+        <!-- paleidimo animacija: punktyrinis žvilgsnis iš krano kabinos bėga į Šiaurinę žvaigždę -->
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_anim</item>
+        <item name="android:windowSplashScreenAnimationDuration">1100</item>
+    </style>
+</resources>

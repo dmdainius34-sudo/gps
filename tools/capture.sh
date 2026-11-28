@@ -52,6 +52,26 @@ case "$MODE" in
     ffmpeg -y -loglevel error -i "$OUT/raw.png" -vf "scale=540:-1" "$OUT/shot.png"
     rm -f "$OUT/raw.png"
     ;;
+  globe)
+    # Kaip shot, bet atidaro 3D gaublį (dvigubas bakstelėjimas ant 2D dangaus vaizdo)
+    T0=$(date +%s)
+    adb shell am start -W -n "$PKG/.MainActivity"
+    wait_geoid "$T0"
+    for i in 1 2 3; do adb shell input swipe 540 1900 540 500 250; sleep 1; done
+    adb shell uiautomator dump /sdcard/ui2.xml >/dev/null 2>&1 || true
+    adb exec-out cat /sdcard/ui2.xml > "$OUT/ui2.xml" 2>/dev/null || true
+    # Didžiausias android.view.View mazgas – 2D dangaus vaizdas
+    XY=$(grep -o 'class="android.view.View"[^>]*bounds="\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]"' "$OUT/ui2.xml" 2>/dev/null \
+      | sed -E 's/.*bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"/\1 \2 \3 \4/' \
+      | awk '{a=($3-$1)*($4-$2); if (a>m) {m=a; x=int(($1+$3)/2); y=int(($2+$4)/2)}} END {if (m>0) print x, y}')
+    [ -n "$XY" ] || XY="540 1700"
+    echo "Gaublys: dvigubas bakstelėjimas ties $XY"
+    adb shell "input tap $XY; input tap $XY"
+    sleep 15
+    adb exec-out screencap -p > "$OUT/raw.png"
+    ffmpeg -y -loglevel error -i "$OUT/raw.png" -vf "scale=540:-1" "$OUT/shot.png"
+    rm -f "$OUT/raw.png"
+    ;;
   video)
     adb shell screenrecord --time-limit 8 /sdcard/rec.mp4 &
     REC=$!
@@ -64,10 +84,12 @@ case "$MODE" in
       -vf "fps=1,scale=360:-1,tile=6x1" -frames:v 1 "$OUT/sheet.png"
     ;;
   *)
-    echo "Nežinomas režimas: $MODE (galimi: shot, video)" >&2
+    echo "Nežinomas režimas: $MODE (galimi: shot, globe, video)" >&2
     exit 2
     ;;
 esac
 
 adb logcat -d > "$OUT/logcat.txt" || true
+grep -E " (I|W|E) (Geoid|GnssApp|Filament) *:" "$OUT/logcat.txt" | tee -a "$OUT/geoid.txt" || true
 ls -la "$OUT"
+grep -E "FATAL EXCEPTION|AndroidRuntime: |Filament|filament" "$OUT/logcat.txt" | grep -E " $(adb shell pidof lt.example.gnss 2>/dev/null | tr -d '\r') |FATAL|AndroidRuntime" | head -40 || true

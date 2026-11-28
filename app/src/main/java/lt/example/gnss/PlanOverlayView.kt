@@ -32,9 +32,9 @@ class PlanOverlayView(ctx: Context) : View(ctx) {
     private val pDot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFF2D2D.toInt() }
     private val pDotE = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); style = Paint.Style.STROKE; strokeWidth = 2f * dp }
     private val pRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x44FF2D2D }
-    private val pGrid = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCCFFFFFF.toInt(); strokeWidth = 1.2f * dp }
+    private val pGrid = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xF0D4FF1A.toInt(); strokeWidth = 1.4f * dp }   // neoninė salotinė geltona
     private val pGridB = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x88000000.toInt(); strokeWidth = 3f * dp }
-    private val pLab = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); textSize = 12f * dp; setShadowLayer(3f * dp, 0f, 0f, 0xFF000000.toInt()) }
+    private val pLab = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFD4FF1A.toInt(); textSize = 12f * dp; setShadowLayer(3f * dp, 0f, 0f, 0xFF000000.toInt()) }
     private val pRingE = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCCFF2D2D.toInt(); style = Paint.Style.STROKE; strokeWidth = 1.5f * dp }
 
     override fun onDraw(c: Canvas) {

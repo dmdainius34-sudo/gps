@@ -2759,6 +2759,7 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
         updatePlanning()
         updateMe()
         drawGlobeGrid()
+        updateOverlayGrid()
         drawEquatorScale()
         if (SpaceLive.enabled) drawAurora()            // TKS ir zondai pašalinti (ne ta tema)
         drawEquatorRing(t)
@@ -5725,6 +5726,52 @@ private class GlobeRenderer(private val appCtx: Context, private val density: Fl
             L.request(k)
         }
         L.shown = out
+    }
+
+    /**
+     * Geografinis tinklelis (platuma °N, ilguma °E) virš Vilniaus žemėlapio ir PGD plano arti žemės: GL tinklelį jie uždengia,
+     * todėl linijos ir užrašai perduodami PlanOverlayView. Žingsnis pagal aukštį (ekrane ~4–8 linijos), iki 0,0001° (~11 m).
+     */
+    private fun updateOverlayGrid() {
+        val on = showEarthGrid && !centreLat.isNaN() && freeView && focus == 0 && flight == null && !helioMode() && !southUp &&
+            (PgdOverlay.screenCorners != null || PlanningTiles.shown.isNotEmpty() || OrthoTiles.shown.isNotEmpty())
+        if (!on) { OverlayGrid.seg = null; OverlayGrid.labels = emptyList(); return }
+        val altM = altNow() / EARTH_R * 6_371_000.0
+        val viewDeg = 2.0 * kotlin.math.tan(Math.toRadians(20.0)) * altM / 111_320.0
+        val steps = doubleArrayOf(0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0.0002, 0.0001)
+        val step = steps.firstOrNull { viewDeg / it >= 4.0 } ?: steps.last()
+        val dec = maxOf(0, kotlin.math.ceil(-kotlin.math.log10(step) - 1e-9).toInt())
+        val cl = cos(Math.toRadians(centreLat)).coerceAtLeast(0.05)
+        val span = viewDeg * 1.2 * maxOf(1.0, lastW.toDouble() / maxOf(lastH, 1))
+        val latA = floor((centreLat - span) / step) * step; val latB = centreLat + span
+        val lonA = floor((centreLon - span / cl) / step) * step; val lonB = centreLon + span / cl
+        val seg = ArrayList<Float>(); val labs = ArrayList<Triple<String, Float, Float>>()
+        val e = DoubleArray(3); val o = FloatArray(2)
+        fun scr(la: Double, lo: Double): FloatArray? {
+            val a = Math.toRadians(la); val b = Math.toRadians(lo)
+            eyeOfDir(cos(a) * cos(b), cos(a) * sin(b), sin(a), maxOf(0.0, reliefH(la, lo)), e)
+            return if (eyeToScreen(e, o, 0)) floatArrayOf(o[0], o[1]) else null
+        }
+        val n = 12
+        fun line(fixedLat: Boolean, v: Double, label: String) {
+            var prev: FloatArray? = null; var best: FloatArray? = null
+            for (i in 0..n) {
+                val t = i.toDouble() / n
+                val p = if (fixedLat) scr(v, lonA + (lonB - lonA) * t) else scr(latA + (latB - latA) * t, v)
+                if (p != null && prev != null) { seg.add(prev[0]); seg.add(prev[1]); seg.add(p[0]); seg.add(p[1]) }
+                prev = p
+                // užrašas: platumai – arčiausiai kairiojo krašto, ilgumai – arčiausiai apatinio (ekrane)
+                if (p != null && p[0] in 0f..lastW.toFloat() && p[1] in 0f..lastH.toFloat()) {
+                    if (best == null || (if (fixedLat) p[0] < best[0] else p[1] > best[1])) best = p
+                }
+            }
+            best?.let { labs.add(Triple(label, it[0], it[1])) }
+        }
+        var la = latA; var k = 0
+        while (la <= latB && k < 40) { line(true, la, "%.${dec}f°N".format(Locale.US, la)); la += step; k++ }
+        var lo = lonA; k = 0
+        while (lo <= lonB && k < 40) { line(false, lo, "%.${dec}f°E".format(Locale.US, lo)); lo += step; k++ }
+        OverlayGrid.seg = seg.toFloatArray(); OverlayGrid.labels = labs
     }
 
     /** Mano padėtis sluoksnyje arti žemės (GL smeigtukas būtų po planu): taškas ir tikslumo apskritimas ekrane. */

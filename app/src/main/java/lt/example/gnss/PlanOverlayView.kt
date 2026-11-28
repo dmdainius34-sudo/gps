@@ -7,6 +7,12 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.view.View
 
+/** Geografinis tinklelis virš žemėlapio (ekrano taškai): linijų atkarpos (x0, y0, x1, y1…) ir užrašai. */
+object OverlayGrid {
+    @Volatile var seg: FloatArray? = null
+    @Volatile var labels: List<Triple<String, Float, Float>> = emptyList()
+}
+
 /** PGD planas virš gaublio arti žemės: kampai – iš GlobeRenderer (PgdOverlay.screenCorners), vaizdas – pilnos raiškos. Lietimų nepriima. */
 class PlanOverlayView(ctx: Context) : View(ctx) {
     private val m = Matrix()
@@ -26,11 +32,22 @@ class PlanOverlayView(ctx: Context) : View(ctx) {
     private val pDot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFF2D2D.toInt() }
     private val pDotE = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); style = Paint.Style.STROKE; strokeWidth = 2f * dp }
     private val pRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x44FF2D2D }
+    private val pGrid = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCCFFFFFF.toInt(); strokeWidth = 1.2f * dp }
+    private val pGridB = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x88000000.toInt(); strokeWidth = 3f * dp }
+    private val pLab = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); textSize = 12f * dp; setShadowLayer(3f * dp, 0f, 0f, 0xFF000000.toInt()) }
     private val pRingE = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCCFF2D2D.toInt(); style = Paint.Style.STROKE; strokeWidth = 1.5f * dp }
 
     override fun onDraw(c: Canvas) {
         postInvalidateOnAnimation()
         drawPlans(c)
+        OverlayGrid.seg?.let { s ->
+            c.drawLines(s, pGridB); c.drawLines(s, pGrid)
+            for ((txt, x, y) in OverlayGrid.labels) {
+                val tw = pLab.measureText(txt)
+                val tx = x.coerceIn(4f * dp, width - tw - 4f * dp); val ty = y.coerceIn(16f * dp, height - 6f * dp)
+                c.drawText(txt, tx + 3f * dp, ty - 3f * dp, pLab)
+            }
+        }
         // mano padėtis (virš plano): tikslumo apskritimas ir taškas
         PgdOverlay.meScreen?.let { p ->
             if (p[2] > 3f) { c.drawCircle(p[0], p[1], p[2], pRing); c.drawCircle(p[0], p[1], p[2], pRingE) }

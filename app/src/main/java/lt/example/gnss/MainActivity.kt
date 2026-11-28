@@ -12281,16 +12281,22 @@ class MainActivity : AppCompatActivity() {
     private fun showSunLogDialog() {
         val list = SunCal.entries(this).sortedByDescending { it.ms }
         val fmt = java.text.SimpleDateFormat("MM-dd HH:mm", Locale.US)
+        // naudojamas tik naujausias geras kalibravimas iki 100 m nuo dabartinės vietos – jis „galioja“, kiti ne
+        val used = SunCal.nearestGood(this, obsLatNow, obsLonNow)?.line
         val items = list.map { e ->
             val dist = kotlin.math.hypot((e.lat - obsLatNow) * 111_320.0, (e.lon - obsLonNow) * 111_320.0 * cos(Math.toRadians(obsLatNow)))
-            (if (e.good && !e.magDistorted) "✓ " else if (e.good) "✓ (magnetometras iškraipytas) " else "⚠ ") + e.target.substringBefore(" (") + " · " + "%s · pataisa %+.1f° · magnetometras %+.1f° · kampai %.0f°/%.0f° · %s".format(Locale.US,
-                fmt.format(java.util.Date(e.ms)), e.corr, e.magDiff, e.devEl, e.sunEl, if (dist < 1000) "%.0f m".format(Locale.US, dist) else "%.1f km".format(Locale.US, dist / 1000))
+            val st = when {
+                e.line == used -> "✓ galioja (čia; kol nebus naujesnio ar nepersikelsite)"
+                !e.good -> "✗ netinkamas"
+                dist > 100 -> "✗ nebegalioja – kita vieta (" + (if (dist < 1000) "%.0f m".format(Locale.US, dist) else "%.1f km".format(Locale.US, dist / 1000)) + ")"
+                else -> "✗ nebegalioja – yra naujesnis"
+            }
+            e.target.substringBefore(" (") + " · " + fmt.format(java.util.Date(e.ms)) + " · " + st
         }.toTypedArray()
-        val checked = BooleanArray(items.size) { !list[it].good }      // abejotini pažymėti iš anksto
+        val checked = BooleanArray(items.size) { !list[it].good }      // netinkami pažymėti iš anksto
         calCache = 0L to null
-        val msg = "Failas: ${SunCal.FILE} (programos vidinė atmintis; kopija – kiekviename ZIP). ✓ – planšetės kampas sutapo su Saulės (≤ 10°). " +
-            "Pažymėti įrašai bus ištrinti."                    // magnetometro palyginimas pašalintas (kabinoje klysta)
-        val b = android.app.AlertDialog.Builder(this).setTitle("Saulės kalibravimų žurnalas (${items.size})")
+        val msg = "Pažymėti įrašai bus ištrinti."
+        val b = android.app.AlertDialog.Builder(this).setTitle("Kalibravimų žurnalas (${items.size})")
         if (items.isEmpty()) b.setMessage("Įrašų dar nėra – paspauskite „Kalibruoti pagal Saulę“.")
         else b.setMultiChoiceItems(items, checked) { _, i, on -> checked[i] = on }
         b.setPositiveButton("Ištrinti pažymėtus") { _, _ ->
@@ -12301,7 +12307,7 @@ class MainActivity : AppCompatActivity() {
         b.setNegativeButton("Uždaryti", null)
         // antraštė su paaiškinimu (kartu su sąrašu žinutės rodyti negalima)
         if (items.isNotEmpty()) b.setCustomTitle(android.widget.TextView(this).apply {
-            text = "Saulės kalibravimų žurnalas (${items.size})\n$msg"; setPadding(48, 32, 48, 8); textSize = 14f })
+            text = "Kalibravimų žurnalas (${items.size})\n$msg"; setPadding(48, 32, 48, 8); textSize = 14f })
         b.create().also { it.show(); WinUtil.draggable(it) }
     }
 

@@ -144,6 +144,14 @@ class CalibDrum(ctx: Context, private val icons: List<String>, private val names
                 st(pts[8], pts[9], 0.11f, 0x93C5FD)           // Rigelis
                 st(pts[10], pts[11], 0.07f, 0xE0E7FF)         // Saifas
             }
+            "grid" -> {
+                // tinklelis (neoninis salotinis), šiaurės rodyklė viršuje
+                line.color = col(a, 0xD4FF1A); line.strokeWidth = r * 0.08f
+                val g = r * 0.62f
+                for (k in -1..1) { val o = k * g * 0.66f; c.drawLine(x + o, y - g, x + o, y + g, line); c.drawLine(x - g, y + o, x + g, y + o, line) }
+                fill.color = col(a, 0xEF4444)
+                c.drawPath(android.graphics.Path().apply { moveTo(x, y - r * 0.98f); lineTo(x + r * 0.2f, y - r * 0.62f); lineTo(x - r * 0.2f, y - r * 0.62f); close() }, fill)
+            }
             "log" -> {
                 val bw = r * 0.62f; val bh = r * 0.8f
                 fill.color = col(a, 0xFDE68A); c.drawRoundRect(RectF(x - bw, y - bh, x + bw, y + bh), r * 0.1f, r * 0.1f, fill)

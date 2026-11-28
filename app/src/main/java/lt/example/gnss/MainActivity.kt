@@ -1329,6 +1329,13 @@ class SkyDomeGL(context: Context) : GLSurfaceView(context), SensorEventListener 
     fun deviceAim(): Triple<Double, Double, String> = SunCal.deviceAzEl(lastRaw, backOnly = true)
 
     /** Kalibravimas pagal orientyrą (Saulė, Mėnulis, Polaris, Oriono žvaigždės). */
+    /** Kalibravimas pagal žemėlapio tinklelį: prietaisas atsuktas į šiaurę (kaip rodo žemėlapio N linijos) – ta kryptis tampa 0°. */
+    fun calibrateGrid(): SunCalResult? {
+        val h = headingDeg() ?: return null
+        val r = calibrateTo(0.0, 0.0, System.currentTimeMillis(), "Tinklelis (žemėlapis)", h)
+        return SunCalResult(0.0, 0.0, r.third, h, 0.0)
+    }
+
     fun calibrateTarget(key: String, lat: Double, lon: Double, camVec: DoubleArray? = null): SunCalResult? {
         val now = System.currentTimeMillis()
         val (az, alt) = SunCal.targetAzEl(key, now, lat, lon)
@@ -11965,12 +11972,13 @@ class MainActivity : AppCompatActivity() {
     private var satBtnMark: (() -> Unit)? = null
     private fun toggleCalibDrum() {
         calDrum?.let { (it.parent as? ViewGroup)?.removeView(it); calDrum = null; return }
-        val keys = listOf("north", "sun", "moon", "polaris", "orion", "log")
+        val keys = listOf("north", "grid", "sun", "moon", "polaris", "orion", "log")
         val icons = keys                                       // piešti paveikslėliai (CalibDrum.drawIcon)
-        val names = listOf("Šiaurė", "Saulė", "Mėnulis", "Šiaurinė žvaigždė", "Orionas", "Žurnalas")
+        val names = listOf("Šiaurė", "Tinklelis", "Saulė", "Mėnulis", "Šiaurinė žvaigždė", "Orionas", "Žurnalas")
         val sp = getSharedPreferences("sky_cal", Context.MODE_PRIVATE)
         fun st(i: Int) = when (val k = keys[i]) {
             "north" -> "į šiaurę"
+            "grid" -> "pagal žemėlapį"
             "orion" -> targetStatusShort("betelgeuse")
             "log" -> "peržiūra"
             else -> targetStatusShort(k)
@@ -12017,6 +12025,7 @@ class MainActivity : AppCompatActivity() {
     private fun openCalib(k: String) {
         when (k) {
             "north" -> showNorthDialog()
+            "grid" -> showGridCalDialog()
             "log" -> showSunLogDialog()
             "orion" -> {
                 val stars = listOf("betelgeuse", "rigel", "bellatrix", "alnilam")
@@ -12264,6 +12273,28 @@ class MainActivity : AppCompatActivity() {
         }
         cam.start()
         ui.postDelayed({ if (!done && dlg.isShowing) dlg.dismiss() }, 40_000L)
+    }
+
+    /**
+     * Šiaurė pagal žemėlapio tinklelį: stovint žinomoje vietoje (žemėlapio kryžiukas ant savo vietos ortofoto) planšetė atsukama
+     * į šiaurę pagal tinklelio N linijas ir paspaudžiama „Kalibruoti“. Įrašas žurnale – su kryžiuko koordinatėmis.
+     */
+    private fun showGridCalDialog() {
+        if (!::skyDome.isInitialized) return
+        android.app.AlertDialog.Builder(this).setTitle("Šiaurė pagal žemėlapio tinklelį")
+            .setMessage("Kryžiukas – ant jūsų vietos žemėlapyje. Atsukite planšetę (nugarėlę ar viršų) į šiaurę pagal tinklelio N linijas ir spauskite „Kalibruoti“.")
+            .setPositiveButton("Kalibruoti") { _, _ ->
+                if (!skyDome.aimReady()) { Toast.makeText(this, "Krypties jutikliai dar neparuošti – palaukite sekundę", Toast.LENGTH_LONG).show(); return@setPositiveButton }
+                val ci = skyDome.centreInfo()
+                val lat = if (!ci[0].isNaN() && skyDome.freeView) ci[0] else obsLatNow
+                val lon = if (!ci[1].isNaN() && skyDome.freeView) ci[1] else obsLonNow
+                val magAz = devAxisZ?.first ?: Double.NaN; val decl = skyDome.declinationDeg()
+                val r = skyDome.calibrateGrid() ?: run { Toast.makeText(this, "Krypties nepavyko nustatyti", Toast.LENGTH_LONG).show(); return@setPositiveButton }
+                try { SunCal.log(this, SunCal.Rec(System.currentTimeMillis(), lat, lon, obsHNow, 1.0, 0.0, 0.0,
+                    r.devAz, 0.0, r.corr, magAz, decl, devPitch, devRoll, Build.MANUFACTURER + " " + Build.MODEL, "Tinklelis")); calCache = 0L to null } catch (e: Exception) { logError("Kalibravimų žurnalas: ${e.message}") }
+                Toast.makeText(this, "Šiaurė pagal tinklelį: pataisa %+.1f°".format(Locale.US, r.corr), Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Atšaukti", null).show().also { WinUtil.draggable(it) }
     }
 
     /** Kalibravimas pagal orientyrą su apsaugomis ir įrašu žurnale. Grąžina true, jei pritaikyta. */
